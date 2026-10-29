@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -415,7 +416,14 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 			server: serverIdentity{Name: redact.Redact(initialized.name, secrets), Version: redact.Redact(initialized.version, secrets)}}
 	}
 	if err := srv.stop(); err != nil {
-		return nil, errors.New(redact.Redact(err.Error(), secrets))
+		// The call was made: a write may have been applied. Temporary files
+		// the server left behind do not take its receipt away; they are
+		// reported on this adapter's standard error.
+		var leftover *leftoverError
+		if !errors.As(err, &leftover) {
+			return nil, errors.New(redact.Redact(err.Error(), secrets))
+		}
+		fmt.Fprintln(os.Stderr, "sandbox-cleanup-incomplete: the server's private temporary directory could not be removed after the call:", redact.Redact(err.Error(), secrets))
 	}
 	out, err := buildEnvelope(cfg, identity, req, schema, result, observedAt, reached)
 	if err != nil {

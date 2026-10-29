@@ -22,11 +22,60 @@ var runtimeSocketPaths = []string{
 }
 
 // userRuntimeSocketNames are the runtime sockets kept below a per-user
-// runtime directory or home directory (rootless and desktop runtimes).
+// runtime directory or home directory (rootless and desktop runtimes:
+// Docker Desktop, Colima, Rancher Desktop, Lima, OrbStack, Podman machine).
 var userRuntimeSocketNames = []string{
 	"docker.sock", "podman/podman.sock",
-	".docker/run/docker.sock", ".colima/default/docker.sock", ".rd/docker.sock",
+	".docker/run/docker.sock", ".docker/desktop/docker.sock", ".colima/default/docker.sock", ".rd/docker.sock",
+	".lima/default/sock/docker.sock", ".orbstack/run/docker.sock",
 	".local/share/containers/podman/machine/podman.sock",
+}
+
+// runtimeHostVariables name a runtime's socket in a client's environment:
+// a "unix://" value there is that runtime's socket, wherever it lies.
+var runtimeHostVariables = []string{"DOCKER_HOST", "CONTAINER_HOST"}
+
+// procNetUnix lists the Unix sockets of this network namespace.
+var procNetUnix = "/proc/net/unix"
+
+// listeningSockets reads procNetUnix: the paths of the listening sockets
+// bound to a filesystem path, and how many listening sockets are bound to
+// an abstract name, which no filesystem mask hides. ok is false when the
+// list cannot be read, so what is reachable is not known.
+func listeningSockets() (paths []string, abstract int, ok bool) {
+	raw, err := os.ReadFile(procNetUnix)
+	if err != nil {
+		return nil, 0, false
+	}
+	lines := strings.Split(string(raw), "\n")
+	for _, line := range lines[1:] {
+		// Num RefCount Protocol Flags Type St Inode [Path]; a path holds no
+		// space unless the kernel escaped it, and a name is never quoted.
+		fields := strings.Fields(line)
+		if len(fields) < 8 {
+			continue
+		}
+		flags, err := strconv.ParseUint(fields[3], 16, 32)
+		if err != nil || flags&0x10000 == 0 { // __SO_ACCEPTCON: listening
+			continue
+		}
+		name := strings.Join(fields[7:], " ")
+		if strings.HasPrefix(name, "@") {
+			abstract++
+		} else if filepath.IsAbs(name) {
+			paths = append(paths, name)
+		}
+	}
+	return paths, abstract, true
+}
+
+// unixTarget is the socket path a "unix://PATH" value names, or "".
+func unixTarget(value string) string {
+	path, ok := strings.CutPrefix(value, "unix://")
+	if !ok || !filepath.IsAbs(path) {
+		return ""
+	}
+	return path
 }
 
 // envValue is the last value of name in env, or "".
@@ -66,10 +115,19 @@ func userRuntimeDirs(env []string) []string {
 }
 
 // reachableRuntimeSockets are the known runtime sockets that exist for this
-// launch, resolved and sorted: the fixed system paths, and the per-user names
-// below the user's runtime directories and home directory.
+// launch, resolved and sorted: the fixed system paths, the sockets the
+// runtime host variables name in the server's environment or this process's,
+// and the per-user names below the user's runtime directories and home
+// directory.
 func reachableRuntimeSockets(env []string) []string {
 	candidates := append([]string{}, runtimeSocketPaths...)
+	for _, name := range runtimeHostVariables {
+		for _, value := range []string{envValue(env, name), os.Getenv(name)} {
+			if target := unixTarget(value); target != "" {
+				candidates = append(candidates, target)
+			}
+		}
+	}
 	bases := userRuntimeDirs(env)
 	// The server's HOME, else this process's (no os/user: it would link the
 	// C library, and the loader variables refused here would act on it).
@@ -85,6 +143,12 @@ func reachableRuntimeSockets(env []string) []string {
 			candidates = append(candidates, filepath.Join(base, name))
 		}
 	}
+	return existingSockets(candidates)
+}
+
+// existingSockets are those of candidates that are sockets, resolved, once
+// each, and sorted.
+func existingSockets(candidates []string) []string {
 	seen := map[string]bool{}
 	var found []string
 	for _, candidate := range candidates {

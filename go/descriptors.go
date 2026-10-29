@@ -53,20 +53,30 @@ type snapshotServer struct{ name, version string }
 type snapshotExecutableIdentity struct {
 	path, digest string
 	script       *snapshotExecutableIdentity
+	interpreters []snapshotExecutableIdentity
 }
 
+// maxSnapshotInterpreters bounds a "#!" chain an executable member binds, as
+// the adapter does.
+const maxSnapshotInterpreters = 8
+
 // snapshotExecutable holds a version-4 snapshot's executable member to its
-// shape: exactly an absolute path and a digest, and optionally a script with
-// exactly the same two.
+// shape: exactly an absolute path and a digest; optionally interpreters, a
+// non-empty list of at most maxSnapshotInterpreters files of exactly those
+// two; and optionally a script of exactly those two.
 func snapshotExecutable(raw value) (*snapshotExecutableIdentity, error) {
-	bad := errors.New("snapshot: executable is not an absolute path and a digest, with at most a script of the same")
-	var read func(raw value, script bool) (*snapshotExecutableIdentity, error)
-	read = func(raw value, script bool) (*snapshotExecutableIdentity, error) {
+	bad := errors.New("snapshot: executable is not an absolute path and a digest, with at most interpreters and a script of the same")
+	var read func(raw value, top bool) (*snapshotExecutableIdentity, error)
+	read = func(raw value, top bool) (*snapshotExecutableIdentity, error) {
 		obj, ok := raw.(*vObject)
 		if !ok {
 			return nil, bad
 		}
-		if exactlyMembers(obj, map[string]bool{"path": true, "digest": true, "script": false}, "snapshot executable") != nil {
+		members := map[string]bool{"path": true, "digest": true}
+		if top {
+			members["script"], members["interpreters"] = false, false
+		}
+		if exactlyMembers(obj, members, "snapshot executable") != nil {
 			return nil, bad
 		}
 		var id snapshotExecutableIdentity
@@ -80,16 +90,26 @@ func snapshotExecutable(raw value) (*snapshotExecutableIdentity, error) {
 			return nil, bad
 		}
 		if inner, present := obj.get("script"); present {
-			if script {
+			if id.script, err = read(inner, false); err != nil {
+				return nil, err
+			}
+		}
+		if inner, present := obj.get("interpreters"); present {
+			list, ok := inner.(vArray)
+			if !ok || len(list) == 0 || len(list) > maxSnapshotInterpreters {
 				return nil, bad
 			}
-			if id.script, err = read(inner, true); err != nil {
-				return nil, err
+			for _, item := range list {
+				interpreter, err := read(item, false)
+				if err != nil {
+					return nil, err
+				}
+				id.interpreters = append(id.interpreters, *interpreter)
 			}
 		}
 		return &id, nil
 	}
-	return read(raw, false)
+	return read(raw, true)
 }
 
 // snapshotTool is a tool's captured candidates; at least one is present.

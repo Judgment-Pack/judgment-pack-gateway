@@ -100,6 +100,11 @@ var postureStatements = map[string]map[string]postureLine{
 // hostPosture judges every protection under the configuration given.
 func hostPosture(in postureInput) postureReport {
 	programs := sourceProgramPosture(in.sources)
+	if in.public {
+		for i := range programs {
+			programs[i].report.Protection.Reason = publicProgramReason(programs[i])
+		}
+	}
 	return postureReport{platform: runtime.GOOS, programs: programs, lines: []postureLine{
 		sourceUserPosture(in, requireUserSwitching, sourceUserIsRoot),
 		descendantPosture(),

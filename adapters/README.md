@@ -330,27 +330,44 @@ approval. Neither an acquisition nor a health check refreshes approval.
 A customer `command` captures `"snapshotVersion":"4"`: version 3 with an
 `executable` member that binds the program, not only its configured words. It
 holds the absolute path the command resolved to, links resolved, and the SHA-256
-of that file; when the first operand that is not a flag names a regular file,
-which is the script an interpreter runs, it also holds that file's path and digest
-as `script`. A bare name is looked up on the adapter's `PATH`; a relative word is
-resolved against the source workspace, the directory the server runs in, never
-the adapter's own working directory. Every start, registration and health checks
-included, resolves and digests both files again. With an approval held, another
-resolved path or another digest of either file refuses with
-`mcp-executable-changed` before anything is started. A version-3 approval of a
+of that file. When that file is a `#!` script, `interpreters` lists, in the order
+they run, each program that runs before it, by path and digest: the interpreter
+its first line names (a relative one resolved against the workspace), and, for
+`#!/usr/bin/env NAME`, the program `env` finds on the server's `PATH`, and so on
+while what runs is itself a `#!` script. `env` with an option other than `-S`, or
+with a variable assignment, refuses with `mcp-executable-unbindable`, since what it
+would run is not bound. When an operand that is not a flag names a regular file,
+the first such operand, which is the script an interpreter runs, is held the same
+way as `script`; an option's separate value that names no file (`-X dev`) is passed
+over, and one that names a file (`--require hook.js`) is taken for the script, so
+put the script first or write such options as `--name=value`. A bare name is
+looked up on the adapter's `PATH`; a relative word is resolved against the source
+workspace, the directory the server runs in, never the adapter's own working
+directory. Every start, registration and health checks included, resolves and
+digests every bound file again. With an approval held, another resolved path or
+another digest of any of them refuses with `mcp-executable-changed` before
+anything is started. Every file is opened without blocking and must be a regular
+file: a FIFO or a device at the path refuses at once. A version-3 approval of a
 command predates this binding and refuses with `mcp-approval-reapproval-required`;
 it is never read as approved, and `connect --replace` approves the source again.
 
-On Linux the command's file is opened once, digested from that descriptor, and
-that same descriptor is executed (through `/proc/self/fd`), under bubblewrap,
-Landlock and full access alike; a file put in place at the path after the digest
-is not what runs. A `#!` script, a bubblewrap without `--argv0`, macOS and Windows
-execute the path instead, and the adapter digests the file again immediately
-before the start; a change within that remaining window is not detected. The
-script operand is always opened by its interpreter by path and is re-checked the
-same way. Code an interpreter or a package runner loads by other means, such as a
-module name, an import from another file or a package fetched at launch, is not
-bound.
+On Linux (amd64 and arm64) a binary command is copied once into an anonymous
+memory file that is then sealed against every write, growth and shrinking; the
+digest is taken from that copy, and that copy is what is executed (through
+`/proc/self/fd`), under bubblewrap, Landlock and full access alike. Neither a file
+put in place at the path after the digest nor the same file rewritten in place
+runs: what runs is exactly the bytes digested. The server's argv[0] is the
+configured word, which a multi-call program dispatches on, and `/proc/self/exe`
+names the sealed copy. What is not run from a sealed copy is executed or opened by
+path, and the adapter digests it again immediately before the start, when the
+process is about to be created: a `#!` script and its interpreters (the kernel and
+`env` open them by path, and the interpreters are resolved afresh), the script
+operand (its interpreter opens it by path), and the command itself under a
+bubblewrap without `--argv0`, on macOS and on Windows. A change after that re-check
+is not detected. The check report's `sandbox.reason` says which applies. Code an
+interpreter or a package runner loads by other means, such as a module name, an
+import from another file or a package fetched at launch, and the shared libraries
+a binary loads, are not bound.
 
 Every call checks the exact allowed names, pinned snapshot bytes, binding,
 operation, endpoint, server identity and current descriptors before `tools/call`.
@@ -373,8 +390,13 @@ The sandbox policy file has this shape:
 Absent a policy file, a customer command uses `workspace-write`. The three modes
 are `read-only`, `workspace-write` and explicitly selected `danger-full-access`.
 Workspace-write permits writes under the source workspace and a private temporary
-directory. The policy file must resolve outside that workspace. The policy belongs to the operator; a tool's arguments cannot select it.
-The successful check report includes `sandbox` with mode, backend, state and reason.
+directory. The policy file must resolve outside that workspace, and its path may not
+pass through a link inside the workspace, which the confined source could re-point
+(`sandbox-policy-invalid`). The policy belongs to the operator; a tool's arguments cannot select it.
+The successful check report includes `sandbox` with mode, backend, state and reason,
+and `gateway connect` names the mode, backend and state in the line it prints for the
+source. An acquisition records no backend of its own; under engine version 13 every
+launch is bound to the backend its source's posture reports, and refuses otherwise.
 No backend means `sandbox-not-enforced` and the restricted command is not started.
 
 Engine version 13 instead confines the adapter and its descendants through
@@ -410,15 +432,23 @@ container-runtime sockets reachable for the runtime client; the report is then
 `partial`. Both refuse with `sandbox-loader-variable-refused` when their own
 environment names a dynamic-loader variable.
 Omitting the workspace creates a private invocation workspace. A child failure
-keeps its own exit status; setup or cleanup failures override success. Read-only
+keeps its own exit status; a setup failure, or a descendant not established gone,
+overrides success. Temporary files the program left behind do not: the private
+temporary directory is removed after the owner's permissions are restored on every
+directory in it, and one that still cannot be removed is reported on standard error
+as `sandbox-cleanup-incomplete` while the program's result stands. A customer
+command's acquisition likewise keeps its receipt after a completed `tools/call`
+when only that removal fails. Read-only
 mode denies temporary writes too, so programs that require scratch files may fail.
 
 A launcher (bubblewrap, the Landlock helper, or sandbox-exec and its helper on
 macOS) starts with an empty environment. The server's environment, the adapter's
 own and the credentials members, reaches the server only inside the sandbox,
-through an unlinked file on an inherited descriptor (bubblewrap's `--clearenv`
-and `--args`), never on a command line, with the private temporary-directory
-variables last. A customer command whose configured environment or credentials
+through an inherited descriptor (bubblewrap's `--clearenv` and `--args`), never on
+a command line, with the private temporary-directory variables last. On Linux that
+descriptor is a sealed anonymous memory file, which never reaches a disk; on macOS
+it is an unlinked file in the private temporary directory, whose bytes may reach
+the disk that directory is on. A customer command whose configured environment or credentials
 name a variable the dynamic loader honours (`LD_*`, `DYLD_*` or `GCONV_PATH`)
 refuses with `sandbox-loader-variable-refused` at registration and at every start,
 before anything is started; the engine refuses such a platform `environment` for a
@@ -430,8 +460,12 @@ A launcher is never looked up on `PATH`. bubblewrap is taken only from
 and sandbox-exec only from `/usr/bin/sandbox-exec`. The launcher must be an
 executable regular file owned by root and writable by neither group nor others,
 in directories that are each owned by root and writable by neither group nor
-others, both along the path as written and along the path it resolves to. A
-launcher there that fails this refuses with `sandbox-launcher-untrusted`; no later
+others, both along the path as written and along the path it resolves to. An ELF
+launcher's program interpreter (`PT_INTERP`) is held the same way, and each
+directory its `RPATH` or `RUNPATH` names (`$ORIGIN` expanded) must be one only root
+can change, or not exist below a directory only root can change; a relative or
+empty entry refuses. A launcher there that fails this refuses with
+`sandbox-launcher-untrusted`; no later
 location, no `PATH` entry and no other backend is tried. With no bubblewrap at
 those locations, Linux uses Landlock and its report says so; macOS without a
 trusted sandbox-exec refuses with `sandbox-not-enforced`. A bubblewrap installed
@@ -440,17 +474,34 @@ used.
 
 Linux tries bubblewrap and falls back to Landlock ABI 3 or newer. Landlock is
 reported as `partial`: file-content writes, truncation and directory mutations are
-restricted, while metadata operations such as chmod remain outside its controls.
+restricted, while metadata operations such as chmod, and connections to local
+sockets, remain outside its controls. Every backend lets a restricted program write
+to `/dev/null`.
+
 Inside bubblewrap the per-user runtime directory (`$XDG_RUNTIME_DIR`,
-`/run/user/UID`) is replaced by an empty one and each other known
+`/run/user/UID`) is replaced by an empty one, and every other Unix socket the
+program could connect to is replaced by `/dev/null`: each listening socket bound
+to a path in the host's socket list (`/proc/net/unix`), each known
 container-runtime socket (`/var/run/docker.sock`, `/run/docker.sock`,
 `/run/podman/podman.sock`, `/run/containerd/containerd.sock`,
-`/run/crio/crio.sock`, `/run/buildkit/buildkitd.sock`, and rootless or desktop
-sockets below the home directory) by `/dev/null`, so neither a container daemon
-nor the user's service manager can write for the program; the report names what
-was masked. Abstract Unix sockets and network access are unchanged. Landlock and
-Seatbelt cannot mask sockets: a reachable runtime socket is named in the report,
-and Seatbelt's state is then `partial`.
+`/run/crio/crio.sock`, `/run/buildkit/buildkitd.sock`, and the rootless and
+desktop sockets below the home directory of Docker Desktop, Colima, Rancher
+Desktop, Lima, OrbStack and Podman machine), and the socket a `unix://` value of
+`DOCKER_HOST` or `CONTAINER_HOST` names. These masks come after the writable binds,
+so a socket inside the workspace is hidden too; only a runtime directory that holds
+the workspace is masked before them. The report names what was masked. A listening
+socket with an abstract name has no path to hide and stays reachable, because every
+mode shares the host's network namespace; while one is listening, or when the socket
+list cannot be read, the state is `partial`, never `enforced`. A socket that starts
+listening after the launch is not masked. Network access is unchanged. A server
+that needs a host socket (a name service, a session bus) cannot reach it under a
+restricted mode.
+
+Landlock and Seatbelt cannot mask sockets: a reachable known runtime socket is
+named in the report. Seatbelt is always reported as `partial`: its profile leaves
+local sockets and system services reachable, and a daemon behind one is not
+confined by it. Its private temporary directory is passed resolved
+(`/private/var/...`), as the workspace is.
 macOS uses Seatbelt through sandbox-exec. Windows and other unsupported platforms
 refuse restricted customer commands before execution with `sandbox-not-enforced`. Network access is outside this filesystem policy.
 The mode does not establish a tool's declared effect or the truth of its answer.

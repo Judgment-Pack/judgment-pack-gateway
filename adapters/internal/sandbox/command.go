@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,11 +12,14 @@ import (
 )
 
 // Launch is a server command as it is to run. Path is the absolute file the
-// command resolved to, links resolved. File, when present, is that file
-// opened once and digested from this descriptor; a backend that can execute
-// or mount the descriptor itself does so, and Report.ExecutesDigestedFile
-// then says so. Env is the server's complete environment: it reaches the
-// server and never the launcher that confines it.
+// command resolved to, links resolved. File, when present, holds the bytes
+// that were digested: a sealed in-memory copy (SealedCopy) where the platform
+// has one, else that file opened once. A backend that can execute the
+// descriptor itself does so; Report.ExecutesDigestedFile says whether what
+// runs is exactly the digested bytes, which holds only for a sealed copy.
+// Argv0 is the configured word, which a multi-call program dispatches on.
+// Env is the server's complete environment: it reaches the server and never
+// the launcher that confines it.
 //
 // Backend, when set, is the only backend this launch may use: the one a
 // posture probe reported for it. A launch that cannot use exactly that backend
@@ -94,7 +98,13 @@ func Command(ctx context.Context, launch Launch, mode, workspace string) (*exec.
 	if err != nil {
 		return nil, report, noop, err
 	}
-	cleanup := func() error { return os.RemoveAll(tmp) }
+	created := tmp
+	cleanup := func() error { return removePrivateTemp(created) }
+	// Resolved, as the workspace is: Seatbelt matches resolved paths, and a
+	// temporary directory below a link (/var on macOS) would match nothing.
+	if tmp, err = filepath.EvalSymlinks(tmp); err != nil {
+		return nil, report, noop, errors.Join(err, cleanup())
+	}
 	// The private temporary-directory variables come last, so neither the
 	// platform environment nor a credential replaces them.
 	launch.Env = dedupEnv(append(append([]string{}, launch.Env...), "TMPDIR="+tmp, "TMP="+tmp, "TEMP="+tmp))
@@ -127,10 +137,35 @@ func Command(ctx context.Context, launch Launch, mode, workspace string) (*exec.
 	return cmd, report, cleanup, nil
 }
 
-// ExecutesDigestedFile reports whether the backend runs the descriptor that
-// was digested (Launch.File) rather than reopening the path. When it does
-// not, the caller re-checks the digest immediately before the start.
+// ExecutesDigestedFile reports whether what runs is exactly the bytes that
+// were digested: the backend executes Launch.File itself, and that file is a
+// sealed copy no one can change. When it is not, the caller re-checks the
+// digest immediately before the start.
 func (r Report) ExecutesDigestedFile() bool { return r.exactFile }
+
+// executesDescriptor reports whether a backend executes launch.File itself
+// rather than the path: a binary does; a "#!" script does not, because its
+// interpreter reopens the path it is given.
+func executesDescriptor(launch Launch) bool { return launch.File != nil && !isScript(launch.File) }
+
+// removePrivateTemp removes a private temporary directory the server could
+// fill. The server runs as this process's user, so whatever it left there is
+// this user's: a directory it made unwritable or unsearchable is given back
+// its owner's permissions first, then the whole tree is removed.
+func removePrivateTemp(dir string) error {
+	if err := os.RemoveAll(dir); err == nil {
+		return nil
+	}
+	// WalkDir visits a directory before it reads it, so each is made
+	// readable and searchable before its entries are needed.
+	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			os.Chmod(path, 0o700)
+		}
+		return nil
+	})
+	return os.RemoveAll(dir)
+}
 
 // dedupEnv keeps the last value of each name, in first-seen order, so a
 // reader that takes the first match and one that takes the last agree.
@@ -150,10 +185,22 @@ func dedupEnv(env []string) []string {
 	return out
 }
 
-// envFile holds the server's environment in an unlinked file in the private
-// temporary directory, so no secret travels on a command line. Each item is
-// followed by a NUL byte.
+// envFile holds the server's environment, credentials included, so no secret
+// travels on a command line: on Linux in a sealed anonymous memory file,
+// which never reaches a disk; where there is none (macOS), in an unlinked
+// file in the private temporary directory. Each item is followed by a NUL
+// byte.
 func envFile(tmp string, items []string) (*os.File, error) {
+	var data []byte
+	for _, item := range items {
+		if strings.IndexByte(item, 0) >= 0 {
+			return nil, errors.New("sandbox-policy-invalid: an environment value contains a NUL byte")
+		}
+		data = append(append(data, item...), 0)
+	}
+	if f, err := sealedData("env", data); err == nil {
+		return f, nil
+	}
 	f, err := os.CreateTemp(tmp, "env-")
 	if err != nil {
 		return nil, err
@@ -161,14 +208,6 @@ func envFile(tmp string, items []string) (*os.File, error) {
 	if err := os.Remove(f.Name()); err != nil {
 		f.Close()
 		return nil, err
-	}
-	var data []byte
-	for _, item := range items {
-		if strings.IndexByte(item, 0) >= 0 {
-			f.Close()
-			return nil, errors.New("sandbox-policy-invalid: an environment value contains a NUL byte")
-		}
-		data = append(append(data, item...), 0)
 	}
 	if _, err := f.Write(data); err != nil {
 		f.Close()

@@ -1,5 +1,5 @@
 {
-  "about": "Handwritten customer MCP command snapshot V4 identities. V4 is V3 with the command's executable identity: the resolved absolute path and digest of the command's file and, when its first operand names a file, of that script. The fixture is not signed provenance.",
+  "about": "Handwritten customer MCP command snapshot V4 identities. V4 is V3 with the command's executable identity: the resolved absolute path and digest of the command's file; when that file is a #! script, the interpreters that run it (the #! interpreter and, for env, the program env finds), in the order they run; and, when an operand names a file, that script. The fixture is not signed provenance.",
   "command": [
     "python3",
     "server.py"
@@ -121,6 +121,48 @@
       "name": "endpoint-on-command",
       "find": "\"capturedAt\":\"2026-10-25T00:00:00Z\",",
       "replace": "\"capturedAt\":\"2026-10-25T00:00:00Z\",\"endpoint\":\"https://mcp.example.test/mcp\","
+    },
+    {
+      "name": "empty-interpreters",
+      "find": "\"path\":\"/usr/bin/python3\"",
+      "replace": "\"interpreters\":[],\"path\":\"/usr/bin/python3\""
+    },
+    {
+      "name": "interpreters-not-a-list",
+      "find": "\"path\":\"/usr/bin/python3\"",
+      "replace": "\"interpreters\":{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"/usr/bin/env\"},\"path\":\"/usr/bin/python3\""
+    },
+    {
+      "name": "relative-interpreter-path",
+      "find": "\"path\":\"/usr/bin/python3\"",
+      "replace": "\"interpreters\":[{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"env\"}],\"path\":\"/usr/bin/python3\""
+    },
+    {
+      "name": "malformed-interpreter-digest",
+      "find": "\"path\":\"/usr/bin/python3\"",
+      "replace": "\"interpreters\":[{\"digest\":\"sha256:bad\",\"path\":\"/usr/bin/env\"}],\"path\":\"/usr/bin/python3\""
+    },
+    {
+      "name": "unknown-interpreter-member",
+      "find": "\"path\":\"/usr/bin/python3\"",
+      "replace": "\"interpreters\":[{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"/usr/bin/env\",\"version\":\"1\"}],\"path\":\"/usr/bin/python3\""
+    },
+    {
+      "name": "too-many-interpreters",
+      "find": "\"path\":\"/usr/bin/python3\"",
+      "replace": "\"interpreters\":[{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"/usr/bin/env\"},{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"/usr/bin/env\"},{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"/usr/bin/env\"},{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"/usr/bin/env\"},{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"/usr/bin/env\"},{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"/usr/bin/env\"},{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"/usr/bin/env\"},{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"/usr/bin/env\"},{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"/usr/bin/env\"}],\"path\":\"/usr/bin/python3\""
+    },
+    {
+      "name": "interpreters-inside-script",
+      "find": "\"path\":\"/srv/tickets/server.py\"",
+      "replace": "\"interpreters\":[{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"/usr/bin/env\"}],\"path\":\"/srv/tickets/server.py\""
+    }
+  ],
+  "accepts": [
+    {
+      "name": "shebang-command-through-env",
+      "find": "\"path\":\"/usr/bin/python3\"",
+      "replace": "\"interpreters\":[{\"digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"path\":\"/usr/bin/env\"},{\"digest\":\"sha256:4444444444444444444444444444444444444444444444444444444444444444\",\"path\":\"/usr/bin/python3\"}],\"path\":\"/srv/tickets/server\""
     }
   ],
   "groups": [

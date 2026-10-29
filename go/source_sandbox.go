@@ -208,6 +208,12 @@ func sandboxSourceCommand(ctx context.Context, spec sourceSpec, path string, arg
 		return nil, fmt.Errorf("sandbox-not-enforced: the source's sandbox posture could not be measured before its launch: %v", err)
 	}
 	p := report.Protection
+	// A completed probe that measured the boundary as not holding (writes it
+	// should have stopped went through, the backend could not run, or it
+	// timed out) is no posture to launch under.
+	if p.Mode != "danger-full-access" && p.State == postureNotEnforced {
+		return nil, fmt.Errorf("sandbox-not-enforced: the source's sandbox probe measured that the %s boundary does not hold under %s, so the source is not launched; gateway posture says why", p.Mode, p.Backend)
+	}
 	args := append(sandboxHelperArgs(s, "run"), "--expect-mode="+p.Mode, "--expect-backend="+p.Backend, "--expect-policy="+report.PolicyDigest, "--", absolute)
 	args = append(args, argv[1:]...)
 	return exec.CommandContext(ctx, s.helper, args...), nil

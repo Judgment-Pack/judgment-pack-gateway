@@ -77,6 +77,11 @@ func SelectionForWorkspace(path, source, workspace string) (Settings, string, er
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
 			return Settings{}, "", errors.New("sandbox-policy-invalid: policy home must be outside the source workspace")
 		}
+		// The resolved target is not enough: a link on the way to it that
+		// lies in the workspace is one the confined source can re-point.
+		if passesThrough(path, workPath) {
+			return Settings{}, "", errors.New("sandbox-policy-invalid: the policy path passes through a link inside the source workspace, which the source could re-point")
+		}
 	}
 	raw, err := readPolicy(path)
 	if err != nil {
@@ -163,4 +168,54 @@ func resolveRaw(raw []byte, source string) (Settings, error) {
 		return Settings{Mode: mode}, nil
 	}
 	return Settings{Mode: p.Default}, nil
+}
+
+// passesThrough reports whether resolving path, one component at a time as
+// the kernel does, visits a location inside dir (dir resolved): the path as
+// written, or any link met on the way and anything it leads to. A location
+// that cannot be read is judged by its name alone.
+func passesThrough(path, dir string) bool {
+	inside := func(p string) bool {
+		rel, err := filepath.Rel(dir, p)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return true
+	}
+	pending := strings.Split(strings.TrimPrefix(filepath.ToSlash(abs), "/"), "/")
+	current := filepath.VolumeName(abs) + string(filepath.Separator)
+	for hops := 0; len(pending) > 0; {
+		name := pending[0]
+		pending = pending[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			current = filepath.Dir(current)
+			continue
+		}
+		next := filepath.Join(current, name)
+		if inside(next) {
+			return true
+		}
+		info, err := os.Lstat(next)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			current = next
+			continue
+		}
+		if hops++; hops > 40 {
+			return true
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return true
+		}
+		if filepath.IsAbs(target) {
+			volume := filepath.VolumeName(target)
+			current, target = volume+string(filepath.Separator), target[len(volume):]
+		}
+		pending = append(strings.Split(filepath.ToSlash(target), "/"), pending...)
+	}
+	return inside(current)
 }

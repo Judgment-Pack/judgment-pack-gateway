@@ -63,16 +63,19 @@ func platformCommand(ctx context.Context, launch Launch, mode, workspace, tmp st
 	if err != nil {
 		return nil, report, err
 	}
-	profile := "(version 1) (allow default) (deny file-write*)"
+	// Writing to /dev/null changes nothing, and programs expect to.
+	profile := "(version 1) (allow default) (deny file-write*) (allow file-write* (literal \"/dev/null\"))"
 	if mode == WorkspaceWrite {
 		profile += " (allow file-write* (subpath (param \"WORKSPACE\")) (subpath (param \"PRIVATE_TMP\")))"
 	}
 	argv := []string{"-D", "WORKSPACE=" + workspace, "-D", "PRIVATE_TMP=" + tmp, "-p", profile, self, envHelperArg, launch.Path, launch.Argv0}
-	report.State, report.Reason = "enforced", "Seatbelt denies file writes outside the declared writable directories; network access is unchanged"
-	// The profile does not mask Unix sockets: a reachable container runtime
-	// could write for the server, so the report says partial and names it.
+	// The profile masks no Unix socket and no system service: a daemon the
+	// server reaches (a container runtime, launchd) could write for it, and
+	// they cannot be listed here. The state is therefore partial, always.
+	report.State = "partial"
+	report.Reason = "Seatbelt denies file writes outside the declared writable directories; connections to local sockets and system services, and network access, are not restricted"
 	if note := runtimeSocketNote(launch, reachableRuntimeSockets(launch.Env)); note != "" {
-		report.State, report.Reason = "partial", report.Reason+"; "+note
+		report.Reason += "; " + note
 	}
 	report.cleanup = func() error { env.Close(); return nil }
 	cmd := exec.CommandContext(ctx, launcher, append(argv, launch.Args...)...)

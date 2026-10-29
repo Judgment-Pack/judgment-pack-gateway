@@ -146,15 +146,17 @@ func runProgram(launch sandbox.Launch, mode, workspace string, argv []string, st
 	runErr := cmd.Run()
 	// Reuse the MCP lifecycle implementation: on Linux, descendants adopted
 	// here are ended; elsewhere there is no adoption, and a full-access
-	// Windows launch has no job containment. Failure overrides even a
-	// successful child result and leaves temporary resources for recovery.
+	// Windows launch has no job containment. A descendant not established
+	// gone overrides even a successful child result and leaves temporary
+	// resources for recovery. Temporary files the program left behind do
+	// not: its result, a completed call's included, stands, and the leftover
+	// is reported.
 	if err := descendants.Kill(); err != nil {
 		fmt.Fprintln(stderr, "sandbox-cleanup-failed:", err)
 		return 125
 	}
 	if err := cleanup(); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 125
+		fmt.Fprintln(stderr, "sandbox-cleanup-incomplete: the private temporary directory could not be removed:", err)
 	}
 	if runErr == nil {
 		return 0
