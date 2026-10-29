@@ -2,11 +2,13 @@ package sandbox
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,6 +36,7 @@ func init() {
 	}
 	parent, _ := strconv.ParseUint(os.Args[4], 10, 32)
 	results := map[string]bool{}
+	diagnostics := map[string]string{}
 	station, _, _ := winUser.NewProc("GetProcessWindowStation").Call()
 	thread, _, _ := winKernel.NewProc("GetCurrentThreadId").Call()
 	desktop, _, _ := winUser.NewProc("GetThreadDesktop").Call(thread)
@@ -69,11 +72,12 @@ func init() {
 		err = syscall.OpenProcessToken(process, syscall.TOKEN_DUPLICATE, &token)
 		results["parent-token"] = err == nil
 		if err == nil {
+			probeParentImpersonation(token, os.Args[3], results, diagnostics)
 			token.Close()
 		}
 		syscall.CloseHandle(process)
 	}
-	json.NewEncoder(os.Stdout).Encode(results)
+	json.NewEncoder(os.Stdout).Encode(windowsProbeResult{results, diagnostics})
 	os.Exit(0)
 }
 
@@ -151,17 +155,19 @@ func TestWindowsRestrictedTokenBoundary(t *testing.T) {
 			if err != nil {
 				t.Fatalf("restricted child: %v: %s", err, raw)
 			}
-			var got map[string]bool
-			if err = json.Unmarshal(raw, &got); err != nil {
+			var probe windowsProbeResult
+			if err = json.Unmarshal(raw, &probe); err != nil {
 				t.Fatal(err, string(raw))
 			}
+			t.Logf("native token diagnostic: %v", probe.Diagnostics)
+			got := probe.Checks
 			if !got["private-station"] || !got["private-desktop"] {
 				t.Fatalf("restricted child did not inherit private desktop: %v", got)
 			}
 			if got["inside"] != (mode == WorkspaceWrite) || got["existing"] != (mode == WorkspaceWrite) || got["rename-inside"] != (mode == WorkspaceWrite) {
 				t.Fatalf("workspace permission: %v", got)
 			}
-			for _, name := range []string{"outside", "outside-acl", "parent-handles", "parent-token", "move-outside"} {
+			for _, name := range []string{"outside", "outside-acl", "parent-handles", "parent-token", "impersonated-outside", "move-outside"} {
 				if got[name] {
 					t.Fatalf("boundary crossed: %s: %v", name, got)
 				}
@@ -319,5 +325,143 @@ func TestWindowsDifferentWorkspaceWritersAlsoExclude(t *testing.T) {
 	defer secondCleanup()
 	if err == nil || !strings.Contains(err.Error(), "workspace already in use") {
 		t.Fatalf("overlapping restricted writers: %v", err)
+	}
+}
+
+type windowsProbeResult struct {
+	Checks      map[string]bool   `json:"checks"`
+	Diagnostics map[string]string `json:"diagnostics"`
+}
+
+// Diagnose actual effective impersonation without relaxing TOKEN_DUPLICATE's
+// existing denial assertion. A successful API call alone is not an escape.
+func probeParentImpersonation(parent syscall.Token, outside string, results map[string]bool, diagnostics map[string]string) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	var duplicate syscall.Token
+	if err := winBool(winSecurity.NewProc("DuplicateToken"), uintptr(parent), 2, uintptr(unsafe.Pointer(&duplicate))); err != nil {
+		diagnostics["duplicate"] = err.Error()
+		return
+	}
+	defer duplicate.Close()
+	diagnostics["duplicate"] = "success"
+	if err := winBool(winSecurity.NewProc("ImpersonateLoggedOnUser"), uintptr(duplicate)); err != nil {
+		diagnostics["impersonate"] = err.Error()
+		return
+	}
+	diagnostics["impersonate"] = "success"
+	defer func() {
+		if err := winBool(winSecurity.NewProc("RevertToSelf")); err != nil {
+			os.Exit(125)
+		}
+	}()
+	thread, _, _ := winKernel.NewProc("GetCurrentThread").Call()
+	var effective syscall.Token
+	if err := winBool(winSecurity.NewProc("OpenThreadToken"), thread, syscall.TOKEN_QUERY, 1, uintptr(unsafe.Pointer(&effective))); err != nil {
+		diagnostics["effective-token"] = err.Error()
+	} else {
+		defer effective.Close()
+		for _, entry := range []struct {
+			name  string
+			class uint32
+		}{{"level", syscall.TokenImpersonationLevel}, {"integrity", syscall.TokenIntegrityLevel}, {"restricting-sids", syscall.TokenRestrictedSids}} {
+			var size uint32
+			syscall.GetTokenInformation(effective, entry.class, nil, 0, &size)
+			if size == 0 || size > 65536 {
+				diagnostics[entry.name] = "invalid size"
+				continue
+			}
+			raw := make([]byte, size)
+			if err := syscall.GetTokenInformation(effective, entry.class, &raw[0], size, &size); err != nil {
+				diagnostics[entry.name] = err.Error()
+				continue
+			}
+			switch entry.class {
+			case syscall.TokenImpersonationLevel, syscall.TokenRestrictedSids:
+				diagnostics[entry.name] = strconv.FormatUint(uint64(binary.LittleEndian.Uint32(raw)), 10)
+			case syscall.TokenIntegrityLevel:
+				sid := *(**syscall.SID)(unsafe.Pointer(&raw[0]))
+				text, err := sid.String()
+				if err != nil {
+					diagnostics[entry.name] = err.Error()
+				} else {
+					diagnostics[entry.name] = text
+				}
+			}
+			runtime.KeepAlive(raw)
+		}
+	}
+	err := os.WriteFile(outside, []byte("changed-through-impersonation"), 0600)
+	results["impersonated-outside"] = err == nil
+	if err != nil {
+		diagnostics["outside-write"] = err.Error()
+	} else {
+		diagnostics["outside-write"] = "success"
+	}
+}
+
+// OpenFileById is a candidate for directory mutation handles. This diagnostic
+// changes no ACL, uses the held handle's volume, and verifies the full identity
+// before and after a rename. Unsupported filesystems must fail, not reopen paths.
+func TestWindowsOpenFileByIDCandidate(t *testing.T) {
+	root := t.TempDir()
+	for _, kind := range []string{"directory", "file"} {
+		t.Run(kind, func(t *testing.T) {
+			name := filepath.Join(root, kind)
+			var err error
+			if kind == "directory" {
+				err = os.Mkdir(name, 0700)
+			} else {
+				err = os.WriteFile(name, nil, 0600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			held, err := holdWindowsFile(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer syscall.CloseHandle(held.handle)
+			type fileIdentity struct {
+				Volume uint64
+				ID     [16]byte
+			}
+			identity := func(handle syscall.Handle) fileIdentity {
+				var id fileIdentity
+				if err := winBool(winKernel.NewProc("GetFileInformationByHandleEx"), uintptr(handle), 18, uintptr(unsafe.Pointer(&id)), unsafe.Sizeof(id)); err != nil {
+					t.Fatal(err)
+				}
+				return id
+			}
+			before := identity(held.handle)
+			var info syscall.ByHandleFileInformation
+			if err = syscall.GetFileInformationByHandle(held.handle, &info); err != nil {
+				t.Fatal(err)
+			}
+			descriptor := struct {
+				Size, Type uint32
+				ID         [16]byte
+			}{Type: 0}
+			descriptor.Size = uint32(unsafe.Sizeof(descriptor))
+			binary.LittleEndian.PutUint64(descriptor.ID[:8], uint64(info.FileIndexHigh)<<32|uint64(info.FileIndexLow))
+			for _, rename := range []bool{false, true} {
+				if rename {
+					if err = os.Rename(name, name+"-renamed"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				handle, _, callErr := winKernel.NewProc("OpenFileById").Call(uintptr(held.handle), uintptr(unsafe.Pointer(&descriptor)), 0x020e0080, 7, 0, 0x02200000)
+				runtime.KeepAlive(descriptor)
+				if syscall.Handle(handle) == syscall.InvalidHandle {
+					t.Fatalf("rename=%v OpenFileById: %v", rename, callErr)
+				}
+				after := identity(syscall.Handle(handle))
+				syscall.CloseHandle(syscall.Handle(handle))
+				if before != after {
+					t.Fatal("opened a different physical object")
+				}
+				t.Logf("rename=%v: full identity and mutation access verified", rename)
+			}
+		})
 	}
 }
