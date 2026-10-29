@@ -164,7 +164,7 @@ func decodeSandboxProbe(raw []byte) (sandboxProbeReport, error) {
 	if p.Mode == "danger-full-access" && p.State != "not-enforced" {
 		return report, errors.New("unrestricted mode claims enforcement")
 	}
-	if p.Backend != "none" && p.Backend != "bubblewrap" && p.Backend != "landlock" && p.Backend != "seatbelt" && p.Backend != "windows-restricted-token" {
+	if p.Backend != "none" && p.Backend != "bubblewrap" && p.Backend != "landlock" && p.Backend != "seatbelt" {
 		return report, errors.New("invalid sandbox probe backend")
 	}
 	if p.Backend == "none" && p.State != "not-enforced" {

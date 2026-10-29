@@ -59,6 +59,9 @@ func Probe(ctx context.Context, mode, workspace string) Report {
 	cmd, prepared, cleanup, err := Command(ctx, self, []string{probeArgument, inside.Name(), outside.Name()}, mode, workspace)
 	report = prepared
 	if err != nil {
+		if report.Reason != "" {
+			return fail("sandbox-not-enforced: " + report.Reason)
+		}
 		return fail("sandbox-not-enforced: backend preparation failed")
 	}
 	cmd.WaitDelay = time.Second
