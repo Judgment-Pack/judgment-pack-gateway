@@ -291,6 +291,7 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 		service.maxRequest = opts.maxRequest
 	}
 	service.receiptVersion = opts.receiptVersion
+	service.requireActionKey = opts.requireActionKey
 	service.identity = opts.identity
 	service.decisionRecords = opts.decisionRecords
 	service.witnessedBy = opts.witnessedBy
@@ -471,9 +472,10 @@ func readSeedFile(path string) ([]byte, error) {
 }
 
 type serveOptions struct {
-	sources         map[string]sourceSpec
-	port            string
-	maxSourceOutput int64
+	requireActionKey bool
+	sources          map[string]sourceSpec
+	port             string
+	maxSourceOutput  int64
 	// maxRequest bounds an /acquire body (--max-request).
 	maxRequest     int64
 	receiptVersion string

@@ -44,9 +44,9 @@ import (
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "13"
+const engineVersion = "14"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -161,8 +161,9 @@ type identitySpec struct {
 // binding is a catalog entry: which pinned artifact serves which operation
 // of a platform, with the licence of each stated.
 type binding struct {
-	customer bool
-	version  string
+	customer       bool
+	version        string
+	actionRecovery map[string]*actionRecovery
 
 	platform string
 	history  *operation
@@ -812,7 +813,7 @@ func loadBinding(catalog, ref string) (binding, error) {
 	return b, nil
 }
 
-var bindingMembers = map[string]bool{"bindingVersion": true, "platform": true, "operations": true, "customer": false}
+var bindingMembers = map[string]bool{"bindingVersion": true, "platform": true, "operations": true, "customer": false, "actionRecovery": false}
 
 // parseBinding holds a catalog entry to its shape: one entry per operation,
 // each naming its shape, a digest-pinned artifact, and its licence.
@@ -829,13 +830,13 @@ func parseBinding(data []byte) (binding, error) {
 		return binding{}, err
 	}
 	version, _ := memberString(obj, "bindingVersion")
-	if version != "1" && version != "2" {
+	if version != "1" && version != "2" && version != "3" {
 		return binding{}, fmt.Errorf("unsupported bindingVersion %q", version)
 	}
 	b := binding{version: version}
 	if raw, present := obj.get("customer"); present {
 		flag, ok := raw.(vBool)
-		if !ok || !bool(flag) || version != "2" {
+		if !ok || !bool(flag) || (version != "2" && version != "3") {
 			return binding{}, errors.New("customer must be true on a bindingVersion 2 binding")
 		}
 		b.customer = true
@@ -855,7 +856,7 @@ func parseBinding(data []byte) (binding, error) {
 			return binding{}, err
 		}
 		parsed, err := parseOperation(op, name)
-		if version == "2" {
+		if version == "2" || version == "3" {
 			parsed, err = parseTaxonomyOperation(op, name)
 		}
 		if err != nil {
@@ -899,8 +900,21 @@ func parseBinding(data []byte) (binding, error) {
 	if b.history == nil && b.live == nil && b.write == nil {
 		return binding{}, errors.New("no operation")
 	}
+	if raw, present := obj.get("actionRecovery"); present {
+		if version != "3" {
+			return binding{}, errors.New("actionRecovery requires bindingVersion 3")
+		}
+		b.actionRecovery, err = parseActionRecovery(raw, b)
+		if err != nil {
+			return binding{}, err
+		}
+	} else if version == "3" && b.write != nil {
+		return binding{}, errors.New("bindingVersion 3 write requires actionRecovery")
+	}
 	return b, nil
 }
+
+func (b binding) hasOwnerDeclarations() bool { return b.version == "2" || b.version == "3" }
 
 func parseOperation(op *vObject, name string) (operation, error) {
 	var o operation
@@ -1162,7 +1176,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if len(b.live.command) > 0 {
 				argv = append(append(argv, "--"), b.live.command...)
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live")}
+			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", binding: p.binding, tools: b.live.tools, check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live")}
 		}
 		// The write operation, for a platform that allows writes: the
 		// executor is adapter-mcp on the binding's write server with the
@@ -1188,7 +1202,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.write.url != "" {
 				endpoint, transport = b.write.url, "http"
 			}
-			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery}
 		}
 	}
 	if cfg.sandbox != nil {
@@ -2019,7 +2033,7 @@ func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, e
 // engineServeOptions is what `serve` runs for a configuration: the derived
 // sources, the receipt version the design assumes, and the defaults.
 func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec, identity *identityConfig) serveOptions {
-	return serveOptions{sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed}
+	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed}
 }
 
 // maxKeySetBytes bounds the issuer's key file.
@@ -2111,7 +2125,7 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		if err := descriptorStatementPinsMatch(*p, b); err != nil {
 			return nil, err
 		}
-		if b.version == "2" {
+		if b.hasOwnerDeclarations() {
 			for _, op := range enabledMCPOperations(*p, b) {
 				if _, err := ownerFileDeclaration(*p, op); err != nil {
 					return nil, err

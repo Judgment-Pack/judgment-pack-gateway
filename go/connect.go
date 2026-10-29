@@ -353,7 +353,7 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if err != nil {
 		return out, err
 	}
-	if capturing && b.version != "2" {
+	if capturing && !b.hasOwnerDeclarations() {
 		op := strings.TrimPrefix(captureSource, req.platform+"/")
 		text, err = renderDescriptorStatements(text, req.platform, map[string]string{op: placeholder})
 		if err != nil {
@@ -399,7 +399,7 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if err := host.switching(sources); err != nil {
 		return out, err
 	}
-	if b.version == "2" {
+	if b.hasOwnerDeclarations() {
 		return connectTaxonomyOperations(ctx, req, file, data, candidate, bindings, b, entry, written, previous, sources, check, out)
 	}
 	// The platform's own sources, each asked once; the first that cannot

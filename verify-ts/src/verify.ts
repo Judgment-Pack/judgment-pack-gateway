@@ -75,7 +75,11 @@ export type Witness = { readonly trail: string; readonly origin: string; readonl
 // A receipt file as the ladder judged it, kept as no more than the rest of
 // verification reads of it, each kept string its own and none long, so no
 // receipt's size stays in memory past its turn.
+type Delivery = { key: string; contract: string; outcome: string; identity: string };
+type Reconciliation = Delivery & { action: Citation };
 type Judged = {
+  readonly delivery?: Delivery;
+  readonly reconciliation?: Reconciliation;
   readonly file: string;
   readonly status: Status;
   // Past order 1: the receipt's index, for its finding.
@@ -365,12 +369,31 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
       ...(witness && { witnessTrail: witness.trail }),
     };
   }
+  // Keep only bounded correlation fields, never whole receipt objects.
+  const identity = (v: Value | undefined): string => {
+    if (v?.type !== "object") return "";
+    return sha256Hex(canonical({type:"array",items:[member(v,"issuer")!,member(v,"subject")!]})!);
+  };
+  const detail = member(receipt,action ? "action" : "acquisition");
+  const d = detail?.type === "object" ? member(detail,action ? "delivery" : "reconciliation") : undefined;
+  let delivery: Delivery | undefined;
+  let reconciliation: Reconciliation | undefined;
+  if (version === "3" && d?.type === "object" && detail?.type === "object") {
+    const fields: Delivery = {key:own(str(member(d,"key"))!),contract:own(str(member(d,"contract"))!),outcome:own(str(member(d,"outcome"))!),identity:identity(action ? member(detail,"requester") : member(receipt,"caller"))};
+    if (action) delivery=fields;
+    else {
+      const c=citations({type:"array",items:[member(d,"action")!]})![0]!;
+      reconciliation={...fields,action:{sessionId:own(c.sessionId),callIndex:own(c.callIndex),signature:own(c.signature)}};
+    }
+  }
   return {
     file,
     status: "ok",
     callIndex,
     chain: { version: own(version), signature: own(signature), prev, keyPos },
     ...(action && { action }),
+    ...(delivery && {delivery}),
+    ...(reconciliation && {reconciliation}),
     ...(witness && { witness }),
   };
 }
@@ -498,11 +521,21 @@ export function verifyStore(
       if (j.witness !== undefined) {
         budget.charge(entryCost + size(j.witness.origin) + size(j.witness.trail) + size(j.witness.keyId), "the witnesses the receipts name");
       }
+      if (j.delivery || j.reconciliation) budget.charge(2048,"action correlation fields");
       judged.push(j);
       testHooks.sample?.("receipt");
     }
     sessions.set(session, judged);
     signatures.set(session, stems);
+  }
+  const reconciliationTargets = new Map<string,Judged>();
+  for (const [session,judged] of sessions) for (const j of judged) if (j.delivery) reconciliationTargets.set(session+"\0"+j.file,j);
+  const reconciliationUnresolved = new Set<Judged>();
+  for (const judged of sessions.values()) for (const j of judged) {
+    const r=j.reconciliation; if (!r) continue;
+    const target=reconciliationTargets.get(r.action.sessionId+"\0"+r.action.callIndex+".json");
+    const d=target?.delivery;
+    if (!d || target?.chain?.signature !== r.action.signature || d.key !== r.key || d.contract !== r.contract || d.outcome !== "uncertain" || d.identity !== r.identity || r.identity === "") reconciliationUnresolved.add(j);
   }
   const resolves = (c: Citation): boolean => signatures.get(c.sessionId)?.get(c.callIndex) === c.signature;
 
@@ -662,6 +695,7 @@ export function verifyStore(
           ["sealed", seal.finalCount],
         ];
       }
+      for (const j of judged) if (reconciliationUnresolved.has(j)) yield [["sessionId",session],["callIndex",j.callIndex!],["status","action-reconciliation-unresolved"]];
       // §4 steps 5 and 6, for each version 3 action receipt that passed.
       for (const j of judged) {
         if (j.action === undefined) {

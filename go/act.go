@@ -35,7 +35,7 @@ type actRefusal struct {
 func (r actRefusal) Error() string { return r.step + ": " + r.reason }
 
 // act performs one write for an authenticated requester, or refuses it.
-func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, decisionRaw, citesRaw json.RawMessage, who *caller) (map[string]any, error) {
+func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, decisionRaw, citesRaw json.RawMessage, who *caller, actionKeyRaw ...json.RawMessage) (map[string]any, error) {
 	if who == nil {
 		return nil, actRefusal{"requester", errNoRequester.Error() + "; this engine has no identity configured"}
 	}
@@ -92,6 +92,21 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	}
 	if _, isObject := arguments.(*vObject); !isObject {
 		return nil, actRefusal{"arguments", "arguments must be a JSON object: the executor sends the request as an object, and the commitment is over what is sent"}
+	}
+	var key string
+	if len(actionKeyRaw) > 0 && len(actionKeyRaw[0]) > 0 {
+		key, err = parseString("actionKey", actionKeyRaw[0])
+		if err != nil || !isLowerHexOfLen(key, 64) {
+			return nil, actRefusal{"action-key", "actionKey must be 64 lowercase hexadecimal characters"}
+		}
+	} else if g.requireActionKey {
+		return nil, actRefusal{"action-key", "actionKey is required by engineVersion 14"}
+	}
+	recovery := spec.actionRecovery[tool]
+	if key != "" {
+		if err = recovery.applyKey(arguments.(*vObject), key); err != nil {
+			return nil, actRefusal{"action-key", err.Error()}
+		}
 	}
 	decisionV, err := parseMember("decision", decisionRaw)
 	if err != nil {
@@ -213,118 +228,195 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	request.set("tool", vString(tool))
 	request.set("arguments", arguments)
 	canonicalRequest := canon(request)
-	result, _, _, err := g.runSource(source, spec, canonicalRequest)
+	var claim *actionClaim
+	if key != "" {
+		// Serialize journal settlement in this process. The durable exclusive
+		// reservation separately prevents dispatch in another process or restart.
+		g.actionMu.Lock()
+		defer g.actionMu.Unlock()
+		journal, openErr := openActionJournal(g.storeRoot)
+		if openErr != nil {
+			return nil, actRefusal{"action-key", openErr.Error()}
+		}
+		defer journal.close()
+		claim, err = journal.reserve(g.actionNamespace(who, key), actionFingerprint(platform, tool, arguments, decisionV, citesV, spec, recovery, g.sources[platform+"/live"]))
+		if err != nil {
+			return nil, actRefusal{"action-key", err.Error()}
+		}
+		defer claim.close()
+		if !claim.fresh {
+			saved, readErr := claim.read("action.json", actionJournalResponseLimit)
+			if readErr == nil {
+				prior, err := g.readActionResponse(saved, who, key, recovery.digest(), arguments, canonicalRequest)
+				if err != nil {
+					return nil, err
+				}
+				if prior.outcome == "response" {
+					return prior.response, nil
+				}
+				return g.reconcileAction(sessionID, platform, arguments, who, key, recovery, prior.response)
+			}
+			if !errors.Is(readErr, os.ErrNotExist) {
+				return nil, readErr
+			}
+		}
+	}
+	var result value
+	uncertain := claim != nil && !claim.fresh
+	if !uncertain {
+		result, _, _, err = g.runSource(source, spec, canonicalRequest)
+		if err == nil {
+			_, err = readEnvelope(result, "mcp")
+		}
+		if err != nil {
+			if claim == nil {
+				return nil, err
+			}
+			uncertain = true
+		}
+	}
+	if uncertain {
+		result, err = g.uncertainActionEnvelope()
+		if err != nil {
+			return nil, err
+		}
+	}
+	out, err := func() (map[string]any, error) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		state := g.sessions[sessionID]
+
+		adapterEnvelope, err := parseEnvelope(result)
+		if err != nil {
+			return nil, fmt.Errorf("source %s: the executor's result is not an envelope: %v", source, err)
+		}
+		result = adapterEnvelope.result
+		var resultOut any
+		if err := json.Unmarshal(canon(result), &resultOut); err != nil {
+			return nil, fmt.Errorf("source %s: the result cannot be returned: %v", source, err)
+		}
+		resultDigest, err := g.store.retain(canon(result))
+		if err != nil {
+			return nil, err
+		}
+
+		servedAt := nowStamp()
+		argsSalt, err := newSalt()
+		if err != nil {
+			return nil, err
+		}
+		requestSalt, err := newSalt()
+		if err != nil {
+			return nil, err
+		}
+
+		action := newObject()
+		action.set("requester", identityObject(who))
+		if claim != nil {
+			delivery := newObject()
+			delivery.set("key", vString(key))
+			delivery.set("contract", vString(recovery.digest()))
+			outcome := "response"
+			if uncertain {
+				outcome = "uncertain"
+			}
+			delivery.set("outcome", vString(outcome))
+			action.set("delivery", delivery)
+		}
+		decided := newObject()
+		decided.set("recordDigest", vString(decision.recordDigest))
+		decided.set("packDigest", vString(decision.packDigest))
+		// How the record was found, under the signature: by its exact bytes for
+		// a policy that requires a signed record, which the verifier then reads
+		// the same way (SPEC.md §1.2a, §4 step 6); absent otherwise.
+		if exact {
+			decided.set("recordBytes", vString("exact"))
+		}
+		action.set("decision", decided)
+		cited := make(vArray, 0, len(cites))
+		for _, c := range cites {
+			entry := newObject()
+			entry.set("sessionId", vString(c.sessionID))
+			entry.set("callIndex", vInt(c.callIndex))
+			entry.set("signature", vString(c.signature))
+			cited = append(cited, entry)
+		}
+		action.set("cites", cited)
+		// The policy the write was held to, by digest, signed with the rest:
+		// absent for a tool the operator holds to none.
+		if policy != nil {
+			action.set("policy", vString(policy.digest))
+		}
+		// The witness the configuration names for the trail of the record
+		// found, read from the bytes whose digest matched (ADR-0014): absent
+		// when the record is no runtime evaluation record of a trail, or the
+		// configuration names no witness for its trail.
+		var witness *vObject
+		if len(g.witnessedBy) > 0 {
+			witness = g.witnessMember(recordTrail(recorded))
+		}
+		called := newObject()
+		called.set("shape", vString("mcp"))
+		if spec.endpoint == "" {
+			called.set("endpoint", vNull{})
+		} else {
+			called.set("endpoint", vString(spec.endpoint))
+		}
+		called.set("name", vString(tool))
+		// The transport, for a write to a remote server alone (SPEC.md §1.2a,
+		// #268): "http", and the endpoint above is then the URL the engine held
+		// to the endpoint form before it started, which a verifier holds it to
+		// as well. A write over stdio names none, and its receipt is the one it
+		// was before the member existed.
+		if spec.transport != "" {
+			called.set("transport", vString(spec.transport))
+		}
+		action.set("tool", called)
+		action.set("request", vString(commitmentOver(requestSalt, "request:", canonicalRequest)))
+		for _, name := range []string{"adapter", "observedAt"} {
+			v, _ := adapterEnvelope.acquisition.get(name)
+			action.set(name, v)
+		}
+		core := buildReceipt(receiptInput{
+			version: receiptVersion3, sessionID: sessionID, callIndex: state.index, prevSignature: state.prev,
+			source: source, resultDigest: resultDigest, servedAt: servedAt, authority: g.authority,
+			arguments: canon(arguments), argumentsSalt: argsSalt,
+			who: who, witness: witness, kind: "action", detail: action,
+		})
+
+		stored, signature, err := g.store.stamp(core)
+		if err != nil {
+			return nil, err
+		}
+		state.index++
+		state.prev = signature
+
+		var receiptOut any
+		if err := json.Unmarshal(canon(stored), &receiptOut); err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"result":  resultOut,
+			"receipt": receiptOut,
+			"salts":   map[string]any{"args": hex.EncodeToString(argsSalt), "request": hex.EncodeToString(requestSalt)},
+		}, nil
+	}()
 	if err != nil {
 		return nil, err
 	}
-
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	state := g.sessions[sessionID]
-
-	adapterEnvelope, err := parseEnvelope(result)
-	if err != nil {
-		return nil, fmt.Errorf("source %s: the executor's result is not an envelope: %v", source, err)
+	if claim != nil {
+		raw, err := json.Marshal(out)
+		if err != nil {
+			return nil, err
+		}
+		if err = claim.put("action.json", raw, actionJournalResponseLimit); err != nil {
+			return nil, err
+		}
+		if uncertain {
+			return g.reconcileAction(sessionID, platform, arguments, who, key, recovery, out)
+		}
 	}
-	result = adapterEnvelope.result
-	var resultOut any
-	if err := json.Unmarshal(canon(result), &resultOut); err != nil {
-		return nil, fmt.Errorf("source %s: the result cannot be returned: %v", source, err)
-	}
-	resultDigest, err := g.store.retain(canon(result))
-	if err != nil {
-		return nil, err
-	}
-
-	servedAt := nowStamp()
-	argsSalt, err := newSalt()
-	if err != nil {
-		return nil, err
-	}
-	requestSalt, err := newSalt()
-	if err != nil {
-		return nil, err
-	}
-
-	action := newObject()
-	action.set("requester", identityObject(who))
-	decided := newObject()
-	decided.set("recordDigest", vString(decision.recordDigest))
-	decided.set("packDigest", vString(decision.packDigest))
-	// How the record was found, under the signature: by its exact bytes for
-	// a policy that requires a signed record, which the verifier then reads
-	// the same way (SPEC.md §1.2a, §4 step 6); absent otherwise.
-	if exact {
-		decided.set("recordBytes", vString("exact"))
-	}
-	action.set("decision", decided)
-	cited := make(vArray, 0, len(cites))
-	for _, c := range cites {
-		entry := newObject()
-		entry.set("sessionId", vString(c.sessionID))
-		entry.set("callIndex", vInt(c.callIndex))
-		entry.set("signature", vString(c.signature))
-		cited = append(cited, entry)
-	}
-	action.set("cites", cited)
-	// The policy the write was held to, by digest, signed with the rest:
-	// absent for a tool the operator holds to none.
-	if policy != nil {
-		action.set("policy", vString(policy.digest))
-	}
-	// The witness the configuration names for the trail of the record
-	// found, read from the bytes whose digest matched (ADR-0014): absent
-	// when the record is no runtime evaluation record of a trail, or the
-	// configuration names no witness for its trail.
-	var witness *vObject
-	if len(g.witnessedBy) > 0 {
-		witness = g.witnessMember(recordTrail(recorded))
-	}
-	called := newObject()
-	called.set("shape", vString("mcp"))
-	if spec.endpoint == "" {
-		called.set("endpoint", vNull{})
-	} else {
-		called.set("endpoint", vString(spec.endpoint))
-	}
-	called.set("name", vString(tool))
-	// The transport, for a write to a remote server alone (SPEC.md §1.2a,
-	// #268): "http", and the endpoint above is then the URL the engine held
-	// to the endpoint form before it started, which a verifier holds it to
-	// as well. A write over stdio names none, and its receipt is the one it
-	// was before the member existed.
-	if spec.transport != "" {
-		called.set("transport", vString(spec.transport))
-	}
-	action.set("tool", called)
-	action.set("request", vString(commitmentOver(requestSalt, "request:", canonicalRequest)))
-	for _, name := range []string{"adapter", "observedAt"} {
-		v, _ := adapterEnvelope.acquisition.get(name)
-		action.set(name, v)
-	}
-	core := buildReceipt(receiptInput{
-		version: receiptVersion3, sessionID: sessionID, callIndex: state.index, prevSignature: state.prev,
-		source: source, resultDigest: resultDigest, servedAt: servedAt, authority: g.authority,
-		arguments: canon(arguments), argumentsSalt: argsSalt,
-		who: who, witness: witness, kind: "action", detail: action,
-	})
-
-	stored, signature, err := g.store.stamp(core)
-	if err != nil {
-		return nil, err
-	}
-	state.index++
-	state.prev = signature
-
-	var receiptOut any
-	if err := json.Unmarshal(canon(stored), &receiptOut); err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"result":  resultOut,
-		"receipt": receiptOut,
-		"salts":   map[string]any{"args": hex.EncodeToString(argsSalt), "request": hex.EncodeToString(requestSalt)},
-	}, nil
+	return out, nil
 }
 
 // sessionOpen is why an action may not be minted into a session, or "":

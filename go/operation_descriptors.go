@@ -21,7 +21,7 @@ func enabledMCPOperations(p platformConfig, b binding) map[string]*operation {
 }
 
 func operationPinsMatch(p platformConfig, b binding) error {
-	if b.version != "2" {
+	if !b.hasOwnerDeclarations() {
 		if p.operationDescriptors != nil {
 			return errors.New("operationDescriptors requires an owner-declared bindingVersion2")
 		}
@@ -235,7 +235,7 @@ func connectTaxonomyOperations(ctx context.Context, req connectRequest, file *co
 }
 
 func (d *servedDirectory) readOperation(p platformConfig, b binding, name string) (*servedPlatform, error) {
-	if b.version != "2" {
+	if !b.hasOwnerDeclarations() {
 		return d.read(p, b)
 	}
 	if err := operationPinsMatch(p, b); err != nil {

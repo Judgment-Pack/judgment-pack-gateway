@@ -493,7 +493,8 @@ A version 3 acquisition may carry `acquisition.reconciliation`, exactly
 have the forms above; `outcome` is `committed` or `unknown`. Verification must
 resolve the cited action under the same authority and authenticated issuer and
 subject, require its delivery key and contract to match, and require that action
-to have an uncertain outcome. Missing or mismatched evidence fails verification.
+to have an uncertain outcome. Missing or mismatched evidence fails verification with
+`action-reconciliation-unresolved`.
 `committed` reports a matching key and committed value observed by the declared
 read tool; `unknown` never establishes absence of a commit. Neither permits
 another dispatch of the mutation. These optional members do not change the
@@ -506,7 +507,7 @@ renewal. A durable private reservation under `actions/` in the store precedes
 any dispatch; only its exclusive creator may send the mutation. Every subsequent
 request under that key either returns retained evidence, performs the declared
 read-back or refuses. Partial or unreadable reservations never grant dispatch.
-A key reused for different approved content is refused. Every attempt still
+A key reused for different approved content or resolved write/read source identity is refused. Every attempt still
 passes the existing action authorization and admission checks. No automatic
 mutation retry is introduced. A platform without the required directory and file
 durability refuses the keyed path. Store export omits private action journals;

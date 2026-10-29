@@ -16,7 +16,7 @@ The journal namespace binds the gateway authority, authenticated issuer and subj
 and action key. It excludes the access-token digest and session identifier so a
 renewed authentication token or fresh post-restart session cannot cause another
 dispatch. A retained fingerprint binds the platform, tool, canonical effective
-arguments, decision, citations, pinned binding and recovery declaration. Reusing a
+arguments, decision, citations, pinned binding, resolved write/read source identities and recovery declaration. Reusing a
 key for different content is an `action-key-conflict` refusal. A new key denotes a
 new action; callers must not invent one merely because an answer was lost.
 
@@ -29,14 +29,19 @@ is relied on; a platform unable to provide that guarantee refuses the keyed path
 
 Only the creator of the reservation may dispatch the mutation. Concurrent repeats
 and repeats after restart may return retained evidence or perform the declared
-read-back, but never repeat the mutation. A completed response is retained with
+read-back, but never repeat the mutation. On the implemented keyed path, Unix filesystems must support successful file and
+directory synchronization. Other hosts refuse keyed dispatch; this is not a
+cross-platform durability claim.
+
+A completed response is retained with
 its receipt and salts; a repeat returns that evidence without a new effect.
 The operator must preserve the journal with the store. Restoring receipts without
 the corresponding journal does not preserve dispatch history.
 
 ## Target support belongs to a pinned binding
 
-A write binding declares recovery separately for each allowed write tool. An
+Binding version 3 requires `actionRecovery`, covering every write tool with a
+contract or explicit null for unsupported recovery. A write binding declares recovery separately for each allowed write tool. An
 idempotency argument is an exact argument member carrying the action key; the
 gateway inserts it before the effect-policy check and refuses a conflicting
 caller value. It does not place a generic header on unrelated services and assume
@@ -88,7 +93,7 @@ If a process dies before it can mint the uncertain action receipt, a later reque
 must use a fresh session and the same key and approved content. It first records
 that uncertainty, then the read-back receipt. It cannot revive the old session or
 send the write again. Failure to persist either receipt remains uncertainty, with
-the original reservation retained. Unsupported read-back gives the named
+the original reservation retained. Unsupported read-back returns HTTP 409 with the retained uncertain action and the named
 `action-reconciliation-unavailable` refusal and no second mutation.
 
 ## Required evidence

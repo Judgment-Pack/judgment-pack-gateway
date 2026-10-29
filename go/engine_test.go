@@ -295,7 +295,7 @@ func TestEngineConfigRefusals(t *testing.T) {
 // no restriction the acquisition does not yet apply.
 func TestBindingRefusals(t *testing.T) {
 	cases := map[string]string{
-		`{"bindingVersion":"3","platform":"p","operations":{}}`: `bindingVersion "3"`,
+		`{"bindingVersion":"4","platform":"p","operations":{}}`: `bindingVersion "4"`,
 		`{"bindingVersion":"1","platform":"p","operations":{}}`: "no operation",
 		`{"bindingVersion":"1","platform":"p","operations":{"history":{"shape":"airbyte","image":"airbyte/source-postgres:3.6.1","licence":"ELv2"}}}`:                                                           "image must be pinned",
 		`{"bindingVersion":"1","platform":"p","operations":{"history":{"shape":"airbyte","image":"--label=probe@` + testImageDigest + `","licence":"ELv2"}}}`:                                                   "image must be pinned",

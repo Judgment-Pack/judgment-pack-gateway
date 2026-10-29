@@ -598,3 +598,21 @@ beyond a checkpoint witness's registrations and named operators, multi-tenancy, 
 beyond a witness's bounds on its submitters, and resistance to a local attacker who can
 concurrently rename or replace store ancestors. Run it from a directory whose ownership and write
 permissions you control.
+
+### Durable action identity
+
+Keyed `/act` requests reserve a private durable journal entry before mutation.
+The namespace includes authority and authenticated issuer/subject, independent
+of session and token renewal; the fingerprint includes the approved arguments,
+decision, citations, binding, resolved write/read source identities and recovery declaration. Existing, incomplete or
+corrupt entries never authorize a second dispatch. The current implementation
+requires Unix file and directory synchronization and refuses keyed dispatch on
+other hosts. A storage rollback or loss of the journal loses dispatch history;
+backup and restore must keep it with the store.
+
+Recovery uses only the binding's declared live read tool, source identity,
+credentials, sandbox and descriptor approval. The receipt records what that
+target reports, not proof of its honesty or consistency. Neither an unknown
+read-back nor unsupported recovery authorizes a resend. An action key is not
+a lease fence or an authorization credential. The gateway does not validate
+an external lease merely because its caller supplied a key.

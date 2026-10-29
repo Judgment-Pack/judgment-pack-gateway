@@ -83,16 +83,18 @@ func keyIDFor(publicKey []byte) string {
 // --- receipts -------------------------------------------------------------
 
 type receipt struct {
-	obj           *vObject
-	version       string
-	sessionID     string
-	callIndex     int64
-	keyID         string
-	authority     string
-	resultDigest  string
-	signature     string
-	prevSignature string
-	hasPrev       bool // false means the member was null: this is a session head
+	delivery       *actionDelivery
+	reconciliation *actionReconciliation
+	obj            *vObject
+	version        string
+	sessionID      string
+	callIndex      int64
+	keyID          string
+	authority      string
+	resultDigest   string
+	signature      string
+	prevSignature  string
+	hasPrev        bool // false means the member was null: this is a session head
 	// Version 3 only (verify_v3.go).
 	kind         string
 	cites        []citation
@@ -663,7 +665,7 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 
 	counts := map[string]int64{}
 	signatures := map[string]map[string]string{}
-	var actions, naming []*receipt
+	var actions, naming, reconciling []*receipt
 	for _, sessionID := range sessions {
 		result, err := verifySessionUnder(storeRoot, sessionID, authority, walk.keys)
 		if err != nil {
@@ -672,8 +674,19 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 		counts[sessionID] = result.count
 		signatures[sessionID] = result.signatures
 		actions = append(actions, result.actions...)
+		reconciling = append(reconciling, result.reconciling...)
 		naming = append(naming, result.named...)
 		rep.Findings = append(rep.Findings, result.findings...)
+	}
+	targets := map[citation]*receipt{}
+	for _, action := range actions {
+		targets[citation{action.sessionID, action.callIndex, action.signature}] = action
+	}
+	for _, read := range reconciling {
+		target := targets[read.reconciliation.action]
+		if !reconciliationMatches(read, target) {
+			rep.Findings = append(rep.Findings, finding{"sessionId": read.sessionID, "callIndex": read.callIndex, "status": "action-reconciliation-unresolved"})
+		}
 	}
 	rep.witnessesNamed(naming)
 	// SPEC.md §3b: the walk's finding, at most one, names the rotation it
@@ -898,10 +911,11 @@ func listSessions(storeRoot string) ([]string, error) {
 // is what a citation resolves against (SPEC.md §4 step 5); and the version 3
 // action receipts that passed the ladder, for steps 5 and 6.
 type sessionResult struct {
-	findings   []finding
-	count      int64
-	signatures map[string]string
-	actions    []*receipt
+	reconciling []*receipt
+	findings    []finding
+	count       int64
+	signatures  map[string]string
+	actions     []*receipt
 	// named are the receipts that passed the ladder and name a witness.
 	named []*receipt
 }
@@ -958,6 +972,9 @@ func verifySessionUnder(storeRoot, sessionID, authority string, keys []reachedKe
 		})
 		if status == "ok" {
 			valid = append(valid, r)
+			if r.reconciliation != nil {
+				result.reconciling = append(result.reconciling, r)
+			}
 			if r.kind == "action" {
 				result.actions = append(result.actions, r)
 			}

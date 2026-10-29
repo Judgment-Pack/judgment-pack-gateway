@@ -166,7 +166,7 @@ func platformProvenance(p platformConfig, b binding, operation string) *descript
 		return nil
 	}
 	snapshot := p.operationDescriptors[operation]
-	if b.version != "2" {
+	if !b.hasOwnerDeclarations() {
 		snapshot = p.descriptors
 	}
 	return &descriptorProvenance{snapshot: snapshot, statement: statement, binding: p.binding}
@@ -177,7 +177,7 @@ func descriptorStatementPinsMatch(p platformConfig, b binding) error {
 		return nil
 	} // explicit recapture upgrades historical registrations
 	expected := map[string]string{}
-	if b.version == "2" {
+	if b.hasOwnerDeclarations() {
 		expected = p.operationDescriptors
 	} else if p.descriptors != "" {
 		if b.live != nil {

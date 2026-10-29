@@ -87,6 +87,13 @@ func validateVersion3(obj *vObject, r *receipt) error {
 		if err := validateAcquisition(acquisitionV); err != nil {
 			return err
 		}
+		if v, present := acquisitionV.(*vObject).get("reconciliation"); present {
+			var err error
+			r.reconciliation, err = parseActionReconciliation(v)
+			if err != nil {
+				return err
+			}
+		}
 	case "action":
 		if !hasAction || hasAcquisition {
 			return errors.New(`kind "action" requires "action" and forbids "acquisition"`)
@@ -271,6 +278,13 @@ func validateAction(v value, r *receipt) error {
 	}
 	if err := validateIdentity(requester, "action.requester"); err != nil {
 		return err
+	}
+	if v, present := obj.get("delivery"); present {
+		var err error
+		r.delivery, err = parseActionDelivery(v)
+		if err != nil {
+			return err
+		}
 	}
 	decisionV, ok := obj.get("decision")
 	if !ok {

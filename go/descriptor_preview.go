@@ -26,7 +26,7 @@ func previewDescriptors(configPath string, cfg engineConfig, bindings map[string
 		return "", fmt.Errorf("platform %s is not configured", platform)
 	}
 	b := bindings[platform]
-	if b.version == "2" {
+	if b.hasOwnerDeclarations() {
 		operation := ""
 		if len(operations) > 0 {
 			operation = operations[0]

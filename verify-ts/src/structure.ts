@@ -225,6 +225,18 @@ function remoteHolds(v: ObjectValue): boolean {
   return peer?.type === "null";
 }
 
+export function isActionDelivery(v: Value): boolean {
+  if (v.type !== "object" || v.members.length !== 3 || !v.members.every(m => ["key", "contract", "outcome"].includes(m.name))) return false;
+  const key = member(v,"key"), outcome = member(v,"outcome");
+  return isString(key) && /^[0-9a-f]{64}$/.test(key.value) && isDigest(member(v,"contract")) && isString(outcome) && ["response","uncertain"].includes(outcome.value);
+}
+export function isActionReconciliation(v: Value): boolean {
+  if (v.type !== "object" || v.members.length !== 4 || !v.members.every(m => ["action","key", "contract", "outcome"].includes(m.name))) return false;
+  const key = member(v,"key"), outcome = member(v,"outcome"), action = member(v,"action");
+  if (action?.type !== "object" || action.members.length !== 3 || !action.members.every(m => ["sessionId","callIndex","signature"].includes(m.name))) return false;
+  return isString(key) && /^[0-9a-f]{64}$/.test(key.value) && isDigest(member(v,"contract")) && isString(outcome) && ["committed","unknown"].includes(outcome.value) && citations({type:"array",items:[action]}) !== null;
+}
+
 function isAcquisition(v: Value | undefined): boolean {
   if (v?.type !== "object") {
     return false;
@@ -232,8 +244,10 @@ function isAcquisition(v: Value | undefined): boolean {
   const shape = member(v, "shape");
   const pageItems = member(v, "pageItems");
   const provenance = member(v, "descriptorProvenance");
+ const reconciliation=member(v,"reconciliation");
   return (
-    isAdapter(member(v, "adapter")) &&
+    (reconciliation===undefined || isActionReconciliation(reconciliation)) &&
+ isAdapter(member(v, "adapter")) &&
     isString(shape) &&
     shapes.has(shape.value) &&
     (provenance === undefined || (shape.value === "mcp" && isDescriptorProvenance(provenance))) &&
@@ -293,8 +307,10 @@ function isAction(v: Value | undefined): boolean {
   const cites = member(v, "cites");
   const tool = member(v, "tool");
   const policy = member(v, "policy");
+ const delivery=member(v,"delivery");
   return (
-    isIdentity(member(v, "requester")) &&
+    (delivery===undefined || isActionDelivery(delivery)) &&
+ isIdentity(member(v, "requester")) &&
     decision?.type === "object" &&
     isDigest(member(decision, "recordDigest")) &&
     isDigest(member(decision, "packDigest")) &&

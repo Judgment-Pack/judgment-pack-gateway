@@ -1,5 +1,5 @@
 {
-  "bindingVersion": "2",
+  "bindingVersion": "3",
   "platform": "azure-devops",
   "operations": {
     "write": {
@@ -29,5 +29,10 @@
         }
       }
     }
+  },
+  "actionRecovery": {
+    "wit_work_item_write": null,
+    "wit_work_item_comment_write": null,
+    "wit_work_item_link_write": null
   }
 }
