@@ -123,7 +123,9 @@ func TestWindowsRestrictedTokenBoundary(t *testing.T) {
 			if err != nil || string(kept) != "original" {
 				t.Fatal("outside file changed", err)
 			}
-			cleanup()
+			if err := cleanup(); err != nil {
+				t.Fatal(err)
+			}
 			if after := aclString(t, workspace); after != before {
 				t.Fatalf("workspace ACL not restored:\nbefore %s\nafter %s", before, after)
 			}
@@ -142,7 +144,9 @@ func TestWindowsRejectsMultiplyLinkedWorkspaceFile(t *testing.T) {
 	}
 	before := aclString(t, workspace)
 	_, _, cleanup, err := Command(context.Background(), os.Args[0], nil, WorkspaceWrite, workspace)
-	cleanup()
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
 	if err == nil || !strings.Contains(err.Error(), "multiply-linked") {
 		t.Fatalf("expected named refusal, got %v", err)
 	}
@@ -168,7 +172,9 @@ func TestWindowsJobKillsDescendantsBeforeCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err, string(raw))
 	}
-	cleanup()
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
 	process, err := syscall.OpenProcess(syscall.SYNCHRONIZE, false, uint32(pid))
 	if err != nil {
 		return
@@ -188,14 +194,63 @@ func TestWindowsOverlappingWorkspacePreparationRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, secondCleanup, err := Command(context.Background(), os.Args[0], nil, WorkspaceWrite, workspace)
-	secondCleanup()
+	if err := secondCleanup(); err != nil {
+		t.Fatal(err)
+	}
 	if err == nil || !strings.Contains(err.Error(), "workspace already in use") {
 		t.Fatalf("overlapping ACL mutations: %v", err)
 	}
-	cleanup()
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
 	_, _, thirdCleanup, err := Command(context.Background(), os.Args[0], nil, WorkspaceWrite, workspace)
-	thirdCleanup()
+	if err := thirdCleanup(); err != nil {
+		t.Fatal(err)
+	}
 	if err != nil {
 		t.Fatalf("workspace lock not released: %v", err)
+	}
+}
+
+// Complete the first run precisely while the second is acquiring exclusion.
+// Capturing the first run's temporary descriptor before this point would restore
+// that stale descriptor after the second run and fail the final comparison.
+func TestWindowsWorkspaceSnapshotFollowsExclusion(t *testing.T) {
+	workspace := t.TempDir()
+	before := aclString(t, workspace)
+	_, _, firstCleanup, err := Command(context.Background(), os.Args[0], nil, WorkspaceWrite, workspace)
+	defer firstCleanup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := lockWindowsWorkspace
+	t.Cleanup(func() { lockWindowsWorkspace = saved })
+	lockWindowsWorkspace = func(handle syscall.Handle) (syscall.Handle, error) {
+		if err := firstCleanup(); err != nil {
+			return 0, err
+		}
+		return saved(handle)
+	}
+	_, _, secondCleanup, err := Command(context.Background(), os.Args[0], nil, WorkspaceWrite, workspace)
+	defer secondCleanup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = secondCleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if after := aclString(t, workspace); after != before {
+		t.Fatalf("stale workspace ACL restored: before %s; after %s", before, after)
+	}
+}
+
+func TestWindowsCleanupFailureIsReturnedAndStable(t *testing.T) {
+	// An invalid job handle deterministically fails before restoration. No real
+	// process is started; the failure must stay visible to repeated callers.
+	r := &winResources{job: syscall.InvalidHandle}
+	for i := 0; i < 2; i++ {
+		if err := r.cleanup(); err == nil || !strings.Contains(err.Error(), "sandbox-cleanup-failed:") {
+			t.Fatalf("cleanup failure lost: %v", err)
+		}
 	}
 }

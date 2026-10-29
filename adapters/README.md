@@ -2348,11 +2348,17 @@ It grants that SID modify access only on the workspace and the private temporary
 directory in workspace-write mode. Read-only grants neither. Full access remains
 an explicit bypass of the sandbox, selected by the operator's policy.
 
+A trusted launcher creates a private window station and desktop before starting
+the restricted child; it never grants access to the interactive desktop. The host
+account must be permitted to create that station. If creation or restricted-child
+startup fails, the command fails without retrying at broader permissions.
+
 The workspace must support security descriptors. Existing reparse points and
 multiply-linked files are refused before any ACL changes. At most 10,000 existing
 objects are held by handle; those handles prevent renames or deletions of existing
 objects while the command runs. Concurrent workspace-write uses of the same
-workspace are refused. New objects inherit the workspace grant. A job with
+workspace are refused across logon sessions, with exclusion acquired before the
+ACL snapshot. New objects inherit the workspace grant. A job with
 kill-on-close and no breakaway contains the launcher and its descendants. Cleanup
 terminates that job and verifies it is empty before restoring held ACLs.
 
@@ -2362,8 +2368,8 @@ above. The backend does not provide read isolation. The operator must keep polic
 credentials and signing material outside the workspace. An abrupt parent exit can
 leave ACL grants or low integrity labels behind; newly created objects retain their
 inherited grants and labels even after normal cleanup. No later run reuses the SID.
-A cleanup failure emits `sandbox-cleanup-failed` separately from the child's result
-and retains temporary files for recovery. Use a dedicated workspace and inspect its
+A cleanup failure returns `sandbox-cleanup-failed`, fails registration or acquisition
+even if the child completed successfully, and retains temporary files for recovery. Use a dedicated workspace and inspect its
 permissions following an interrupted run.
 
 Native CI tests cover the write boundary, outside-file ACL changes, access to the

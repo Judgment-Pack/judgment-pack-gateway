@@ -10,9 +10,9 @@ import (
 
 // Command prepares a command and a private temporary directory. The caller
 // removes the directory only after the complete process tree has stopped.
-func Command(ctx context.Context, executable string, args []string, mode, workspace string) (*exec.Cmd, Report, func(), error) {
+func Command(ctx context.Context, executable string, args []string, mode, workspace string) (*exec.Cmd, Report, func() error, error) {
 	report := Report{Mode: mode, Backend: "none", State: "not-enforced"}
-	noop := func() {}
+	noop := func() error { return nil }
 	if !ValidMode(mode) {
 		return nil, report, noop, errors.New("sandbox-policy-invalid: unsupported mode")
 	}
@@ -37,22 +37,26 @@ func Command(ctx context.Context, executable string, args []string, mode, worksp
 	if err != nil {
 		return nil, report, noop, err
 	}
-	cleanup := func() { _ = os.RemoveAll(tmp) }
+	cleanup := func() error { return os.RemoveAll(tmp) }
 	cmd, report, err := platformCommand(ctx, executable, args, mode, resolved, tmp)
 	if err != nil {
-		if report.cleanup == nil || report.cleanup() {
-			cleanup()
+		if report.cleanup != nil {
+			if cleanupErr := report.cleanup(); cleanupErr != nil {
+				return nil, report, noop, errors.Join(err, cleanupErr)
+			}
 		}
+		err = errors.Join(err, cleanup())
 		return nil, report, noop, err
 	}
 	cmd.Dir = resolved
 	cmd.Env = append(os.Environ(), "TMPDIR="+tmp, "TMP="+tmp, "TEMP="+tmp)
 	if platformCleanup := report.cleanup; platformCleanup != nil {
 		removeTemp := cleanup
-		cleanup = func() {
-			if platformCleanup() {
-				removeTemp()
+		cleanup = func() error {
+			if err := platformCleanup(); err != nil {
+				return err
 			}
+			return removeTemp()
 		}
 	}
 	return cmd, report, cleanup, nil

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,12 @@ var winAssignJob = winKernel.NewProc("AssignProcessToJobObject")
 var winTerminateJob = winKernel.NewProc("TerminateJobObject")
 var winQueryJob = winKernel.NewProc("QueryInformationJobObject")
 var winCreateEvent = winKernel.NewProc("CreateEventW")
+var winUser = syscall.NewLazyDLL("user32.dll")
+var winCreateStation = winUser.NewProc("CreateWindowStationW")
+var winSetStation = winUser.NewProc("SetProcessWindowStation")
+var winCreateDesktop = winUser.NewProc("CreateDesktopW")
+var winSetDesktop = winUser.NewProc("SetThreadDesktop")
+var winIsRestricted = winSecurity.NewProc("IsTokenRestricted")
 
 const winHelperArg = "_gateway_windows_sandbox_exec_v1"
 const winSecurityParts = 0x4 | 0x10 // DACL and mandatory label, not audit SACL
@@ -57,7 +64,7 @@ func init() {
 		return
 	}
 	fail := func(err error) { fmt.Fprintln(os.Stderr, "sandbox-not-enforced:", err); os.Exit(125) }
-	if len(os.Args) < 4 {
+	if len(os.Args) < 6 {
 		fail(errors.New("invalid restricted launcher"))
 	}
 	handle, err := strconv.ParseUint(os.Args[2], 10, 64)
@@ -65,6 +72,17 @@ func init() {
 		fail(err)
 	}
 	job := syscall.Handle(handle)
+	tokenValue, err := strconv.ParseUint(os.Args[3], 10, 64)
+	if err != nil {
+		fail(err)
+	}
+	token := syscall.Token(tokenValue)
+	if err = winBool(winIsRestricted, uintptr(token)); err != nil {
+		fail(err)
+	}
+	if err = syscall.SetHandleInformation(syscall.Handle(token), 1, 0); err != nil {
+		fail(err)
+	}
 	self, err := syscall.GetCurrentProcess()
 	if err != nil {
 		fail(err)
@@ -75,9 +93,21 @@ func init() {
 	if err = syscall.CloseHandle(job); err != nil {
 		fail(err)
 	}
-	cmd := exec.Command(os.Args[3], os.Args[4:]...)
+	// The trusted launcher prepares a private desktop before starting the
+	// restricted child. The operator's interactive desktop is never granted to
+	// the restricting SID. Startup with a nil Desktop inherits this association.
+	runtime.LockOSThread()
+	if err = privateWindowsDesktop(os.Args[4], token); err != nil {
+		fail(err)
+	}
+	cmd := exec.Command(os.Args[5], os.Args[6:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Token: token, CreationFlags: 0x08000000}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	err = cmd.Run()
+	err = cmd.Start()
+	token.Close()
+	if err == nil {
+		err = cmd.Wait()
+	}
 	if err == nil {
 		os.Exit(0)
 	}
@@ -87,6 +117,45 @@ func init() {
 	}
 	fmt.Fprintln(os.Stderr, "server-exec-failed:", err)
 	os.Exit(126)
+}
+
+func privateWindowsDesktop(sid string, token syscall.Token) error {
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return err
+	}
+	userSID, err := user.User.Sid.String()
+	if err != nil {
+		return err
+	}
+	raw, err := syscall.UTF16PtrFromString("D:(A;;GA;;;SY)(A;;GA;;;" + userSID + ")(A;;GA;;;" + sid + ")S:(ML;;NW;;;LW)")
+	if err != nil {
+		return err
+	}
+	var sd uintptr
+	if err = winBool(winStringSD, uintptr(unsafe.Pointer(raw)), 1, uintptr(unsafe.Pointer(&sd)), 0); err != nil {
+		return err
+	}
+	defer winFree(sd)
+	sa := syscall.SecurityAttributes{Length: uint32(unsafe.Sizeof(syscall.SecurityAttributes{})), SecurityDescriptor: sd}
+	name, err := syscall.UTF16PtrFromString("gateway-" + sid)
+	if err != nil {
+		return err
+	}
+	station, _, callErr := winCreateStation.Call(uintptr(unsafe.Pointer(name)), 1, 0xf037f, uintptr(unsafe.Pointer(&sa)))
+	if station == 0 {
+		return fmt.Errorf("private window station: %w", callErr)
+	}
+	if err = winBool(winSetStation, station); err != nil {
+		return err
+	}
+	name, _ = syscall.UTF16PtrFromString("source")
+	desktop, _, callErr := winCreateDesktop.Call(uintptr(unsafe.Pointer(name)), 0, 0, 0, 0xf01ff, uintptr(unsafe.Pointer(&sa)))
+	if desktop == 0 {
+		return fmt.Errorf("private desktop: %w", callErr)
+	}
+	// Both handles stay private to the trusted launcher and close on exit.
+	return winBool(winSetDesktop, desktop)
 }
 
 type winACL struct {
@@ -104,7 +173,7 @@ type winResources struct {
 }
 
 // Restore only after the job is empty; retain temporary files on cleanup error.
-func (r *winResources) cleanup() bool {
+func (r *winResources) cleanup() error {
 	r.once.Do(func() {
 		r.clean = true
 		if r.job != 0 {
@@ -153,7 +222,10 @@ func (r *winResources) cleanup() bool {
 			fmt.Fprintln(os.Stderr, "sandbox-cleanup-failed: job termination or ACL restoration failed; temporary files retained")
 		}
 	})
-	return r.clean
+	if !r.clean {
+		return errors.New("sandbox-cleanup-failed: job termination or ACL restoration failed")
+	}
+	return nil
 }
 func platformCommand(ctx context.Context, executable string, args []string, mode, workspace, tmp string) (_ *exec.Cmd, report Report, result error) {
 	report = Report{Mode: mode, Backend: "windows-restricted-token", State: "not-enforced"}
@@ -205,28 +277,18 @@ func platformCommand(ctx context.Context, executable string, args []string, mode
 				if len(resources.acls) >= 10000 {
 					return errors.New("sandbox-policy-invalid: workspace exceeds 10000 existing objects")
 				}
-				a, err := holdWindowsACL(path)
+				a, err := holdWindowsFile(path)
 				if err != nil {
 					return err
 				}
 				resources.acls = append(resources.acls, a)
 				if path == workspace {
-					var info syscall.ByHandleFileInformation
-					if err := syscall.GetFileInformationByHandle(a.handle, &info); err != nil {
+					resources.lock, err = lockWindowsWorkspace(a.handle)
+					if err != nil {
 						return err
 					}
-					name, _ := syscall.UTF16PtrFromString(fmt.Sprintf("Local\\gateway-sandbox-%08x-%08x-%08x", info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow))
-					h, _, eventErr := winCreateEvent.Call(0, 1, 0, uintptr(unsafe.Pointer(name)))
-					if h == 0 {
-						return eventErr
-					}
-					if eventErr == syscall.ERROR_ALREADY_EXISTS {
-						syscall.CloseHandle(syscall.Handle(h))
-						return errors.New("sandbox-policy-invalid: workspace already in use")
-					}
-					resources.lock = syscall.Handle(h)
 				}
-				return nil
+				return snapshotWindowsACL(&resources.acls[len(resources.acls)-1])
 			})
 			if err != nil {
 				return nil, report, err
@@ -264,15 +326,38 @@ func platformCommand(ctx context.Context, executable string, args []string, mode
 	if err != nil {
 		return nil, report, err
 	}
-	argv := append([]string{winHelperArg, strconv.FormatUint(uint64(job), 10), executable}, args...)
+	if err = syscall.SetHandleInformation(syscall.Handle(resources.token), 1, 1); err != nil {
+		return nil, report, err
+	}
+	argv := append([]string{winHelperArg, strconv.FormatUint(uint64(job), 10), strconv.FormatUint(uint64(resources.token), 10), sidText, executable}, args...)
 	cmd := exec.CommandContext(ctx, self, argv...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Token: resources.token, CreationFlags: 0x08000000, AdditionalInheritedHandles: []syscall.Handle{resources.job}}
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000, AdditionalInheritedHandles: []syscall.Handle{resources.job, syscall.Handle(resources.token)}}
 	report.State = "partial"
 	report.Reason = "low-integrity write-restricted token and per-run ACLs restrict writes on access-controlled filesystems; network access and objects without usable access controls are not confined"
 	report.cleanup = resources.cleanup
 	return cmd, report, nil
 }
-func holdWindowsACL(path string) (winACL, error) {
+
+// Exclusion is acquired using physical identity before reading any ACL. The
+// global namespace covers separate logon sessions sharing the workspace.
+var lockWindowsWorkspace = func(handle syscall.Handle) (syscall.Handle, error) {
+	var info syscall.ByHandleFileInformation
+	if err := syscall.GetFileInformationByHandle(handle, &info); err != nil {
+		return 0, err
+	}
+	name, _ := syscall.UTF16PtrFromString(fmt.Sprintf("Global\\gateway-sandbox-%08x-%08x-%08x", info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow))
+	h, _, err := winCreateEvent.Call(0, 1, 0, uintptr(unsafe.Pointer(name)))
+	if h == 0 {
+		return 0, err
+	}
+	if err == syscall.ERROR_ALREADY_EXISTS {
+		syscall.CloseHandle(syscall.Handle(h))
+		return 0, errors.New("sandbox-policy-invalid: workspace already in use")
+	}
+	return syscall.Handle(h), nil
+}
+
+func holdWindowsFile(path string) (winACL, error) {
 	name, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
 		return winACL{}, err
@@ -291,13 +376,29 @@ func holdWindowsACL(path string) (winACL, error) {
 	if info.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0 || (info.FileAttributes&syscall.FILE_ATTRIBUTE_DIRECTORY == 0 && info.NumberOfLinks != 1) {
 		return fail(errors.New("sandbox-policy-invalid: workspace contains a reparse point or multiply-linked file"))
 	}
-	var sd uintptr
-	status, _, _ := winGetSecurity.Call(uintptr(handle), 1, winSecurityParts, 0, 0, 0, 0, uintptr(unsafe.Pointer(&sd)))
-	if status != 0 {
-		return fail(syscall.Errno(status))
-	}
-	return winACL{handle: handle, original: sd}, nil
+	return winACL{handle: handle}, nil
 }
+
+func snapshotWindowsACL(a *winACL) error {
+	status, _, _ := winGetSecurity.Call(uintptr(a.handle), 1, winSecurityParts, 0, 0, 0, 0, uintptr(unsafe.Pointer(&a.original)))
+	if status != 0 {
+		return syscall.Errno(status)
+	}
+	return nil
+}
+
+func holdWindowsACL(path string) (winACL, error) {
+	a, err := holdWindowsFile(path)
+	if err != nil {
+		return a, err
+	}
+	if err = snapshotWindowsACL(&a); err != nil {
+		syscall.CloseHandle(a.handle)
+		return winACL{}, err
+	}
+	return a, nil
+}
+
 func grantWindowsACL(a *winACL, sid string) error {
 	var text *uint16
 	if err := winBool(winSDString, a.original, 1, winSecurityParts, uintptr(unsafe.Pointer(&text)), 0); err != nil {
