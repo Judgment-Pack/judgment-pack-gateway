@@ -15,7 +15,14 @@ snapshot itself is not independently signed by this change.
 Registered customer commands default to workspace-write under the operator's
 separate sandbox policy. Bubblewrap on Linux restricts writable mounts; the Landlock
 fallback is reported as partial because it does not restrict filesystem metadata
-changes. macOS uses Seatbelt. A platform without an implemented backend refuses a
+changes. macOS uses Seatbelt. Windows uses a low-integrity, write-restricted token
+with a fresh per-run SID, workspace ACL grants and a non-breakaway job; it reports
+partial enforcement. Access-control-free objects and network effects remain outside
+that Windows claim. Existing workspace ACLs are restored after the job is empty;
+an abrupt parent termination can leave the temporary ACL grants and low labels in
+place, and newly created objects retain their inherited ACLs and labels. The SID is
+never reused. Use a dedicated workspace, and inspect its permissions after a crash.
+A platform without an implemented backend refuses a
 restricted command with `sandbox-not-enforced`; full access is an explicit operator
 choice. The check reports the actual backend selected. These controls restrict local
 filesystem writes, not network effects or reads available to the source's user.

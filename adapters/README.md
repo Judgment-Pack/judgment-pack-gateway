@@ -355,7 +355,8 @@ No backend means `sandbox-not-enforced` and the restricted command is not starte
 Linux tries bubblewrap and falls back to Landlock ABI 3 or newer. Landlock is
 reported as `partial`: file-content writes, truncation and directory mutations are
 restricted, while metadata operations such as chmod remain outside its controls.
-macOS uses Seatbelt through sandbox-exec. Other platforms currently refuse
+macOS uses Seatbelt through sandbox-exec. Windows uses the restricted-token and ACL
+backend described below and reports partial enforcement. Other platforms refuse
 restricted customer commands. Network access is outside this filesystem policy.
 The mode does not establish a tool's declared effect or the truth of its answer.
 
@@ -2338,3 +2339,36 @@ The optional `site` enforces the exact origin and robots rules again, including
 redirects. Each page then has its own verified document and citation; fetching
 again may observe newer content. Those later reads have their own limits and
 are not counted in the discovery budget. Direct `{"url":...}` reads are unchanged.
+
+### Windows customer-command isolation
+
+The Windows backend uses `CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE` and
+`WRITE_RESTRICTED`, a fresh restricting SID and a low mandatory integrity label.
+It grants that SID modify access only on the workspace and the private temporary
+directory in workspace-write mode. Read-only grants neither. Full access remains
+an explicit bypass of the sandbox, selected by the operator's policy.
+
+The workspace must support security descriptors. Existing reparse points and
+multiply-linked files are refused before any ACL changes. At most 10,000 existing
+objects are held by handle; those handles prevent renames or deletions of existing
+objects while the command runs. Concurrent workspace-write uses of the same
+workspace are refused. New objects inherit the workspace grant. A job with
+kill-on-close and no breakaway contains the launcher and its descendants. Cleanup
+terminates that job and verifies it is empty before restoring held ACLs.
+
+The report is `partial`: network access is unchanged, objects without usable access
+controls are not confined, and workspace filesystem operations have the limits
+above. The backend does not provide read isolation. The operator must keep policy,
+credentials and signing material outside the workspace. An abrupt parent exit can
+leave ACL grants or low integrity labels behind; newly created objects retain their
+inherited grants and labels even after normal cleanup. No later run reuses the SID.
+A cleanup failure emits `sandbox-cleanup-failed` separately from the child's result
+and retains temporary files for recovery. Use a dedicated workspace and inspect its
+permissions following an interrupted run.
+
+Native CI tests cover the write boundary, outside-file ACL changes, access to the
+parent's handles and token, link refusal, ACL restoration and descendant cleanup.
+These checks execute on the Windows runner; cross-compilation alone does not
+establish that enforcement works. The implementation follows the documented
+[restricted-token access checks](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)
+and [mandatory integrity rules](https://learn.microsoft.com/en-us/windows/win32/secauthz/mandatory-integrity-control).

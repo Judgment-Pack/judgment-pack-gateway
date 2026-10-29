@@ -40,10 +40,20 @@ func Command(ctx context.Context, executable string, args []string, mode, worksp
 	cleanup := func() { _ = os.RemoveAll(tmp) }
 	cmd, report, err := platformCommand(ctx, executable, args, mode, resolved, tmp)
 	if err != nil {
-		cleanup()
+		if report.cleanup == nil || report.cleanup() {
+			cleanup()
+		}
 		return nil, report, noop, err
 	}
 	cmd.Dir = resolved
 	cmd.Env = append(os.Environ(), "TMPDIR="+tmp, "TMP="+tmp, "TEMP="+tmp)
+	if platformCleanup := report.cleanup; platformCleanup != nil {
+		removeTemp := cleanup
+		cleanup = func() {
+			if platformCleanup() {
+				removeTemp()
+			}
+		}
+	}
 	return cmd, report, cleanup, nil
 }

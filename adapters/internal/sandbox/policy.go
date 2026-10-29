@@ -23,10 +23,11 @@ const (
 )
 
 type Report struct {
-	Mode    string `json:"mode"`
-	Backend string `json:"backend"`
-	State   string `json:"state"`
-	Reason  string `json:"reason"`
+	Mode    string      `json:"mode"`
+	Backend string      `json:"backend"`
+	State   string      `json:"state"`
+	Reason  string      `json:"reason"`
+	cleanup func() bool // platform resources; false leaves temporary files in place
 }
 
 type policy struct {

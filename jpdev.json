@@ -20,7 +20,7 @@
       "paths": ["adapters/**"],
       "checks": ["local-paths", "agent-docs", "diff-check",
                  "go-test",
-                 "adapters-fmt", "adapters-vet", "adapters-vet-windows", "adapters-test", "adapters-build",
+                 "adapters-fmt", "adapters-vet", "adapters-vet-windows", "adapters-test", "adapters-build", "sandbox-boundary",
                  "acquisition-fixture", "attachment-schemas", "rendering-schemas", "search-schema",
                  "adapter-conform", "adapters-not-into-core", "third-party-notices", "release-programs",
                  "no-publisher-registration", "both-paths-agree",
