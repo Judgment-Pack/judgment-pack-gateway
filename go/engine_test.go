@@ -157,7 +157,7 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 		"warehouse/live": {
 			argv: []string{filepath.Join(binDir, "adapter-mcp"), "--image=ghcr.io/example/mcp-postgres:2.1@" + testImageDigest,
 				"--credentials=" + p.credentials["live"], "--runtime=podman", "--tools=query,explain", "--endpoint=warehouse.internal:5432"},
-			env: env, user: "engine-warehouse", shape: "mcp",
+			env: env, user: "engine-warehouse", shape: "mcp", binding: ref, tools: []string{"query", "explain"},
 		},
 		// The write operation, since the platform allows writes: the
 		// executor is adapter-mcp on the binding's write server, with the
@@ -165,7 +165,7 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 		"warehouse/write": {
 			argv: []string{filepath.Join(binDir, "adapter-mcp"), "--image=ghcr.io/example/mcp-postgres:2.1@" + testImageDigest,
 				"--credentials=" + p.credentials["write"], "--runtime=podman", "--tools=execute,drop", "--error-results", "--endpoint=warehouse.internal:5432"},
-			env: env, user: "engine-warehouse", shape: "mcp", tools: []string{"execute", "drop"}, endpoint: "warehouse.internal:5432",
+			env: env, user: "engine-warehouse", shape: "mcp", tools: []string{"execute", "drop"}, endpoint: "warehouse.internal:5432", binding: ref,
 		},
 	}
 	if !reflect.DeepEqual(sources, want) {
@@ -243,7 +243,7 @@ func TestEngineConfigRefusals(t *testing.T) {
 		{"unknown member", engineJSON(t, catalog, `,"port":8787`, good), `unknown member "port"`},
 		{"duplicate member", `{"engineVersion":"1","engineVersion":"1"}`, "duplicate"},
 		{"missing member", replace(`"registry":"`, `"registryx":"`), `unknown member "registryx"`},
-		{"wrong version", replace(`"engineVersion":"1"`, `"engineVersion":"14"`), `unsupported engineVersion "14" (latest "13")`},
+		{"wrong version", replace(`"engineVersion":"1"`, `"engineVersion":"15"`), `unsupported engineVersion "15" (latest "14")`},
 		{"identity without an audience", engineJSON(t, catalog, `,"identity":{"issuer":"https://login.example","keys":"`+abs(t, t.TempDir(), "keys.json")+`"}`, good), `missing member "audience"`},
 		{"identity with an unknown member", engineJSON(t, catalog, `,"identity":{"issuer":"https://login.example","audience":"gateway:acme","keys":"`+abs(t, t.TempDir(), "keys.json")+`","jwksUrl":"https://x"}`, good), `unknown member "jwksUrl"`},
 		{"identity with an empty issuer", engineJSON(t, catalog, `,"identity":{"issuer":"","audience":"gateway:acme","keys":"`+abs(t, t.TempDir(), "keys.json")+`"}`, good), "identity.issuer must be the token issuer"},
