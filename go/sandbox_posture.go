@@ -78,6 +78,11 @@ func sourceProgramPosture(sources map[string]sourceSpec) []postureProgram {
 	return programs
 }
 
+// publicSocketLimit is the stated limit on local services every restricted
+// entry carries: enforced means the filesystem write boundary holds, and
+// says nothing of what a program reaches over a socket.
+const publicSocketLimit = "local services reached over Unix sockets may remain reachable, and this filesystem write boundary does not cover what they do"
+
 const containerHelperNote = "this confines the runtime client only, not filesystem writes performed by its external container daemon"
 
 // customerExecutionNote says what of a customer command runs as the exact
@@ -130,15 +135,20 @@ func publicProgramReason(p postureProgram) string {
 	case protection.State == postureNotEnforced:
 		reason = "the backend check did not establish the selected mode for this source, and its restricted launches refuse; gateway posture, given the configuration, says why"
 	case protection.Backend == "bubblewrap" && protection.State == postureEnforced:
-		reason = "bubblewrap keeps filesystem mounts read-only outside the declared writable directories and hides the host's listening Unix sockets; network access is unchanged"
+		reason = "bubblewrap keeps filesystem mounts read-only outside the declared writable directories, and the filesystem write boundary holds; network access is unchanged"
 	case protection.Backend == "bubblewrap":
-		reason = "bubblewrap keeps filesystem mounts read-only outside the declared writable directories; some local sockets stay reachable, and the programs behind them are not confined by this boundary; network access is unchanged"
+		reason = "bubblewrap keeps filesystem mounts read-only outside the declared writable directories; some local sockets were seen to stay reachable, and the programs behind them are not confined by this boundary; network access is unchanged"
 	case protection.Backend == "landlock":
 		reason = "Landlock restricts file-content writes, truncation and directory mutations; metadata changes, connections to local sockets and network access are not restricted"
 	case protection.Backend == "seatbelt":
 		reason = "Seatbelt denies file writes outside the declared writable directories; connections to local sockets and system services, and network access, are not restricted"
 	default:
 		reason = "the backend's measured limits are named by gateway posture, given the configuration"
+	}
+	// Landlock's and Seatbelt's sentences already say sockets are not
+	// restricted.
+	if protection.Backend == "bubblewrap" {
+		reason += "; " + publicSocketLimit
 	}
 	switch p.class {
 	case "container-helper":

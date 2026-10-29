@@ -118,14 +118,48 @@ func TestCustomerEnvShebangProgramBound(t *testing.T) {
 			refusedBeforeStart(t, err, "mcp-executable-changed: a #! interpreter now resolves to another file")
 		})
 	}
-	// env with an option or an assignment names no bindable program.
-	for _, line := range []string{"#!/usr/bin/env -i probe\n", "#!/usr/bin/env PATH=/x probe\n", "#!/usr/bin/env\n"} {
+	// Only a plain program word, with -S optionally followed by literal
+	// arguments, is bound: an option, an assignment, a nested env, an
+	// expansion, an escape or a quote names no bindable program.
+	for _, line := range []string{
+		"#!/usr/bin/env -i probe\n", "#!/usr/bin/env PATH=/x probe\n", "#!/usr/bin/env\n",
+		"#!/usr/bin/env -S env probe\n", "#!/usr/bin/env -S /usr/bin/env probe\n", "#!/usr/bin/env env\n",
+		"#!/usr/bin/env -S ${HOME}/server\n", "#!/usr/bin/env -S probe ${ARG}\n", "#!/usr/bin/env -S $NAME\n",
+		"#!/usr/bin/env -S probe \\\"quoted\\\"\n", "#!/usr/bin/env -S probe 'a b'\n", "#!/usr/bin/env -S probe \\_x\n",
+		"#!/usr/bin/env -S -i probe\n", "#!/usr/bin/env -S VAR=1 probe\n",
+	} {
 		ws := t.TempDir()
 		path := filepath.Join(ws, "server")
 		os.WriteFile(path, []byte(line), 0o755)
 		if _, err := measureCustomerCommand([]string{path}, ws, os.Environ()); err == nil || !strings.Contains(err.Error(), "mcp-executable-unbindable:") {
 			t.Fatalf("%q: %v", line, err)
 		}
+	}
+}
+
+// The accepted -S form, a plain program word and literal arguments, binds
+// env and the program it finds.
+func TestCustomerEnvSplitPlainFormBound(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/env"); err != nil {
+		t.Skip("no /usr/bin/env")
+	}
+	dir, ws := t.TempDir(), t.TempDir()
+	program := filepath.Join(dir, "probe-interp")
+	copyFile(t, os.Args[0], program)
+	env := append(os.Environ(), "PATH="+dir)
+	script := filepath.Join(ws, "server")
+	if err := os.WriteFile(script, []byte("#!/usr/bin/env -S probe-interp -u literal --flag=value\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m, err := measureCustomerCommand([]string{script}, ws, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.file.Close()
+	found, _ := filepath.EvalSymlinks(program)
+	chain := m.identity.Interpreters
+	if len(chain) != 2 || filepath.Base(chain[0].Path) != "env" || chain[1].Path != found {
+		t.Fatalf("chain %+v, want env then %s", chain, found)
 	}
 }
 

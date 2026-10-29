@@ -95,6 +95,11 @@ func TestBubblewrapReportIsPartialWhileASocketStaysReachable(t *testing.T) {
 		if err != nil || report.Backend != "bubblewrap" || report.State != c.state {
 			t.Fatalf("sockets %v: %+v %v", c.list, report, err)
 		}
+		// Enforced is the filesystem write boundary; what stays reachable
+		// over a socket is a stated limit, whatever the state.
+		if !strings.Contains(report.Reason, SocketLimit) {
+			t.Fatalf("the socket limit is not stated: %s", report.Reason)
+		}
 	}
 }
 

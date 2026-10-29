@@ -334,9 +334,12 @@ of that file. When that file is a `#!` script, `interpreters` lists, in the orde
 they run, each program that runs before it, by path and digest: the interpreter
 its first line names (a relative one resolved against the workspace), and, for
 `#!/usr/bin/env NAME`, the program `env` finds on the server's `PATH`, and so on
-while what runs is itself a `#!` script. `env` with an option other than `-S`, or
-with a variable assignment, refuses with `mcp-executable-unbindable`, since what it
-would run is not bound. When an operand that is not a flag names a regular file,
+while what runs is itself a `#!` script. Not every `env` form is bound; two are
+accepted: `env NAME`, and `env -S NAME ARGS...`, where NAME is one plain program
+word and ARGS are literal words. A plain word is not an option and not an
+assignment, and holds no `$`, backslash, quote or `#`, which `env -S` would expand
+or unquote. Any other form, `env` running `env` again included, refuses with
+`mcp-executable-unbindable`, since what it would run is not bound. When an operand that is not a flag names a regular file,
 the first such operand, which is the script an interpreter runs, is held the same
 way as `script`; an option's separate value that names no file (`-X dev`) is passed
 over, and one that names a file (`--require hook.js`) is taken for the script, so
@@ -493,11 +496,15 @@ desktop sockets below the home directory of Docker Desktop, Colima, Rancher
 Desktop, Lima, OrbStack and Podman machine), and the socket a `unix://` value of
 `DOCKER_HOST` or `CONTAINER_HOST` names. These masks come after the writable binds,
 so a socket inside the workspace is hidden too; only a runtime directory that holds
-the workspace is masked before them. The report names what was masked. A listening
-socket with an abstract name has no path to hide and stays reachable, because every
-mode shares the host's network namespace; while one is listening, or when the socket
-list cannot be read, the state is `partial`, never `enforced`. A socket that starts
-listening after the launch is not masked. Network access is unchanged. A server
+the workspace is masked before them. The report names what was masked. These masks
+are defence in depth, not part of what `enforced` claims: `enforced` means the
+filesystem write boundary holds. Local services reached over Unix sockets may
+remain reachable, and the boundary does not cover what they do: a socket created
+after the launch, bound in another network namespace or by a relative path is not
+masked, and every bubblewrap report states this limit. A listening socket with an
+abstract name has no path to hide and stays reachable, because every mode shares
+the host's network namespace; while one is listening, or when the socket list
+cannot be read, the state is `partial`. Network access is unchanged. A server
 that needs a host socket (a name service, a session bus) cannot reach it under a
 restricted mode.
 

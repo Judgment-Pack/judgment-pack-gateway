@@ -41,9 +41,13 @@ the boundary as not holding refuses. Inside bubblewrap the per-user runtime
 directory, every listening Unix socket bound to a path, the known container-runtime
 sockets and the one `DOCKER_HOST` or `CONTAINER_HOST` names are masked, after the
 writable binds, except for a container image source's runtime client, which is
-reported as partial. A listening socket with an abstract name cannot be masked
-while the network namespace is shared, so its presence makes the state partial:
-posture never says enforced while a reachable daemon socket remains. The policy
+reported as partial. These masks are defence in depth: `enforced` means the
+filesystem write boundary holds, and says nothing of local services. A program may
+still reach a local service over a Unix socket (one created after the launch,
+bound in another network namespace or by a relative path is not masked), and what
+that service does is outside this boundary; every bubblewrap report states this
+limit. A listening socket with an abstract name, which no mask hides while the
+network namespace is shared, makes the state partial. The policy
 file is held at start as an adapter is (owned by root or the signer, writable by
 nobody else), and its path may not pass through a link inside a source workspace. Its customer adapter
 receives the explicit operator flag `--sandbox-enclosing`, which skips only a

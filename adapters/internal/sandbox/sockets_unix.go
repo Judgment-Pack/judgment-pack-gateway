@@ -31,6 +31,13 @@ var userRuntimeSocketNames = []string{
 	".local/share/containers/podman/machine/podman.sock",
 }
 
+// SocketLimit is the boundary's stated limit on local services: enforced
+// means the filesystem write boundary holds, and says nothing of what a
+// program reaches over a socket. Masks are defence in depth only: a socket
+// created after the launch, bound in another network namespace or by a
+// relative path is not masked, and a read-only mount does not stop connect.
+const SocketLimit = "local services reached over Unix sockets may remain reachable (a socket created after the launch, bound in another network namespace or by a relative path is not masked), and this filesystem write boundary does not cover what they do"
+
 // runtimeHostVariables name a runtime's socket in a client's environment:
 // a "unix://" value there is that runtime's socket, wherever it lies.
 var runtimeHostVariables = []string{"DOCKER_HOST", "CONTAINER_HOST"}

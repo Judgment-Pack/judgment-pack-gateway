@@ -219,21 +219,41 @@ func shebangLine(f *os.File) (interpreter, argument string, err error) {
 	return interpreter, strings.TrimSpace(argument), nil
 }
 
-// envProgram is the program a "#!/usr/bin/env ARGUMENT" line runs: ARGUMENT
-// itself, or after "-S" (which splits it) its first word. Any other option,
-// or a variable assignment, would change what env runs or where it looks,
-// and refuses.
+// envProgram is the program a "#!/usr/bin/env ARGUMENT" line runs, or a
+// refusal: not every env variant is bound, only two forms are accepted.
+//   - Without -S, ARGUMENT is one plain program word (the kernel hands env
+//     the whole rest of the line as one argument).
+//   - With -S, which splits the string, the first word is one plain program
+//     word and the rest are literal arguments.
+//
+// A plain word is not an option, not an assignment, and holds nothing env -S
+// would expand or unquote ("$", a backslash, a quote, "#"); and the program
+// is not env itself, whose own arguments would choose another program. Any
+// other form refuses with mcp-executable-unbindable.
 func envProgram(argument string) (string, error) {
-	name := argument
-	if rest, ok := strings.CutPrefix(argument, "-S"); ok {
-		fields := strings.Fields(rest)
-		if len(fields) == 0 {
-			return "", errors.New("mcp-executable-unbindable: the #! line's env runs no program")
-		}
-		name = fields[0]
+	unbindable := func(why string) (string, error) {
+		return "", errors.New("mcp-executable-unbindable: the #! line's env " + why + ", so the program it runs is not bound")
 	}
-	if name == "" || strings.HasPrefix(name, "-") || strings.ContainsRune(name, '=') {
-		return "", errors.New("mcp-executable-unbindable: the #! line passes env an option or an assignment, so the program it runs is not bound")
+	words := []string{argument}
+	if rest, ok := strings.CutPrefix(argument, "-S"); ok {
+		words = strings.Fields(rest)
+		if len(words) == 0 {
+			return unbindable("runs no program")
+		}
+	}
+	for _, word := range words {
+		if strings.ContainsAny(word, "$\\'\"#`") || (len(words) == 1 && strings.ContainsAny(word, " \t")) {
+			return unbindable("has an expansion, an escape or a quote")
+		}
+	}
+	name := words[0]
+	switch {
+	case name == "" || strings.HasPrefix(name, "-"):
+		return unbindable("has an option other than -S")
+	case strings.ContainsRune(name, '='):
+		return unbindable("has a variable assignment")
+	case filepath.Base(name) == "env":
+		return unbindable("runs env again")
 	}
 	return name, nil
 }

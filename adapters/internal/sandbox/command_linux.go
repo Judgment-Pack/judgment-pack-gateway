@@ -220,6 +220,7 @@ func bubblewrapCommand(ctx context.Context, path string, launch Launch, mode, wo
 			if len(masked) > 0 {
 				report.Reason += "; masked inside the sandbox: " + strings.Join(masked, ", ")
 			}
+			report.Reason += "; " + SocketLimit
 			if open != "" {
 				report.State = "partial"
 				report.Reason += "; " + open

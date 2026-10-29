@@ -401,6 +401,13 @@ func TestPublicPostureReasonsNameNoPathOrAccount(t *testing.T) {
 			t.Fatalf("a /posture reason names an account: %q", reason)
 		}
 	}
+	// Every bubblewrap entry, enforced included, states the socket limit.
+	for _, entry := range parsed.(*vObject).byName["programs"].(vArray) {
+		e := entry.(*vObject)
+		if e.byName["backend"] == vString("bubblewrap") && !strings.Contains(string(e.byName["reason"].(vString)), publicSocketLimit) {
+			t.Fatalf("a bubblewrap entry does not state the socket limit: %v", e.byName["reason"])
+		}
+	}
 	operator := hostPosture(postureInput{configured: true, sources: sources}).canonical()
 	if !strings.Contains(string(operator), "/run/user/"+uid) {
 		t.Fatal("the operator's report lost the helper's detail")

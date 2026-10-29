@@ -1076,7 +1076,11 @@ is partial too. For every other source, bubblewrap masks the per-user runtime
 directory, every listening socket bound to a path, the known runtime sockets and
 the one a `unix://` `DOCKER_HOST` or `CONTAINER_HOST` names, after the writable
 binds; a listening socket with an abstract name, which no mask hides, makes its
-state partial. Landlock and Seatbelt name a reachable runtime socket in the reason,
+state partial. The masks are defence in depth: `enforced` means the filesystem
+write boundary holds, and local services reached over Unix sockets may remain
+reachable (a socket created after the launch, bound in another network namespace
+or by a relative path is not masked). Every bubblewrap entry, `/posture`'s fixed
+sentence included, states that limit. Landlock and Seatbelt name a reachable runtime socket in the reason,
 and both are always partial. A `customer-command` entry's reason also says what
 runs as the exact approved bytes and what is re-checked by path before the start.
 
