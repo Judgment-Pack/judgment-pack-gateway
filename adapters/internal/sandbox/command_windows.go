@@ -38,6 +38,7 @@ var winSetJob = winKernel.NewProc("SetInformationJobObject")
 var winAssignJob = winKernel.NewProc("AssignProcessToJobObject")
 var winTerminateJob = winKernel.NewProc("TerminateJobObject")
 var winQueryJob = winKernel.NewProc("QueryInformationJobObject")
+var winReopenFile = winKernel.NewProc("ReOpenFile")
 var winCreateEvent = winKernel.NewProc("CreateEventW")
 var winUser = syscall.NewLazyDLL("user32.dll")
 var winCreateStation = winUser.NewProc("CreateWindowStationW")
@@ -374,7 +375,7 @@ func platformCommand(ctx context.Context, executable string, args []string, mode
 
 // Exclude all restricted workspace writers before reading any ACL, including
 // nested or aliased workspaces and separate logon sessions. File handles allow
-// delete sharing so their MAXIMUM_ALLOWED access does not block normal I/O;
+// delete sharing but never request DELETE, so ordinary file I/O remains possible;
 // they keep restoration bound to the original object if the child renames it.
 // The fresh SID cannot move an object outside its writable parent directories.
 var lockWindowsWorkspace = func(_ syscall.Handle) (syscall.Handle, error) {
@@ -397,7 +398,7 @@ func holdWindowsFile(path string) (winACL, error) {
 	}
 	// READ_CONTROL | WRITE_DAC | WRITE_OWNER | FILE_READ_ATTRIBUTES; open the
 	// reparse point itself and keep this exact object from being renamed.
-	handle, err := syscall.CreateFile(name, 0x020e0080, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, nil, syscall.OPEN_EXISTING, 0x02000000|0x00200000, 0)
+	handle, err := syscall.CreateFile(name, 0xe0080, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, nil, syscall.OPEN_EXISTING, 0x02000000|0x00200000, 0)
 	if err != nil {
 		return winACL{}, fmt.Errorf("sandbox-policy-invalid: workspace ACL handle: %w", err)
 	}
@@ -470,10 +471,17 @@ func grantWindowsACL(a *winACL, sid string) error {
 	return nil
 }
 
-// MAXIMUM_ALLOWED on every held file handle suppresses SetSecurityInfo's child
-// propagation. Explicit required rights still make opening fail if unavailable.
+// ReOpenFile binds a short-lived mutation handle to the held physical object,
+// even after a rename. MAXIMUM_ALLOWED suppresses SetSecurityInfo propagation,
+// but its DELETE access would conflict with normal Go opens while it remained
+// open. Close this handle before ordinary I/O; the retained handle lacks DELETE.
 // Only DACL and mandatory-label components are set, preserving audit SACL ACEs.
 func setWindowsFileSecurity(handle syscall.Handle, sd uintptr) error {
+	mutation, _, reopenErr := winReopenFile.Call(uintptr(handle), 0x020e0080, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, 0x02000000|0x00200000)
+	if syscall.Handle(mutation) == syscall.InvalidHandle {
+		return fmt.Errorf("reopen held security object: %w", reopenErr)
+	}
+	defer syscall.CloseHandle(syscall.Handle(mutation))
 	var dacl, sacl uintptr
 	var present, defaulted uint32
 	if err := winBool(winGetDACL, sd, uintptr(unsafe.Pointer(&present)), uintptr(unsafe.Pointer(&dacl)), uintptr(unsafe.Pointer(&defaulted))); err != nil {
@@ -494,7 +502,7 @@ func setWindowsFileSecurity(handle syscall.Handle, sd uintptr) error {
 	if control&0x1000 != 0 {
 		flags = winSecurityParts | 0x80000000
 	}
-	status, _, _ := winSetSecurity.Call(uintptr(handle), 1, flags, 0, 0, dacl, sacl)
+	status, _, _ := winSetSecurity.Call(mutation, 1, flags, 0, 0, dacl, sacl)
 	if status != 0 {
 		return syscall.Errno(status)
 	}

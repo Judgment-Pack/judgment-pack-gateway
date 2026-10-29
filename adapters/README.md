@@ -2365,8 +2365,10 @@ cannot move them into a directory without the fresh SID grant. The operator must
 not move workspace objects outside the workspace while a command is running. New objects inherit the workspace grant. A job with
 kill-on-close and no breakaway contains the launcher and its descendants. Cleanup
 terminates that job and verifies it is empty before restoring held ACLs. File handles
-request `MAXIMUM_ALLOWED` together with required security rights so `SetSecurityInfo`
-does not propagate ACL updates to children. Restoration reads the held objects back
+retain physical identity without DELETE access. Each ACL update briefly reopens
+that same object with `MAXIMUM_ALLOWED` and required security rights, so
+`SetSecurityInfo` does not propagate ACL updates to children; the mutation handle
+closes before ordinary file I/O. A rename cannot redirect that reopen. Restoration reads the held objects back
 and verifies DACL entries, inheritance/protection state and mandatory labels. A
 representation with no label ACE is equivalent whether its label-only SACL is absent
 or null; explicit and inherited DACL entries are never treated as equivalent.
