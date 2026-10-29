@@ -198,6 +198,11 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 	}
 	if err := cmd.Start(); err != nil {
 		cancel()
+		if protection != nil && protection.ExecutesDigestedFile() && errors.Is(err, os.ErrPermission) {
+			// Never another copy instead: the sealed bytes run or nothing does.
+			err = errors.New("sandbox-sealed-exec-refused: this host refused to execute the sealed in-memory copy of the approved bytes (a security module may forbid executing memory files); nothing was started")
+			return nil, errors.Join(err, cleanup())
+		}
 		return nil, errors.Join(fmt.Errorf("server could not be started: %v", err), cleanup())
 	}
 	// A reader blocked on stdout, or a writer blocked on stdin because a

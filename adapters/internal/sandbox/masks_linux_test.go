@@ -177,3 +177,46 @@ func TestServerEnvironmentIsASealedMemoryFile(t *testing.T) {
 		t.Fatalf("read back %v %v", env, err)
 	}
 }
+
+// With a usable bubblewrap at a trusted location, a binary runs as the
+// sealed bytes that were digested, from bubblewrap's read-only copy of them,
+// never through the memory file itself and never by its path.
+func TestSealedCopyRunsUnderBubblewrap(t *testing.T) {
+	if _, found, err := trustedLauncher(bwrapLocations); err != nil || !found {
+		t.Skip("no bubblewrap at a trusted location")
+	}
+	for _, mode := range []string{ReadOnly, WorkspaceWrite} {
+		path := filepath.Join(t.TempDir(), "server")
+		copyFile(t, os.Args[0], path)
+		original, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sealed, err := SealedCopy(original, "server")
+		original.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Another program written over the same file after the digest.
+		if err := os.WriteFile(path, []byte("#!/bin/sh\necho '{\"program\":\"replacement\"}'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cmd, report, cleanup, err := Command(ctx, Launch{Path: path, File: sealed, Argv0: "configured", Args: []string{"_sandbox_test_env"}, Env: os.Environ(), Backend: "bubblewrap"}, mode, t.TempDir())
+		if err != nil {
+			cancel()
+			t.Skipf("bubblewrap is not usable here: %v", err)
+		}
+		if slices.Contains(cmd.Args, path) || slices.Contains(cmd.Args, descriptorPath(4)) {
+			t.Fatalf("bubblewrap is told to run the path or the memory file: %v", cmd.Args)
+		}
+		raw, err := cmd.CombinedOutput()
+		cleanup()
+		cancel()
+		sealed.Close()
+		var got map[string]string
+		if err != nil || json.Unmarshal(raw, &got) != nil || got["program"] != "test binary" || !report.ExecutesDigestedFile() {
+			t.Fatalf("%s: the sealed bytes did not run under bubblewrap: %s %v (exact %v)", mode, raw, err, report.ExecutesDigestedFile())
+		}
+	}
+}

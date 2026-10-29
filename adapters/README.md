@@ -353,12 +353,16 @@ it is never read as approved, and `connect --replace` approves the source again.
 
 On Linux (amd64 and arm64) a binary command is copied once into an anonymous
 memory file that is then sealed against every write, growth and shrinking; the
-digest is taken from that copy, and that copy is what is executed (through
-`/proc/self/fd`), under bubblewrap, Landlock and full access alike. Neither a file
-put in place at the path after the digest nor the same file rewritten in place
-runs: what runs is exactly the bytes digested. The server's argv[0] is the
-configured word, which a multi-call program dispatches on, and `/proc/self/exe`
-names the sealed copy. What is not run from a sealed copy is executed or opened by
+digest is taken from that copy, and those bytes are what is executed: under
+Landlock and full access through `/proc/self/fd`; under bubblewrap, which a
+security module may forbid to execute a memory file, bubblewrap copies the sealed
+descriptor into a read-only file of its own tmpfs (`--ro-bind-data`, with
+`--perms 0555`) and runs that. Neither a file put in place at the path after the
+digest nor the same file rewritten in place runs: what runs is exactly the bytes
+digested. Where the host refuses to execute the sealed copy, the start refuses
+with `sandbox-sealed-exec-refused`; no other copy is run instead. The server's
+argv[0] is the configured word, which a multi-call program dispatches on, and
+`/proc/self/exe` names the copy that runs. What is not run from a sealed copy is executed or opened by
 path, and the adapter digests it again immediately before the start, when the
 process is about to be created: a `#!` script and its interpreters (the kernel and
 `env` open them by path, and the interpreters are resolved afresh), the script

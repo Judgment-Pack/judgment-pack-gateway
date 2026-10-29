@@ -364,7 +364,9 @@ func TestPublicPostureReasonsNameNoPathOrAccount(t *testing.T) {
 	sources := map[string]sourceSpec{}
 	for i, c := range []struct{ backend, state string }{{"bubblewrap", "enforced"}, {"bubblewrap", "partial"}, {"landlock", "partial"}, {"seatbelt", "partial"}, {"none", "not-enforced"}} {
 		name := string(rune('a'+i)) + "/live"
-		raw := `{"preset":"custom","policyDigest":"none","settings":{"mode":"workspace-write","approval":"","operations":null},"protection":{"mode":"workspace-write","backend":"` + c.backend + `","state":"` + c.state + `","reason":` + strings.ReplaceAll(`"`+helperReason+`"`, "\n", "") + `}}`
+		// Encoded, not spliced: a Windows path holds backslashes.
+		reason, _ := json.Marshal(helperReason)
+		raw := `{"preset":"custom","policyDigest":"none","settings":{"mode":"workspace-write","approval":"","operations":null},"protection":{"mode":"workspace-write","backend":"` + c.backend + `","state":"` + c.state + `","reason":` + string(reason) + `}}`
 		report, err := decodeSandboxProbe([]byte(raw))
 		if err != nil {
 			t.Fatal(err)

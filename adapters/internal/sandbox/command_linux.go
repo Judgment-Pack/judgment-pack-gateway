@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -43,6 +44,10 @@ func init() {
 		os.Exit(125)
 	}
 	if err := syscall.Exec(os.Args[5], os.Args[6:], env); err != nil {
+		if err == syscall.EACCES && os.Args[5] == descriptorPath(4) {
+			fmt.Fprintln(os.Stderr, "sandbox-sealed-exec-refused: this host refused to execute the sealed in-memory copy of the approved bytes; nothing was started")
+			os.Exit(126)
+		}
 		fmt.Fprintln(os.Stderr, "server-exec-failed:", err)
 		os.Exit(126)
 	}
@@ -130,44 +135,73 @@ func platformCommand(ctx context.Context, launch Launch, mode, workspace, tmp st
 // reach is hidden (bubblewrapFlags), and the report is partial when one
 // stays reachable.
 func bubblewrapCommand(ctx context.Context, path string, launch Launch, mode, workspace, tmp string, report *Report) (*exec.Cmd, error) {
-	// A binary is executed inside the sandbox through the descriptor that
-	// was digested (descriptor 4, which bubblewrap passes through), with its
-	// argv[0] kept by --argv0; a bubblewrap without --argv0, or a "#!"
-	// script, runs the path and the caller re-checks the digest.
+	// A binary is not executed through its descriptor inside bubblewrap: a
+	// security module may refuse to execute a memory file there (Ubuntu's
+	// bubblewrap profile does, with EACCES). bubblewrap instead copies the
+	// digested descriptor (descriptor 4) into a read-only file of its own
+	// tmpfs, over a directory of the private temporary directory, and runs
+	// that file with argv[0] kept by --argv0. The copy is made from the
+	// sealed descriptor before the server starts, and neither the server
+	// nor anyone outside its mount namespace can reach it, so what runs is
+	// exactly the digested bytes. A bubblewrap that lacks those options, or
+	// a "#!" script, runs the path and the caller re-checks the digest.
 	type attempt struct {
-		argv0  bool
+		copied bool
 		target string
-		files  []*os.File
 	}
+	execDir := filepath.Join(tmp, ".gateway-exec")
 	attempts := []attempt{}
 	if executesDescriptor(launch) {
-		attempts = append(attempts, attempt{true, descriptorPath(4), []*os.File{launch.File}})
+		if err := os.Mkdir(execDir, 0o700); err != nil {
+			return nil, err
+		}
+		attempts = append(attempts, attempt{true, filepath.Join(execDir, filepath.Base(launch.Path))})
 	}
-	attempts = append(attempts, attempt{false, launch.Path, nil})
+	attempts = append(attempts, attempt{false, launch.Path})
 	for _, a := range attempts {
 		// The sockets are listed afresh for each start check: one that goes
 		// away between the listing and the check fails it once.
 		for try := 0; try < 2; try++ {
 			flags, masked, open := bubblewrapFlags(launch, mode, workspace, tmp)
-			if a.argv0 {
-				flags = append(flags, "--argv0", launch.Argv0)
+			if a.copied {
+				flags = append(flags, "--tmpfs", execDir, "--perms", "0555", "--ro-bind-data", "4", a.target, "--argv0", launch.Argv0)
 			}
 			probeArgs, err := os.Open(os.DevNull)
 			if err != nil {
 				return nil, err
 			}
+			probeFiles := []*os.File{probeArgs}
+			if a.copied {
+				// Its own open file description: bubblewrap reads to the end.
+				data, err := reopen(launch.File)
+				if err != nil {
+					probeArgs.Close()
+					return nil, err
+				}
+				probeFiles = append(probeFiles, data)
+			}
 			probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			probe := exec.CommandContext(probeCtx, path, append(append([]string{}, flags...), "--", "/bin/true")...)
 			probe.Env = launcherEnv()
-			probe.ExtraFiles = []*os.File{probeArgs}
+			probe.ExtraFiles = probeFiles
 			err = probe.Run()
 			cancel()
-			probeArgs.Close()
+			for _, f := range probeFiles {
+				f.Close()
+			}
 			if err != nil {
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
 				continue
+			}
+			var files []*os.File
+			if a.copied {
+				data, err := reopen(launch.File)
+				if err != nil {
+					return nil, err
+				}
+				files = append(files, data)
 			}
 			var items []string
 			for _, pair := range launch.Env {
@@ -176,6 +210,9 @@ func bubblewrapCommand(ctx context.Context, path string, launch Launch, mode, wo
 			}
 			args, err := envFile(tmp, items)
 			if err != nil {
+				for _, f := range files {
+					f.Close()
+				}
 				return nil, err
 			}
 			report.Backend, report.State = "bubblewrap", "enforced"
@@ -191,15 +228,27 @@ func bubblewrapCommand(ctx context.Context, path string, launch Launch, mode, wo
 				report.State = "partial"
 				report.Reason += "; " + runtimeSocketNote(launch, nil)
 			}
-			report.exactFile = a.files != nil && Sealed(launch.File)
-			report.cleanup = func() error { args.Close(); return nil }
+			report.exactFile = a.copied && Sealed(launch.File)
+			report.cleanup = func() error {
+				args.Close()
+				for _, f := range files {
+					f.Close()
+				}
+				return nil
+			}
 			cmd := exec.CommandContext(ctx, path, append(append(flags, "--", a.target), launch.Args...)...)
 			cmd.Env = launcherEnv()
-			cmd.ExtraFiles = append([]*os.File{args}, a.files...)
+			cmd.ExtraFiles = append([]*os.File{args}, files...)
 			return cmd, nil
 		}
 	}
 	return nil, nil
+}
+
+// reopen is a new open file description, read-only at its first byte, of
+// the file f is open on: a memory file or a regular one alike.
+func reopen(f *os.File) (*os.File, error) {
+	return os.Open(descriptorPath(int(f.Fd())))
 }
 
 // bubblewrapFlags are the launcher's options up to the command; what they
