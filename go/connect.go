@@ -727,6 +727,13 @@ func describeCheck(shape string, report []byte, url string) (string, error) {
 			Tool     string `json:"tool"`
 			Answered bool   `json:"answered"`
 		} `json:"probe"`
+		// Sandbox is the filesystem protection the server ran under at this
+		// check, as a customer command reports it.
+		Sandbox *struct {
+			Mode    string `json:"mode"`
+			Backend string `json:"backend"`
+			State   string `json:"state"`
+		} `json:"sandbox"`
 	}
 	if err := json.Unmarshal(top["check"], &check); err != nil || check.Adapter.Name == "" || check.Adapter.Digest == "" {
 		return "", errors.New("the adapter's report is not a check report")
@@ -766,6 +773,9 @@ func describeCheck(shape string, report []byte, url string) (string, error) {
 				return "", fmt.Errorf("the probe %q did not answer", check.Probe.Tool)
 			}
 			line += "; " + check.Probe.Tool + " answered"
+		}
+		if sb := check.Sandbox; sb != nil {
+			line += "; sandbox " + sb.Mode + " under " + sb.Backend + ", " + sb.State
 		}
 		return line, nil
 	}

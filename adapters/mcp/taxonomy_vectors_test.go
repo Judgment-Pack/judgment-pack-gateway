@@ -30,6 +30,7 @@ func sharedSourceIdentityVectors(t *testing.T, filename string, customer bool) {
 		Tools    map[string]ToolTaxonomy
 		Command  []string
 		Refusals []struct{ Name, Find, Replace string }
+		Accepts  []struct{ Name, Find, Replace string }
 	}
 	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "tool-taxonomy", filename))
 	if err != nil || json.Unmarshal(raw, &v) != nil {
@@ -58,6 +59,20 @@ func sharedSourceIdentityVectors(t *testing.T, filename string, customer bool) {
 		if err != nil || summary != g.Taxonomy || profile.Effect != g.Taxonomy.Effect || !reflect.DeepEqual(profile.Operations, g.Operations) {
 			t.Fatalf("group %s: %+v %+v %v", g.Name, summary, profile, err)
 		}
+	}
+	// Variants every reader accepts: a "#!" command's interpreters.
+	for _, a := range v.Accepts {
+		t.Run(a.Name, func(t *testing.T) {
+			if strings.Count(v.SnapshotText, a.Find) != 1 {
+				t.Fatal("fixture edit")
+			}
+			accepted := cfg
+			writeApproval(t, &accepted, []byte(strings.Replace(v.SnapshotText, a.Find, a.Replace, 1)))
+			snap, _, err := approvedSnapshot(accepted)
+			if err != nil || snap.Executable == nil || len(snap.Executable.Interpreters) == 0 {
+				t.Fatalf("accepted variant refused: %v", err)
+			}
+		})
 	}
 	for _, r := range v.Refusals {
 		t.Run(r.Name, func(t *testing.T) {

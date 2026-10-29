@@ -23,7 +23,8 @@ establish descriptor provenance, because it may ignore the new receipt member.
 Registered customer commands default to workspace-write under the operator's
 separate sandbox policy. Bubblewrap on Linux restricts writable mounts; the Landlock
 fallback is reported as partial because it does not restrict filesystem metadata
-changes. macOS uses Seatbelt. Windows has no shipped restricted-command backend:
+changes or connections to local sockets. macOS uses Seatbelt, which is reported as
+partial for the same reason about sockets and system services. Windows has no shipped restricted-command backend:
 read-only and workspace-write local customer commands refuse before execution,
 including registration and acquisition under an existing approval. No token/ACL
 sandbox or job-containment claim is made on Windows. Explicit operator-selected
@@ -35,9 +36,20 @@ descendants through `adapter-sandbox`, which the core holds as it holds an adapt
 the launcher that helper runs comes only from the fixed locations below. Each
 launch is bound to the posture reported for its source: the probe's mode, backend
 and policy digest go to the helper, which refuses a changed policy or a backend
-that fails at launch rather than falling back. Inside bubblewrap the per-user
-runtime directory and known container-runtime sockets are masked, except for a
-container image source's runtime client, which is reported as partial. Its customer adapter
+that fails at launch rather than falling back, and a launch whose probe measured
+the boundary as not holding refuses. Inside bubblewrap the per-user runtime
+directory, every listening Unix socket bound to a path, the known container-runtime
+sockets and the one `DOCKER_HOST` or `CONTAINER_HOST` names are masked, after the
+writable binds, except for a container image source's runtime client, which is
+reported as partial. These masks are defence in depth: `enforced` means the
+filesystem write boundary holds, and says nothing of local services. A program may
+still reach a local service over a Unix socket (one created after the launch,
+bound in another network namespace or by a relative path is not masked), and what
+that service does is outside this boundary; every bubblewrap report states this
+limit. A listening socket with an abstract name, which no mask hides while the
+network namespace is shared, makes the state partial. The policy
+file is held at start as an adapter is (owned by root or the signer, writable by
+nobody else), and its path may not pass through a link inside a source workspace. Its customer adapter
 receives the explicit operator flag `--sandbox-enclosing`, which skips only a
 redundant inner sandbox. That flag is not proof of enforcement: the adapter reports
 `enclosing-operator` / `not-enforced`; the core independently probes the enclosing
@@ -46,16 +58,21 @@ Without the flag, customer command startup still establishes its own sandbox.
 The check reports the actual backend selected. These controls restrict local
 filesystem writes, not network effects or reads available to the source's user.
 A customer command's approval (snapshot version 4) binds its executable: the
-resolved absolute path and digest of the command's file and of a script operand.
-Each start re-resolves and re-digests both and refuses a difference before
-starting anything. On Linux the digested descriptor is the one executed; a `#!`
-script, a script operand, macOS and Windows execute by path after a digest taken
-immediately before the start, so a change inside that window is not detected.
-Code loaded by other means (modules, imports, packages fetched at launch) is not
-bound. The sandbox launcher is taken only from fixed root-owned locations
-(`/usr/bin/bwrap`, `/bin/bwrap`, `/usr/local/bin/bwrap`; `/usr/bin/sandbox-exec`),
-never from PATH; one there that is not root's, or that group or others can write
-along its path, refuses with `sandbox-launcher-untrusted` and nothing falls back.
+resolved absolute path and digest of the command's file, of each interpreter a
+`#!` line runs (the program `env` finds on the server's PATH included), and of a
+script operand. Each start re-resolves and re-digests all of them and refuses a
+difference before starting anything. On Linux (amd64, arm64) a binary runs from a
+sealed in-memory copy of exactly the bytes digested, so neither a replaced nor an
+in-place rewritten file runs. A `#!` script and its interpreters, a script operand,
+and every file on macOS and Windows are executed or opened by path after a digest
+taken immediately before the start, so a change after that re-check is not
+detected. Code loaded by other means (modules, imports, packages fetched at launch,
+a binary's shared libraries) is not bound. The sandbox launcher is taken only from
+fixed root-owned locations (`/usr/bin/bwrap`, `/bin/bwrap`, `/usr/local/bin/bwrap`;
+`/usr/bin/sandbox-exec`), never from PATH; one there that is not root's, or that
+group or others can write along its path, or whose program interpreter or library
+search path is not held the same way, refuses with `sandbox-launcher-untrusted` and
+nothing falls back.
 The sandbox launcher starts with an empty environment, and a configured
 environment or credentials member naming a dynamic-loader variable (`LD_*`,
 `DYLD_*`, `GCONV_PATH`) is refused at registration and every start; at engine

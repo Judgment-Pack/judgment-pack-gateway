@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +44,10 @@ func init() {
 		os.Exit(125)
 	}
 	if err := syscall.Exec(os.Args[5], os.Args[6:], env); err != nil {
+		if err == syscall.EACCES && os.Args[5] == descriptorPath(4) {
+			fmt.Fprintln(os.Stderr, "sandbox-sealed-exec-refused: this host refused to execute the sealed in-memory copy of the approved bytes; nothing was started")
+			os.Exit(126)
+		}
 		fmt.Fprintln(os.Stderr, "server-exec-failed:", err)
 		os.Exit(126)
 	}
@@ -102,7 +109,7 @@ func platformCommand(ctx context.Context, launch Launch, mode, workspace, tmp st
 		return nil, report, err
 	}
 	report.Backend, report.State = "landlock", "partial"
-	report.Reason = "file-content writes, truncation and directory mutations are restricted; metadata changes and network access are not restricted"
+	report.Reason = "file-content writes, truncation and directory mutations are restricted; metadata changes, connections to local sockets and network access are not restricted"
 	if launch.Backend == "" {
 		report.Reason += "; no usable bubblewrap at a trusted location (" + strings.Join(bwrapLocations, ", ") + "), and a bwrap on PATH is never used"
 	}
@@ -111,9 +118,9 @@ func platformCommand(ctx context.Context, launch Launch, mode, workspace, tmp st
 	}
 	report.cleanup = func() error { env.Close(); return nil }
 	extra, target := []*os.File{env}, launch.Path
-	if launch.File != nil && !isScript(launch.File) {
+	if executesDescriptor(launch) {
 		extra, target = append(extra, launch.File), descriptorPath(4)
-		report.exactFile = true
+		report.exactFile = Sealed(launch.File)
 	}
 	argv := append([]string{helperArg, mode, workspace, tmp, target, launch.Argv0}, launch.Args...)
 	cmd := exec.CommandContext(ctx, self, argv...)
@@ -124,100 +131,219 @@ func platformCommand(ctx context.Context, launch Launch, mode, workspace, tmp st
 
 // bubblewrapCommand prepares the launch under bubblewrap at path. It returns
 // no command and no error when bubblewrap fails its start check here.
-// Unless launch.RuntimeSockets, the per-user runtime directories are replaced
-// by empty ones and every other known runtime socket by /dev/null, so neither
-// a container runtime nor the user's service manager can act for the server.
+// Unless launch.RuntimeSockets, every listening Unix socket the server could
+// reach is hidden (bubblewrapFlags), and the report is partial when one
+// stays reachable.
 func bubblewrapCommand(ctx context.Context, path string, launch Launch, mode, workspace, tmp string, report *Report) (*exec.Cmd, error) {
-	flags, masked := bubblewrapFlags(launch, mode, workspace, tmp)
-	// A binary is executed inside the sandbox through the descriptor that
-	// was digested (descriptor 4, which bubblewrap passes through), with its
-	// argv[0] kept by --argv0; a bubblewrap without --argv0, or a "#!"
-	// script, runs the path and the caller re-checks the digest.
+	// A binary is not executed through its descriptor inside bubblewrap: a
+	// security module may refuse to execute a memory file there (Ubuntu's
+	// bubblewrap profile does, with EACCES). bubblewrap instead copies the
+	// digested descriptor (descriptor 4) into a read-only file of its own
+	// tmpfs, over a directory of the private temporary directory, and runs
+	// that file with argv[0] kept by --argv0. The copy is made from the
+	// sealed descriptor before the server starts, and neither the server
+	// nor anyone outside its mount namespace can reach it, so what runs is
+	// exactly the digested bytes. A bubblewrap that lacks those options, or
+	// a "#!" script, runs the path and the caller re-checks the digest.
 	type attempt struct {
-		flags  []string
+		copied bool
 		target string
-		files  []*os.File
 	}
+	execDir := filepath.Join(tmp, ".gateway-exec")
 	attempts := []attempt{}
-	if launch.File != nil && !isScript(launch.File) {
-		attempts = append(attempts, attempt{append(append([]string{}, flags...), "--argv0", launch.Argv0), descriptorPath(4), []*os.File{launch.File}})
+	if executesDescriptor(launch) {
+		if err := os.Mkdir(execDir, 0o700); err != nil {
+			return nil, err
+		}
+		attempts = append(attempts, attempt{true, filepath.Join(execDir, filepath.Base(launch.Path))})
 	}
-	attempts = append(attempts, attempt{flags, launch.Path, nil})
+	attempts = append(attempts, attempt{false, launch.Path})
 	for _, a := range attempts {
-		probeArgs, err := os.Open(os.DevNull)
-		if err != nil {
-			return nil, err
-		}
-		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		probe := exec.CommandContext(probeCtx, path, append(append([]string{}, a.flags...), "--", "/bin/true")...)
-		probe.Env = launcherEnv()
-		probe.ExtraFiles = []*os.File{probeArgs}
-		err = probe.Run()
-		cancel()
-		probeArgs.Close()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
+		// The sockets are listed afresh for each start check: one that goes
+		// away between the listing and the check fails it once.
+		for try := 0; try < 2; try++ {
+			flags, masked, open := bubblewrapFlags(launch, mode, workspace, tmp)
+			if a.copied {
+				flags = append(flags, "--tmpfs", execDir, "--perms", "0555", "--ro-bind-data", "4", a.target, "--argv0", launch.Argv0)
 			}
-			continue
+			probeArgs, err := os.Open(os.DevNull)
+			if err != nil {
+				return nil, err
+			}
+			probeFiles := []*os.File{probeArgs}
+			if a.copied {
+				// Its own open file description: bubblewrap reads to the end.
+				data, err := reopen(launch.File)
+				if err != nil {
+					probeArgs.Close()
+					return nil, err
+				}
+				probeFiles = append(probeFiles, data)
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			probe := exec.CommandContext(probeCtx, path, append(append([]string{}, flags...), "--", "/bin/true")...)
+			probe.Env = launcherEnv()
+			probe.ExtraFiles = probeFiles
+			err = probe.Run()
+			cancel()
+			for _, f := range probeFiles {
+				f.Close()
+			}
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				continue
+			}
+			var files []*os.File
+			if a.copied {
+				data, err := reopen(launch.File)
+				if err != nil {
+					return nil, err
+				}
+				files = append(files, data)
+			}
+			var items []string
+			for _, pair := range launch.Env {
+				name, value, _ := strings.Cut(pair, "=")
+				items = append(items, "--setenv", name, value)
+			}
+			args, err := envFile(tmp, items)
+			if err != nil {
+				for _, f := range files {
+					f.Close()
+				}
+				return nil, err
+			}
+			report.Backend, report.State = "bubblewrap", "enforced"
+			report.Reason = "filesystem mounts are read-only outside the declared writable directories (launcher " + path + "); network access is unchanged"
+			if len(masked) > 0 {
+				report.Reason += "; masked inside the sandbox: " + strings.Join(masked, ", ")
+			}
+			report.Reason += "; " + SocketLimit
+			if open != "" {
+				report.State = "partial"
+				report.Reason += "; " + open
+			}
+			if launch.RuntimeSockets {
+				report.State = "partial"
+				report.Reason += "; " + runtimeSocketNote(launch, nil)
+			}
+			report.exactFile = a.copied && Sealed(launch.File)
+			report.cleanup = func() error {
+				args.Close()
+				for _, f := range files {
+					f.Close()
+				}
+				return nil
+			}
+			cmd := exec.CommandContext(ctx, path, append(append(flags, "--", a.target), launch.Args...)...)
+			cmd.Env = launcherEnv()
+			cmd.ExtraFiles = append([]*os.File{args}, files...)
+			return cmd, nil
 		}
-		var items []string
-		for _, pair := range launch.Env {
-			name, value, _ := strings.Cut(pair, "=")
-			items = append(items, "--setenv", name, value)
-		}
-		args, err := envFile(tmp, items)
-		if err != nil {
-			return nil, err
-		}
-		report.Backend, report.State = "bubblewrap", "enforced"
-		report.Reason = "filesystem mounts are read-only outside the declared writable directories (launcher " + path + "); network access is unchanged"
-		if len(masked) > 0 {
-			report.Reason += "; masked inside the sandbox: " + strings.Join(masked, ", ")
-		}
-		if launch.RuntimeSockets {
-			report.State = "partial"
-			report.Reason += "; " + runtimeSocketNote(launch, nil)
-		}
-		report.exactFile = a.files != nil
-		report.cleanup = func() error { args.Close(); return nil }
-		cmd := exec.CommandContext(ctx, path, append(append(a.flags, "--", a.target), launch.Args...)...)
-		cmd.Env = launcherEnv()
-		cmd.ExtraFiles = append([]*os.File{args}, a.files...)
-		return cmd, nil
 	}
 	return nil, nil
 }
 
-// bubblewrapFlags are the launcher's options up to the command, and what they
-// mask: unless launch.RuntimeSockets, each per-user runtime directory becomes
-// an empty tmpfs and each other known runtime socket /dev/null. The masks
-// precede the writable binds, so a workspace below a masked directory stays.
-func bubblewrapFlags(launch Launch, mode, workspace, tmp string) (flags, masked []string) {
+// reopen is a new open file description, read-only at its first byte, of
+// the file f is open on: a memory file or a regular one alike.
+func reopen(f *os.File) (*os.File, error) {
+	return os.Open(descriptorPath(int(f.Fd())))
+}
+
+// bubblewrapFlags are the launcher's options up to the command; what they
+// mask, for the report: each runtime directory and known runtime socket by
+// name, and the other listening sockets by count, which keeps the report
+// within its bound on a host with many; and, when something stays
+// reachable, what (open; "" otherwise).
+//
+// Unless launch.RuntimeSockets, each per-user runtime directory becomes an
+// empty tmpfs, and every other socket the server could connect to -- each
+// listening socket bound to a path, each known runtime socket and the one a
+// runtime host variable names -- becomes /dev/null. Masks come after the
+// writable binds, so a socket inside the workspace is hidden too; only a
+// runtime directory that holds the workspace or the private temporary
+// directory is masked before them, so they stay, and its sockets inside them
+// are masked after. A listening socket with an abstract name has no path to
+// hide and stays reachable while the network namespace is shared, which every
+// mode does: the report is then partial, as it is when the socket list
+// cannot be read.
+func bubblewrapFlags(launch Launch, mode, workspace, tmp string) (flags, masked []string, open string) {
 	flags = []string{"--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--ro-bind", "/", "/"}
+	writable := []string{}
+	if mode == WorkspaceWrite {
+		writable = []string{workspace, tmp}
+	}
+	inWritable := func(path string) bool {
+		for _, dir := range writable {
+			if within(path, dir) {
+				return true
+			}
+		}
+		return false
+	}
+	var before, after, sockets []string
 	if !launch.RuntimeSockets {
-		dirs := userRuntimeDirs(launch.Env)
-		for _, dir := range dirs {
-			flags = append(flags, "--tmpfs", dir)
+		for _, dir := range userRuntimeDirs(launch.Env) {
+			holds := false
+			for _, w := range writable {
+				holds = holds || within(w, dir)
+			}
+			if holds {
+				before = append(before, dir)
+			} else {
+				after = append(after, dir)
+			}
 			masked = append(masked, dir)
 		}
-		for _, socket := range reachableRuntimeSockets(launch.Env) {
-			inside := false
-			for _, dir := range dirs {
-				inside = inside || within(socket, dir)
+		listening, abstract, ok := listeningSockets()
+		known := reachableRuntimeSockets(launch.Env)
+		others := 0
+		for _, socket := range existingSockets(append(append([]string{}, known...), listening...)) {
+			hidden := within(socket, "/dev") || within(socket, "/proc")
+			for _, dir := range after {
+				hidden = hidden || within(socket, dir)
 			}
-			if !inside {
-				flags = append(flags, "--ro-bind", "/dev/null", socket)
+			for _, dir := range before {
+				hidden = hidden || (within(socket, dir) && !inWritable(socket))
+			}
+			// A socket this user may not connect to needs no mask.
+			if hidden || syscall.Access(socket, 2) != nil {
+				continue
+			}
+			sockets = append(sockets, socket)
+			if slices.Contains(known, socket) {
 				masked = append(masked, socket)
+			} else {
+				others++
 			}
 		}
+		if others > 0 {
+			masked = append(masked, strconv.Itoa(others)+" other listening sockets")
+		}
+		switch {
+		case !ok:
+			open = "the host's listening Unix sockets could not be listed, so a reachable one may remain"
+		case abstract > 0:
+			open = strconv.Itoa(abstract) + " listening Unix sockets with an abstract name stay reachable (the network namespace is shared), and their programs are not confined by this boundary"
+		}
+	}
+	for _, dir := range before {
+		flags = append(flags, "--tmpfs", dir)
 	}
 	flags = append(flags, "--dev", "/dev", "--proc", "/proc")
-	if mode == WorkspaceWrite {
-		flags = append(flags, "--bind", workspace, workspace, "--bind", tmp, tmp)
+	for _, dir := range writable {
+		flags = append(flags, "--bind", dir, dir)
+	}
+	for _, dir := range after {
+		flags = append(flags, "--tmpfs", dir)
+	}
+	for _, socket := range sockets {
+		flags = append(flags, "--ro-bind", "/dev/null", socket)
 	}
 	flags = append(flags, "--chdir", workspace, "--clearenv", "--args", "3")
-	return flags, masked
+	return flags, masked, open
 }
 
 func restrictLandlock(mode, workspace, tmp string) error {
@@ -231,21 +357,15 @@ func restrictLandlock(mode, workspace, tmp string) error {
 		return errno
 	}
 	defer syscall.Close(int(fd))
+	// Writing to /dev/null changes nothing, and programs expect to: its
+	// file rights (write, truncate) are granted beneath the device itself.
+	if err := landlockRule(fd, os.DevNull, (1<<1)|(1<<14)); err != nil {
+		return err
+	}
 	if mode == WorkspaceWrite {
 		for _, path := range []string{workspace, tmp} {
-			parent, err := syscall.Open(path, 0x200000|syscall.O_CLOEXEC|syscall.O_DIRECTORY, 0) // O_PATH
-			if err != nil {
+			if err := landlockRule(fd, path, writes); err != nil {
 				return err
-			}
-			// The kernel struct is packed: uint64 allowed_access, int32 parent_fd.
-			rule := struct {
-				Access uint64
-				Parent int32
-			}{writes, int32(parent)}
-			_, _, errno = syscall.Syscall6(445, fd, 1, uintptr(unsafe.Pointer(&rule)), 0, 0, 0)
-			syscall.Close(parent)
-			if errno != 0 {
-				return errno
 			}
 		}
 	}
@@ -253,6 +373,25 @@ func restrictLandlock(mode, workspace, tmp string) error {
 		return errno
 	} // PR_SET_NO_NEW_PRIVS
 	if _, _, errno = syscall.Syscall(446, fd, 0, 0); errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+// landlockRule allows access beneath path (a directory, or a file for file
+// rights only) in the ruleset fd.
+func landlockRule(fd uintptr, path string, access uint64) error {
+	parent, err := syscall.Open(path, 0x200000|syscall.O_CLOEXEC, 0) // O_PATH
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(parent)
+	// The kernel struct is packed: uint64 allowed_access, int32 parent_fd.
+	rule := struct {
+		Access uint64
+		Parent int32
+	}{access, int32(parent)}
+	if _, _, errno := syscall.Syscall6(445, fd, 1, uintptr(unsafe.Pointer(&rule)), 0, 0, 0); errno != 0 {
 		return errno
 	}
 	return nil

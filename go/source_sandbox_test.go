@@ -44,6 +44,7 @@ func TestSandboxProbeRejectsFalseClaims(t *testing.T) {
 		{`"ask","check"`, `"check","ask"`},
 		{`"read"]`, `"unknown"]`},
 		{`"state":"partial"`, `"state":"enforced"`},
+		{`"backend":"landlock","state":"partial"`, `"backend":"seatbelt","state":"enforced"`},
 		{`"backend":"landlock"`, `"backend":"none"`},
 		{`"backend":"landlock"`, `"backend":"unknown"`},
 		{`"backend":"landlock"`, `"backend":"windows-restricted-token"`},
@@ -299,5 +300,116 @@ func TestWrappedSourceRefusesLoaderEnvironment(t *testing.T) {
 		if err := validateEngineSandbox(cfg, bindings); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// A launch whose completed probe measured the boundary as not holding
+// refuses, as a launch with no backend does; full access, which claims no
+// boundary, still runs.
+func TestSandboxLaunchRefusesAMeasuredFailure(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := []string{self}
+	for _, backend := range []string{"landlock", "bubblewrap", "none"} {
+		stubSandboxProbe(t, `{"preset":"custom","policyDigest":"none","settings":{"mode":"workspace-write","approval":"","operations":null},"protection":{"mode":"workspace-write","backend":"`+backend+`","state":"not-enforced","reason":"sandbox-not-enforced: observed writes do not match the selected mode"}}`, nil)
+		spec := sourceSpec{argv: argv, sandbox: &sourceSandbox{helper: self, source: "fixture/live", workspace: t.TempDir()}}
+		if cmd, err := sandboxSourceCommand(context.Background(), spec, self, argv); err == nil || cmd != nil || !strings.Contains(err.Error(), "sandbox-not-enforced:") {
+			t.Fatalf("%s measured failing: %v %v", backend, cmd, err)
+		}
+	}
+	stubSandboxProbe(t, `{"preset":"custom","policyDigest":"none","settings":{"mode":"danger-full-access","approval":"","operations":null},"protection":{"mode":"danger-full-access","backend":"none","state":"not-enforced","reason":"the operator explicitly selected unrestricted filesystem access"}}`, nil)
+	spec := sourceSpec{argv: argv, sandbox: &sourceSandbox{helper: self, source: "fixture/live", workspace: t.TempDir()}}
+	if _, err := sandboxSourceCommand(context.Background(), spec, self, argv); err != nil {
+		t.Fatalf("full access: %v", err)
+	}
+}
+
+// A probe that timed out is not kept: the next posture or launch probes again.
+func TestSandboxProbeTimeoutIsNotCached(t *testing.T) {
+	saved := runSourceSandboxProbe
+	t.Cleanup(func() { runSourceSandboxProbe = saved })
+	calls := 0
+	reason := probeTimedOut
+	runSourceSandboxProbe = func(context.Context, sourceSpec) (sandboxProbeReport, error) {
+		calls++
+		var r sandboxProbeReport
+		r.Protection.Mode, r.Protection.Backend, r.Protection.State, r.Protection.Reason = "workspace-write", "landlock", "not-enforced", reason
+		if reason != probeTimedOut {
+			r.Protection.State = "partial"
+		}
+		return r, nil
+	}
+	spec := sourceSpec{sandbox: &sourceSandbox{probe: &sourceSandboxProbe{}}}
+	probeSourceSandbox(context.Background(), spec)
+	probeSourceSandbox(context.Background(), spec)
+	if calls != 2 {
+		t.Fatalf("a timed-out probe was kept: %d probes", calls)
+	}
+	reason = "measured"
+	probeSourceSandbox(context.Background(), spec)
+	probeSourceSandbox(context.Background(), spec)
+	if calls != 3 {
+		t.Fatalf("a completed probe was not kept: %d probes", calls)
+	}
+}
+
+// /posture names no path, no home directory and no uid in any reason; the
+// operator's own report keeps the helper's words.
+func TestPublicPostureReasonsNameNoPathOrAccount(t *testing.T) {
+	uid := "4242"
+	home := filepath.Join("/", "home", "someone-"+uid)
+	helperReason := "filesystem mounts are read-only outside the declared writable directories (launcher /usr/bin/bwrap); masked inside the sandbox: /run/user/" + uid + ", " + home + "/.docker/run/docker.sock; sandbox-launcher-untrusted: /usr/local/bin/bwrap is not owned by root along its path"
+	sources := map[string]sourceSpec{}
+	for i, c := range []struct{ backend, state string }{{"bubblewrap", "enforced"}, {"bubblewrap", "partial"}, {"landlock", "partial"}, {"seatbelt", "partial"}, {"none", "not-enforced"}} {
+		name := string(rune('a'+i)) + "/live"
+		// Encoded, not spliced: a Windows path holds backslashes.
+		reason, _ := json.Marshal(helperReason)
+		raw := `{"preset":"custom","policyDigest":"none","settings":{"mode":"workspace-write","approval":"","operations":null},"protection":{"mode":"workspace-write","backend":"` + c.backend + `","state":"` + c.state + `","reason":` + string(reason) + `}}`
+		report, err := decodeSandboxProbe([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		probe := &sourceSandboxProbe{done: true, report: report}
+		sources[name] = sourceSpec{sandbox: &sourceSandbox{probe: probe, classes: []string{"adapter", "customer-command", "container-helper"}}}
+	}
+	sources["z/live"] = sourceSpec{}
+	t.Setenv("HOME", home)
+	public := hostPosture(postureInput{configured: true, sources: sources, public: true}).canonical()
+	parsed, err := parseJSON(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reasons []string
+	for _, member := range []string{"protections", "programs"} {
+		list, _ := parsed.(*vObject).byName[member].(vArray)
+		for _, entry := range list {
+			reasons = append(reasons, string(entry.(*vObject).byName["reason"].(vString)))
+		}
+	}
+	if len(reasons) < 15 {
+		t.Fatalf("too few reasons judged: %d", len(reasons))
+	}
+	for _, reason := range reasons {
+		for i, r := range reason {
+			if r == '/' && (i == 0 || strings.ContainsRune(" (\"'=:,", rune(reason[i-1]))) {
+				t.Fatalf("a /posture reason names an absolute path: %q", reason)
+			}
+		}
+		if strings.Contains(reason, home) || strings.Contains(reason, uid) || strings.Contains(reason, "someone") {
+			t.Fatalf("a /posture reason names an account: %q", reason)
+		}
+	}
+	// Every bubblewrap entry, enforced included, states the socket limit.
+	for _, entry := range parsed.(*vObject).byName["programs"].(vArray) {
+		e := entry.(*vObject)
+		if e.byName["backend"] == vString("bubblewrap") && !strings.Contains(string(e.byName["reason"].(vString)), publicSocketLimit) {
+			t.Fatalf("a bubblewrap entry does not state the socket limit: %v", e.byName["reason"])
+		}
+	}
+	operator := hostPosture(postureInput{configured: true, sources: sources}).canonical()
+	if !strings.Contains(string(operator), "/run/user/"+uid) {
+		t.Fatal("the operator's report lost the helper's detail")
 	}
 }

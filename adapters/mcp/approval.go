@@ -420,17 +420,18 @@ func (c *capturer) beginOwnedVersion(operation string, customer bool, executable
 }
 
 // approvedExecutableShape holds an approved executable identity to its
-// exact members: an absolute path and a digest, and optionally a script
-// with the same two.
+// exact members: an absolute path and a digest; optionally interpreters, a
+// non-empty list of at most maxInterpreters files of exactly those two; and
+// optionally a script of exactly those two.
 func approvedExecutableShape(raw json.RawMessage) error {
 	bad := errors.New("malformed approved executable identity")
-	check := func(raw json.RawMessage, script bool) (json.RawMessage, error) {
+	check := func(raw json.RawMessage, top bool) (map[string]json.RawMessage, error) {
 		members, err := exactMembers(raw)
 		if err != nil {
 			return nil, bad
 		}
 		for key := range members {
-			if key != "digest" && key != "path" && !(script && key == "script") {
+			if key != "digest" && key != "path" && !(top && (key == "script" || key == "interpreters")) {
 				return nil, bad
 			}
 		}
@@ -440,12 +441,27 @@ func approvedExecutableShape(raw json.RawMessage) error {
 		if json.Unmarshal(members["digest"], &digest) != nil || !canon.IsDigestString(digest) || json.Unmarshal(members["path"], &file) != nil || !(filepath.IsAbs(file) || path.IsAbs(file)) {
 			return nil, bad
 		}
-		return members["script"], nil
+		return members, nil
 	}
-	script, err := check(raw, true)
-	if err != nil || script == nil {
+	members, err := check(raw, true)
+	if err != nil {
 		return err
 	}
-	_, err = check(script, false)
-	return err
+	if script, present := members["script"]; present {
+		if _, err := check(script, false); err != nil {
+			return err
+		}
+	}
+	if list, present := members["interpreters"]; present {
+		var interpreters []json.RawMessage
+		if json.Unmarshal(list, &interpreters) != nil || len(interpreters) == 0 || len(interpreters) > maxInterpreters {
+			return bad
+		}
+		for _, interpreter := range interpreters {
+			if _, err := check(interpreter, false); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

@@ -269,7 +269,7 @@ func TestCustomerExecutableRecheckBeforeStart(t *testing.T) {
 	if err := os.WriteFile(script, []byte("first"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m, err := measureCustomerCommand([]string{server, "server.sh"}, dir)
+	m, err := measureCustomerCommand([]string{server, "server.sh"}, dir, os.Environ())
 	if err != nil {
 		t.Fatal(err)
 	}
