@@ -16,7 +16,7 @@ verdict is store-wide and it is the JSON, never an exit code.
 | Action | Calls | Properties |
 |---|---|---|
 | Acquire | `POST /acquire` | Session, Source, Arguments (JSON text: any JSON value; empty for the engine's default, `{}`) |
-| Act | `POST /act` | Session, Platform, Tool, Arguments, Decision (`recordDigest`, `packDigest`), Cites (array of `{sessionId, callIndex, signature}`) |
+| Act | `POST /act` | Session, Platform, Tool, Arguments, Decision (`recordDigest`, `packDigest`), Cites (array of `{sessionId, callIndex, signature}`), Action Key (derived, given or none) |
 | Seal | `POST /seal` | Session |
 
 The framework's custom-call action is not offered: the pinned `@activepieces/pieces-common`
@@ -33,6 +33,15 @@ step. An Act is refused by the engine unless the requester is authenticated, the
 writable, the tool is the binding's, every cited receipt is in the engine's store and verifies,
 and the decision record exists; the piece checks only the shape of what it sends. The receipt
 an Act yields says who asked, never that anyone approved.
+
+**Action key.** An engine at configuration version 14 refuses an Act without `actionKey`, and
+answers a repeated key from its journal instead of writing again (`SPEC.md` §1.2b). By default
+the piece derives the key from the intended write: the platform, tool, arguments, decision and
+cites, so a retry of the same write, in a new session, sends the key its first attempt sent, and
+another write another key. *Given* sends a key the workflow chose once for the write and keeps for
+every retry of it. *None* sends no key: an engine at version 14 refuses the Act, and a retry may
+write twice. Never send a write the engine refused as `action-key-conflict` again under a new key:
+the conflict means the key already names a write, which may have been sent.
 
 ## Connection
 

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { acquireRequest, actRequest, sealRequest } = require('../dist/nodes/JudgmentPack/shared/requests.js');
+const { acquireRequest, actRequest, sealRequest, deriveActionKey } = require('../dist/nodes/JudgmentPack/shared/requests.js');
 const { address } = require('../dist/credentials/engine.js');
 
 test('acquire sends what a curl of /acquire sends', () => {
@@ -35,7 +35,7 @@ test('act carries the requester’s assertions as given and refuses what the eng
 		decision: { recordDigest: 'sha256:a', packDigest: 'sha256:b' },
 		cites: [{ sessionId: 's1', callIndex: 3, signature: 'ab' }],
 	};
-	const { request } = actRequest(input);
+	const { request } = actRequest({ ...input, actionKeyMode: 'none' });
 	assert.equal(request.path, '/act');
 	assert.deepEqual(request.body, { ...input });
 	assert.match(actRequest({ ...input, cites: [] }).refusal, /at least one receipt/);
@@ -60,4 +60,44 @@ test('the credential resolves the path against the URL and sends the bearer only
 	assert.throws(() => address({ engineUrl: '' }, '/seal'), /names no engine URL/);
 	assert.throws(() => address({ engineUrl: 'ftp://x' }, '/seal'), /http:\/\/ or https:\/\//);
 	assert.equal(address({ engineUrl: 'http://e' }, 'http://elsewhere/x').url, 'http://elsewhere/x');
+});
+
+// #351 M5: an engine at configuration version 14 requires actionKey. The key
+// names one intended write: every retry of it sends the same key, and another
+// write another key.
+test('act names its intended write with an action key, the same on every retry', () => {
+	const input = {
+		session: 's1',
+		platform: 'tickets',
+		tool: 'update_ticket',
+		arguments: { id: 'T-1', fields: { b: 2, a: 1 } },
+		decision: { recordDigest: 'sha256:a', packDigest: 'sha256:b' },
+		cites: [{ sessionId: 's1', callIndex: 3, signature: 'ab' }],
+	};
+	const first = actRequest(input).request.body.actionKey;
+	assert.match(first, /^[0-9a-f]{64}$/);
+	// a retry opens a new session; the members' order is not the intent
+	assert.equal(actRequest({ ...input, session: 'retry', arguments: { fields: { a: 1, b: 2 }, id: 'T-1' } }).request.body.actionKey, first);
+	assert.equal(actRequest({ ...input, actionKeyMode: 'derive' }).request.body.actionKey, first);
+	assert.equal(deriveActionKey(input), first);
+	// the same derivation as the Activepieces piece's, spelled out by hand
+	const { createHash } = require('node:crypto');
+	const spelled = '{"arguments":{"fields":{"a":1,"b":2},"id":"T-1"},"cites":[{"callIndex":3,"sessionId":"s1","signature":"ab"}],"decision":{"packDigest":"sha256:b","recordDigest":"sha256:a"},"platform":"tickets","tool":"update_ticket"}';
+	assert.equal(createHash('sha256').update('judgment-pack-plugin/action-key/1:' + spelled).digest('hex'), first);
+	for (const changed of [
+		{ platform: 'other' },
+		{ tool: 'close_ticket' },
+		{ arguments: { id: 'T-2', fields: { a: 1, b: 2 } } },
+		{ decision: { recordDigest: 'sha256:c', packDigest: 'sha256:b' } },
+		{ cites: [{ sessionId: 's1', callIndex: 4, signature: 'ab' }] },
+	]) {
+		assert.notEqual(actRequest({ ...input, ...changed }).request.body.actionKey, first, JSON.stringify(changed));
+	}
+	const given = 'c'.repeat(64);
+	assert.equal(actRequest({ ...input, actionKeyMode: 'given', actionKey: given }).request.body.actionKey, given);
+	for (const bad of ['', 'C'.repeat(64), 'c'.repeat(63), 7]) {
+		assert.match(actRequest({ ...input, actionKeyMode: 'given', actionKey: bad }).refusal, /64 lowercase hexadecimal/);
+	}
+	assert.equal('actionKey' in actRequest({ ...input, actionKeyMode: 'none' }).request.body, false);
+	assert.match(actRequest({ ...input, actionKeyMode: 'random' }).refusal, /derive, given or none/);
 });

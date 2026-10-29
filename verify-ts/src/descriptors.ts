@@ -39,7 +39,10 @@ export function descriptorStatus(root: string, receipt: ObjectValue, keys: reado
   if (!/^[0-9a-f]{32}$/.test(keyId) || !/^[0-9a-f]{128}$/.test(signature) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(at)) return fail;
   const timestamp = Date.parse(at);
   if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== at.replace("Z",".000Z")) return fail;
-  if (endpoint !== "" && (!isRemoteEndpoint(endpoint) || endpoint !== text(acquisition,"endpoint"))) return fail;
+  // A remote acquisition (transport "http") is covered only by a statement
+  // naming its same, nonempty endpoint; an empty one is a local capture.
+  const remote = text(acquisition,"transport") === "http";
+  if ((endpoint !== "" || remote) && (!isRemoteEndpoint(endpoint) || endpoint !== text(acquisition,"endpoint"))) return fail;
   const core: ObjectValue = {type:"object",members:obj.members.filter(m => m.name !== "signature")};
   const input = Buffer.concat([Buffer.from("judgment-pack-gateway/descriptor-statement/1:","utf8"),canonical(core)!]);
   const key = keys.find(k => k.keyId === keyId);

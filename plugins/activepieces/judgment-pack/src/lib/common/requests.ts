@@ -2,6 +2,8 @@
 // be tested without it: each is what a curl of the engine's HTTP surface
 // would send (SPEC.md §6), no more.
 
+import { createHash } from 'crypto';
+
 export interface EngineCredentials {
 	engine_url: string;
 	token?: string;
@@ -118,6 +120,50 @@ export function acquireRequest(
 	};
 }
 
+// The engine's action key form (SPEC.md §1.2b): 64 lowercase hexadecimal
+// characters.
+const actionKeyForm = /^[0-9a-f]{64}$/;
+
+// canonicalText spells a JSON value with every object's members in code-point
+// order, so one intent always spells, and hashes, the same.
+function canonicalText(value: unknown): string {
+	if (Array.isArray(value)) {
+		return `[${value.map(canonicalText).join(',')}]`;
+	}
+	if (value !== null && typeof value === 'object') {
+		const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+		return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalText(v)}`).join(',')}}`;
+	}
+	return JSON.stringify(value);
+}
+
+// deriveActionKey names one approved intent: the same platform, tool,
+// arguments, decision and citations always give the same key, so every retry
+// of the step -- the flow's own retry, or the run started again -- sends the
+// key its first attempt sent, and the engine answers it from its journal
+// instead of writing twice. Another intent gives another key. The session is
+// left out: a retry opens a new one. The n8n node derives the same key.
+export function deriveActionKey(intent: {
+	platform: unknown;
+	tool: unknown;
+	arguments: unknown;
+	decision: unknown;
+	cites: unknown;
+}): string {
+	const text = canonicalText({
+		platform: intent.platform,
+		tool: intent.tool,
+		arguments: intent.arguments,
+		decision: intent.decision,
+		cites: intent.cites,
+	});
+	return createHash('sha256').update('judgment-pack-plugin/action-key/1:' + text, 'utf8').digest('hex');
+}
+
+// actRequest's action key: 'derive' (the default) names the intent as
+// deriveActionKey does; 'given' sends the key the flow chose once for the
+// intent and keeps for its retries; 'none' sends no key, which an engine at
+// configuration version 14 refuses and with which a retry may write twice.
 export function actRequest(
 	credentials: EngineCredentials,
 	input: {
@@ -127,6 +173,8 @@ export function actRequest(
 		arguments: unknown;
 		decision: unknown;
 		cites: unknown;
+		actionKeyMode?: unknown;
+		actionKey?: unknown;
 	},
 ): EngineRequest {
 	const decision = object(input.decision, 'the decision');
@@ -153,15 +201,44 @@ export function actRequest(
 		method: 'POST',
 		url: `${engineBase(credentials)}/act`,
 		headers: engineHeaders(credentials),
-		body: {
-			session: session(input.session),
-			platform: text(input.platform, 'the platform'),
-			tool: text(input.tool, 'the tool'),
-			arguments: object(input.arguments, 'the arguments'),
-			decision,
-			cites,
-		},
+		body: withActionKey(
+			{
+				session: session(input.session),
+				platform: text(input.platform, 'the platform'),
+				tool: text(input.tool, 'the tool'),
+				arguments: object(input.arguments, 'the arguments'),
+				decision,
+				cites,
+			},
+			input.actionKeyMode,
+			input.actionKey,
+		),
 	};
+}
+
+function withActionKey(body: Record<string, unknown>, mode: unknown, key: unknown): Record<string, unknown> {
+	switch (mode ?? 'derive') {
+		case 'derive':
+			return {
+				...body,
+				actionKey: deriveActionKey({
+					platform: body['platform'],
+					tool: body['tool'],
+					arguments: body['arguments'],
+					decision: body['decision'],
+					cites: body['cites'],
+				}),
+			};
+		case 'given':
+			if (typeof key !== 'string' || !actionKeyForm.test(key)) {
+				throw new RequestError('the action key must be 64 lowercase hexadecimal characters');
+			}
+			return { ...body, actionKey: key };
+		case 'none':
+			return body;
+		default:
+			throw new RequestError('the action key mode must be derive, given or none');
+	}
 }
 
 export function sealRequest(credentials: EngineCredentials, input: { session: unknown }): EngineRequest {

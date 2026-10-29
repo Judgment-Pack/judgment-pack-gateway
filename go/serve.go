@@ -132,16 +132,27 @@ const (
 
 type gatewayService struct {
 	requireActionKey bool
-	actionMu         sync.Mutex
-	store            *store
-	registry         *registryWriter
-	storeRoot        string
-	regPath          string
-	authority        string
-	publicKey        ed25519.PublicKey
-	keyID            string
-	sources          map[string]sourceSpec
-	maxSourceOutput  int64
+	// actionLocks holds one keyed action at a time per key (act).
+	actionLocks actionKeyLocks
+	// provenanceKeyList is the registry walk's reached keys, taken once
+	// (provenanceKeys): they cannot change while the gateway runs, since
+	// rotate-key requires it stopped.
+	provenanceKeyMu   sync.Mutex
+	provenanceKeyList []reachedKey
+	// keyWalk walks the registry for provenanceKeys; nil is reachedKeys.
+	// beforeProvenanceRecheck runs just before the post-run provenance check.
+	// Both are test seams.
+	keyWalk                 func() ([]reachedKey, error)
+	beforeProvenanceRecheck func()
+	store                   *store
+	registry                *registryWriter
+	storeRoot               string
+	regPath                 string
+	authority               string
+	publicKey               ed25519.PublicKey
+	keyID                   string
+	sources                 map[string]sourceSpec
+	maxSourceOutput         int64
 	// maxRequest bounds an /acquire body, from --max-request; /seal and /act
 	// keep maxRequestBody.
 	maxRequest int64
@@ -286,7 +297,35 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 		return os.Stderr
 	})
 	g.bindLifetime(context.Background())
+	// Descriptor provenance is checked twice per acquisition; the registry is
+	// walked for it once, here.
+	for _, spec := range sources {
+		if spec.descriptorProvenance != nil {
+			_, _ = g.provenanceKeys()
+			break
+		}
+	}
 	return g, nil
+}
+
+// provenanceKeys is the registry's reached keys for descriptor provenance,
+// walked at start and kept; a walk that failed is tried again on next use.
+func (g *gatewayService) provenanceKeys() ([]reachedKey, error) {
+	g.provenanceKeyMu.Lock()
+	defer g.provenanceKeyMu.Unlock()
+	if g.provenanceKeyList != nil {
+		return g.provenanceKeyList, nil
+	}
+	walk := g.reachedKeys
+	if g.keyWalk != nil {
+		walk = g.keyWalk
+	}
+	keys, err := walk()
+	if err != nil {
+		return nil, err
+	}
+	g.provenanceKeyList = keys
+	return keys, nil
 }
 
 // bindLifetime makes the service's lifetime end when parent ends, and gives
@@ -727,12 +766,14 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 	}
 	if p := spec.descriptorProvenance; p != nil {
 		// Re-read before every source execution, including after a restart.
-		// Registry rotation keys are reached by the same verifier as receipts.
-		keys, err := g.reachedKeys()
+		// Registry rotation keys are reached by the same verifier as receipts,
+		// walked once (provenanceKeys). A live source names an endpoint only
+		// for a remote server, whose statement must then name the same one.
+		keys, err := g.provenanceKeys()
 		if err != nil {
 			return nil, err
 		}
-		if status := checkDescriptorProvenance(g.store.root, *p, g.authority, source, spec.endpoint, keys); status != "ok" {
+		if status := checkDescriptorProvenance(g.store.root, *p, g.authority, source, spec.endpoint, spec.endpoint != "", keys); status != "ok" {
 			return nil, errors.New(status)
 		}
 	}
@@ -770,12 +811,6 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 		return nil, err
 	}
 
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	// The session is known because admission reserved it, and it cannot have
-	// been sealed since: sealing refuses while an acquisition is in flight.
-	state := g.sessions[sessionID]
-
 	// An adapter's stdout is an envelope (SPEC.md §6): the result to attest
 	// and the acquisition as the adapter recorded it. A defective envelope
 	// fails the acquisition before anything is retained.
@@ -786,7 +821,31 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 			return nil, fmt.Errorf("source %s: %w", source, err)
 		}
 		result = adapterEnvelope.result
+		// The pinned provenance is checked again against the endpoint the
+		// envelope reports, outside the gateway-wide lock: the pins are
+		// immutable in memory, the artifacts content-addressed, and the keys
+		// walked once.
+		if p := spec.descriptorProvenance; p != nil && g.receiptVersion == receiptVersion3 {
+			if g.beforeProvenanceRecheck != nil {
+				g.beforeProvenanceRecheck()
+			}
+			endpoint, _ := memberString(adapterEnvelope.acquisition, "endpoint")
+			transport, _ := memberString(adapterEnvelope.acquisition, "transport")
+			keys, err := g.provenanceKeys()
+			if err != nil {
+				return nil, err
+			}
+			if status := checkDescriptorProvenance(g.store.root, *p, g.authority, source, endpoint, transport == "http", keys); status != "ok" {
+				return nil, errors.New(status)
+			}
+		}
 	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	// The session is known because admission reserved it, and it cannot have
+	// been sealed since: sealing refuses while an acquisition is in flight.
+	state := g.sessions[sessionID]
 	resultOut, err := returnableResult(result)
 	if err != nil {
 		return nil, fmt.Errorf("source %s: %w", source, err)
@@ -827,14 +886,7 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 			}
 		}
 		if p := spec.descriptorProvenance; p != nil {
-			endpoint, _ := memberString(acquisition, "endpoint")
-			keys, err := g.reachedKeys()
-			if err != nil {
-				return nil, err
-			}
-			if status := checkDescriptorProvenance(g.store.root, *p, g.authority, source, endpoint, keys); status != "ok" {
-				return nil, errors.New(status)
-			}
+			// Checked above, before the lock was taken.
 			acquisition.set("descriptorProvenance", p.value())
 		}
 	}
@@ -894,6 +946,51 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 // the output was read. /acquire and /act share it: an action is a call
 // through the same boundary as a read, and the receipt's claims about the
 // process are the same claims.
+// sourceNotStarted is a runSource failure before the source's program was
+// started: nothing it would have done was done. A failure after the start --
+// the program's own exit, a sandbox helper's refusal after it began, a
+// timeout -- is never one.
+type sourceNotStarted struct{ err error }
+
+func (e *sourceNotStarted) Error() string { return e.err.Error() }
+func (e *sourceNotStarted) Unwrap() error { return e.err }
+
+// actionKeyLocks serializes requests under one action key in this process
+// and nothing else: two keys never wait on each other.
+type actionKeyLocks struct {
+	mu   sync.Mutex
+	held map[string]*actionKeyLock
+}
+
+type actionKeyLock struct {
+	mu    sync.Mutex
+	users int
+}
+
+// lock holds name until the returned function is called.
+func (l *actionKeyLocks) lock(name string) func() {
+	l.mu.Lock()
+	if l.held == nil {
+		l.held = map[string]*actionKeyLock{}
+	}
+	k := l.held[name]
+	if k == nil {
+		k = &actionKeyLock{}
+		l.held[name] = k
+	}
+	k.users++
+	l.mu.Unlock()
+	k.mu.Lock()
+	return func() {
+		k.mu.Unlock()
+		l.mu.Lock()
+		if k.users--; k.users == 0 {
+			delete(l.held, name)
+		}
+		l.mu.Unlock()
+	}
+}
+
 func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte) (result value, adapterDigest, observedAt string, err error) {
 	timeout := spec.timeout
 	if timeout <= 0 {
@@ -919,7 +1016,7 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	// is refused, as os/exec refuses it.
 	path, err := exec.LookPath(spec.argv[0])
 	if err != nil {
-		return nil, "", "", fmt.Errorf("source could not be started: %v", err)
+		return nil, "", "", &sourceNotStarted{fmt.Errorf("source could not be started: %v", err)}
 	}
 	if g.receiptVersion == receiptVersion3 && spec.shape == "" {
 		// Digested before anything is started, so a failure here leaves
@@ -927,12 +1024,12 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 		// replacement between this read and the start is not detected.
 		adapterDigest, err = executableDigest(path)
 		if err != nil {
-			return nil, "", "", err
+			return nil, "", "", &sourceNotStarted{err}
 		}
 	}
 	cmd, err := sandboxSourceCommand(ctx, spec, path, append([]string(nil), spec.argv...))
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", &sourceNotStarted{err}
 	}
 	cmd.Stdin = bytes.NewReader(stdin)
 	// The declared environment and nothing else (sourceSpec). An explicit
@@ -942,7 +1039,7 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	cmd.Env = sourceEnvironment(spec)
 	group, err := prepareSourceProcess(cmd, spec.user)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("source %s: %w", source, err)
+		return nil, "", "", &sourceNotStarted{fmt.Errorf("source %s: %w", source, err)}
 	}
 	// cancelled records that os/exec cancelled the source and that the
 	// cancellation succeeded. os/exec watches the context until Wait has
@@ -988,7 +1085,7 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	g.startedWith.Store(&argv)
 	if err := group.start(cmd); err != nil {
 		group.reap()
-		return nil, "", "", fmt.Errorf("source could not be started: %v", err)
+		return nil, "", "", &sourceNotStarted{fmt.Errorf("source could not be started: %v", err)}
 	}
 	waitErr := cmd.Wait()
 	if g.afterSourceWait != nil {

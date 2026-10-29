@@ -1,0 +1,8 @@
+[
+  {"name": "local capture, local acquisition", "statementEndpoint": "", "acquisition": {}, "status": "ok"},
+  {"name": "local capture, remote https acquisition", "statementEndpoint": "", "acquisition": {"endpoint": "https://mcp.example/mcp", "transport": "http", "server": {"name": "tickets", "version": "1"}, "peerIdentity": "tls:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "status": "descriptor-provenance-mismatch"},
+  {"name": "local capture, remote loopback acquisition", "statementEndpoint": "", "acquisition": {"endpoint": "http://127.0.0.1:8080/mcp", "transport": "http", "server": {"name": "tickets", "version": "1"}}, "status": "descriptor-provenance-mismatch"},
+  {"name": "remote capture, same remote acquisition", "statementEndpoint": "https://mcp.example/mcp", "acquisition": {"endpoint": "https://mcp.example/mcp", "transport": "http", "server": {"name": "tickets", "version": "1"}, "peerIdentity": "tls:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "status": "ok"},
+  {"name": "remote capture, other remote acquisition", "statementEndpoint": "https://other.example/mcp", "acquisition": {"endpoint": "https://mcp.example/mcp", "transport": "http", "server": {"name": "tickets", "version": "1"}, "peerIdentity": "tls:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "status": "descriptor-provenance-mismatch"},
+  {"name": "remote capture, local acquisition", "statementEndpoint": "https://mcp.example/mcp", "acquisition": {}, "status": "descriptor-provenance-mismatch"}
+]

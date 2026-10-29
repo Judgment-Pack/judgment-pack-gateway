@@ -688,6 +688,9 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 			rep.Findings = append(rep.Findings, finding{"sessionId": read.sessionID, "callIndex": read.callIndex, "status": "action-reconciliation-unresolved"})
 		}
 	}
+	// SPEC.md §1.2b: an uncertain action is a record of uncertainty, not a
+	// target's answer; the report says which, beside ok.
+	rep.Observations = append(rep.Observations, deliveryObservations(actions, reconciling)...)
 	rep.witnessesNamed(naming)
 	// SPEC.md §3b: the walk's finding, at most one, names the rotation it
 	// could not take and no session.
@@ -1121,7 +1124,8 @@ func checkReceiptUnder(data []byte, storeRoot, sessionID, fileName, authority st
 			p, _ := descriptorProvenanceFrom(v) // already checked at lexical order 1
 			source, _ := memberString(r.obj, "source")
 			endpoint, _ := memberString(acq, "endpoint")
-			return r, checkDescriptorProvenance(storeRoot, *p, authority, source, endpoint, keys[:r.keyPos+1])
+			transport, _ := memberString(acq, "transport")
+			return r, checkDescriptorProvenance(storeRoot, *p, authority, source, endpoint, transport == "http", keys[:r.keyPos+1])
 		}
 	}
 	return r, "ok"

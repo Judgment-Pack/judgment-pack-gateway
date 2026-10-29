@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { acquireRequest, actRequest, sealRequest, RequestError } = require('../dist/src/lib/common/requests.js');
+const { acquireRequest, actRequest, sealRequest, RequestError, deriveActionKey } = require('../dist/src/lib/common/requests.js');
 const { send, sendTo } = require('../dist/src/lib/common/send.js');
 
 const engine = { engine_url: 'http://127.0.0.1:8787/', token: 'tok' };
@@ -40,7 +40,7 @@ test('act carries the requester’s assertions as given and refuses what the eng
 		decision: { recordDigest: 'sha256:a', packDigest: 'sha256:b' },
 		cites: [{ sessionId: 's1', callIndex: 3, signature: 'ab' }],
 	};
-	const r = actRequest(engine, input);
+	const r = actRequest(engine, { ...input, actionKeyMode: 'none' });
 	assert.equal(r.url, 'http://127.0.0.1:8787/act');
 	assert.deepEqual(r.body, { ...input });
 	assert.throws(() => actRequest(engine, { ...input, cites: [] }), RequestError);
@@ -354,4 +354,42 @@ test('sending leaves the process’s certificate verification alone, and a refus
 	}
 	assert.equal(process.env.NODE_TLS_REJECT_UNAUTHORIZED, before);
 	assert.notEqual(process.env.NODE_TLS_REJECT_UNAUTHORIZED, '0');
+});
+
+// #351 M5: an engine at configuration version 14 requires actionKey. The key
+// names one intended write: every retry of it sends the same key, and another
+// write another key. The n8n node derives the same key for the same intent.
+test('act names its intended write with an action key, the same on every retry', () => {
+	const input = {
+		session: 's1',
+		platform: 'tickets',
+		tool: 'update_ticket',
+		arguments: { id: 'T-1', fields: { b: 2, a: 1 } },
+		decision: { recordDigest: 'sha256:a', packDigest: 'sha256:b' },
+		cites: [{ sessionId: 's1', callIndex: 3, signature: 'ab' }],
+	};
+	const first = actRequest(engine, input).body.actionKey;
+	assert.match(first, /^[0-9a-f]{64}$/);
+	assert.equal(actRequest(engine, { ...input, session: 'retry', arguments: '{"fields":{"a":1,"b":2},"id":"T-1"}' }).body.actionKey, first);
+	assert.equal(deriveActionKey(input), first);
+	// the same derivation as the n8n node's, spelled out by hand
+	const { createHash } = require('node:crypto');
+	const spelled = '{"arguments":{"fields":{"a":1,"b":2},"id":"T-1"},"cites":[{"callIndex":3,"sessionId":"s1","signature":"ab"}],"decision":{"packDigest":"sha256:b","recordDigest":"sha256:a"},"platform":"tickets","tool":"update_ticket"}';
+	assert.equal(createHash('sha256').update('judgment-pack-plugin/action-key/1:' + spelled).digest('hex'), first);
+	for (const changed of [
+		{ platform: 'other' },
+		{ tool: 'close_ticket' },
+		{ arguments: { id: 'T-2', fields: { a: 1, b: 2 } } },
+		{ decision: { recordDigest: 'sha256:c', packDigest: 'sha256:b' } },
+		{ cites: [{ sessionId: 's1', callIndex: 4, signature: 'ab' }] },
+	]) {
+		assert.notEqual(actRequest(engine, { ...input, ...changed }).body.actionKey, first, JSON.stringify(changed));
+	}
+	const given = 'c'.repeat(64);
+	assert.equal(actRequest(engine, { ...input, actionKeyMode: 'given', actionKey: given }).body.actionKey, given);
+	for (const bad of ['', 'C'.repeat(64), 'c'.repeat(63), 7, undefined]) {
+		assert.throws(() => actRequest(engine, { ...input, actionKeyMode: 'given', actionKey: bad }), /64 lowercase hexadecimal/);
+	}
+	assert.equal('actionKey' in actRequest(engine, { ...input, actionKeyMode: 'none' }).body, false);
+	assert.throws(() => actRequest(engine, { ...input, actionKeyMode: 'random' }), /derive, given or none/);
 });

@@ -226,3 +226,145 @@ func TestActionJournalSyncsPhysicalStoreAncestry(t *testing.T) {
 		}
 	}
 }
+
+// #351 L1: dispatch is granted by an exclusive marker; only a complete
+// not-dispatched answer frees the next attempt, and anything else that may
+// have begun stays begun.
+func TestActionJournalDispatchMarkers(t *testing.T) {
+	if !actionJournalSupported {
+		t.Skip("durable keyed dispatch is explicitly unsupported")
+	}
+	dir := t.TempDir()
+	key, fingerprint := strings.Repeat("1", 64), strings.Repeat("2", 64)
+	open := func() (*actionJournal, *actionClaim) {
+		t.Helper()
+		j, err := openActionJournal(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := j.reserve(key, fingerprint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j, c
+	}
+	expect := func(c *actionClaim, n int, begun bool) {
+		t.Helper()
+		gotN, gotBegun, err := c.attempt()
+		if err != nil || gotN != n || gotBegun != begun {
+			t.Fatalf("attempt %d begun %v, want %d %v: %v", gotN, gotBegun, n, begun, err)
+		}
+	}
+	j, c := open()
+	expect(c, 1, false)
+	c.close()
+	j.close()
+
+	var granted atomic.Int32
+	var wg sync.WaitGroup
+	for range 12 {
+		wg.Go(func() {
+			j, err := openActionJournal(dir)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer j.close()
+			c, err := j.reserve(key, fingerprint)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer c.close()
+			if err := c.claimDispatch(1); err == nil {
+				granted.Add(1)
+			} else if !errors.Is(err, errActionDispatchClaimed) {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if granted.Load() != 1 {
+		t.Fatalf("dispatch grants: %d", granted.Load())
+	}
+	j, c = open()
+	defer j.close()
+	defer c.close()
+	expect(c, 1, true)
+	if err := c.releaseDispatch(1, "not started"); err != nil {
+		t.Fatal(err)
+	}
+	expect(c, 2, false)
+	if err := c.claimDispatch(2); err != nil {
+		t.Fatal(err)
+	}
+	// An answer that is not a complete private record proves nothing.
+	if err := os.WriteFile(filepath.Join(dir, "actions", key, "not-dispatched-2.json"), []byte(`{"attempt"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	expect(c, 2, true)
+	if err := c.releaseDispatch(2, "again"); err == nil {
+		t.Fatal("an answer was overwritten")
+	}
+}
+
+// A marker whose durability failed never permits a dispatch, and counts as
+// begun afterwards.
+func TestActionJournalDispatchMarkerSyncFailureNeverDispatches(t *testing.T) {
+	if !actionJournalSupported {
+		t.Skip("durable keyed dispatch is explicitly unsupported")
+	}
+	for failAt := 1; failAt <= 2; failAt++ {
+		dir := t.TempDir()
+		j, err := openActionJournal(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := j.reserve(strings.Repeat("1", 64), strings.Repeat("2", 64))
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved := syncActionFile
+		calls := 0
+		syncActionFile = func(f *os.File) error {
+			if calls++; calls == failAt {
+				return errors.New("injected sync failure")
+			}
+			return f.Sync()
+		}
+		err = c.claimDispatch(1)
+		syncActionFile = saved
+		if err == nil {
+			t.Fatalf("dispatch granted after marker sync failure %d", failAt)
+		}
+		if _, begun, _ := c.attempt(); !begun {
+			t.Fatalf("a marker whose durability failed was not treated as begun (%d)", failAt)
+		}
+		c.close()
+		j.close()
+	}
+}
+
+// A reservation written before dispatch markers existed cannot prove that
+// nothing was sent, and is refused.
+func TestActionJournalRefusesALegacyReservation(t *testing.T) {
+	if !actionJournalSupported {
+		t.Skip("durable keyed dispatch is explicitly unsupported")
+	}
+	dir := t.TempDir()
+	key, fingerprint := strings.Repeat("1", 64), strings.Repeat("2", 64)
+	j, err := openActionJournal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.close()
+	if err = os.Mkdir(filepath.Join(dir, "actions", key), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "actions", key, "intent.json"), []byte(`{"journalVersion":"1","fingerprint":"`+fingerprint+`"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = j.reserve(key, fingerprint); err == nil {
+		t.Fatal("a version 1 reservation was accepted")
+	}
+}

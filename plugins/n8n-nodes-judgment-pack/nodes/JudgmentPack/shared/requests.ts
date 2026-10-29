@@ -5,6 +5,8 @@
 // engine's URL and the bearer are the credential's (authenticate in
 // credentials/JudgmentPackEngineApi.credentials.ts), never read here.
 
+import { createHash } from 'crypto';
+
 export interface EngineRequest {
 	method: 'POST';
 	path: '/acquire' | '/act' | '/seal';
@@ -100,6 +102,50 @@ export function acquireRequest(input: { session: unknown; source: unknown; argum
 	return c.built({ method: 'POST', path: '/acquire', body });
 }
 
+// The engine's action key form (SPEC.md §1.2b): 64 lowercase hexadecimal
+// characters.
+const actionKeyForm = /^[0-9a-f]{64}$/;
+
+// canonicalText spells a JSON value with every object's members in code-point
+// order, so one intent always spells, and hashes, the same.
+function canonicalText(value: unknown): string {
+	if (Array.isArray(value)) {
+		return `[${value.map(canonicalText).join(',')}]`;
+	}
+	if (value !== null && typeof value === 'object') {
+		const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+		return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalText(v)}`).join(',')}}`;
+	}
+	return JSON.stringify(value);
+}
+
+// deriveActionKey names one approved intent: the same platform, tool,
+// arguments, decision and citations always give the same key, so every retry
+// of the item -- Retry On Fail, or the execution run again -- sends the key its
+// first attempt sent, and the engine answers it from its journal instead of
+// writing twice. Another intent gives another key. The session is left out: a
+// retry opens a new one.
+export function deriveActionKey(intent: {
+	platform: unknown;
+	tool: unknown;
+	arguments: unknown;
+	decision: unknown;
+	cites: unknown;
+}): string {
+	const text = canonicalText({
+		platform: intent.platform,
+		tool: intent.tool,
+		arguments: intent.arguments,
+		decision: intent.decision,
+		cites: intent.cites,
+	});
+	return createHash('sha256').update('judgment-pack-plugin/action-key/1:' + text, 'utf8').digest('hex');
+}
+
+// actRequest's action key: 'derive' (the default) names the intent as
+// deriveActionKey does; 'given' sends the key the workflow chose once for the
+// intent and keeps for its retries; 'none' sends no key, which an engine at
+// configuration version 14 refuses and with which a retry may write twice.
 export function actRequest(input: {
 	session: unknown;
 	platform: unknown;
@@ -107,6 +153,8 @@ export function actRequest(input: {
 	arguments: unknown;
 	decision: unknown;
 	cites: unknown;
+	actionKeyMode?: unknown;
+	actionKey?: unknown;
 }): Built {
 	const c = new check();
 	const decision = c.object(input.decision, 'the decision');
@@ -128,7 +176,7 @@ export function actRequest(input: {
 			c.refuse('a citation must carry sessionId, callIndex and signature');
 		}
 	}
-	const body = {
+	const body: Record<string, unknown> = {
 		session: c.session(input.session),
 		platform: c.text(input.platform, 'the platform'),
 		tool: c.text(input.tool, 'the tool'),
@@ -136,6 +184,27 @@ export function actRequest(input: {
 		decision,
 		cites,
 	};
+	switch (input.actionKeyMode ?? 'derive') {
+		case 'derive':
+			body.actionKey = deriveActionKey({
+				platform: body.platform,
+				tool: body.tool,
+				arguments: body.arguments,
+				decision,
+				cites,
+			});
+			break;
+		case 'given':
+			if (typeof input.actionKey !== 'string' || !actionKeyForm.test(input.actionKey)) {
+				c.refuse('the action key must be 64 lowercase hexadecimal characters');
+			}
+			body.actionKey = input.actionKey;
+			break;
+		case 'none':
+			break;
+		default:
+			c.refuse('the action key mode must be derive, given or none');
+	}
 	return c.built({ method: 'POST', path: '/act', body });
 }
 

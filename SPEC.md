@@ -270,7 +270,13 @@ receipt or the artifact in the clear.
 **`action`** — present when `kind` is `"action"`. An action receipt records that
 an executor was asked to perform something, by which authenticated identity,
 citing which decision, and what the target answered. `resultDigest` is over the
-target's response bytes, retained like any artifact.
+target's response bytes, retained like any artifact. An action receipt whose
+`action.delivery.outcome` is `"uncertain"` (§1.2b) is the exception: it records
+no target answer, and its `resultDigest`, `adapter` and `observedAt` are the
+gateway's uncertainty record's, as §1.2b says; the request it commits to may never
+have been sent. A reader that does not read `delivery` takes such a receipt for a
+write the target answered, which it is not: a verifier written before §1.2b
+returns `ok` for it, and reports nothing of its delivery (§4, **Observations**).
 
 | Member | Type | Meaning |
 |---|---|---|
@@ -280,8 +286,8 @@ target's response bytes, retained like any artifact.
 | `policy` | `"sha256:" + hex` — **optional** | the decision policy the gateway held the action to before it was sent, by digest (below); absent when its operator held the tool to none |
 | `tool` | `{ "shape": string, "endpoint": string or `null`, "name": string, "transport": "http" }`, `transport` **optional** | what was called, named as `acquisition` names its adapter; for a write to a remote MCP server, `endpoint` is the server's URL and `transport` is `"http"` (below) |
 | `request` | `"sha256:" + hex` | a commitment (above) to the request the executor sent |
-| `adapter` | as in `acquisition` | the executor that performed it |
-| `observedAt` | string | when the target answered |
+| `adapter` | as in `acquisition` | the executor that performed it; for an uncertain delivery (§1.2b), the gateway's uncertainty recorder |
+| `observedAt` | string | when the target answered; for an uncertain delivery, when the gateway recorded uncertainty |
 
 **`decision.recordBytes`.** Present, it is the string `"exact"`: the gateway found
 the record named by its **exact bytes** — a line of a `.jsonl` file taken as all
@@ -493,8 +499,20 @@ A version 3 acquisition may carry `acquisition.reconciliation`, exactly
 have the forms above; `outcome` is `committed` or `unknown`. Verification must
 resolve the cited action under the same authority and authenticated issuer and
 subject, require its delivery key and contract to match, and require that action
-to have an uncertain outcome. Missing or mismatched evidence fails verification with
+to have an uncertain outcome. The read-back must be the declared live operation of
+the action's platform: the action's `source` is `<platform>/write`, the read-back's
+`source` is `<platform>/live`, and the read-back's acquisition `shape` is `mcp`.
+Missing or mismatched evidence fails verification with
 `action-reconciliation-unresolved`.
+
+A verifier reports each action receipt that passed the ladder and whose delivery
+outcome is `uncertain` as an observation (§4), once: `action-mismatch` when some
+read-back citing its session and index fails the checks above,
+`action-committed` otherwise when a read-back resolving it reports `committed`, and
+`action-uncertain` otherwise — no read-back, or only `unknown` ones. An action
+with outcome `response` and an action without `delivery` are not observed. The
+observation never changes `ok`; it is how a reader learns that an action receipt
+records no target answer.
 `committed` reports a matching key and committed value observed by the declared
 read tool; `unknown` never establishes absence of a commit. Neither permits
 another dispatch of the mutation. These optional members do not change the
@@ -504,10 +522,22 @@ For engine version 14, `/act` requires `actionKey` in the key form above. Older
 configurations may opt in by supplying it. The key is scoped to gateway
 authority, authenticated issuer and subject, independent of session and token
 renewal. A durable private reservation under `actions/` in the store precedes
-any dispatch; only its exclusive creator may send the mutation. Every subsequent
-request under that key either returns retained evidence, performs the declared
-read-back or refuses. Partial or unreadable reservations never grant dispatch.
-A key reused for different approved content or resolved write/read source identity is refused. Every attempt still
+any dispatch, and a durable dispatch marker, created exclusively, immediately
+precedes starting the write program; only the marker's creator may send the
+mutation. A marker answered durably as not dispatched — the program was never
+started — frees the key's next attempt for the same approved content, and only
+for it. Every subsequent request under that key either returns retained evidence,
+dispatches a freed attempt, performs the declared read-back or refuses. Partial or
+unreadable reservations, markers and answers never grant dispatch.
+A key reused for different approved content is refused as `action-key-conflict`.
+The approved content is the platform, tool, effective arguments, decision, cites,
+binding pin, recovery contract and decision policy, and for the write and
+read-back sources their binding, endpoint, transport, command line without
+install paths (with the descriptor and executable approval pins), descriptor
+provenance and sandbox policy digest; where the programs are installed, the
+platform environment and the operating-system user are not part of it. A client
+never sends a conflicting key's write again under a new key: the conflict means
+the key already names a write that may have been sent. Every attempt still
 passes the existing action authorization and admission checks. No automatic
 mutation retry is introduced. A platform without the required directory and file
 durability refuses the keyed path. Store export omits private action journals;
@@ -983,8 +1013,9 @@ of every other finding and of whether any action receipt names that record.
 **Observations.** A report carries, beside `ok` and `findings`, a member
 `observations` when there is anything the verifier says of a receipt without
 failing it: an array of `{sessionId, callIndex, observation}`, with the
-receipt's own session and index. The one observation this document names is
-step 8's `decision-record-not-compared`. An observation is not a finding: it
+receipt's own session and index. The observations this document names are
+step 8's `decision-record-not-compared`, and §1.2b's `action-uncertain`,
+`action-committed` and `action-mismatch`. An observation is not a finding: it
 never makes `ok` false, a consumer's verdict (§5a) does not read it, and a
 report with none may leave the member out.
 
@@ -2015,7 +2046,11 @@ regular file or beyond its bound, its status is
 `descriptor-provenance-mismatch` if either exact-byte digest differs, the
 statement is not canonical or has another form, its signature fails, its
 authority/source/binding/snapshot differs from the receipt's corresponding
-values, or its nonempty endpoint differs from the acquisition endpoint. All
+values, or its nonempty endpoint differs from the acquisition endpoint. When
+the acquisition carries `transport` `"http"` (a remote server, §1.2a), the
+statement's endpoint must be nonempty and equal to the acquisition endpoint: an
+empty endpoint records a local capture and does not cover a remote acquisition.
+All
 these checks must succeed for the receipt's ladder status to be `ok`. These
 statuses affect session and registry verification as any other failed receipt
 does. The verifier does not reinterpret the snapshot's tool schemas.

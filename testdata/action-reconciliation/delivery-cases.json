@@ -1,0 +1,14 @@
+[
+  {"name": "a response is not observed", "delivery": "response", "reads": [], "observation": null, "unresolved": []},
+  {"name": "uncertain with no read-back", "delivery": "uncertain", "reads": [], "observation": "action-uncertain", "unresolved": []},
+  {"name": "uncertain, read-back unknown", "delivery": "uncertain", "reads": [{"outcome": "unknown"}], "observation": "action-uncertain", "unresolved": []},
+  {"name": "uncertain, read-back committed", "delivery": "uncertain", "reads": [{"outcome": "committed"}], "observation": "action-committed", "unresolved": []},
+  {"name": "committed outranks unknown", "delivery": "uncertain", "reads": [{"outcome": "unknown"}, {"outcome": "committed"}], "observation": "action-committed", "unresolved": []},
+  {"name": "a read-back under another key", "delivery": "uncertain", "reads": [{"outcome": "committed", "key": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}], "observation": "action-mismatch", "unresolved": [0]},
+  {"name": "a mismatch outranks committed", "delivery": "uncertain", "reads": [{"outcome": "committed"}, {"outcome": "unknown", "contract": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}], "observation": "action-mismatch", "unresolved": [1]},
+  {"name": "a mismatch is not undone by a later committed read-back", "delivery": "uncertain", "reads": [{"outcome": "unknown", "contract": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}, {"outcome": "committed"}], "observation": "action-mismatch", "unresolved": [0]},
+  {"name": "a read-back from another platform", "delivery": "uncertain", "reads": [{"outcome": "committed", "source": "other/live"}], "observation": "action-mismatch", "unresolved": [0]},
+  {"name": "a read-back from the platform's history source", "delivery": "uncertain", "reads": [{"outcome": "committed", "source": "tickets/history"}], "observation": "action-mismatch", "unresolved": [0]},
+  {"name": "a read-back of another shape", "delivery": "uncertain", "reads": [{"outcome": "committed", "shape": "airbyte"}], "observation": "action-mismatch", "unresolved": [0]},
+  {"name": "an action not from a write source", "delivery": "uncertain", "actionSource": "tickets/live", "reads": [{"outcome": "committed"}], "observation": "action-mismatch", "unresolved": [0]}
+]

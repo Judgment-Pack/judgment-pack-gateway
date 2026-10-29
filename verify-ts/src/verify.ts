@@ -75,7 +75,7 @@ export type Witness = { readonly trail: string; readonly origin: string; readonl
 // A receipt file as the ladder judged it, kept as no more than the rest of
 // verification reads of it, each kept string its own and none long, so no
 // receipt's size stays in memory past its turn.
-type Delivery = { key: string; contract: string; outcome: string; identity: string };
+type Delivery = { key: string; contract: string; outcome: string; identity: string; source: string; shape: string };
 type Reconciliation = Delivery & { action: Citation };
 type Judged = {
   readonly delivery?: Delivery;
@@ -379,7 +379,7 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
   let delivery: Delivery | undefined;
   let reconciliation: Reconciliation | undefined;
   if (version === "3" && d?.type === "object" && detail?.type === "object") {
-    const fields: Delivery = {key:own(str(member(d,"key"))!),contract:own(str(member(d,"contract"))!),outcome:own(str(member(d,"outcome"))!),identity:identity(action ? member(detail,"requester") : member(receipt,"caller"))};
+    const fields: Delivery = {key:own(str(member(d,"key"))!),contract:own(str(member(d,"contract"))!),outcome:own(str(member(d,"outcome"))!),identity:identity(action ? member(detail,"requester") : member(receipt,"caller")),source:own(str(member(receipt,"source")) ?? ""),shape:action ? "" : own(str(member(detail,"shape")) ?? "")};
     if (action) delivery=fields;
     else {
       const c=citations({type:"array",items:[member(d,"action")!]})![0]!;
@@ -531,11 +531,24 @@ export function verifyStore(
   const reconciliationTargets = new Map<string,Judged>();
   for (const [session,judged] of sessions) for (const j of judged) if (j.delivery) reconciliationTargets.set(session+"\0"+j.file,j);
   const reconciliationUnresolved = new Set<Judged>();
+  // §1.2b: what the store establishes of each uncertain action, beside ok. A
+  // mismatched read-back outranks a committed one, which outranks none.
+  const deliveryRank = ["action-uncertain","action-committed","action-mismatch"];
+  const deliveryState = new Map<Judged,string>();
+  for (const target of reconciliationTargets.values()) if (target.delivery?.outcome === "uncertain") deliveryState.set(target,"action-uncertain");
+  const raise = (target: Judged, to: string): void => {
+    const from = deliveryState.get(target);
+    if (from !== undefined && deliveryRank.indexOf(to) > deliveryRank.indexOf(from)) deliveryState.set(target,to);
+  };
   for (const judged of sessions.values()) for (const j of judged) {
     const r=j.reconciliation; if (!r) continue;
     const target=reconciliationTargets.get(r.action.sessionId+"\0"+r.action.callIndex+".json");
     const d=target?.delivery;
-    if (!d || target?.chain?.signature !== r.action.signature || d.key !== r.key || d.contract !== r.contract || d.outcome !== "uncertain" || d.identity !== r.identity || r.identity === "") reconciliationUnresolved.add(j);
+    // The read-back is the action's platform's live operation, over MCP.
+    const live = d !== undefined && d.source.endsWith("/write") && d.source.length > "/write".length ? d.source.slice(0,-"/write".length)+"/live" : undefined;
+    const matched = !(!d || target?.chain?.signature !== r.action.signature || d.key !== r.key || d.contract !== r.contract || d.outcome !== "uncertain" || d.identity !== r.identity || r.identity === "" || live === undefined || r.source !== live || r.shape !== "mcp");
+    if (!matched) reconciliationUnresolved.add(j);
+    if (target !== undefined) raise(target, !matched ? "action-mismatch" : r.outcome === "committed" ? "action-committed" : "action-uncertain");
   }
   const resolves = (c: Citation): boolean => signatures.get(c.sessionId)?.get(c.callIndex) === c.signature;
 
@@ -770,6 +783,12 @@ export function verifyStore(
   // §4 step 8's observation: each action whose record was found and is
   // not a runtime evaluation record, which is not compared.
   function* observations(): Generator<Finding> {
+    for (const [session, judged] of sessions) {
+      for (const j of judged) {
+        const delivery = deliveryState.get(j);
+        if (delivery !== undefined) yield [["sessionId", session],["callIndex", j.callIndex!],["observation", delivery]];
+      }
+    }
     for (const [session, judged] of sessions) {
       for (const j of judged) {
         if (j.action === undefined) {

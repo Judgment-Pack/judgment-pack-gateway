@@ -134,6 +134,43 @@ export class JudgmentPack implements INodeType {
 				displayOptions: { show: { operation: ['act'] } },
 				description: 'The receipts the decision relied on, each by session, index and signature',
 			},
+			{
+				displayName: 'Action Key',
+				name: 'actionKeyMode',
+				type: 'options',
+				options: [
+					{
+						name: 'Derive From the Intent',
+						value: 'derive',
+						description:
+							'The same platform, tool, arguments, decision and cites give the same key, so a retry sends the key its first attempt sent',
+					},
+					{
+						name: 'Given',
+						value: 'given',
+						description: 'A key the workflow chose once for this write and keeps for every retry of it',
+					},
+					{
+						name: 'None',
+						value: 'none',
+						description:
+							'No key: an engine at configuration version 14 refuses the write, and a retry may write twice',
+					},
+				],
+				default: 'derive',
+				displayOptions: { show: { operation: ['act'] } },
+				description:
+					'How the write is named to the engine, which answers a retry under the same key from its journal instead of writing again. Never send a refused key’s write again under a new key.',
+			},
+			{
+				displayName: 'Key',
+				name: 'actionKey',
+				type: 'string',
+				default: '',
+				required: true,
+				displayOptions: { show: { operation: ['act'], actionKeyMode: ['given'] } },
+				description: '64 lowercase hexadecimal characters, chosen once for this write',
+			},
 		],
 	};
 
@@ -186,6 +223,8 @@ async function perform(ctx: IExecuteFunctions, i: number): Promise<unknown> {
 				arguments: ctx.getNodeParameter('arguments', i),
 				decision: ctx.getNodeParameter('decision', i),
 				cites: ctx.getNodeParameter('cites', i),
+				actionKeyMode: ctx.getNodeParameter('actionKeyMode', i, 'derive'),
+				actionKey: ctx.getNodeParameter('actionKey', i, ''),
 			});
 			break;
 		case 'seal':
