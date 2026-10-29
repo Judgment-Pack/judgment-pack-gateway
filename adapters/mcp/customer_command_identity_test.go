@@ -13,6 +13,7 @@ func TestRelativeCustomerCommandResolvesInWorkspace(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("requires a native filesystem sandbox and shell")
 	}
+	withoutLoaderVariables(t)
 	original := t.TempDir()
 	workspace := t.TempDir()
 	t.Chdir(original)

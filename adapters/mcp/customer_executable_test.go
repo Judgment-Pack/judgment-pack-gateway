@@ -11,7 +11,23 @@ import (
 	"testing"
 
 	"adapters/internal/fakemcp"
+	"adapters/internal/sandbox"
 )
+
+// withoutLoaderVariables removes from this test's environment, which a
+// server command inherits as the adapter's own, every variable a customer
+// command refuses (a runner's toolchain may set LD_LIBRARY_PATH); the
+// adapter itself runs with the engine's environment, which holds none.
+func withoutLoaderVariables(t *testing.T) {
+	t.Helper()
+	for _, pair := range os.Environ() {
+		name, _, _ := strings.Cut(pair, "=")
+		if sandbox.LoaderVariable(name) {
+			t.Setenv(name, "")
+			os.Unsetenv(name)
+		}
+	}
+}
 
 // customerModes are the policies a customer command can run under here:
 // Windows refuses every restricted mode before a process starts.
@@ -257,7 +273,6 @@ func TestCustomerExecutableRecheckBeforeStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.file.Close()
 	if err := recheckBeforeStart(m, false); err != nil {
 		t.Fatal(err)
 	}
@@ -270,6 +285,8 @@ func TestCustomerExecutableRecheckBeforeStart(t *testing.T) {
 	if err := os.WriteFile(script, []byte("first"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Closed first: Windows does not replace a file that is open.
+	m.file.Close()
 	replaceWithOtherBytes(t, server)
 	if err := recheckBeforeStart(m, true); err != nil {
 		t.Fatalf("a command executed through its descriptor is not re-read: %v", err)
