@@ -34,6 +34,10 @@ func openActionJournal(storeRoot string) (*actionJournal, error) {
 		return nil, errors.New("action-journal-unavailable: cannot hold store directory")
 	}
 	defer parent.Close()
+	if err = syncActionAncestry(storeRoot, parent); err != nil {
+		return nil, err
+	}
+
 	if err = parent.Mkdir("actions", 0700); err != nil && !errors.Is(err, os.ErrExist) {
 		return nil, errors.New("action-journal-unavailable: cannot create private journal")
 	}
@@ -47,6 +51,48 @@ func openActionJournal(storeRoot string) (*actionJournal, error) {
 		return nil, err
 	}
 	return &actionJournal{root}, nil
+}
+
+// MkdirAll may have just created the store and several parents. Sync every
+// entry naming it, through the filesystem root, before any reservation can
+// grant dispatch. Resolving symlinks first covers the physical ancestry; each
+// held child's identity is checked against its parent's non-link entry.
+func syncActionAncestry(path string, held *os.Root) error {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return errors.New("action-journal-unavailable: cannot resolve store ancestry")
+	}
+	current := held
+	var opened []*os.Root
+	defer func() {
+		for _, root := range opened {
+			root.Close()
+		}
+	}()
+	for {
+		before, err := current.Stat(".")
+		if err != nil {
+			return errors.New("action-journal-unavailable: cannot identify held store ancestry")
+		}
+		parentPath := filepath.Dir(resolved)
+		if parentPath == resolved {
+			return syncActionDirectory(current)
+		}
+		parent, err := os.OpenRoot(parentPath)
+		if err != nil {
+			return errors.New("action-journal-unavailable: cannot hold store ancestor")
+		}
+		opened = append(opened, parent)
+		named, err := parent.Lstat(filepath.Base(resolved))
+		if err != nil || !named.IsDir() || named.Mode()&os.ModeSymlink != 0 || !os.SameFile(before, named) {
+			return errors.New("action-journal-invalid: store ancestry changed while opening")
+		}
+		if err = syncActionDirectory(parent); err != nil {
+			return err
+		}
+		current = parent
+		resolved = parentPath
+	}
 }
 
 func (j *actionJournal) close() { j.root.Close() }

@@ -66,3 +66,36 @@ func TestActionRecoveryPinnedContract(t *testing.T) {
 		})
 	}
 }
+
+func TestActionFingerprintBindsSandboxTuple(t *testing.T) {
+	base := sourceSpec{argv: []string{"adapter"}, sandbox: &sourceSandbox{helper: "helper", policy: "policy", workspace: "workspace", source: "tickets/write"}}
+	recovery := &actionRecovery{declaration: newObject(), readBack: &actionReadBack{tool: "read"}}
+	fingerprint := func(write, live sourceSpec) string {
+		return actionFingerprint("tickets", "write", newObject(), newObject(), vArray{}, write, recovery, live)
+	}
+	want := fingerprint(base, base)
+	for _, field := range []string{"presence", "helper", "policy", "workspace", "source"} {
+		changed := base
+		boundary := *base.sandbox
+		changed.sandbox = &boundary
+		switch field {
+		case "presence":
+			changed.sandbox = nil
+		case "helper":
+			boundary.helper = "changed"
+		case "policy":
+			boundary.policy = "changed"
+		case "workspace":
+			boundary.workspace = "changed"
+		case "source":
+			boundary.source = "changed"
+		}
+		if fingerprint(changed, base) == want || fingerprint(base, changed) == want {
+			t.Fatalf("%s did not change write and live identities", field)
+		}
+	}
+	base.sandbox.probe = &sourceSandboxProbe{done: true}
+	if fingerprint(base, base) != want {
+		t.Fatal("mutable probe cache changed intent identity")
+	}
+}

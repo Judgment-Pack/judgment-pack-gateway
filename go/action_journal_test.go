@@ -72,7 +72,22 @@ func TestActionJournalSyncFailureNeverGrantsDispatch(t *testing.T) {
 	if !actionJournalSupported {
 		t.Skip("durable keyed dispatch is explicitly unsupported")
 	}
-	for _, failAt := range []int{1, 2, 3, 4} {
+	saved := syncActionFile
+	total := 0
+	syncActionFile = func(f *os.File) error { total++; return f.Sync() }
+	baseline, err := openActionJournal(t.TempDir())
+	if err != nil {
+		syncActionFile = saved
+		t.Fatal(err)
+	}
+	claim, err := baseline.reserve(strings.Repeat("1", 64), strings.Repeat("2", 64))
+	baseline.close()
+	syncActionFile = saved
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim.close()
+	for failAt := 1; failAt <= total; failAt++ {
 		t.Run(string(rune('0'+failAt)), func(t *testing.T) {
 			saved := syncActionFile
 			defer func() { syncActionFile = saved }()
@@ -173,5 +188,41 @@ func TestActionJournalUnsupportedHostRefuses(t *testing.T) {
 	if j, err := openActionJournal(t.TempDir()); err == nil {
 		j.close()
 		t.Fatal("unsupported durability silently accepted")
+	}
+}
+
+func TestActionJournalSyncsPhysicalStoreAncestry(t *testing.T) {
+	if !actionJournalSupported {
+		t.Skip("keyed dispatch unsupported")
+	}
+	base := t.TempDir()
+	store := filepath.Join(base, "new", "nested", "store")
+	if err := os.MkdirAll(store, 0700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(filepath.Join(base, "new"), alias); err != nil {
+		t.Fatal(err)
+	}
+	synced := map[string]bool{}
+	saved := syncActionFile
+	defer func() { syncActionFile = saved }()
+	syncActionFile = func(f *os.File) error { synced[filepath.Clean(f.Name())] = true; return f.Sync() }
+	j, err := openActionJournal(filepath.Join(alias, "nested", "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.close()
+	physical, err := filepath.EvalSymlinks(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for parent := filepath.Dir(physical); ; parent = filepath.Dir(parent) {
+		if !synced[parent] {
+			t.Fatalf("store ancestor was not synced: %s", filepath.Base(parent))
+		}
+		if filepath.Dir(parent) == parent {
+			break
+		}
 	}
 }

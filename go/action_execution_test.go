@@ -153,6 +153,25 @@ func TestActionReconciliationCommitThenDrop(t *testing.T) {
 	}
 	sources["tickets/live"] = live
 
+	for _, boundary := range []*sourceSandbox{
+		{helper: "helper", policy: "policy", workspace: "workspace", source: "tickets/live"},
+		{helper: "other", policy: "policy", workspace: "workspace", source: "tickets/live"},
+		{helper: "helper", policy: "other", workspace: "workspace", source: "tickets/live"},
+		{helper: "helper", policy: "policy", workspace: "other", source: "tickets/live"},
+		{helper: "helper", policy: "policy", workspace: "workspace", source: "other/live"},
+	} {
+		moved := live
+		moved.sandbox = boundary
+		sources["tickets/live"] = moved
+		if _, err := call(g, "act", who, `{"ticket":"T-1"}`); err == nil || !strings.Contains(err.Error(), "action-key-conflict") {
+			t.Fatalf("changed sandbox accepted: %v", err)
+		}
+		if g.started.Load() != beforeMoved {
+			t.Fatal("changed sandbox reached read-back")
+		}
+	}
+	sources["tickets/live"] = live
+
 	renewed := *who
 	renewed.tokenDigest = "sha256:" + strings.Repeat("f", 64)
 	restarted := makeService()
