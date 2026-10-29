@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"time"
@@ -37,11 +39,57 @@ type snapshot struct {
 	endpoint   string
 	capturedAt string
 	server     *snapshotServer // nil when the identity fell back
+	// executable is a customer command's approved executable identity
+	// (version 4): the file its command resolved to and, when its first
+	// operand named one, the script.
+	executable *snapshotExecutableIdentity
 	tools      map[string]snapshotTool
 	names      []string // the tools, sorted
 }
 
 type snapshotServer struct{ name, version string }
+
+type snapshotExecutableIdentity struct {
+	path, digest string
+	script       *snapshotExecutableIdentity
+}
+
+// snapshotExecutable holds a version-4 snapshot's executable member to its
+// shape: exactly an absolute path and a digest, and optionally a script with
+// exactly the same two.
+func snapshotExecutable(raw value) (*snapshotExecutableIdentity, error) {
+	bad := errors.New("snapshot: executable is not an absolute path and a digest, with at most a script of the same")
+	var read func(raw value, script bool) (*snapshotExecutableIdentity, error)
+	read = func(raw value, script bool) (*snapshotExecutableIdentity, error) {
+		obj, ok := raw.(*vObject)
+		if !ok {
+			return nil, bad
+		}
+		if exactlyMembers(obj, map[string]bool{"path": true, "digest": true, "script": false}, "snapshot executable") != nil {
+			return nil, bad
+		}
+		var id snapshotExecutableIdentity
+		var err error
+		// Absolute on this system, or a POSIX absolute path: the adapter
+		// compares it with the path measured where the command runs.
+		if id.path, err = requireString(obj, "path"); err != nil || !(filepath.IsAbs(id.path) || path.IsAbs(id.path)) {
+			return nil, bad
+		}
+		if id.digest, err = requireString(obj, "digest"); err != nil || !isDigest(id.digest) {
+			return nil, bad
+		}
+		if inner, present := obj.get("script"); present {
+			if script {
+				return nil, bad
+			}
+			if id.script, err = read(inner, true); err != nil {
+				return nil, err
+			}
+		}
+		return &id, nil
+	}
+	return read(raw, false)
+}
 
 // snapshotTool is a tool's captured candidates; at least one is present.
 type snapshotTool struct {
@@ -104,7 +152,7 @@ func parseSnapshot(data []byte) (snapshot, error) {
 	members := snapshotMembers
 	version, hasVersion := memberString(obj, "snapshotVersion")
 	if _, present := obj.get("snapshotVersion"); present {
-		if !hasVersion || (version != "2" && version != "3") {
+		if !hasVersion || (version != "2" && version != "3" && version != "4") {
 			return snapshot{}, errors.New("snapshot: unsupported snapshotVersion")
 		}
 		members = map[string]bool{}
@@ -113,12 +161,22 @@ func parseSnapshot(data []byte) (snapshot, error) {
 		}
 		members["snapshotVersion"] = true
 		members["operation"] = true
+		if version == "4" {
+			// A customer command's snapshot binds its executable identity.
+			members["executable"] = true
+		}
 	}
 	if err := exactlyMembers(obj, members, "snapshot"); err != nil {
 		return snapshot{}, err
 	}
 	s := snapshot{version: version}
-	if version == "2" || version == "3" {
+	if version == "4" {
+		raw, _ := obj.get("executable")
+		if s.executable, err = snapshotExecutable(raw); err != nil {
+			return snapshot{}, err
+		}
+	}
+	if version == "2" || version == "3" || version == "4" {
 		s.operation, err = requireString(obj, "operation")
 		if err != nil || (s.operation != "live" && s.operation != "write") {
 			return snapshot{}, errors.New("snapshot: invalid operation identity")
@@ -175,13 +233,13 @@ func parseSnapshot(data []byte) (snapshot, error) {
 			return snapshot{}, errors.New("snapshot: a tool is not an object holding a description, an input schema's text, or both")
 		}
 		var t snapshotTool
-		if version == "3" {
+		if version == "3" || version == "4" {
 			t.descriptorDigest, err = requireString(entry, "descriptorDigest")
 			if err != nil || !isDigest(t.descriptorDigest) {
 				return snapshot{}, errors.New("snapshot: missing complete descriptor digest")
 			}
 		}
-		if version == "2" || version == "3" {
+		if version == "2" || version == "3" || version == "4" {
 			raw, _ := entry.get("taxonomy")
 			t.taxonomy, err = taxonomyValue(raw)
 			if err != nil || !t.taxonomy.External() {
@@ -207,10 +265,10 @@ func parseSnapshot(data []byte) (snapshot, error) {
 			}
 		}
 		for _, member := range entry.names {
-			if version == "3" && member == "descriptorDigest" {
+			if (version == "3" || version == "4") && member == "descriptorDigest" {
 				continue
 			}
-			if (version == "2" || version == "3") && (member == "taxonomy" || member == "serverAnnotations") {
+			if (version == "2" || version == "3" || version == "4") && (member == "taxonomy" || member == "serverAnnotations") {
 				continue
 			}
 			text, ok := memberString(entry, member)

@@ -609,3 +609,18 @@ capture statements and verifier enforcement are tracked separately in #313. The
 pin says what the server reported, not whether the server or its tool is truthful.
 Shared handwritten acceptance/refusal vectors are in
 `testdata/tool-taxonomy/v3.json` and are read by both modules.
+
+## Customer command snapshot version 4
+
+A customer binding whose server is a local `command` uses `snapshotVersion: "4"`:
+version 3 with one more top-level member, `executable`, an object holding exactly
+`path` (absolute, links resolved) and `digest` (`sha256:` and 64 lowercase hex) of
+the file the command resolved to, and optionally `script` with exactly the same two
+members for the first non-flag operand that named a regular file. Both readers
+require the member on version 4 and refuse it elsewhere; the engine requires
+version 4 for a command operation and version 3 for an image or URL one. A
+version-3 snapshot offered for a command refuses with
+`mcp-approval-reapproval-required` and is never read as approved. The adapter
+compares the member with the command it resolves and digests at every start and
+refuses a difference with `mcp-executable-changed` before the start. Shared
+vectors are in `testdata/tool-taxonomy/v4.json`.

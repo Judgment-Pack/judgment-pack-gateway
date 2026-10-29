@@ -19,6 +19,10 @@ func TestMain(m *testing.M) {
 		json.NewEncoder(os.Stdout).Encode(results)
 		os.Exit(0)
 	}
+	if len(os.Args) > 1 && os.Args[1] == "_sandbox_test_env" {
+		json.NewEncoder(os.Stdout).Encode(map[string]string{"program": "test binary", "sentinel": os.Getenv("SANDBOX_TEST_SENTINEL"), "tmpdir": os.Getenv("TMPDIR")})
+		os.Exit(0)
+	}
 	os.Exit(m.Run())
 }
 
@@ -39,7 +43,7 @@ func TestFilesystemPolicyAtTheChildProcess(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			cmd, report, cleanup, err := Command(ctx, os.Args[0], []string{"_sandbox_test_write", filepath.Join(workspace, "new"), out, link}, mode, workspace)
+			cmd, report, cleanup, err := Command(ctx, Launch{Path: os.Args[0], Args: []string{"_sandbox_test_write", filepath.Join(workspace, "new"), out, link}, Env: os.Environ()}, mode, workspace)
 			defer cleanup()
 			if err != nil {
 				t.Fatalf("sandbox setup: %v (%+v)", err, report)

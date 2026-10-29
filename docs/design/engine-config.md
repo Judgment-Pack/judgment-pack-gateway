@@ -955,7 +955,11 @@ The binding digest covers the complete server configuration and owner declaratio
 
 Registration uses `adapter-mcp --check --customer-binding` with the existing
 `--descriptors-binding`, platform and operation selectors. It captures snapshot
-version 3, which adds a complete descriptor digest for every allowed tool.
+version 3, which adds a complete descriptor digest for every allowed tool; a
+`command` server captures version 4, which also binds the resolved executable
+(and a script operand) by path and digest. A platform `environment` that names a
+dynamic-loader variable (`LD_*`, `DYLD_*` or `GCONV_PATH`) is refused for a binding
+that runs a customer command, with `sandbox-loader-variable-refused`.
 `connect` stores the snapshot and owner declaration using the existing immutable
 approval path; subsequent acquisition refuses a version downgrade or descriptor
 drift before `tools/call`. A customer binding is not an exemption from per-platform

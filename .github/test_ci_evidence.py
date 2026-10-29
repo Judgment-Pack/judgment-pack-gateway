@@ -64,6 +64,7 @@ NOT_PULLED = {
     'testdata/tool-descriptors/rendered.json': 'a recorded rendering, compared as bytes',
     'testdata/tool-taxonomy/v2.json': 'a taxonomy fixture, read as data',
     'testdata/tool-taxonomy/v3.json': 'a customer taxonomy fixture, read as data',
+    'testdata/tool-taxonomy/v4.json': 'a customer command taxonomy fixture, read as data',
 }
 UPLOAD = 'actions/upload-artifact@'
 LABEL_OS = {'ubuntu': 'Linux', 'macos': 'macOS', 'windows': 'Windows'}

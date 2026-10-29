@@ -36,6 +36,10 @@ type Config struct {
 	OwnerDeclarationFile                           string
 	OwnerDeclarationPin                            string
 	ownerDeclarationLoaded                         bool
+	// approvalHeld says an approved snapshot was read for this invocation,
+	// and approvedExecutable is the command identity it binds (version 4).
+	approvalHeld       bool
+	approvedExecutable *executableIdentity
 
 	ToolTaxonomies                    map[string]ToolTaxonomy
 	DescriptorSnapshot, DescriptorPin string
@@ -291,6 +295,9 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if approved != nil {
+		cfg.approvalHeld, cfg.approvedExecutable = true, approved.Executable
+	}
 	srv, secrets, err := start(ctx, cfg)
 	if err != nil {
 		if secrets != nil {
@@ -364,7 +371,7 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	var descriptor json.RawMessage
 	var names []string
 	if approved != nil {
-		descriptor, err = observedApprovedTool(ctx, cfg, rpc, initialized, secrets, approved, original, req.Tool)
+		descriptor, err = observedApprovedTool(ctx, cfg, rpc, initialized, secrets, approved, original, req.Tool, srv.executable)
 	} else {
 		descriptor, names, err = findTool(ctx, rpc, req.Tool)
 	}
@@ -513,6 +520,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 			return nil, err
 		}
 		cfg.Descriptors = &DescriptorTarget{Platform: approved.Platform, Binding: approved.Binding, Operation: approved.Operation}
+		cfg.approvalHeld, cfg.approvedExecutable = true, approved.Executable
 	}
 	srv, secrets, err := start(ctx, cfg)
 	if err != nil {
@@ -582,7 +590,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 			return finish(nil, err)
 		}
 		if cfg.ToolTaxonomies != nil {
-			if err := capture.beginOwnedVersion(cfg.Descriptors.Operation, cfg.Customer); err != nil {
+			if err := capture.beginOwnedVersion(cfg.Descriptors.Operation, cfg.Customer, srv.executable); err != nil {
 				return finish(nil, err)
 			}
 			if capture.snap.Server == nil {

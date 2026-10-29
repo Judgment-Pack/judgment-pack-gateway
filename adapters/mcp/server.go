@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +30,9 @@ type server struct {
 	firstLine func() string
 	identity  adapterIdentity
 	remote    *mcphttp.Client
+	// executable is a customer command's measured identity, which its
+	// approval binds (snapshot version 4).
+	executable *executableIdentity
 }
 
 // stdioConversation is JSON-RPC over a started server's stdio.
@@ -76,50 +78,72 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 		return &server{rpc: stdioConversation{newClient(c.Stdin, c.Stdout)}, stop: c.Stop, firstLine: c.FirstLine,
 			identity: adapterIdentity{Name: image.Name, Version: image.Version, Digest: image.Digest}}, nil
 	}
-	path, err := exec.LookPath(cfg.Command[0])
-	if err != nil {
-		return nil, fmt.Errorf("server command could not be resolved: %v", err)
-	}
-	// The sandbox changes the child's working directory. Resolve the command
-	// once here so the file we identify is the file launched in that directory.
-	path, err = filepath.Abs(path)
-	if err != nil {
-		return nil, fmt.Errorf("server command could not be resolved: %v", err)
-	}
-	digest, err := executableDigest(path)
-	if err != nil {
-		return nil, err
-	}
 	runCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(runCtx, path, cfg.Command[1:]...)
-	cmd.Args[0] = cfg.Command[0]
-	cmd.Env = append(os.Environ(), env...)
-	cleanup := func() error { return nil }
+	var cmd *exec.Cmd
+	var digest string
+	var measured *measuredCommand
 	var protection *sandbox.Report
+	cleanup := func() error { return nil }
 	if cfg.Customer {
+		// A loader variable would choose code before the policy applies
+		// (and, before this refusal, before the launcher confined anything).
+		if err := loaderVariableRefusal(os.Environ(), env); err != nil {
+			cancel()
+			return nil, err
+		}
 		mode, err := sandbox.ModeForWorkspace(cfg.SandboxPolicy, cfg.SandboxSource, cfg.SandboxWorkspace)
 		if err != nil {
 			cancel()
 			return nil, err
 		}
-		var report sandbox.Report
-		cmd, report, cleanup, err = sandboxCommand(runCtx, path, cfg.Command[1:], mode, cfg.SandboxWorkspace)
+		// Resolved and digested afresh at every start; with an approval
+		// held, a different file or digest refuses before anything runs.
+		measured, err = measureCustomerCommand(cfg.Command, cfg.SandboxWorkspace)
 		if err != nil {
 			cancel()
 			return nil, err
 		}
-		protection = &report
-		if cmd.Env == nil {
-			cmd.Env = os.Environ()
-		}
-		// Credentials cannot replace the private temporary-directory variables.
-		private := []string{}
-		for _, pair := range cmd.Env {
-			if strings.HasPrefix(pair, "TMPDIR=") || strings.HasPrefix(pair, "TMP=") || strings.HasPrefix(pair, "TEMP=") {
-				private = append(private, pair)
+		if cfg.approvalHeld {
+			if err := approvedCommandRefusal(cfg.approvedExecutable, measured.identity); err != nil {
+				measured.file.Close()
+				cancel()
+				return nil, err
 			}
 		}
-		cmd.Env = append(append(cmd.Env, env...), private...)
+		digest = measured.identity.Digest
+		launch := sandbox.Launch{Path: measured.identity.Path, File: measured.file, Argv0: measured.identity.Path, Args: cfg.Command[1:], Env: append(os.Environ(), env...)}
+		var report sandbox.Report
+		var release func() error
+		cmd, report, release, err = sandboxCommand(runCtx, launch, mode, cfg.SandboxWorkspace)
+		if err != nil {
+			measured.file.Close()
+			cancel()
+			return nil, err
+		}
+		protection = &report
+		file := measured.file
+		cleanup = func() error {
+			file.Close()
+			return release()
+		}
+	} else {
+		path, err := exec.LookPath(cfg.Command[0])
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("server command could not be resolved: %v", err)
+		}
+		path, err = filepath.Abs(path)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("server command could not be resolved: %v", err)
+		}
+		if digest, err = executableDigest(path); err != nil {
+			cancel()
+			return nil, err
+		}
+		cmd = exec.CommandContext(runCtx, path, cfg.Command[1:]...)
+		cmd.Args[0] = cfg.Command[0]
+		cmd.Env = append(os.Environ(), env...)
 	}
 	cmd.WaitDelay = containers.WaitDelay
 	// The server stays in this process's group, so a kill of the group
@@ -141,6 +165,14 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 	if err != nil {
 		cancel()
 		return nil, errors.Join(err, cleanup())
+	}
+	if measured != nil {
+		// What is not executed through its digested descriptor is digested
+		// again here, as close to the start as this process can.
+		if err := recheckBeforeStart(measured, protection.ExecutesDigestedFile()); err != nil {
+			cancel()
+			return nil, errors.Join(err, cleanup())
+		}
 	}
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -193,8 +225,13 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 		}
 		return stopErr
 	}
-	return &server{sandbox: protection, rpc: stdioConversation{newClient(stdin, stdout)}, stop: stop, firstLine: func() string { return stderr.firstLine(redactor) },
-		identity: adapterIdentity{Name: cfg.Command[0], Digest: digest}}, nil
+	srv := &server{sandbox: protection, rpc: stdioConversation{newClient(stdin, stdout)}, stop: stop, firstLine: func() string { return stderr.firstLine(redactor) },
+		identity: adapterIdentity{Name: cfg.Command[0], Digest: digest}}
+	if measured != nil {
+		identity := measured.identity
+		srv.executable = &identity
+	}
+	return srv, nil
 }
 
 // executableDigest is the SHA-256 of the regular file at path, streamed,

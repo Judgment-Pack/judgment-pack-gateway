@@ -8,16 +8,19 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
 )
 
-const helperArg = "_gateway_sandbox_exec_v1"
+const helperArg = "_gateway_sandbox_exec_v2"
 
-// The helper never returns to the application. Landlock attaches to the
-// calling thread; exec must run on that same locked thread. Its restrictions
-// then apply to the new program and its descendants.
+// The helper never returns to the application. It starts with the fixed
+// launcher environment, reads the server's environment from descriptor 3,
+// then confines itself. Landlock attaches to the calling thread; exec must
+// run on that same locked thread. Its restrictions then apply to the new
+// program and its descendants.
 func init() {
 	if len(os.Args) < 2 || os.Args[1] != helperArg {
 		return
@@ -26,34 +29,86 @@ func init() {
 		fmt.Fprintln(os.Stderr, "sandbox-policy-invalid: invalid helper invocation")
 		os.Exit(125)
 	}
+	env, err := readEnv(3)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sandbox-policy-invalid: the server environment could not be read:", err)
+		os.Exit(125)
+	}
 	runtime.LockOSThread()
 	if err := restrictLandlock(os.Args[2], os.Args[3], os.Args[4]); err != nil {
 		fmt.Fprintln(os.Stderr, "sandbox-not-enforced: Landlock setup failed:", err)
 		os.Exit(125)
 	}
-	if err := syscall.Exec(os.Args[5], os.Args[6:], os.Environ()); err != nil {
+	if err := syscall.Exec(os.Args[5], os.Args[6:], env); err != nil {
 		fmt.Fprintln(os.Stderr, "server-exec-failed:", err)
 		os.Exit(126)
 	}
 	panic("exec returned without an error")
 }
 
-func platformCommand(ctx context.Context, executable string, args []string, mode, workspace, tmp string) (*exec.Cmd, Report, error) {
+// platformCommand starts a launcher with the fixed launcher environment
+// (launcherEnv), never the server's: a loader variable among the server's
+// variables would otherwise act on the launcher before anything is confined.
+// The server's environment reaches the server through descriptor 3, read by
+// bubblewrap (--clearenv, then --args) or by the Landlock helper. Neither
+// sees it on a command line.
+func platformCommand(ctx context.Context, launch Launch, mode, workspace, tmp string) (*exec.Cmd, Report, error) {
 	report := Report{Mode: mode, Backend: "none", State: "not-enforced", Reason: "no usable filesystem sandbox backend"}
 	if path, err := exec.LookPath("bwrap"); err == nil {
 		flags := []string{"--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"}
 		if mode == WorkspaceWrite {
 			flags = append(flags, "--bind", workspace, workspace, "--bind", tmp, tmp)
 		}
-		flags = append(flags, "--chdir", workspace)
-		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		probe := exec.CommandContext(probeCtx, path, append(append([]string{}, flags...), "--", "/bin/true")...)
-		err := probe.Run()
-		cancel()
-		if err == nil {
+		flags = append(flags, "--chdir", workspace, "--clearenv", "--args", "3")
+		// A binary is executed inside the sandbox through the descriptor
+		// that was digested (descriptor 4, which bubblewrap passes through),
+		// with its argv[0] kept by --argv0; a bubblewrap without --argv0, or
+		// a "#!" script, runs the path and the caller re-checks the digest.
+		type attempt struct {
+			flags  []string
+			target string
+			files  []*os.File
+		}
+		attempts := []attempt{}
+		if launch.File != nil && !isScript(launch.File) {
+			attempts = append(attempts, attempt{append(append([]string{}, flags...), "--argv0", launch.Argv0), descriptorPath(4), []*os.File{launch.File}})
+		}
+		attempts = append(attempts, attempt{flags, launch.Path, nil})
+		for _, a := range attempts {
+			probeArgs, err := os.Open(os.DevNull)
+			if err != nil {
+				return nil, report, err
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			probe := exec.CommandContext(probeCtx, path, append(append([]string{}, a.flags...), "--", "/bin/true")...)
+			probe.Env = launcherEnv()
+			probe.ExtraFiles = []*os.File{probeArgs}
+			err = probe.Run()
+			cancel()
+			probeArgs.Close()
+			if err != nil {
+				if ctx.Err() != nil {
+					break
+				}
+				continue
+			}
+			var items []string
+			for _, pair := range launch.Env {
+				name, value, _ := strings.Cut(pair, "=")
+				items = append(items, "--setenv", name, value)
+			}
+			args, err := envFile(tmp, items)
+			if err != nil {
+				return nil, report, err
+			}
 			report.Backend, report.State = "bubblewrap", "enforced"
 			report.Reason = "filesystem mounts are read-only outside the declared writable directories; network access is unchanged"
-			return exec.CommandContext(ctx, path, append(append(flags, "--", executable), args...)...), report, nil
+			report.exactFile = a.files != nil
+			report.cleanup = func() error { args.Close(); return nil }
+			cmd := exec.CommandContext(ctx, path, append(append(a.flags, "--", a.target), launch.Args...)...)
+			cmd.Env = launcherEnv()
+			cmd.ExtraFiles = append([]*os.File{args}, a.files...)
+			return cmd, report, nil
 		}
 	}
 	if ctx.Err() != nil {
@@ -67,10 +122,23 @@ func platformCommand(ctx context.Context, executable string, args []string, mode
 	if err != nil {
 		return nil, report, err
 	}
+	env, err := envFile(tmp, launch.Env)
+	if err != nil {
+		return nil, report, err
+	}
 	report.Backend, report.State = "landlock", "partial"
 	report.Reason = "file-content writes, truncation and directory mutations are restricted; metadata changes and network access are not restricted"
-	argv := append([]string{helperArg, mode, workspace, tmp, executable, executable}, args...)
-	return exec.CommandContext(ctx, self, argv...), report, nil
+	report.cleanup = func() error { env.Close(); return nil }
+	extra, target := []*os.File{env}, launch.Path
+	if launch.File != nil && !isScript(launch.File) {
+		extra, target = append(extra, launch.File), descriptorPath(4)
+		report.exactFile = true
+	}
+	argv := append([]string{helperArg, mode, workspace, tmp, target, launch.Argv0}, launch.Args...)
+	cmd := exec.CommandContext(ctx, self, argv...)
+	cmd.Env = launcherEnv()
+	cmd.ExtraFiles = extra
+	return cmd, report, nil
 }
 
 func restrictLandlock(mode, workspace, tmp string) error {

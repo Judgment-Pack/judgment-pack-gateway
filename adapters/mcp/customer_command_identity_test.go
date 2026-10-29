@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestRelativeCustomerCommandKeepsExecutableIdentity(t *testing.T) {
+func TestRelativeCustomerCommandResolvesInWorkspace(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("requires a native filesystem sandbox and shell")
 	}
@@ -36,18 +36,21 @@ func TestRelativeCustomerCommandKeepsExecutableIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedDigest, err := executableDigest(filepath.Join(original, "server"))
+	cwdDigest, err := executableDigest(filepath.Join(original, "server"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	actualDigest, err := executableDigest(filepath.Join(workspace, "server"))
+	workspaceDigest, err := executableDigest(filepath.Join(workspace, "server"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if srv.identity.Digest != expectedDigest || srv.identity.Digest == actualDigest {
+	// A relative command word resolves against the workspace, the directory
+	// the server runs in, never the adapter's own working directory: the
+	// file digested and the file executed are the workspace's.
+	if srv.identity.Digest != workspaceDigest || srv.identity.Digest == cwdDigest {
 		t.Fatal("reported digest does not identify the resolved command")
 	}
-	if string(got) != `{"executed":"original"}` {
+	if string(got) != `{"executed":"workspace"}` {
 		t.Fatalf("customer command executed a different file from the one digested: %s", got)
 	}
 }

@@ -327,6 +327,31 @@ representation changes within those bytes. Version 2 approvals remain readable
 for their existing bindings; they cannot substitute for a customer's version 3
 approval. Neither an acquisition nor a health check refreshes approval.
 
+A customer `command` captures `"snapshotVersion":"4"`: version 3 with an
+`executable` member that binds the program, not only its configured words. It
+holds the absolute path the command resolved to, links resolved, and the SHA-256
+of that file; when the first operand that is not a flag names a regular file,
+which is the script an interpreter runs, it also holds that file's path and digest
+as `script`. A bare name is looked up on the adapter's `PATH`; a relative word is
+resolved against the source workspace, the directory the server runs in, never
+the adapter's own working directory. Every start, registration and health checks
+included, resolves and digests both files again. With an approval held, another
+resolved path or another digest of either file refuses with
+`mcp-executable-changed` before anything is started. A version-3 approval of a
+command predates this binding and refuses with `mcp-approval-reapproval-required`;
+it is never read as approved, and `connect --replace` approves the source again.
+
+On Linux the command's file is opened once, digested from that descriptor, and
+that same descriptor is executed (through `/proc/self/fd`), under bubblewrap,
+Landlock and full access alike; a file put in place at the path after the digest
+is not what runs. A `#!` script, a bubblewrap without `--argv0`, macOS and Windows
+execute the path instead, and the adapter digests the file again immediately
+before the start; a change within that remaining window is not detected. The
+script operand is always opened by its interpreter by path and is re-checked the
+same way. Code an interpreter or a package runner loads by other means, such as a
+module name, an import from another file or a package fetched at launch, is not
+bound.
+
 Every call checks the exact allowed names, pinned snapshot bytes, binding,
 operation, endpoint, server identity and current descriptors before `tools/call`.
 The named refusals include `mcp-tool-not-allowed`, `mcp-descriptor-drift`,
@@ -351,6 +376,17 @@ Workspace-write permits writes under the source workspace and a private temporar
 directory. The policy file must resolve outside that workspace. The policy belongs to the operator; a tool's arguments cannot select it.
 The successful check report includes `sandbox` with mode, backend, state and reason.
 No backend means `sandbox-not-enforced` and the restricted command is not started.
+
+A launcher (bubblewrap, the Landlock helper, or sandbox-exec and its helper on
+macOS) starts with an empty environment. The server's environment, the adapter's
+own and the credentials members, reaches the server only inside the sandbox,
+through an unlinked file on an inherited descriptor (bubblewrap's `--clearenv`
+and `--args`), never on a command line, with the private temporary-directory
+variables last. A customer command whose configured environment or credentials
+name a variable the dynamic loader honours (`LD_*`, `DYLD_*` or `GCONV_PATH`)
+refuses with `sandbox-loader-variable-refused` at registration and at every start,
+before anything is started; the engine refuses such a platform `environment` for a
+customer command binding when it loads the configuration.
 
 Linux tries bubblewrap and falls back to Landlock ABI 3 or newer. Landlock is
 reported as `partial`: file-content writes, truncation and directory mutations are
