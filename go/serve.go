@@ -80,7 +80,8 @@ type sourceSpec struct {
 	// the endpoint an action receipt names, and the transport it names
 	// beside it -- "http" for a remote server's URL, the --url form, and ""
 	// for a server the adapter runs over stdio (SPEC.md §1.2a, #268);
-	// /acquire reads none of them.
+	// A live source also retains its remote endpoint for descriptor-provenance
+	// preflight; its acquisition envelope still supplies the receipt endpoint.
 	tools     []string
 	endpoint  string
 	transport string

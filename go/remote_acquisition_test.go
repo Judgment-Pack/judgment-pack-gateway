@@ -243,8 +243,8 @@ func TestEngineDerivesARemoteServer(t *testing.T) {
 	if write.endpoint != "https://mcp.example/api/mcp" || write.transport != "http" {
 		t.Fatalf("the write's endpoint is the URL it went to, not the platform's, reached over http: %q %q", write.endpoint, write.transport)
 	}
-	if live.transport != "" || live.endpoint != "" {
-		t.Fatalf("a read source names no endpoint and no transport for a receipt: %q %q", live.endpoint, live.transport)
+	if live.transport != "" || live.endpoint != "https://mcp.example/api/mcp" {
+		t.Fatalf("a read source retains its remote endpoint for descriptor provenance, without an action transport: %q %q", live.endpoint, live.transport)
 	}
 }
 
