@@ -607,8 +607,7 @@ Read-only and workspace-write wrappers therefore refuse those adapter launches
 on Windows and report `backend: none`,
 `state: not-enforced`, with the Windows unavailability reason. An explicit
 full-access policy is required to launch these adapters there and remains
-unrestricted. It does not enable keyed action dispatch on an unsupported host.
-Remote-server and container-daemon
+unrestricted. Remote-server and container-daemon
 availability does not establish their confinement by this local wrapper.
 
 The seed and the sources are judged at each request, so a mode changed after the start shows;
