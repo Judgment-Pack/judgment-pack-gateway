@@ -34,6 +34,7 @@ import type { NumberValue, ObjectValue, Value } from "./json.ts";
 import { RegistryWalk } from "./rotation.ts";
 import type { ReachedKey, RotationStatus } from "./rotation.ts";
 import { structureV2, structureV3 } from "./structure.ts";
+import { descriptorStatus } from "./descriptors.ts";
 
 export type Status =
   | "ok"
@@ -44,7 +45,9 @@ export type Status =
   | "misfiled"
   | "authority-mismatch"
   | "artifact-missing"
-  | "artifact-mismatch";
+  | "artifact-mismatch"
+  | "descriptor-provenance-missing"
+  | "descriptor-provenance-mismatch";
 
 // A finding, its members in the order written. A bigint is written as the
 // integer it is.
@@ -332,6 +335,10 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
   }
   if (digest !== hex) {
     return judged("artifact-mismatch");
+  }
+  if (version === "3") {
+    const status = descriptorStatus(root,receipt,keys.slice(0,keyPos+1));
+    if (status !== "ok") return judged(status);
   }
   const prevValue = member(receipt, "prevSignature");
   const prev: Prev =

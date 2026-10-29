@@ -1,0 +1,11 @@
+{
+  "authority": "gateway:other",
+  "source": "other/live",
+  "binding": "other@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "snapshot": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "endpoint": "https://other.example/mcp",
+  "capturedAt": "2026-02-30T00:00:00Z",
+  "keyId": "00000000000000000000000000000000",
+  "statementVersion": "2",
+  "extra": "unknown"
+}

@@ -117,7 +117,7 @@ func TestV2CustomerCatalogConnectAndDispatch(t *testing.T) {
 			}
 			p, b := cfg.platforms[0], bindings[req.platform]
 			ops := enabledMCPOperations(p, b)
-			if cfg.version != "11" || p.descriptors != "" || len(p.operationDescriptors) != len(ops) || len(f.asked) != len(ops) {
+			if cfg.version != "12" || p.descriptors != "" || len(p.operationDescriptors) != len(ops) || len(f.asked) != len(ops) {
 				t.Fatal("incomplete operation pins")
 			}
 			for op := range ops {
@@ -181,7 +181,7 @@ func TestV2CustomerCatalogConnectAndDispatch(t *testing.T) {
 				}
 			}
 			sources := deriveSources(cfg, bindings)
-			service, server := testService(t)
+			service, server := connectedTestService(t, cfg)
 			for name, spec := range sources {
 				source := adapt(spec)
 				service.sources[name] = source

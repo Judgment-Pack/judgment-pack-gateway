@@ -289,9 +289,9 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	want := "engine.json,engine.json.descriptors,engine.json.lock"
+	want := "engine.json,engine.json.descriptors,engine.json.lock,store"
 	if runtime.GOOS == "windows" {
-		want = "engine.json,engine.json.descriptors"
+		want = "engine.json,engine.json.descriptors,store"
 	}
 	if strings.Join(names, ",") != want {
 		t.Fatalf("beside the file: %v, want %s", names, want)
@@ -300,7 +300,7 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 		t.Fatalf("the file keeps its mode: %v", info.Mode())
 	}
 	// The other members survive as written, in canonical order.
-	if !strings.Contains(after, "\n  \"catalog\": ") || !strings.Contains(after, "\n  \"engineVersion\": \"11\",\n") || !strings.Contains(after, "\n  \"platforms\": {\n    \"warehouse\": {\n      \"binding\": \"postgres@") || !strings.Contains(after, "\n      \"credentials\": {\n        \"history\": {\n          \"file\": ") {
+	if !strings.Contains(after, "\n  \"catalog\": ") || !strings.Contains(after, "\n  \"engineVersion\": \"12\",\n") || !strings.Contains(after, "\n  \"platforms\": {\n    \"warehouse\": {\n      \"binding\": \"postgres@") || !strings.Contains(after, "\n      \"credentials\": {\n        \"history\": {\n          \"file\": ") {
 		t.Fatalf("members in canonical order: %s", after)
 	}
 }

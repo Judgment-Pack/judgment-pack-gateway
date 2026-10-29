@@ -240,7 +240,7 @@ func main() {
 	// names and whose name is its digest.
 	pin := cfg.platforms[0].operationDescriptors["live"]
 	kept, err := os.ReadFile(filepath.Join(config+".descriptors", strings.TrimPrefix(pin, "sha256:")+".json"))
-	if err != nil || cfg.version != "11" || pin == "" || pin != digestOf(string(kept)) {
+	if err != nil || cfg.version != "12" || pin == "" || pin != digestOf(string(kept)) {
 		t.Fatalf("the snapshot is kept and pinned: %v version %s pin %s", err, cfg.version, pin)
 	}
 	if s, err := parseSnapshot(kept); err != nil || s.platform != "warehouse" || strings.Join(s.names, ",") != "query" || s.tools["query"].inputSchemaText == nil {

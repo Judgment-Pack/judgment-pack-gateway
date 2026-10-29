@@ -10,7 +10,15 @@ it never refreshes approval on drift. The source's statement names the binding a
 snapshot digest, and the existing receipt commits to that statement. A valid receipt
 establishes byte lineage under the gateway key, not the honesty of a customer server,
 the truth of a descriptor, or that a tool obeyed its declared effect. The descriptor
-snapshot itself is not independently signed by this change.
+snapshot is also covered by a separately domain-separated signed capture statement
+for new registrations (SPEC.md §9). Its exact bytes and statement are retained as
+artifacts. An acquisition names the operator-pinned snapshot, statement and binding;
+the verifier refuses either missing artifact or an invalid/mismatched statement.
+It trusts only keys reached no later than the receipt's own key. The statement
+records the capture's reported time and endpoint, not an independently authenticated
+clock. Legacy registrations and receipts without this reference make no such claim;
+explicit recapture upgrades a registration. An older verifier's success does not
+establish descriptor provenance, because it may ignore the new receipt member.
 
 Registered customer commands default to workspace-write under the operator's
 separate sandbox policy. Bubblewrap on Linux restricts writable mounts; the Landlock

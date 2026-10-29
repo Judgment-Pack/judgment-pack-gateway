@@ -1920,3 +1920,60 @@ an earlier statement's fails at that statement. It does not establish:
 - when anything happened: `witnessedAt` is the witness's clock, an upper bound on when it
   held the checkpoint as it states it, under no certificate policy, and it says nothing of
   when a record was made.
+
+## 9. Descriptor-snapshot provenance
+
+A version-3 acquisition of shape `mcp` may carry `descriptorProvenance`, an
+object with exactly three string members: `snapshot` and `statement`, each a
+`sha256:` digest, and `binding`, a binding reference (`name@sha256:<64 lowercase
+hex>`, with a nonempty name containing neither slash, backslash nor `@`, and not
+`.` or `..`). Its presence on another acquisition shape is malformed. Absence
+preserves the historical receipt's meaning: it makes no descriptor-provenance
+claim. Receipt version and signing domain remain unchanged. An older verifier
+that ignores this member does not establish this section's property.
+
+The snapshot and statement are retained in the store's ordinary artifact space,
+each under the SHA-256 of its exact bytes. The snapshot is at most 327680 bytes;
+the statement at most 16384 bytes. The statement is canonical JSON, with exactly
+these members:
+
+| Member | Form |
+| --- | --- |
+| `statementVersion` | string `"1"` |
+| `authority` | string, the receipt authority |
+| `keyId` | 32 lowercase hexadecimal characters |
+| `source` | string, the receipt source |
+| `binding` | the binding reference above |
+| `snapshot` | the snapshot digest above |
+| `endpoint` | string: empty for a local server, otherwise a remote endpoint of §1.2a |
+| `capturedAt` | valid RFC 3339 UTC timestamp, exactly `YYYY-MM-DDTHH:MM:SSZ` |
+| `signature` | 128 lowercase hexadecimal characters |
+
+The signature is Ed25519 over UTF-8
+`judgment-pack-gateway/descriptor-statement/1:` followed by the canonical object
+with only its top-level `signature` removed. The statement's key must be among
+the registry's reached keys, no later in that walk than the receipt's key.
+
+After §1.4's artifact checks, a receipt with this member undergoes two further
+checks, in order. If either referenced artifact is absent, unreadable, not a
+regular file or beyond its bound, its status is
+`descriptor-provenance-missing`. Otherwise its status is
+`descriptor-provenance-mismatch` if either exact-byte digest differs, the
+statement is not canonical or has another form, its signature fails, its
+authority/source/binding/snapshot differs from the receipt's corresponding
+values, or its nonempty endpoint differs from the acquisition endpoint. All
+these checks must succeed for the receipt's ladder status to be `ok`. These
+statuses affect session and registry verification as any other failed receipt
+does. The verifier does not reinterpret the snapshot's tool schemas.
+
+Registration signs only a validated capture, recording its reported endpoint,
+capture time, binding and operation's source name. It durably retains both
+artifacts before publishing the configuration that names them. Acquisition uses
+the operator-pinned reference, never a reference supplied by the adapter or the
+caller, and refuses a missing or invalid statement before starting the source.
+A recapture with changed snapshot bytes has a new snapshot digest and statement.
+Unreferenced artifacts left by an interrupted registration authorize nothing.
+
+This testifies to the descriptors reported at capture and the operator's pinned
+binding. It does not establish the server's honesty, the descriptors' truth,
+the capture clock's accuracy, or that the server's external state is unchanged.

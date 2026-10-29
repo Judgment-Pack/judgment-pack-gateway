@@ -457,7 +457,7 @@ func TestConnectKeepsADecisionPolicyAndTheVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.version != "11" || after.platforms[0].operationDescriptors["live"] == "" || after.platforms[0].policies["execute"] == nil || after.platforms[0].policies["execute"].digest != digest {
+	if after.version != "12" || after.platforms[0].operationDescriptors["live"] == "" || after.platforms[0].policies["execute"] == nil || after.platforms[0].policies["execute"].digest != digest {
 		t.Fatalf("version %s, pin %q, policies %+v: the policy kept as written, the version not lowered", after.version, after.platforms[0].operationDescriptors["live"], after.platforms[0].policies)
 	}
 	// A binding whose write operation does not name the policy's tool is

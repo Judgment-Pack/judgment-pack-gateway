@@ -1,0 +1,22 @@
+{
+  "name": "v3-descriptor-valid",
+  "note": "Hand-authored SPEC section 9 input; signed independently with the corpus test key. valid.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0": "{\"n\":0}",
+    "artifacts/033d0b1c016061b11c9378b6a5092e488e904360aeb4a777494fba0b5a8cdfe6": "{\"binding\":\"customer@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"capturedAt\":\"2026-09-15T01:02:03Z\",\"platform\":\"tickets\",\"policy\":1,\"tools\":{\"query\":{\"description\":\"Read one record.\"}}}",
+    "artifacts/c9540081e73bea63181e6c01f3d70c7910f639aa38600f72528e09a604ddfdfb": "{\"authority\":\"gateway:corpus\",\"binding\":\"customer@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"capturedAt\":\"2026-09-15T01:02:03Z\",\"endpoint\":\"\",\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"signature\":\"5a4b5023fae12d2f2575136d21eb059631155c07fc86586bbf653c2f8f796404392ff8e6d8ee5cba8c2926e3c143f5394d1c64012e5fb904c63f436d857e1103\",\"snapshot\":\"sha256:033d0b1c016061b11c9378b6a5092e488e904360aeb4a777494fba0b5a8cdfe6\",\"source\":\"tickets/live\",\"statementVersion\":\"1\"}",
+    "receipts/s1/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"name\":\"adapter-mcp\",\"version\":\"1\"},\"descriptorProvenance\":{\"binding\":\"customer@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"snapshot\":\"sha256:033d0b1c016061b11c9378b6a5092e488e904360aeb4a777494fba0b5a8cdfe6\",\"statement\":\"sha256:c9540081e73bea63181e6c01f3d70c7910f639aa38600f72528e09a604ddfdfb\"},\"endpoint\":null,\"observedAt\":\"2026-09-15T01:02:04Z\",\"peerIdentity\":null,\"schema\":null,\"shape\":\"mcp\",\"snapshot\":null,\"statement\":null,\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0\",\"servedAt\":\"2026-09-15T01:02:04Z\",\"sessionId\":\"s1\",\"signature\":\"44dbb15bbaf5d45a301046a199be85bdcb6e543ee76373c64e6d6cffb5f81318f6d7808f7ed8a6483120534c625b16ebf37a54ddc35d500e75773c2e7c809709\",\"source\":\"tickets/live\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-15T01:02:05Z\",\"sessionId\":\"s1\",\"signature\":\"933e6496d300994f93b377dce918d448cdd8483b662168161263eed9b6565613490face5cf2b37444432bcecdc7774595e8e015c5bfe9e97f119568979461d03\"}\n",
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      }
+    ]
+  }
+}

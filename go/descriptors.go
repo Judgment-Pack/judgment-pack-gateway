@@ -14,7 +14,8 @@ import (
 // tool's description and input schema as the server wrote them, and the
 // server's identity -- kept by connect beside the configuration, one
 // immutable file per snapshot named by its digest, and served by the
-// frontend. The signer never reads one, and no receipt covers one.
+// frontend. New captures are also retained with the signed provenance of
+// SPEC.md §9; historical snapshots without that reference remain readable.
 
 const (
 	// maxSnapshotBytes bounds a snapshot, the whole file, and

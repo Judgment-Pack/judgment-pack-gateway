@@ -57,7 +57,7 @@ func describePlatformToolWithin(t mcpTool, p *servedPlatform, limit int) (string
 		arguments = "declared by the platform's server's schema, as captured"
 	}
 	prose := head + " Its arguments are " + arguments + ". " + answerCarries +
-		" When " + codeSpan("connect") + " ran at " + codeSpan(p.capturedAt) + ", the platform's server described it as follows, in its own words, which are not the engine's and which no receipt covers:\n\n"
+		" When " + codeSpan("connect") + " ran at " + codeSpan(p.capturedAt) + ", the platform's server described it as follows, in its own words, whose truth the engine does not establish:\n\n"
 	return fenced(prose, func(w *blockWriter) {
 		if p.server != nil {
 			w.item()

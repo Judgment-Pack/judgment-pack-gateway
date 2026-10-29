@@ -815,7 +815,7 @@ func TestConnectCapturesTheWriteBackPlatformsDescriptorsAndKeepsTheParameters(t 
 				t.Fatal(err)
 			}
 			entry := cfg.platforms[0]
-			if cfg.version != "11" || entry.operationDescriptors["write"] == "" || len(entry.parameters) != len(parameters) {
+			if cfg.version != "12" || entry.operationDescriptors["write"] == "" || len(entry.parameters) != len(parameters) {
 				t.Fatalf("version %s, pin %q, parameters %v; answers %q", cfg.version, entry.operationDescriptors["write"], entry.parameters, out.answers)
 			}
 			kept, err := os.ReadFile(filepath.Join(f.config+".descriptors", strings.TrimPrefix(entry.operationDescriptors["write"], "sha256:")+".json"))
@@ -846,7 +846,7 @@ func TestConnectCapturesTheWriteBackPlatformsDescriptorsAndKeepsTheParameters(t 
 				t.Fatal(err)
 			}
 			again, _, err := loadEngineConfig(f.config, stubAccounts(stubUsers))
-			if err != nil || len(again.platforms[0].parameters) != len(parameters) || again.version != "11" {
+			if err != nil || len(again.platforms[0].parameters) != len(parameters) || again.version != "12" {
 				t.Fatalf("connect keeps the parameters: %v %+v", err, again.platforms)
 			}
 			// A parameter the binding does not name is refused before

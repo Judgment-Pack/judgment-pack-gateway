@@ -63,9 +63,12 @@ type sessionState struct {
 // unless declared, because a source that cannot find `/bin/sh` is not a
 // source, and PATH carries no secret.
 type sourceSpec struct {
-	argv []string
-	env  []string
-	user string
+	// Descriptor provenance is selected by the operator's configuration. A
+	// source's own envelope cannot introduce or replace this reference.
+	descriptorProvenance *descriptorProvenance
+	argv                 []string
+	env                  []string
+	user                 string
 	// shape is the adapter shape declared with --source-shape (SPEC.md §1.2a);
 	// empty for a bare command, whose stdout is the result itself.
 	shape string
@@ -230,6 +233,9 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 	// would be malformed to every verifier, so it is refused here, whatever
 	// built the configuration.
 	for name, spec := range sources {
+		if spec.descriptorProvenance != nil && spec.shape != "mcp" {
+			return nil, fmt.Errorf("source %s: descriptor provenance requires MCP", name)
+		}
 		if spec.shape != "" && !adapterShapes[spec.shape] {
 			return nil, fmt.Errorf("source %s: unknown adapter shape %q", name, spec.shape)
 		}
@@ -703,6 +709,17 @@ func (g *gatewayService) acquireForTrail(sessionID, source, trail string, argume
 	if spec.shape != "" && g.receiptVersion != receiptVersion3 {
 		return nil, fmt.Errorf("source %s is an adapter and needs receipt version 3", source)
 	}
+	if p := spec.descriptorProvenance; p != nil {
+		// Re-read before every source execution, including after a restart.
+		// Registry rotation keys are reached by the same verifier as receipts.
+		keys, err := g.reachedKeys()
+		if err != nil {
+			return nil, err
+		}
+		if status := checkDescriptorProvenance(g.store.root, *p, g.authority, source, spec.endpoint, keys); status != "ok" {
+			return nil, errors.New(status)
+		}
+	}
 	canonicalArgs := canon(arguments)
 
 	// Admission happens BEFORE the source exists. Sources are slow, cost money
@@ -792,6 +809,17 @@ func (g *gatewayService) acquireForTrail(sessionID, source, trail string, argume
 			if statementSalt != nil {
 				salts["statement"] = hex.EncodeToString(statementSalt)
 			}
+		}
+		if p := spec.descriptorProvenance; p != nil {
+			endpoint, _ := memberString(acquisition, "endpoint")
+			keys, err := g.reachedKeys()
+			if err != nil {
+				return nil, err
+			}
+			if status := checkDescriptorProvenance(g.store.root, *p, g.authority, source, endpoint, keys); status != "ok" {
+				return nil, errors.New(status)
+			}
+			acquisition.set("descriptorProvenance", p.value())
 		}
 	}
 	core := buildReceipt(receiptInput{

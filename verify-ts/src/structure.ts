@@ -231,10 +231,12 @@ function isAcquisition(v: Value | undefined): boolean {
   }
   const shape = member(v, "shape");
   const pageItems = member(v, "pageItems");
+  const provenance = member(v, "descriptorProvenance");
   return (
     isAdapter(member(v, "adapter")) &&
     isString(shape) &&
     shapes.has(shape.value) &&
+    (provenance === undefined || (shape.value === "mcp" && isDescriptorProvenance(provenance))) &&
     nullableString(member(v, "endpoint")) &&
     nullableDigest(member(v, "statement")) &&
     nullableString(member(v, "snapshot")) &&
@@ -245,6 +247,17 @@ function isAcquisition(v: Value | undefined): boolean {
     isString(member(v, "observedAt")) &&
     remoteHolds(v)
   );
+}
+
+export function isBindingReference(s: string): boolean {
+  const parts = s.split("@");
+  return parts.length === 2 && parts[0] !== "" && parts[0] !== "." && parts[0] !== ".." && !/[\\/]/.test(parts[0]!) && /^sha256:[0-9a-f]{64}$/.test(parts[1]!);
+}
+
+function isDescriptorProvenance(v: Value): boolean {
+  if (v.type !== "object" || v.members.length !== 3 || !v.members.every(m => ["snapshot", "statement", "binding"].includes(m.name))) return false;
+  const binding = member(v, "binding");
+  return isDigest(member(v, "snapshot")) && isDigest(member(v, "statement")) && isString(binding) && isBindingReference(binding.value);
 }
 
 // toolTransportHolds is what a write to a remote MCP server adds to an

@@ -13,7 +13,7 @@ func TestTheFourTemplates(t *testing.T) {
 	}
 	tool := mcpTool{name: "tickets.search", platform: "tickets", tool: "search", binding: "tickets@sha256:" + strings.Repeat("0", 64)}
 	head := "Tool `search` of platform `tickets` (binding `tickets@sha256:" + strings.Repeat("0", 64) + "`), called by the engine's own adapter under the engine's key."
-	provenance := " When `connect` ran at `2026-09-15T01:02:03Z`, the platform's server described it as follows, in its own words, which are not the engine's and which no receipt covers:\n\n"
+	provenance := " When `connect` ran at `2026-09-15T01:02:03Z`, the platform's server described it as follows, in its own words, whose truth the engine does not establish:\n\n"
 	server := &snapshotServer{name: "tickets-mcp", version: "2.4.1"}
 	for _, tc := range []struct {
 		name   string

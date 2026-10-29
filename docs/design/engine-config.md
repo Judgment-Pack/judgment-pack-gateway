@@ -56,22 +56,33 @@ key is an error, never an intention silently dropped. `engineVersion`, `authorit
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
 `runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness` and `witnessedBy` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
-`descriptors`, `decisionPolicy` and `parameters` optional. Every path is absolute.
+`descriptors`, `operationDescriptors`, `descriptorStatements`, `decisionPolicy`
+and `parameters` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"10"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"12"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
-  decision policy's `fix` and `closed`, and version 10 a decision policy's `shape`. A file of
+  decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
+  `operationDescriptors`, and version 12 `descriptorStatements`. A file of
   an earlier version still loads without the member and is refused by name with it.
-  `connect` raises a file to version 3 exactly when an entry it writes carries a pin, and to
-  version 8 exactly when it carries parameters, and otherwise leaves the version as it found it —
+  `connect` raises a file to version 12 when it signs a captured snapshot, and to
+  version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
   it never lowers one — so a signer older than version 3 goes on reading every file `connect` has
   not pinned. (ADR-0007 named version 4 for its `services` member, which is not built; ADR-0011
   gave 4 to `decisionPolicy`, ADR-0012 gave 5 to `requireSignedRecord`, ADR-0013 gave 6 to
   `witness`, ADR-0014 gave 7 to `witnessedBy`, ADR-0015's amendment of 2026-10-13 gave 8 to
   `parameters`, ADR-0016 gave 9 to `fix` and `closed`, ADR-0018 gave 10 to `shape`, and
   `services` takes the next version when it is built.)
+
+`descriptorStatements` maps each captured `live` or `write` operation to the
+SHA-256 digest of its signed capture statement in the store's artifact space.
+When present it covers exactly the operations pinned by `operationDescriptors`,
+or the one legacy `descriptors` operation. It is never filled from a source's
+response during acquisition. New `connect` captures write these pins before
+returning success; existing registrations gain them through explicit recapture.
+Acquisition receipts name the matching snapshot, statement and binding, and
+verification requires their retained evidence (SPEC.md §9).
 - `parameters`, in a version-8 file, fills the placeholders of the platform's remote binding
   ([ADR-0015](../adr/0015-a-remote-mcp-server-as-a-source-and-executor.md), question 1, amended
   2026-10-13; "Bindings" below) —
