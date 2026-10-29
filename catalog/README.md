@@ -57,7 +57,7 @@ tool, so none is named; a function or procedure write returns when a server offe
 platform that pins this binding and sets `write: true` is refused at start, naming the
 platform and the rule, and its credentials name no `write` file. That historical change retained the then-current `history` and `live` entries.
 
-Current shipped catalogs now use bindingVersion2 owner declarations, so their complete
+Current shipped catalogs use owner declarations (bindingVersion 2 or 3), so their complete
 digests change. Pin them explicitly and recapture per-operation snapshotV2 approval;
 no old approval is silently reused. Exact historical V1 copies remain in
 `testdata/catalog-v1` for readers. See [taxonomy migration](../docs/releases/taxonomy-v2-migration.md).
@@ -191,3 +191,17 @@ argument by argument, since a statement's meaning is in its text. A function who
 statement it is given is raw SQL by another name, and its author is the one to refuse it. The
 `postgres` binding holds to the same rule: it predated it, and its `write` operation, which
 named `execute_sql`, was removed on 2026-10-14 (#260).
+
+## Action recovery
+
+The write catalogs use bindingVersion 3. Each listed tool explicitly declares
+`actionRecovery: null`: neither the generic function binding nor the remote
+work-item tools declare a correlated idempotency/read-back contract. A keyed
+uncertain action is never resent. An operator-owned function can supply a pinned
+recovery contract and an approved read-only live tool; registration must recapture
+all affected descriptors after the binding digest changes. A provider name or
+tool annotation does not establish support. There is no shipped Drive action
+binding; personal Drive storage keeps its separate durable-plan protocol.
+
+See [action reconciliation](../docs/design/action-reconciliation.md) for the
+contract, private journal backup requirements and platform limitations.

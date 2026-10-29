@@ -1,5 +1,5 @@
 {
-  "bindingVersion": "2",
+  "bindingVersion": "3",
   "platform": "databricks",
   "operations": {
     "write": {
@@ -19,5 +19,8 @@
         }
       }
     }
+  },
+  "actionRecovery": {
+    "{catalog}__{schema}__{function}": null
   }
 }

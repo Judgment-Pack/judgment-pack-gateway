@@ -1082,3 +1082,32 @@ mode now differ, or when the reported backend cannot be used: a bubblewrap that
 fails at launch does not fall back to Landlock. A changed policy therefore takes
 effect only after a restart measures it, and posture never reports a selection a
 launch does not use.
+
+## Keyed actions (engine version 14)
+
+Version 14 requires a caller-chosen `actionKey` on `/act`: 64 lowercase hex
+characters, retained and reused for the same approved intent across retries.
+Older configurations may opt in per request. A changed payload under the same
+key is refused. The key does not replace authorization, decision policy or a
+lease fence. Clients must retain the key and approved content before submitting
+a write; changing the key after a timeout creates a distinct action.
+
+The gateway durably reserves the key in its private `actions/` store directory
+before dispatch. A completed request replays its retained response; an uncertain
+one may run only the pinned read-back contract and returns `{action,
+reconciliation}`. Unsupported or failed read-back returns HTTP 409 with `error`
+and the retained `action` evidence. A `committed` read-back reports the matching
+key observed by the read tool; `unknown` never permits another dispatch.
+
+Binding version 3 retains owner declarations and adds a per-write-tool
+`actionRecovery` map, including explicit null entries for unsupported tools.
+The shipped write bindings declare unsupported recovery. An operator-owned
+contract may name an idempotency argument and a read-only live tool; updating
+the binding requires a new digest pin and recaptured descriptor approval. See
+[action reconciliation](action-reconciliation.md) and SPEC.md §1.2b.
+
+The initial durable journal requires Unix file and directory synchronization;
+other hosts refuse keyed dispatch. A failed sync, partial record or corrupt
+cache refuses safely and never creates a fresh dispatch opportunity. Preserve
+`actions/` with the receipt store in operational backups. Attestation exports
+exclude this private journal and cannot serve as a dispatch-history backup.

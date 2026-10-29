@@ -2,6 +2,10 @@
   "version": 1,
   "changed": [
     {
+      "paths": ["testdata/action-reconciliation/*.json"],
+      "checks": ["go-test", "verify-ts-test", "verify-ts-typecheck", "ci-evidence"]
+    },
+    {
       "paths": ["corpus/v3/stores/v3-descriptor-*.json", "testdata/descriptor-provenance/statement-mutations.json"],
       "checks": ["ci-evidence"]
     },

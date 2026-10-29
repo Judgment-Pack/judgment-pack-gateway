@@ -33,6 +33,7 @@
     "scripts/dev/changed_checks.py",
     "scripts/dev/check.sh",
     "testdata/attachments/schema-requirements.txt",
+    "testdata/action-reconciliation/mutations.json",
     "testdata/descriptor-provenance/statement-mutations.json",
     "testdata/tool-descriptors/commonmark/go.mod",
     "testdata/tool-descriptors/commonmark/go.sum",

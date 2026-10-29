@@ -122,7 +122,7 @@ func openServedDirectory(configPath string, cfg engineConfig) (*servedDirectory,
 // read reads the snapshot p pins from the directory, by the remaining
 // checks.
 func (d *servedDirectory) read(p platformConfig, b binding) (*servedPlatform, error) {
-	if b.version == "2" {
+	if b.hasOwnerDeclarations() {
 		var selected *servedPlatform
 		for _, name := range []string{"write", "live"} {
 			if enabledMCPOperations(p, b)[name] != nil {

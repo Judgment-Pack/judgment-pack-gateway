@@ -213,7 +213,7 @@ func resolveParameters(b binding, parameters map[string]string, ref string) (bin
 	if len(names) == 0 {
 		return b, nil
 	}
-	value := func(name string) string { return parameters[name] }
+	parameter := func(name string) string { return parameters[name] }
 	for _, slot := range []struct {
 		name string
 		op   **operation
@@ -223,7 +223,7 @@ func resolveParameters(b binding, parameters map[string]string, ref string) (bin
 			continue
 		}
 		resolved := *op
-		resolved.url = fillTemplate(op.url, value)
+		resolved.url = fillTemplate(op.url, parameter)
 		if len(resolved.url) > maxRemoteEndpoint {
 			return b, fmt.Errorf("binding %s: the %s operation's URL, filled with the platform's parameters, is %d characters, more than the %d of the endpoint form", ref, slot.name, len(resolved.url), maxRemoteEndpoint)
 		}
@@ -235,7 +235,7 @@ func resolveParameters(b binding, parameters map[string]string, ref string) (bin
 			resolved.taxonomies = map[string]ToolTaxonomy{}
 		}
 		for _, tool := range op.tools {
-			name := fillTemplate(tool, value)
+			name := fillTemplate(tool, parameter)
 			if contains(resolved.tools, name) {
 				return b, fmt.Errorf("binding %s: two of the %s operation's tools resolve to %q", ref, slot.name, requestText(name))
 			}
@@ -245,7 +245,7 @@ func resolveParameters(b binding, parameters map[string]string, ref string) (bin
 			}
 		}
 		if op.probe != "" {
-			resolved.probe = fillTemplate(op.probe, value)
+			resolved.probe = fillTemplate(op.probe, parameter)
 		}
 		if resolved.taxonomies != nil {
 			if _, err := ownerDeclaration(resolved); err != nil {
@@ -253,6 +253,28 @@ func resolveParameters(b binding, parameters map[string]string, ref string) (bin
 			}
 		}
 		*slot.op = &resolved
+	}
+	if b.actionRecovery != nil {
+		resolved := newObject()
+		for tool, recovery := range b.actionRecovery {
+			var v value = vNull{}
+			if recovery != nil {
+				copyValue, _ := parseJSON(canon(recovery.declaration))
+				declaration := copyValue.(*vObject)
+				if raw, present := declaration.get("readBack"); present {
+					read := raw.(*vObject)
+					tool, _ := memberString(read, "tool")
+					read.set("tool", vString(fillTemplate(tool, parameter)))
+				}
+				v = declaration
+			}
+			resolved.set(fillTemplate(tool, parameter), v)
+		}
+		var err error
+		b.actionRecovery, err = parseActionRecovery(resolved, b)
+		if err != nil {
+			return b, err
+		}
 	}
 	return b, nil
 }

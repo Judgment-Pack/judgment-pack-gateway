@@ -63,7 +63,9 @@ type sessionState struct {
 // unless declared, because a source that cannot find `/bin/sh` is not a
 // source, and PATH carries no secret.
 type sourceSpec struct {
-	sandbox *sourceSandbox
+	binding        string
+	actionRecovery map[string]*actionRecovery
+	sandbox        *sourceSandbox
 	// Descriptor provenance is selected by the operator's configuration. A
 	// source's own envelope cannot introduce or replace this reference.
 	descriptorProvenance *descriptorProvenance
@@ -129,15 +131,17 @@ const (
 )
 
 type gatewayService struct {
-	store           *store
-	registry        *registryWriter
-	storeRoot       string
-	regPath         string
-	authority       string
-	publicKey       ed25519.PublicKey
-	keyID           string
-	sources         map[string]sourceSpec
-	maxSourceOutput int64
+	requireActionKey bool
+	actionMu         sync.Mutex
+	store            *store
+	registry         *registryWriter
+	storeRoot        string
+	regPath          string
+	authority        string
+	publicKey        ed25519.PublicKey
+	keyID            string
+	sources          map[string]sourceSpec
+	maxSourceOutput  int64
 	// maxRequest bounds an /acquire body, from --max-request; /seal and /act
 	// keep maxRequestBody.
 	maxRequest int64
@@ -574,7 +578,7 @@ func limitBodyTo(w http.ResponseWriter, r *http.Request, limit int64) {
 // about, and what is signed or sealed is decided by the disagreement.
 var (
 	acquireRequestMembers = map[string]bool{"session": true, "source": true, "arguments": true, "trail": true}
-	actRequestMembers     = map[string]bool{"session": true, "platform": true, "tool": true, "arguments": true, "decision": true, "cites": true}
+	actRequestMembers     = map[string]bool{"session": true, "platform": true, "tool": true, "arguments": true, "decision": true, "cites": true, "actionKey": true}
 	sealRequestMembers    = map[string]bool{"session": true}
 )
 
@@ -696,6 +700,10 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 // refused before the source runs. A request names a trail and never a
 // witness or a key.
 func (g *gatewayService) acquireForTrail(sessionID, source, trail string, arguments value, who *caller) (map[string]any, error) {
+	return g.acquireWithReconciliation(sessionID, source, trail, arguments, who, nil)
+}
+
+func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail string, arguments value, who *caller, reconciliation *actionReconciliationRequest) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err} // refuse before running anything
 	}
@@ -704,6 +712,12 @@ func (g *gatewayService) acquireForTrail(sessionID, source, trail string, argume
 		// A write source is the executor's alone (executor.md): a read
 		// that writes is not a read, and /acquire names no such source.
 		return nil, badRequest{fmt.Errorf("unknown source: %s", requestText(source))}
+	}
+	if reconciliation != nil {
+		if !contains(spec.tools, reconciliation.read.tool) || spec.shape != "mcp" {
+			return nil, errors.New("action-reconciliation-unavailable: live tool is not configured")
+		}
+		spec = narrowTools(spec, reconciliation.read.tool)
 	}
 	if trail != "" && g.witnessMember(trail) == nil {
 		return nil, badRequest{errors.New("trail: this gateway names no witness for the trail the request names; a request names a trail only where the operator's configuration names a witness for it")}
@@ -823,6 +837,9 @@ func (g *gatewayService) acquireForTrail(sessionID, source, trail string, argume
 			}
 			acquisition.set("descriptorProvenance", p.value())
 		}
+	}
+	if reconciliation != nil {
+		acquisition.set("reconciliation", reconciliation.member(result))
 	}
 	core := buildReceipt(receiptInput{
 		version: g.receiptVersion, sessionID: sessionID, callIndex: state.index, prevSignature: state.prev,
@@ -1546,8 +1563,13 @@ func (g *gatewayService) handler() http.Handler {
 			fail(w, badRequest{err})
 			return
 		}
-		out, err := g.act(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who)
+		out, err := g.act(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, body["actionKey"])
 		if err != nil {
+			var uncertain *actionUncertain
+			if errors.As(err, &uncertain) {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": uncertain.reason, "action": uncertain.action})
+				return
+			}
 			var refusal actRefusal
 			if errors.As(err, &refusal) {
 				// The ladder's first step is who is asking: with no identity

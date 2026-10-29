@@ -269,7 +269,7 @@ func TestV2ShippedDeclarationsAndOwnerOverflow(t *testing.T) {
 			t.Fatal(err)
 		}
 		b, err := parseBinding(text)
-		if err != nil || b.version != "2" {
+		if err != nil || !b.hasOwnerDeclarations() {
 			t.Fatalf("catalog %s: %v", name, err)
 		}
 		for _, op := range []*operation{b.live, b.write} {
