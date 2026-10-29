@@ -23,9 +23,8 @@ export function descriptorStatus(root: string, receipt: ObjectValue, keys: reado
   const snapshotPin = text(p,"snapshot")!, statementPin = text(p,"statement")!;
   let snapshot: Uint8Array, statement: Uint8Array;
   try {
-    snapshot = readDocument(path.join(root,"artifacts",snapshotPin.slice(7)),"descriptor snapshot");
-    statement = readDocument(path.join(root,"artifacts",statementPin.slice(7)),"descriptor statement");
-    if (snapshot.length > 327680 || statement.length > 16384) return "descriptor-provenance-missing";
+    snapshot = readDocument(path.join(root,"artifacts",snapshotPin.slice(7)),"descriptor snapshot",327680);
+    statement = readDocument(path.join(root,"artifacts",statementPin.slice(7)),"descriptor statement",16384);
   } catch { return "descriptor-provenance-missing"; }
   const fail = "descriptor-provenance-mismatch";
   if (digest(snapshot) !== snapshotPin || digest(statement) !== statementPin) return fail;

@@ -3,6 +3,9 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { test } from "node:test";
+import mutableFS from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { readDocument } from "../src/inputs.ts";
 import { verifyStore } from "../src/verify.ts";
 import { acquisitionV3, authority, keyId, newStore, publicKey, put, sealLine, sign, signed, verdictText } from "./support.ts";
 
@@ -46,6 +49,29 @@ test("descriptor provenance requires both exact retained artifacts", () => {
   assert.equal(status(fixture()),"ok");
   for (const missing of ["snapshot","statement"]) assert.equal(status(fixture(undefined,missing)),"descriptor-provenance-missing",missing);
   for (const changed of ["changed-snapshot","changed-statement"]) assert.equal(status(fixture(undefined,changed)),"descriptor-provenance-mismatch",changed);
+});
+
+test("descriptor artifact limits stop I/O at one byte past the bound", () => {
+  const store = fixture();
+  const target = path.join(store.root,"oversized");
+  fs.writeFileSync(target,Buffer.alloc(1 << 20));
+  const original = mutableFS.readSync;
+  let readBytes = 0;
+  // Observe real reads, without replacing the bounded reader under test.
+  mutableFS.readSync = ((...args: any[]) => {
+    const n = (original as any)(...args); readBytes += n; return n;
+  }) as typeof original;
+  syncBuiltinESMExports();
+  try {
+    for (const limit of [16384,327680]) {
+      readBytes = 0;
+      assert.throws(() => readDocument(target,"descriptor artifact",limit), /is over/);
+      assert.equal(readBytes,limit + 1);
+    }
+  } finally {
+    mutableFS.readSync = original;
+    syncBuiltinESMExports();
+  }
 });
 
 test("descriptor statement claims and signing domain cannot be spliced", () => {
