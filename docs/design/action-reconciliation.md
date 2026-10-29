@@ -162,6 +162,17 @@ defense when supported, not a substitute for the gateway's durable reservation.
 - **The receipt a journal entry cites is synced best-effort.** After a power loss
   the journal can name a receipt the store lost; that key then refuses as
   `action-journal-invalid` instead of replaying. Nothing is sent twice.
-- **The key is scoped to the authenticated issuer and subject.** A takeover that
-  authenticates as another subject reaches another reservation; the agent's
+- **The key is scoped to the authority and the authenticated issuer and subject.**
+  A takeover that authenticates as another subject reaches another reservation,
+  and so does every key after the configured issuer string or the authority
+  changes, even for the same subject: settle pending keys first. The agent's
   run-owned jobs settle this scope before adopting reconciliation (#352).
+- **A key records at most 16 attempts that were never started.** A retry loop
+  through an outage exhausts it (`action-journal-exhausted`). Every attempt was
+  answered as not dispatched, so nothing was sent: the client may send the write
+  under a new key, or an operator may remove that key's entry once the cause is
+  fixed.
+- **The identity keeps this release's derived command line.** The adapter command
+  line, less its install paths, is part of the identity, so a later release that
+  adds or reorders a derived flag turns pending keys into conflicts. Reconcile or
+  drain pending uncertain keys before upgrading.

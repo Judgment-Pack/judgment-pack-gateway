@@ -393,3 +393,37 @@ test('act names its intended write with an action key, the same on every retry',
 	assert.equal('actionKey' in actRequest(engine, { ...input, actionKeyMode: 'none' }).body, false);
 	assert.throws(() => actRequest(engine, { ...input, actionKeyMode: 'random' }), /derive, given or none/);
 });
+
+// #354 N2: the key is derived from the intent exactly as the request sends it.
+// A Date is sent, and hashed, as its ISO string; an undefined member is neither
+// sent nor hashed; a value JSON does not carry as it is (a Map, a Set) refuses
+// derivation, since it would be sent as {} and two writes would share a key.
+test('the derived action key names exactly what the request sends', () => {
+	const act = (input) => actRequest(engine, input);
+	const sent = (r) => r.body;
+	const input = {
+		session: 's1',
+		platform: 'tickets',
+		tool: 'update_ticket',
+		arguments: { id: 'T-1', due: new Date('2026-10-30T00:00:00.000Z') },
+		decision: { recordDigest: 'sha256:a', packDigest: 'sha256:b' },
+		cites: [{ sessionId: 's1', callIndex: 3, signature: 'ab' }],
+	};
+	const dated = sent(act(input));
+	assert.deepEqual(dated.arguments, { id: 'T-1', due: '2026-10-30T00:00:00.000Z' });
+	assert.equal(dated.actionKey, sent(act({ ...input, arguments: { id: 'T-1', due: '2026-10-30T00:00:00.000Z' } })).actionKey);
+	assert.notEqual(dated.actionKey, sent(act({ ...input, arguments: { id: 'T-1', due: new Date('2026-10-31T00:00:00.000Z') } })).actionKey);
+	const undefinedMember = sent(act({ ...input, arguments: { id: 'T-1', note: undefined } }));
+	assert.equal('note' in undefinedMember.arguments, false);
+	assert.equal(undefinedMember.actionKey, sent(act({ ...input, arguments: { id: 'T-1' } })).actionKey);
+	for (const [label, bad] of [
+		['a Map', { id: 'T-1', fields: new Map([['a', 1]]) }],
+		['a Set', { id: 'T-1', tags: new Set(['x']) }],
+		['a class instance', { id: 'T-1', value: new (class Value {})() }],
+		['a function', { id: 'T-1', value: () => 1 }],
+	]) {
+		assert.throws(() => act({ ...input, arguments: bad }), /cannot be derived.*explicit action key/, label);
+	}
+	// an explicit key is still sent with such arguments: the workflow named the write
+	assert.equal(sent(act({ ...input, arguments: { fields: new Map() }, actionKeyMode: 'given', actionKey: 'e'.repeat(64) })).actionKey, 'e'.repeat(64));
+});

@@ -298,6 +298,7 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 			// that is answered durably the key's next attempt is free.
 			var notStarted *sourceNotStarted
 			if errors.As(err, &notStarted) && claim.releaseDispatch(attempt, err.Error()) == nil {
+				g.abandonUnminted(sessionID)
 				return nil, fmt.Errorf("action-not-dispatched: nothing was sent, and the same request may be retried under the same key: %w", err)
 			}
 			uncertain = true
@@ -546,6 +547,23 @@ func (g *gatewayService) admitAction(sessionID string) error {
 	state.inFlight++
 	g.gate.admitLocked()
 	return nil
+}
+
+// abandonUnminted removes the session directory admission made for an
+// action that minted nothing and was never sent (action-not-dispatched), so
+// the store keeps no empty, unsealed session for it. Only while this request
+// is the session's one admission and nothing was minted in it; a directory
+// that is not empty is left as it is.
+func (g *gatewayService) abandonUnminted(sessionID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	state, seen := g.sessions[sessionID]
+	if !seen || !state.created || state.sealed || state.index != 0 || state.inFlight != 1 {
+		return
+	}
+	if os.Remove(filepath.Join(g.storeRoot, "receipts", sessionID)) == nil {
+		state.created = false
+	}
 }
 
 // narrowTools is the write source started for one tool: the adapter's

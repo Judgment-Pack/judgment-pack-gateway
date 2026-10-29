@@ -318,7 +318,7 @@ func TestActionKeyCrashWindowsNeverSendTwice(t *testing.T) {
 // answers the attempt, the key stays the request's, and the retry -- once the
 // program is there -- dispatches it exactly once.
 func TestActionNotDispatchedFreesTheKey(t *testing.T) {
-	root, _, c := actionKeysSetup(t)
+	root, setup, c := actionKeysSetup(t)
 	key := strings.Repeat("9", 64)
 	missing := filepath.Join(root, "not-installed", "adapter-mcp")
 	g := actionKeysService(t, root, actionKeysSources(t, root, missing))
@@ -336,8 +336,15 @@ func TestActionNotDispatchedFreesTheKey(t *testing.T) {
 			t.Fatalf("journal has no %s: %v", name, err)
 		}
 	}
-	if _, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", "missing-program", "0.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("a write that was never sent was receipted")
+	// #354 N3: nothing was minted, so no session is left for it.
+	if _, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", "missing-program")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a write that was never sent left a session: %v", err)
+	}
+	if _, err := setup.sealSession("read"); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := verifyWithRegistryAndRecords(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey); err != nil || !report.OK {
+		t.Fatalf("the store does not verify after a write that was never sent: %+v %v", report, err)
 	}
 	installed := actionKeysService(t, root, actionKeysSources(t, root, os.Args[0]))
 	first, err := actionKeysAct(installed, c, "installed", key)

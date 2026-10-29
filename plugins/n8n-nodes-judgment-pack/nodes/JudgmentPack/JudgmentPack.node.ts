@@ -143,7 +143,7 @@ export class JudgmentPack implements INodeType {
 						name: 'Derive From the Intent',
 						value: 'derive',
 						description:
-							'The same platform, tool, arguments, decision and cites give the same key, so a retry sends the key its first attempt sent',
+							'The same platform, tool, arguments, decision and cites give the same key, so a retry sends the key its first attempt sent. An argument that changes per execution, such as $now, gives a new key: use Given.',
 					},
 					{
 						name: 'Given',

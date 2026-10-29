@@ -52,7 +52,7 @@ export const act = createAction({
 			options: {
 				disabled: false,
 				options: [
-					{ label: 'Derive from the intent (a retry sends the same key)', value: 'derive' },
+					{ label: 'Derive from the intent (a retry sends the same key; not for arguments that change per run)', value: 'derive' },
 					{ label: 'Given (a key chosen once for this write)', value: 'given' },
 					{ label: 'None (refused at configuration version 14; a retry may write twice)', value: 'none' },
 				],
