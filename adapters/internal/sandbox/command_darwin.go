@@ -41,9 +41,14 @@ func init() {
 // executed by path and the caller re-checks its digest just before the start.
 func platformCommand(ctx context.Context, launch Launch, mode, workspace, tmp string) (*exec.Cmd, Report, error) {
 	report := Report{Mode: mode, Backend: "seatbelt", State: "not-enforced", Reason: "Seatbelt launcher is unavailable"}
-	launcher, err := exec.LookPath("sandbox-exec")
+	// sandbox-exec only from its fixed, verified location, never PATH.
+	launcher, found, err := trustedLauncher(sandboxExecLocations)
 	if err != nil {
-		return nil, report, errors.New("sandbox-not-enforced: Seatbelt launcher is unavailable")
+		report.Reason = err.Error()
+		return nil, report, err
+	}
+	if !found {
+		return nil, report, errors.New("sandbox-not-enforced: Seatbelt launcher is unavailable at /usr/bin/sandbox-exec")
 	}
 	self, err := os.Executable()
 	if err != nil {

@@ -31,7 +31,11 @@ starting anything. On Linux the digested descriptor is the one executed; a `#!`
 script, a script operand, macOS and Windows execute by path after a digest taken
 immediately before the start, so a change inside that window is not detected.
 Code loaded by other means (modules, imports, packages fetched at launch) is not
-bound. The sandbox launcher starts with an empty environment, and a configured
+bound. The sandbox launcher is taken only from fixed root-owned locations
+(`/usr/bin/bwrap`, `/bin/bwrap`, `/usr/local/bin/bwrap`; `/usr/bin/sandbox-exec`),
+never from PATH; one there that is not root's, or that group or others can write
+along its path, refuses with `sandbox-launcher-untrusted` and nothing falls back.
+The sandbox launcher starts with an empty environment, and a configured
 environment or credentials member naming a dynamic-loader variable (`LD_*`,
 `DYLD_*`, `GCONV_PATH`) is refused at registration and every start.
 Keep the policy, credentials, signing material and approval evidence outside the

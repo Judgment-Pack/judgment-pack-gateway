@@ -388,6 +388,19 @@ refuses with `sandbox-loader-variable-refused` at registration and at every star
 before anything is started; the engine refuses such a platform `environment` for a
 customer command binding when it loads the configuration.
 
+A launcher is never looked up on `PATH`. bubblewrap is taken only from
+`/usr/bin/bwrap`, `/bin/bwrap` or `/usr/local/bin/bwrap`, the first that exists,
+and sandbox-exec only from `/usr/bin/sandbox-exec`. The launcher must be an
+executable regular file owned by root and writable by neither group nor others,
+in directories that are each owned by root and writable by neither group nor
+others, both along the path as written and along the path it resolves to. A
+launcher there that fails this refuses with `sandbox-launcher-untrusted`; no later
+location, no `PATH` entry and no other backend is tried. With no bubblewrap at
+those locations, Linux uses Landlock and its report says so; macOS without a
+trusted sandbox-exec refuses with `sandbox-not-enforced`. A bubblewrap installed
+in a prefix an unprivileged user owns (a Homebrew prefix, for example) is never
+used.
+
 Linux tries bubblewrap and falls back to Landlock ABI 3 or newer. Landlock is
 reported as `partial`: file-content writes, truncation and directory mutations are
 restricted, while metadata operations such as chmod remain outside its controls.

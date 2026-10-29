@@ -54,7 +54,14 @@ func init() {
 // sees it on a command line.
 func platformCommand(ctx context.Context, launch Launch, mode, workspace, tmp string) (*exec.Cmd, Report, error) {
 	report := Report{Mode: mode, Backend: "none", State: "not-enforced", Reason: "no usable filesystem sandbox backend"}
-	if path, err := exec.LookPath("bwrap"); err == nil {
+	// bubblewrap only from a fixed, verified location (launcher_unix.go);
+	// one there that fails verification refuses rather than falling back.
+	path, found, err := trustedLauncher(bwrapLocations)
+	if err != nil {
+		report.Reason = err.Error()
+		return nil, report, err
+	}
+	if found {
 		flags := []string{"--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"}
 		if mode == WorkspaceWrite {
 			flags = append(flags, "--bind", workspace, workspace, "--bind", tmp, tmp)
@@ -102,7 +109,7 @@ func platformCommand(ctx context.Context, launch Launch, mode, workspace, tmp st
 				return nil, report, err
 			}
 			report.Backend, report.State = "bubblewrap", "enforced"
-			report.Reason = "filesystem mounts are read-only outside the declared writable directories; network access is unchanged"
+			report.Reason = "filesystem mounts are read-only outside the declared writable directories (launcher " + path + "); network access is unchanged"
 			report.exactFile = a.files != nil
 			report.cleanup = func() error { args.Close(); return nil }
 			cmd := exec.CommandContext(ctx, path, append(append(a.flags, "--", a.target), launch.Args...)...)
@@ -116,7 +123,7 @@ func platformCommand(ctx context.Context, launch Launch, mode, workspace, tmp st
 	}
 	abi, _, errno := syscall.Syscall(444, 0, 0, 1) // landlock_create_ruleset: query ABI
 	if errno != 0 || abi < 3 {
-		return nil, report, fmt.Errorf("sandbox-not-enforced: bubblewrap unavailable and Landlock ABI 3 or newer is required")
+		return nil, report, fmt.Errorf("sandbox-not-enforced: no usable bubblewrap at a trusted location (%s) and Landlock ABI 3 or newer is required", strings.Join(bwrapLocations, ", "))
 	}
 	self, err := os.Executable()
 	if err != nil {
@@ -127,7 +134,7 @@ func platformCommand(ctx context.Context, launch Launch, mode, workspace, tmp st
 		return nil, report, err
 	}
 	report.Backend, report.State = "landlock", "partial"
-	report.Reason = "file-content writes, truncation and directory mutations are restricted; metadata changes and network access are not restricted"
+	report.Reason = "file-content writes, truncation and directory mutations are restricted; metadata changes and network access are not restricted; no usable bubblewrap at a trusted location (" + strings.Join(bwrapLocations, ", ") + "), and a bwrap on PATH is never used"
 	report.cleanup = func() error { env.Close(); return nil }
 	extra, target := []*os.File{env}, launch.Path
 	if launch.File != nil && !isScript(launch.File) {
