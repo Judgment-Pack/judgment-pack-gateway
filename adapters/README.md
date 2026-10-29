@@ -2345,7 +2345,9 @@ are not counted in the discovery budget. Direct `{"url":...}` reads are unchange
 The Windows backend uses `CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE` and
 `WRITE_RESTRICTED`, a fresh restricting SID and a low mandatory integrity label.
 It grants that SID modify access only on the workspace and the private temporary
-directory in workspace-write mode. Read-only grants neither. Full access remains
+directory in workspace-write mode. Its token default DACL grants the same fresh
+SID access to new private objects; this does not change any existing host ACL.
+Read-only grants neither directory. Full access remains
 an explicit bypass of the sandbox, selected by the operator's policy.
 
 A trusted launcher creates a private window station and desktop before starting
@@ -2355,10 +2357,12 @@ startup fails, the command fails without retrying at broader permissions.
 
 The workspace must support security descriptors. Existing reparse points and
 multiply-linked files are refused before any ACL changes. At most 10,000 existing
-objects are held by handle; those handles prevent renames or deletions of existing
-objects while the command runs. Concurrent workspace-write uses of the same
-workspace are refused across logon sessions, with exclusion acquired before the
-ACL snapshot. New objects inherit the workspace grant. A job with
+objects are held by handle so restoration stays bound to their physical identities.
+Concurrent Windows workspace-write runs are refused, including nested or aliased
+workspaces and separate logon sessions; exclusion precedes the ACL snapshot.
+The child may rename or delete objects inside its writable directories, but it
+cannot move them into a directory without the fresh SID grant. The operator must
+not move workspace objects outside the workspace while a command is running. New objects inherit the workspace grant. A job with
 kill-on-close and no breakaway contains the launcher and its descendants. Cleanup
 terminates that job and verifies it is empty before restoring held ACLs. File handles
 request `MAXIMUM_ALLOWED` together with required security rights so `SetSecurityInfo`

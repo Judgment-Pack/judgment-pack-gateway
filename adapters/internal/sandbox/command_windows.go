@@ -146,6 +146,40 @@ func restrictedWindowsToken(sidText string) (syscall.Token, error) {
 		token.Close()
 		return 0, err
 	}
+	// New private objects must be accessible to the same restricting SID.
+	// This changes only the new token's default DACL, never an existing host
+	// object's ACL and never the set of restricting SIDs.
+	user, err := token.GetTokenUser()
+	if err != nil {
+		token.Close()
+		return 0, err
+	}
+	userSID, err := user.User.Sid.String()
+	if err != nil {
+		token.Close()
+		return 0, err
+	}
+	raw, err := syscall.UTF16PtrFromString("D:(A;;GA;;;SY)(A;;GA;;;" + userSID + ")(A;;GA;;;" + sidText + ")")
+	if err != nil {
+		token.Close()
+		return 0, err
+	}
+	var sd uintptr
+	if err = winBool(winStringSD, uintptr(unsafe.Pointer(raw)), 1, uintptr(unsafe.Pointer(&sd)), 0); err != nil {
+		token.Close()
+		return 0, err
+	}
+	defer winFree(sd)
+	var dacl uintptr
+	var present, defaulted uint32
+	if err = winBool(winGetDACL, sd, uintptr(unsafe.Pointer(&present)), uintptr(unsafe.Pointer(&dacl)), uintptr(unsafe.Pointer(&defaulted))); err != nil {
+		token.Close()
+		return 0, err
+	}
+	if err = winBool(winSetToken, uintptr(token), 6, uintptr(unsafe.Pointer(&dacl)), unsafe.Sizeof(dacl)); err != nil {
+		token.Close()
+		return 0, err
+	}
 	return token, nil
 }
 
@@ -269,8 +303,9 @@ func platformCommand(ctx context.Context, executable string, args []string, mode
 	sidText := fmt.Sprintf("S-1-5-21-%d-%d-%d-%d", binary.LittleEndian.Uint32(random[0:4]), binary.LittleEndian.Uint32(random[4:8]), binary.LittleEndian.Uint32(random[8:12]), binary.LittleEndian.Uint32(random[12:16]))
 	var err error
 	if mode == WorkspaceWrite {
-		// Validate the complete tree before changing any ACL. No delete sharing;
-		// reparse points and multiply-linked files are refused, not followed.
+		// Validate the complete tree before changing any ACL. Reparse points
+		// and multiply-linked files are refused, not followed. Global exclusion
+		// prevents a second restricted writer from changing nested workspaces.
 		for _, root := range []string{workspace, tmp} {
 			err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 				if walkErr != nil {
@@ -337,14 +372,13 @@ func platformCommand(ctx context.Context, executable string, args []string, mode
 	return cmd, report, nil
 }
 
-// Exclusion is acquired using physical identity before reading any ACL. The
-// global namespace covers separate logon sessions sharing the workspace.
-var lockWindowsWorkspace = func(handle syscall.Handle) (syscall.Handle, error) {
-	var info syscall.ByHandleFileInformation
-	if err := syscall.GetFileInformationByHandle(handle, &info); err != nil {
-		return 0, err
-	}
-	name, _ := syscall.UTF16PtrFromString(fmt.Sprintf("Global\\gateway-sandbox-%08x-%08x-%08x", info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow))
+// Exclude all restricted workspace writers before reading any ACL, including
+// nested or aliased workspaces and separate logon sessions. File handles allow
+// delete sharing so their MAXIMUM_ALLOWED access does not block normal I/O;
+// they keep restoration bound to the original object if the child renames it.
+// The fresh SID cannot move an object outside its writable parent directories.
+var lockWindowsWorkspace = func(_ syscall.Handle) (syscall.Handle, error) {
+	name, _ := syscall.UTF16PtrFromString("Global\\gateway-sandbox-workspace-write-v1")
 	h, _, err := winCreateEvent.Call(0, 1, 0, uintptr(unsafe.Pointer(name)))
 	if h == 0 {
 		return 0, err
@@ -363,7 +397,7 @@ func holdWindowsFile(path string) (winACL, error) {
 	}
 	// READ_CONTROL | WRITE_DAC | WRITE_OWNER | FILE_READ_ATTRIBUTES; open the
 	// reparse point itself and keep this exact object from being renamed.
-	handle, err := syscall.CreateFile(name, 0x020e0080, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE, nil, syscall.OPEN_EXISTING, 0x02000000|0x00200000, 0)
+	handle, err := syscall.CreateFile(name, 0x020e0080, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, nil, syscall.OPEN_EXISTING, 0x02000000|0x00200000, 0)
 	if err != nil {
 		return winACL{}, fmt.Errorf("sandbox-policy-invalid: workspace ACL handle: %w", err)
 	}

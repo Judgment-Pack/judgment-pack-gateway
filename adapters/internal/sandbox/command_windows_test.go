@@ -48,6 +48,9 @@ func init() {
 	results["private-station"] = strings.HasPrefix(objectName(station), "gateway-S-1-5-21-")
 	results["private-desktop"] = objectName(desktop) == "source"
 	results["inside"] = os.WriteFile(filepath.Join(os.Args[2], "new"), []byte("changed"), 0600) == nil
+	results["existing"] = os.WriteFile(filepath.Join(os.Args[2], "existing"), []byte("changed"), 0600) == nil
+	results["move-outside"] = os.Rename(filepath.Join(os.Args[2], "existing"), filepath.Join(filepath.Dir(os.Args[3]), "escaped")) == nil
+	results["rename-inside"] = os.Rename(filepath.Join(os.Args[2], "existing"), filepath.Join(os.Args[2], "renamed")) == nil
 	results["outside"] = os.WriteFile(os.Args[3], []byte("changed"), 0600) == nil
 	name, _ := syscall.UTF16PtrFromString(os.Args[3])
 	h, err := syscall.CreateFile(name, 0x40000, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, nil, syscall.OPEN_EXISTING, 0, 0)
@@ -96,6 +99,10 @@ func TestWindowsRestrictedTokenBoundary(t *testing.T) {
 			if err := os.WriteFile(outside, []byte("original"), 0600); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.WriteFile(filepath.Join(workspace, "existing"), []byte("original"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			fileBefore := aclString(t, filepath.Join(workspace, "existing"))
 			before := aclString(t, workspace)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -118,10 +125,10 @@ func TestWindowsRestrictedTokenBoundary(t *testing.T) {
 			if !got["private-station"] || !got["private-desktop"] {
 				t.Fatalf("restricted child did not inherit private desktop: %v", got)
 			}
-			if got["inside"] != (mode == WorkspaceWrite) {
+			if got["inside"] != (mode == WorkspaceWrite) || got["existing"] != (mode == WorkspaceWrite) || got["rename-inside"] != (mode == WorkspaceWrite) {
 				t.Fatalf("workspace permission: %v", got)
 			}
-			for _, name := range []string{"outside", "outside-acl", "parent-handles", "parent-token"} {
+			for _, name := range []string{"outside", "outside-acl", "parent-handles", "parent-token", "move-outside"} {
 				if got[name] {
 					t.Fatalf("boundary crossed: %s: %v", name, got)
 				}
@@ -132,6 +139,13 @@ func TestWindowsRestrictedTokenBoundary(t *testing.T) {
 			}
 			if err := cleanup(); err != nil {
 				t.Fatal(err)
+			}
+			fileName := "existing"
+			if mode == WorkspaceWrite {
+				fileName = "renamed"
+			}
+			if after := aclString(t, filepath.Join(workspace, fileName)); after != fileBefore {
+				t.Fatalf("held file ACL not restored: before %s; after %s", fileBefore, after)
 			}
 			if after := aclString(t, workspace); after != before {
 				t.Fatalf("workspace ACL not restored:\nbefore %s\nafter %s", before, after)
@@ -259,5 +273,18 @@ func TestWindowsCleanupFailureIsReturnedAndStable(t *testing.T) {
 		if err := r.cleanup(); err == nil || !strings.Contains(err.Error(), "sandbox-cleanup-failed:") {
 			t.Fatalf("cleanup failure lost: %v", err)
 		}
+	}
+}
+
+func TestWindowsDifferentWorkspaceWritersAlsoExclude(t *testing.T) {
+	_, _, cleanup, err := Command(context.Background(), os.Args[0], nil, WorkspaceWrite, t.TempDir())
+	defer cleanup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, secondCleanup, err := Command(context.Background(), os.Args[0], nil, WorkspaceWrite, t.TempDir())
+	defer secondCleanup()
+	if err == nil || !strings.Contains(err.Error(), "workspace already in use") {
+		t.Fatalf("overlapping restricted writers: %v", err)
 	}
 }
