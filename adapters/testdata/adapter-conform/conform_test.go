@@ -82,6 +82,7 @@ func TestMain(m *testing.M) {
 // program added to the release is run here or said not to be a source of an
 // adapter shape.
 var noEnvelope = map[string]string{
+	"adapter-sandbox":     "a native process launcher and posture/policy reporter; its child remains responsible for the source envelope",
 	"adapter-document":    "a bare source, of the command shape: what it writes is the attachment record itself (ADR-0004)",
 	"adapter-render":      "a bare source, of the command shape: what it writes is the render record itself (ADR-0006)",
 	"gateway-connections": "the connection companion over its parent's pipe, not a source",
