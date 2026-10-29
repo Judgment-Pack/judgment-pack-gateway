@@ -18,7 +18,7 @@ import (
 	"strings"
 )
 
-// The three states a protection can be in. not-applicable is a protection
+// not-applicable is a protection
 // with nothing to hold on this host or under this configuration -- no
 // source to switch, no seed named, an image this platform does not run --
 // never one that is merely absent, which is not-enforced.
@@ -55,6 +55,7 @@ type postureLine struct {
 
 type postureReport struct {
 	platform string
+	programs []postureProgram
 	lines    []postureLine
 }
 
@@ -69,8 +70,8 @@ type postureInput struct {
 	public     bool
 }
 
-// operatorProgramsLine is the same everywhere: no backend confines what
-// the gateway starts (SECURITY.md, "What none of this gives").
+// operatorProgramsLine is the legacy/no-evidence statement. Version 13 sources
+// contribute separately probed program entries and may report partial protection.
 var operatorProgramsLine = postureLine{protectionOperatorPrograms, postureNotEnforced,
 	"the gateway does not confine the programs it starts: a source, or a program an adapter runs, reads what its operating-system user can read, reaches the network and writes files"}
 
@@ -98,12 +99,13 @@ var postureStatements = map[string]map[string]postureLine{
 
 // hostPosture judges every protection under the configuration given.
 func hostPosture(in postureInput) postureReport {
-	return postureReport{platform: runtime.GOOS, lines: []postureLine{
+	programs := sourceProgramPosture(in.sources)
+	return postureReport{platform: runtime.GOOS, programs: programs, lines: []postureLine{
 		sourceUserPosture(in, requireUserSwitching, sourceUserIsRoot),
 		descendantPosture(),
 		custodyPosture(in.public),
 		seedPosture(in),
-		operatorProgramsLine,
+		programConfinementPosture(programs),
 	}}
 }
 
@@ -188,6 +190,13 @@ func (r postureReport) canonical() []byte {
 	top := newObject()
 	top.set("platform", vString(r.platform))
 	top.set("protections", protections)
+	if len(r.programs) > 0 {
+		programs := vArray{}
+		for _, p := range r.programs {
+			programs = append(programs, p.value())
+		}
+		top.set("programs", programs)
+	}
 	return canon(top)
 }
 
@@ -196,6 +205,9 @@ func (r postureReport) text() string {
 	var sb strings.Builder
 	for _, l := range r.lines {
 		fmt.Fprintf(&sb, "%-29s %-14s %s\n", l.name, l.state, l.reason)
+	}
+	for _, p := range r.programs {
+		fmt.Fprintf(&sb, "%s %s %s %s %s preset=%s %s\n", p.source, p.class, p.report.Protection.Mode, p.report.Protection.Backend, p.report.Protection.State, p.report.Preset, p.report.Protection.Reason)
 	}
 	return sb.String()
 }

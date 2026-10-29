@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -33,6 +34,7 @@ type Config struct {
 	// Customer requires a pinned owner-declared snapshot for every call.
 	Customer                                       bool
 	SandboxPolicy, SandboxSource, SandboxWorkspace string
+	SandboxEnclosing                               bool // explicit operator launch assertion; never proof of enforcement
 	OwnerDeclarationFile                           string
 	OwnerDeclarationPin                            string
 	ownerDeclarationLoaded                         bool
@@ -219,6 +221,12 @@ func credentialsEnv(path string) (env []string, secrets []string, err error) {
 // form takes. It reads nothing -- not the request, not the credentials --
 // so a configuration refused is refused before anything is read.
 func (cfg Config) Refusal() error {
+	if cfg.SandboxEnclosing && (!cfg.Customer || len(cfg.Command) == 0 || cfg.URL != "" || cfg.Image != "") {
+		return errors.New("sandbox-policy-invalid: enclosing boundary requires a customer command")
+	}
+	if cfg.SandboxEnclosing && !filepath.IsAbs(cfg.SandboxWorkspace) {
+		return errors.New("sandbox-policy-invalid: enclosing boundary requires an absolute workspace")
+	}
 	if cfg.Customer {
 		if cfg.ToolTaxonomies == nil && cfg.OwnerDeclarationFile == "" {
 			return errors.New("mcp-owner-declaration-required: a customer binding requires per-tool owner declarations")

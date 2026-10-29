@@ -384,6 +384,9 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if err := preflightPaths(candidate.store, candidate.registry, candidate.decisionRecords); err != nil {
 		return out, err
 	}
+	if err := validateEngineSandbox(candidate, bindings); err != nil {
+		return out, err
+	}
 	sources := deriveSources(candidate, bindings)
 	// Every adapter the sources launch, held as serve holds them at start,
 	// and launched by the path it resolved to.
@@ -618,8 +621,10 @@ func runCheck(ctx context.Context, spec sourceSpec) ([]byte, error) {
 		return nil, fmt.Errorf("adapter could not be started: %v", err)
 	}
 	argv := append(append([]string{spec.argv[0], "--check", "--timeout=" + checkTimeout.String()}, spec.check...), spec.argv[1:]...)
-	cmd := exec.CommandContext(ctx, path, argv[1:]...)
-	cmd.Args = argv
+	cmd, err := sandboxSourceCommand(ctx, spec, path, argv)
+	if err != nil {
+		return nil, err
+	}
 	cmd.Stdin = bytes.NewReader(nil)
 	cmd.Env = sourceEnvironment(spec)
 	group, err := prepareSourceProcess(cmd, spec.user)

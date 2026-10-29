@@ -243,7 +243,7 @@ func TestEngineConfigRefusals(t *testing.T) {
 		{"unknown member", engineJSON(t, catalog, `,"port":8787`, good), `unknown member "port"`},
 		{"duplicate member", `{"engineVersion":"1","engineVersion":"1"}`, "duplicate"},
 		{"missing member", replace(`"registry":"`, `"registryx":"`), `unknown member "registryx"`},
-		{"wrong version", replace(`"engineVersion":"1"`, `"engineVersion":"13"`), `engineVersion "13" is not "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11" or "12"`},
+		{"wrong version", replace(`"engineVersion":"1"`, `"engineVersion":"14"`), `unsupported engineVersion "14" (latest "13")`},
 		{"identity without an audience", engineJSON(t, catalog, `,"identity":{"issuer":"https://login.example","keys":"`+abs(t, t.TempDir(), "keys.json")+`"}`, good), `missing member "audience"`},
 		{"identity with an unknown member", engineJSON(t, catalog, `,"identity":{"issuer":"https://login.example","audience":"gateway:acme","keys":"`+abs(t, t.TempDir(), "keys.json")+`","jwksUrl":"https://x"}`, good), `unknown member "jwksUrl"`},
 		{"identity with an empty issuer", engineJSON(t, catalog, `,"identity":{"issuer":"","audience":"gateway:acme","keys":"`+abs(t, t.TempDir(), "keys.json")+`"}`, good), "identity.issuer must be the token issuer"},
@@ -939,7 +939,7 @@ func TestAdapterExecutablesAreHeldAndLaunchedResolved(t *testing.T) {
 		for _, dir := range []string{root, filepath.Join(root, "usr"), filepath.Join(root, "usr", "local"), bin} {
 			fs[dir] = fileOwnership{uid: 0, mode: 0o755, dir: true}
 		}
-		for _, name := range []string{"adapter-airbyte", "adapter-mcp"} {
+		for _, name := range []string{"adapter-airbyte", "adapter-mcp", "adapter-sandbox"} {
 			fs[filepath.Join(bin, name)] = fileOwnership{uid: 0, mode: 0o755}
 		}
 		return fs
@@ -984,6 +984,34 @@ func TestAdapterExecutablesAreHeldAndLaunchedResolved(t *testing.T) {
 			t.Fatalf("each source launches the resolved path, its arguments kept: %v", launched)
 		}
 	}
+	t.Run("sandbox helper has the same trust boundary", func(t *testing.T) {
+		for _, unsafe := range []bool{false, true} {
+			launched := sources("")
+			for name, spec := range launched {
+				spec.sandbox = &sourceSandbox{helper: "adapter-sandbox"}
+				launched[name] = spec
+			}
+			fs := image()
+			if unsafe {
+				fs[filepath.Join(bin, "adapter-sandbox")] = fileOwnership{uid: 1001, mode: 0755}
+			}
+			err := holdAdapterSources(launched, host(fs, onPath(bin)))
+			if unsafe {
+				if err == nil {
+					t.Fatal("untrusted helper accepted")
+				}
+				continue
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, spec := range launched {
+				if spec.sandbox.helper != filepath.Join(bin, "adapter-sandbox") {
+					t.Fatal("helper was not retained at resolved path")
+				}
+			}
+		}
+	})
 	// Each command is resolved once: the live and write sources share
 	// adapter-mcp, and a second lookup, which here would answer another
 	// path, is never made.

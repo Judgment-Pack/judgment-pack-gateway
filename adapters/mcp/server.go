@@ -103,7 +103,15 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 			return nil, err
 		}
 		var report sandbox.Report
-		cmd, report, cleanup, err = sandboxCommand(runCtx, path, cfg.Command[1:], mode, cfg.SandboxWorkspace)
+		if cfg.SandboxEnclosing {
+			// Only operator launch configuration selects this branch. The outer
+			// wrapper confines the adapter and all descendants; no tool argument
+			// or environment marker can select it. Report the assertion honestly.
+			cmd.Dir, cmd.Env = cfg.SandboxWorkspace, os.Environ()
+			report = sandbox.Report{Mode: mode, Backend: "enclosing-operator", State: "not-enforced", Reason: "the operator asserts an enclosing process boundary; this adapter did not independently establish or measure it"}
+		} else {
+			cmd, report, cleanup, err = sandboxCommand(runCtx, path, cfg.Command[1:], mode, cfg.SandboxWorkspace)
+		}
 		if err != nil {
 			cancel()
 			return nil, err

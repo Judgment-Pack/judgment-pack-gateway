@@ -35,6 +35,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	sandboxPolicy := fs.String("sandbox-policy", "", "separate operator sandbox policy file; workspace-write by default")
 	sandboxSource := fs.String("sandbox-source", "", "source identity for a sandbox policy override")
 	sandboxWorkspace := fs.String("sandbox-workspace", "", "absolute workspace directory for a customer command")
+	sandboxEnclosing := fs.Bool("sandbox-enclosing", false, "operator assertion that an enclosing launcher already confines this customer command; no independent enforcement claim")
 	image := fs.String("image", "", "pinned server image, name[:tag]@sha256:<64 hex>; or give a local server command after --, or a remote server's --url")
 	url := fs.String("url", "", "a remote server reached over Streamable HTTP, used as written: https, or http at a loopback address written as one; no user, no query, no fragment")
 	bearer := fs.String("bearer", "", "with --url, the member of the --credentials file sent as Authorization: Bearer")
@@ -86,6 +87,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	cfg := mcp.Config{Runtime: *runtime, Image: *image, URL: *url, Bearer: *bearer, Headers: headers, CAFile: *caFile, Credentials: *credentials, Endpoint: *endpoint, MaxOutput: *maxOutput}
 	cfg.Customer = *customer
 	cfg.SandboxPolicy, cfg.SandboxSource, cfg.SandboxWorkspace = *sandboxPolicy, *sandboxSource, *sandboxWorkspace
+	cfg.SandboxEnclosing = *sandboxEnclosing
 	if !*customer && (*sandboxPolicy != "" || *sandboxSource != "" || *sandboxWorkspace != "") {
 		fmt.Fprintln(stderr, "sandbox-policy-invalid: sandbox flags require --customer-binding")
 		return 2

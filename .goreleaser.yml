@@ -95,6 +95,10 @@ builds:
     main: ./cmd/adapter-render
     binary: adapter-render
   - <<: *adapter
+    id: adapter-sandbox
+    main: ./cmd/adapter-sandbox
+    binary: adapter-sandbox
+  - <<: *adapter
     id: adapter-sources
     main: ./cmd/adapter-sources
     binary: adapter-sources

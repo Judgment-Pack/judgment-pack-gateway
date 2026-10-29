@@ -1,0 +1,7 @@
+[
+  {"preset":"review","settings":{"mode":"read-only","approval":"always","operations":["ask","check","discover","read"]}},
+  {"preset":"work","settings":{"mode":"workspace-write","approval":"policy","operations":["act","ask","check","discover","propose","read"]}},
+  {"preset":"full","settings":{"mode":"danger-full-access","approval":"policy","operations":["act","ask","check","discover","propose","read"]}},
+  {"preset":"custom","settings":{"mode":"workspace-write","approval":"always","operations":["act","answer","ask","check","discover","evaluate","own-state","propose","read","run","transform"]}},
+  {"preset":"custom","settings":{"mode":"workspace-write","approval":"","operations":null}}
+]

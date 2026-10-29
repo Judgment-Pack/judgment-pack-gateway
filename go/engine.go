@@ -38,14 +38,15 @@ import (
 // version 9 a decision policy's optional `fix` and `closed`
 // (docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md),
 // version 10 a decision policy's optional `shape`, version 11 per-operation
-// owner descriptor approvals, and version 12 signed `descriptorStatements`:
+// owner descriptor approvals, version 12 signed `descriptorStatements`, and
+// version 13 the source sandbox wrapper and optional `sandbox` configuration:
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "12"
+const engineVersion = "13"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -67,6 +68,7 @@ const maxEngineConfigBytes = 1 << 20
 
 type engineConfig struct {
 	configPath string // internal path for approval-bound adapter snapshot arguments
+	sandbox    *engineSandbox
 
 	authority       string
 	seed            string
@@ -258,7 +260,7 @@ var engineMembers = map[string]bool{
 	"engineVersion": true, "authority": true, "seed": true, "store": true, "registry": true,
 	"decisionRecords": true, "listen": true, "catalog": true, "platforms": true,
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
-	"mcp": false, "witness": false, "witnessedBy": false,
+	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false,
 }
 
 var platformMembers = map[string]bool{
@@ -283,9 +285,21 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	var cfg engineConfig
 	version, _ := memberString(obj, "engineVersion")
 	if !engineVersions[version] {
-		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q, %q, %q, %q, %q, %q, %q, %q, %q or %q", version, "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", engineVersion)
+		return engineConfig{}, fmt.Errorf("engine configuration: unsupported engineVersion %q (latest %q)", version, engineVersion)
 	}
 	cfg.version = version
+	if sandboxValue, present := obj.get("sandbox"); present {
+		if !versionAtLeast(version, "13") {
+			return engineConfig{}, errors.New("sandbox requires engineVersion 13")
+		}
+		var err error
+		cfg.sandbox, err = parseEngineSandbox(sandboxValue)
+		if err != nil {
+			return engineConfig{}, err
+		}
+	} else if versionAtLeast(version, "13") {
+		cfg.sandbox = &engineSandbox{workspaces: map[string]string{}}
+	}
 	if _, present := obj.get("mcp"); present && version == "1" {
 		return engineConfig{}, errors.New("engine configuration: mcp is a version-2 member; engineVersion 1 has no mcp")
 	}
@@ -1177,6 +1191,46 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies}
 		}
 	}
+	if cfg.sandbox != nil {
+		for name, spec := range sources {
+			workspace, policy := cfg.sandbox.workspaces[name], cfg.sandbox.policy
+			classes := []string{"adapter"}
+			platform, opName, _ := strings.Cut(name, "/")
+			b := bindings[platform]
+			var op *operation
+			switch opName {
+			case "history":
+				op = b.history
+			case "live":
+				op = b.live
+			case "write":
+				op = b.write
+			}
+			if op != nil && len(op.command) > 0 {
+				workspace = op.workspace
+				if policy == "" {
+					policy = op.sandboxPolicy
+				}
+				// One effective selection for wrapper, adapter, and posture. The
+				// adapter skips redundant native setup only under this explicit
+				// operator launch assertion; its report does not claim enforcement.
+				for i, arg := range spec.argv {
+					if arg == "--" {
+						spec.argv = append(spec.argv[:i:i], append([]string{"--sandbox-enclosing"}, spec.argv[i:]...)...)
+						break
+					}
+					if strings.HasPrefix(arg, "--sandbox-policy=") {
+						spec.argv[i] = "--sandbox-policy=" + policy
+					}
+				}
+				classes = append(classes, "customer-command")
+			} else if op != nil && op.image != "" {
+				classes = append(classes, "container-helper")
+			}
+			spec.sandbox = &sourceSandbox{helper: adapter("adapter-sandbox"), policy: policy, workspace: workspace, source: name, classes: classes, probe: &sourceSandboxProbe{}}
+			sources[name] = spec
+		}
+	}
 	return sources
 }
 
@@ -1689,6 +1743,20 @@ func holdAdapterSources(sources map[string]sourceSpec, host engineHost) error {
 			resolved[command] = path
 		}
 		spec.argv = append([]string{path}, spec.argv[1:]...)
+		if spec.sandbox != nil {
+			command := spec.sandbox.helper
+			helper, held := resolved[command]
+			if !held {
+				var err error
+				if helper, err = holdAdapter(command, host); err != nil {
+					return fmt.Errorf("source %s: sandbox helper %s: %v", name, command, err)
+				}
+				resolved[command] = helper
+			}
+			selection := *spec.sandbox
+			selection.helper = helper
+			spec.sandbox = &selection
+		}
 		sources[name] = spec
 	}
 	return nil
@@ -2051,6 +2119,9 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 			}
 		}
 		bindings[p.name] = b
+	}
+	if err := validateEngineSandbox(*cfg, bindings); err != nil {
+		return nil, err
 	}
 	return bindings, nil
 }

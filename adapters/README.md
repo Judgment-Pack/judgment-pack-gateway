@@ -352,6 +352,27 @@ directory. The policy file must resolve outside that workspace. The policy belon
 The successful check report includes `sandbox` with mode, backend, state and reason.
 No backend means `sandbox-not-enforced` and the restricted command is not started.
 
+Engine version 13 instead confines the adapter and its descendants with the
+trusted `adapter-sandbox` launcher. For a customer command it passes the explicit
+operator flag `--sandbox-enclosing` along with the same effective policy, source
+identity and workspace. This skips a redundant inner sandbox, while keeping owner
+declarations, descriptor approval, drift checks, allowed tools and cleanup. The
+adapter reports `backend: "enclosing-operator"`, `state: "not-enforced"`: this flag
+is an operator assertion, not an independent enforcement check. Standalone use of
+the flag requires an operator-supplied enclosing boundary. It is refused for
+noncustomer, remote and container configurations; tool arguments cannot set it.
+
+`adapter-sandbox preset review|work|full` emits policy version 2, with expanded
+`mode`, `approval` and sorted operation families in `default` and whole-setting
+overrides in `sources`. It never writes a preset selector. The gateway enforces
+the filesystem mode; companion approval policy remains responsible for effects.
+`adapter-sandbox probe --policy FILE --source NAME --workspace DIR` performs a
+fixed native write check and emits canonical settings, derived preset and protection.
+`adapter-sandbox run` accepts the same selection followed by `-- COMMAND ARGS...`.
+Omitting the workspace creates a private invocation workspace. A child failure
+keeps its own exit status; setup or cleanup failures override success. Read-only
+mode denies temporary writes too, so programs that require scratch files may fail.
+
 Linux tries bubblewrap and falls back to Landlock ABI 3 or newer. Landlock is
 reported as `partial`: file-content writes, truncation and directory mutations are
 restricted, while metadata operations such as chmod remain outside its controls.
