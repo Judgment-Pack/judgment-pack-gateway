@@ -98,7 +98,10 @@ func readDescriptorArtifacts(root string, p descriptorProvenance) ([]byte, []byt
 	return snapshot, statement, ""
 }
 
-func checkDescriptorProvenance(root string, p descriptorProvenance, authority, source, endpoint string, keys []reachedKey) string {
+// remote is whether the acquisition reached a remote server (transport
+// "http"): its statement must then name that same, nonempty endpoint, and an
+// empty one -- a local capture -- does not cover it (SPEC.md §9).
+func checkDescriptorProvenance(root string, p descriptorProvenance, authority, source, endpoint string, remote bool, keys []reachedKey) string {
 	snapshot, statement, status := readDescriptorArtifacts(root, p)
 	if status != "" {
 		return status
@@ -129,7 +132,7 @@ func checkDescriptorProvenance(root string, p descriptorProvenance, authority, s
 	if _, err := time.Parse(time.RFC3339, fields["capturedAt"]); err != nil {
 		return fail
 	}
-	if ep := fields["endpoint"]; ep != "" && (!isRemoteEndpoint(ep) || ep != endpoint) {
+	if ep := fields["endpoint"]; (ep != "" || remote) && (!isRemoteEndpoint(ep) || ep != endpoint) {
 		return fail
 	}
 	core := newObject()

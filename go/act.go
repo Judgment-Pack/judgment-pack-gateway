@@ -213,38 +213,35 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		}
 	}
 
-	// The judgment is there. What follows is the acquisition path with an
-	// action's claims: admission, the executor as a source, one receipt in
-	// the session chain.
-	if g.beforeAdmit != nil {
-		g.beforeAdmit()
-	}
-	if err := g.admitAction(sessionID); err != nil {
-		return nil, err
-	}
-	defer g.release(sessionID)
-
 	request := newObject()
 	request.set("tool", vString(tool))
 	request.set("arguments", arguments)
 	canonicalRequest := canon(request)
 	var claim *actionClaim
+	attempt, begun := 0, false
 	if key != "" {
-		// Serialize journal settlement in this process. The durable exclusive
-		// reservation separately prevents dispatch in another process or restart.
-		g.actionMu.Lock()
-		defer g.actionMu.Unlock()
+		// One request per key at a time in this process; other keys proceed
+		// concurrently. The durable reservation and the dispatch marker hold
+		// one key exclusive across processes and restarts on their own.
+		namespace := g.actionNamespace(who, key)
+		defer g.actionLocks.lock(namespace)()
+		fingerprint, err := actionFingerprint(platform, tool, arguments, decisionV, citesV, spec, recovery, g.sources[platform+"/live"])
+		if err != nil {
+			return nil, actRefusal{"action-key", err.Error()}
+		}
 		journal, openErr := openActionJournal(g.storeRoot)
 		if openErr != nil {
 			return nil, actRefusal{"action-key", openErr.Error()}
 		}
 		defer journal.close()
-		claim, err = journal.reserve(g.actionNamespace(who, key), actionFingerprint(platform, tool, arguments, decisionV, citesV, spec, recovery, g.sources[platform+"/live"]))
+		claim, err = journal.reserve(namespace, fingerprint)
 		if err != nil {
 			return nil, actRefusal{"action-key", err.Error()}
 		}
 		defer claim.close()
 		if !claim.fresh {
+			// Retained evidence answers before admission: a replay, a
+			// conflict or an invalid entry opens no session of its own.
 			saved, readErr := claim.read("action.json", actionJournalResponseLimit)
 			if readErr == nil {
 				prior, err := g.readActionResponse(saved, who, key, recovery.digest(), arguments, canonicalRequest)
@@ -260,9 +257,34 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 				return nil, readErr
 			}
 		}
+		attempt, begun, err = claim.attempt()
+		if err != nil {
+			return nil, actRefusal{"action-key", err.Error()}
+		}
 	}
+
+	// The judgment is there. What follows is the acquisition path with an
+	// action's claims: admission, the executor as a source, one receipt in
+	// the session chain.
+	if g.beforeAdmit != nil {
+		g.beforeAdmit()
+	}
+	if err := g.admitAction(sessionID); err != nil {
+		return nil, err
+	}
+	defer g.release(sessionID)
+
 	var result value
-	uncertain := claim != nil && !claim.fresh
+	// A dispatch marker without its not-dispatched answer: the mutation may
+	// have been sent, so it is recorded as uncertain and never sent again.
+	uncertain := begun
+	if claim != nil && !uncertain {
+		if err = claim.claimDispatch(attempt); errors.Is(err, errActionDispatchClaimed) {
+			uncertain = true
+		} else if err != nil {
+			return nil, actRefusal{"action-key", err.Error()}
+		}
+	}
 	if !uncertain {
 		result, _, _, err = g.runSource(source, spec, canonicalRequest)
 		if err == nil {
@@ -271,6 +293,13 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		if err != nil {
 			if claim == nil {
 				return nil, err
+			}
+			// The write program was never started: nothing was sent, and once
+			// that is answered durably the key's next attempt is free.
+			var notStarted *sourceNotStarted
+			if errors.As(err, &notStarted) && claim.releaseDispatch(attempt, err.Error()) == nil {
+				g.abandonUnminted(sessionID)
+				return nil, fmt.Errorf("action-not-dispatched: nothing was sent, and the same request may be retried under the same key: %w", err)
 			}
 			uncertain = true
 		}
@@ -518,6 +547,23 @@ func (g *gatewayService) admitAction(sessionID string) error {
 	state.inFlight++
 	g.gate.admitLocked()
 	return nil
+}
+
+// abandonUnminted removes the session directory admission made for an
+// action that minted nothing and was never sent (action-not-dispatched), so
+// the store keeps no empty, unsealed session for it. Only while this request
+// is the session's one admission and nothing was minted in it; a directory
+// that is not empty is left as it is.
+func (g *gatewayService) abandonUnminted(sessionID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	state, seen := g.sessions[sessionID]
+	if !seen || !state.created || state.sealed || state.index != 0 || state.inFlight != 1 {
+		return
+	}
+	if os.Remove(filepath.Join(g.storeRoot, "receipts", sessionID)) == nil {
+		state.created = false
+	}
 }
 
 // narrowTools is the write source started for one tool: the adapter's

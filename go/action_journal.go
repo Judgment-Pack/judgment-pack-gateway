@@ -10,10 +10,23 @@ import (
 	"path/filepath"
 )
 
-// A reservation is immutable. Its exclusive directory creation is the only
-// transition that grants permission to dispatch. Every later open, including a
-// partially written reservation after a crash, forbids another dispatch.
+// A reservation binds a key to one approved content (intent.json). Dispatch is
+// granted by a second exclusive transition: creating dispatch-<n>.json, synced,
+// immediately before the write program is started. A reservation whose every
+// dispatch marker is answered by not-dispatched-<n>.json provably sent nothing,
+// and its next attempt may be claimed, by exactly one exclusive creator. A
+// dispatch marker without its answer means dispatch may have begun, and no
+// later open dispatches again. Nothing here is overwritten or removed, and a
+// partial or unreadable entry never grants dispatch.
 const actionJournalResponseLimit = 16 << 20
+
+// actionJournalVersion is the intent's journal version. Version "1" entries,
+// written before dispatch markers existed, are refused: they cannot prove that
+// nothing was sent.
+const actionJournalVersion = "2"
+
+// actionDispatchAttempts bounds the not-dispatched attempts one key may record.
+const actionDispatchAttempts = 16
 
 type actionJournal struct{ root *os.Root }
 type actionClaim struct {
@@ -149,7 +162,7 @@ func (j *actionJournal) reserve(namespace, fingerprint string) (*actionClaim, er
 	claim := &actionClaim{root: root, fresh: fresh}
 	fail := func(err error) (*actionClaim, error) { root.Close(); return nil, err }
 	if fresh {
-		raw, _ := json.Marshal(actionIntent{Version: "1", Fingerprint: fingerprint})
+		raw, _ := json.Marshal(actionIntent{Version: actionJournalVersion, Fingerprint: fingerprint})
 		if err = claim.put("intent.json", raw, 1024); err != nil {
 			return fail(err)
 		}
@@ -172,7 +185,7 @@ func (j *actionJournal) reserve(namespace, fingerprint string) (*actionClaim, er
 	}
 	version, _ := memberString(object, "journalVersion")
 	stored, _ := memberString(object, "fingerprint")
-	if version != "1" || !isLowerHexOfLen(stored, 64) {
+	if version != actionJournalVersion || !isLowerHexOfLen(stored, 64) {
 		return fail(errors.New("action-journal-invalid: invalid intent"))
 	}
 	if stored != fingerprint {
@@ -182,8 +195,64 @@ func (j *actionJournal) reserve(namespace, fingerprint string) (*actionClaim, er
 }
 
 func actionJournalName(name string) bool {
-	return name == "intent.json" || name == "action.json" || name == "response.json"
+	if name == "intent.json" || name == "action.json" || name == "response.json" {
+		return true
+	}
+	for n := 1; n <= actionDispatchAttempts; n++ {
+		if name == actionDispatchName(n) || name == actionNotDispatchedName(n) {
+			return true
+		}
+	}
+	return false
 }
+
+func actionDispatchName(n int) string      { return fmt.Sprintf("dispatch-%d.json", n) }
+func actionNotDispatchedName(n int) string { return fmt.Sprintf("not-dispatched-%d.json", n) }
+
+// errActionDispatchClaimed is a dispatch marker another opener created first:
+// that opener may be sending the mutation now.
+var errActionDispatchClaimed = errors.New("action-journal: dispatch was claimed by another request")
+
+// attempt is the reservation's dispatch state: the next attempt number to
+// claim, or begun when a dispatch marker exists without its not-dispatched
+// answer, so the mutation may have been sent. An entry that cannot be read as
+// a not-dispatched answer counts as begun; only a complete answer frees the
+// next attempt.
+func (c *actionClaim) attempt() (n int, begun bool, err error) {
+	for n = 1; n <= actionDispatchAttempts; n++ {
+		if _, err = c.root.Lstat(actionDispatchName(n)); errors.Is(err, os.ErrNotExist) {
+			return n, false, nil
+		} else if err != nil {
+			return n, true, nil
+		}
+		if _, err = c.read(actionNotDispatchedName(n), 1024); err != nil {
+			return n, true, nil
+		}
+	}
+	return 0, false, errors.New("action-journal-exhausted: this key recorded too many attempts that were never dispatched; choose the request's next step with the operator")
+}
+
+// claimDispatch creates attempt n's dispatch marker exclusively and makes it
+// durable. Only a nil return permits starting the write program. A marker that
+// already exists is errActionDispatchClaimed; any other failure sends nothing,
+// and a marker it may have left counts as begun on the next open.
+func (c *actionClaim) claimDispatch(n int) error {
+	raw, _ := json.Marshal(map[string]int{"attempt": n})
+	err := c.put(actionDispatchName(n), raw, 1024)
+	if errors.Is(err, errActionRecordExists) {
+		return errActionDispatchClaimed
+	}
+	return err
+}
+
+// releaseDispatch answers attempt n's marker: the write program was never
+// started, so nothing was sent under it.
+func (c *actionClaim) releaseDispatch(n int, reason string) error {
+	raw, _ := json.Marshal(map[string]any{"attempt": n, "reason": reason})
+	return c.put(actionNotDispatchedName(n), raw, 1024)
+}
+
+var errActionRecordExists = errors.New("action-journal-unavailable: cannot exclusively retain record: it already exists")
 
 // put never overwrites or removes a partial file. An existing malformed entry
 // means uncertainty and needs operator recovery; it never grants a new dispatch.
@@ -192,6 +261,9 @@ func (c *actionClaim) put(name string, raw []byte, limit int) error {
 		return errors.New("action-journal-invalid: invalid or oversized record")
 	}
 	f, err := c.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if errors.Is(err, os.ErrExist) {
+		return errActionRecordExists
+	}
 	if err != nil {
 		return errors.New("action-journal-unavailable: cannot exclusively retain record")
 	}

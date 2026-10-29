@@ -1105,8 +1105,12 @@ launch does not use.
 
 Version 14 requires a caller-chosen `actionKey` on `/act`: 64 lowercase hex
 characters, retained and reused for the same approved intent across retries.
-Older configurations may opt in per request. A changed payload under the same
-key is refused. The key does not replace authorization, decision policy or a
+Older configurations may opt in per request. A changed payload or approval under
+the same key is refused as `action-key-conflict`; install paths, the platform
+environment and the OS user are not part of the key's identity, so an upgrade
+into another directory does not strand it. Never send a conflicting key's write
+again under a new key. A write program that was never started answers
+`action-not-dispatched` and frees the key for the same request. The key does not replace authorization, decision policy or a
 lease fence. Clients must retain the key and approved content before submitting
 a write; changing the key after a timeout creates a distinct action.
 

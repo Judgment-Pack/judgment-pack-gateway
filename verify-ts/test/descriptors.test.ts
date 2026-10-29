@@ -16,12 +16,12 @@ const digest = (raw: string): string => "sha256:" + crypto.createHash("sha256").
 // order can be spelled without the implementation's canonicalizer.
 const canonicalText = (o: Record<string,string>): string => JSON.stringify(Object.fromEntries(Object.entries(o).sort(([a],[b]) => a < b ? -1 : a > b ? 1 : 0)));
 
-function fixture(change?: string, missing?: string, removeMember?: string) {
+function fixture(change?: string, missing?: string, removeMember?: string, endpoint = "", acquisitionMembers: Record<string,unknown> = {}) {
   const store = newStore();
   const snapshot = '{"tools":{}}';
   const snapshotPin = digest(snapshot);
   const binding = "customer@sha256:" + "1".repeat(64);
-  const core: Record<string,string> = {statementVersion:"1",authority,keyId,source:"tickets/live",binding,snapshot:snapshotPin,endpoint:"",capturedAt:"2026-09-15T01:02:03Z"};
+  const core: Record<string,string> = {statementVersion:"1",authority,keyId,source:"tickets/live",binding,snapshot:snapshotPin,endpoint,capturedAt:"2026-09-15T01:02:03Z"};
   if (change !== undefined && mutations[change] !== undefined) core[change] = mutations[change]!;
   if (removeMember !== undefined && removeMember !== "signature") delete core[removeMember];
   const statement: Record<string,string> = {...core,signature:sign(change === "domain" ? "judgment-pack-gateway/receipt/3:" : prefix,core)};
@@ -35,6 +35,7 @@ function fixture(change?: string, missing?: string, removeMember?: string) {
   receipt.source = "tickets/live";
   receipt.acquisition.shape = "mcp";
   receipt.acquisition.descriptorProvenance = {snapshot:snapshotPin,statement:statementPin,binding};
+  Object.assign(receipt.acquisition,acquisitionMembers);
   put(store,"s1","0.json",JSON.stringify(signed(receipt)));
   fs.writeFileSync(store.registry,sealLine("s1",1)+"\n");
   return store;
@@ -100,4 +101,11 @@ test("a descriptor statement signed by a later reached key cannot cover an earli
   const reverse = {...common,kind:"key-continuation",keyId:nextId,previous:publicKey.toString("hex"),previousKeyId:keyId};
   fs.appendFileSync(store.registry,JSON.stringify({...forward,signature:sign("judgment-pack-gateway/rotation/1:",forward)})+"\n"+JSON.stringify({...reverse,signature:nextSign("judgment-pack-gateway/rotation/1:",reverse)})+"\n");
   assert.equal(status(store),"descriptor-provenance-mismatch");
+});
+
+// #349 F3: an empty statement endpoint records a local capture and covers no
+// remote acquisition. The rows are shared with the Go reader.
+test("a descriptor statement's endpoint follows the acquisition's transport", () => {
+  const rows: {name:string,statementEndpoint:string,acquisition:Record<string,unknown>,status:string}[] = JSON.parse(fs.readFileSync(new URL("../../testdata/descriptor-provenance/endpoint-cases.json",import.meta.url),"utf8"));
+  for (const row of rows) assert.equal(status(fixture(undefined,undefined,undefined,row.statementEndpoint,row.acquisition)),row.status,row.name);
 });

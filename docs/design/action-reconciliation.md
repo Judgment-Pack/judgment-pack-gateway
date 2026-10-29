@@ -15,10 +15,25 @@ claim. The key is not an authorization credential or a lease fencing check.
 The journal namespace binds the gateway authority, authenticated issuer and subject,
 and action key. It excludes the access-token digest and session identifier so a
 renewed authentication token or fresh post-restart session cannot cause another
-dispatch. A retained fingerprint binds the platform, tool, canonical effective
-arguments, decision, citations, pinned binding, resolved write/read source identities and recovery declaration. Reusing a
-key for different content is an `action-key-conflict` refusal. A new key denotes a
-new action; callers must not invent one merely because an answer was lost.
+dispatch. A retained fingerprint binds the approved identity: the platform, tool,
+canonical effective arguments, decision, citations, pinned binding, recovery
+declaration and decision policy, and for the write and read-back sources their
+binding, endpoint, transport, command line without install paths (keeping the
+descriptor and executable approval pins), signed descriptor provenance and the
+digest of the sandbox policy bytes the launch is bound to. Where the programs are
+installed (the adapter, the runtime client, the credentials file, the sandbox
+helper, policy and workspace paths, the configuration's copies of approvals), the
+platform's environment and the OS user are left out, so an upgrade into another
+directory or an added environment variable does not strand a key. Reusing a key for
+different content is an `action-key-conflict` refusal. A new key denotes a new
+action; callers must not invent one merely because an answer was lost, and must
+never send a conflicting key's write again under a new key.
+
+What does change the identity, and so strands a pending key with
+`action-key-conflict`: a new binding pin, a recaptured descriptor or executable
+approval, another sandbox policy, moving an opted-in deployment from engine
+version 12 to 13 (which adds the sandbox), or another endpoint. Settle pending
+keys (each answered from the journal, or read back) before such a change.
 
 All existing requester, session, citation, record, descriptor and effect-policy
 checks still run. The gateway reserves the key durably before dispatch, after
@@ -27,9 +42,22 @@ to make a retry possible. A partial or corrupt reservation is uncertainty, not
 absence. Directory, file and final-name durability are required before a result
 is relied on; a platform unable to provide that guarantee refuses the keyed path.
 
-Only the creator of the reservation may dispatch the mutation. Concurrent repeats
-and repeats after restart may return retained evidence or perform the declared
-read-back, but never repeat the mutation. On the implemented keyed path, Unix filesystems must support successful file and
+Dispatch takes a second exclusive transition: the gateway creates
+`dispatch-<n>.json` in the reservation, synced, immediately before starting the
+write program, and only that marker's creator may send the mutation. A program
+that was never started (not found, refused before its start, or the start itself
+failed) is answered with a synced `not-dispatched-<n>.json`; the request is refused
+as `action-not-dispatched`, nothing is receipted, and the same request under the
+same key may claim attempt `n+1`. A reservation without any marker, left by a crash
+before dispatch, is likewise taken over by the next request. A marker without its
+answer means dispatch may have begun: it is recorded as uncertain and never
+dispatched again. A refusal by the sandbox helper after it started is not proof
+that the adapter never ran, and stays uncertain. Concurrent repeats and repeats
+after restart may return retained evidence, dispatch a freed attempt or perform the
+declared read-back, but never repeat a mutation that may have been sent. Within one
+process, requests under one key run one at a time; different keys run concurrently.
+A replayed response, a conflict and an invalid entry are answered before admission
+and open no session. On the implemented keyed path, Unix filesystems must support successful file and
 directory synchronization. Other hosts refuse keyed dispatch; this is not a
 cross-platform durability claim.
 
@@ -84,7 +112,11 @@ response. The journal therefore treats every reserved but unsettled action alike
 
 Read-back produces a separate acquisition receipt whose reconciliation member
 names the action receipt, key, recovery-contract digest and observed outcome.
-Both readers validate these members and the referenced action. The receipt proves
+Both readers validate these members and the referenced action, and require the
+read-back to be the action platform's `<platform>/live` MCP acquisition. Both
+report every uncertain action as an observation beside `ok`: `action-uncertain`,
+`action-committed` or `action-mismatch` (SPEC.md §1.2b). A reader before this
+release returns `ok` for an uncertain action and says nothing of its delivery. The receipt proves
 what the target reported under the gateway's signature; it does not make an
 untrusted or stale target truthful. Existing receipts without these members retain
 their original meaning and canonical form.
@@ -116,3 +148,31 @@ the original reservation retained. Unsupported read-back returns HTTP 409 with t
 
 No automatic mutation retry is introduced. Target idempotency is additional
 defense when supported, not a substitute for the gateway's durable reservation.
+
+## Known limits
+
+- **A damaged journal entry needs an operator.** A partial or unreadable intent,
+  marker or response refuses its key for good: it never grants dispatch. Before
+  removing such an entry, the operator checks at the target whether the write
+  happened and records what was found; removing it re-enables dispatch under that
+  key.
+- **The journal grows with every key.** Each key keeps a directory holding its
+  intent, markers and full retained response. There is no retention policy yet;
+  removing a settled entry loses the replay of its response.
+- **The receipt a journal entry cites is synced best-effort.** After a power loss
+  the journal can name a receipt the store lost; that key then refuses as
+  `action-journal-invalid` instead of replaying. Nothing is sent twice.
+- **The key is scoped to the authority and the authenticated issuer and subject.**
+  A takeover that authenticates as another subject reaches another reservation,
+  and so does every key after the configured issuer string or the authority
+  changes, even for the same subject: settle pending keys first. The agent's
+  run-owned jobs settle this scope before adopting reconciliation (#352).
+- **A key records at most 16 attempts that were never started.** A retry loop
+  through an outage exhausts it (`action-journal-exhausted`). Every attempt was
+  answered as not dispatched, so nothing was sent: the client may send the write
+  under a new key, or an operator may remove that key's entry once the cause is
+  fixed.
+- **The identity keeps this release's derived command line.** The adapter command
+  line, less its install paths, is part of the identity, so a later release that
+  adds or reorders a derived flag turns pending keys into conflicts. Reconcile or
+  drain pending uncertain keys before upgrading.

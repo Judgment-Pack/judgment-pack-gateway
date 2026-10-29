@@ -72,3 +72,21 @@ test('an empty acquire argument is left to the engine’s default', async () => 
 	await new JudgmentPack().execute.call(ctx);
 	assert.deepEqual(ctx.sent[0].options.body, { session: 's1', source: 'x' });
 });
+
+test('an act sends the derived action key unless the workflow gives one', async () => {
+	const item = {
+		operation: 'act',
+		session: 's1',
+		platform: 'tickets',
+		tool: 'update_ticket',
+		arguments: { id: 'T-1' },
+		decision: { recordDigest: 'sha256:a', packDigest: 'sha256:b' },
+		cites: [{ sessionId: 's1', callIndex: 3, signature: 'ab' }],
+	};
+	const ctx = context([item, { ...item, session: 's2' }, { ...item, actionKeyMode: 'given', actionKey: 'd'.repeat(64) }]);
+	await new JudgmentPack().execute.call(ctx);
+	const [first, retry, given] = ctx.sent.map((s) => s.options.body.actionKey);
+	assert.match(first, /^[0-9a-f]{64}$/);
+	assert.equal(retry, first);
+	assert.equal(given, 'd'.repeat(64));
+});

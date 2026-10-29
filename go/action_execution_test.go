@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,6 +67,7 @@ func TestActionReconciliationCommitThenDrop(t *testing.T) {
 		t.Skip("keyed dispatch fails closed on this host")
 	}
 	t.Setenv(envSourceHelper, "1")
+	stubSandboxPolicyDigests(t, nil)
 	root := t.TempDir()
 	target := filepath.Join(root, "target-state")
 	recoveryValue, _ := parseJSON([]byte(recoveryDeclaration))
@@ -200,7 +202,11 @@ func TestActionReconciliationCommitThenDrop(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, session := range []string{"after-restart", "conflict", "repeat-0", "repeat-1", "repeat-2", "repeat-3"} {
+	// A refused retry opens no session of its own (#351 L2).
+	if _, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", "conflict")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused retry left a session: %v", err)
+	}
+	for _, session := range []string{"after-restart", "repeat-0", "repeat-1", "repeat-2", "repeat-3"} {
 		if _, err := restarted.sealSession(session); err != nil {
 			t.Fatal(err)
 		}
@@ -210,24 +216,47 @@ func TestActionReconciliationCommitThenDrop(t *testing.T) {
 		t.Fatalf("reconciled store does not verify: %+v %v", report, err)
 	}
 	testActionCorrelationMutations(t, g, "act", "after-restart")
-	// A durable reservation left before dispatch is uncertain after restart;
-	// even a negative read-back cannot authorize sending the mutation.
+	// A reservation whose dispatch marker was never created provably sent
+	// nothing (#351 L1): after a restart the same request dispatches it, once.
 	key = strings.Repeat("2", 64)
 	args, _ := parseJSON([]byte(`{"ticket":"T-1","request_id":"` + key + `"}`))
 	decisionV, _ := parseJSON(decision)
 	citesV, _ := parseJSON(cites)
+	fingerprint, err := actionFingerprint("tickets", "query", args, decisionV, citesV, narrowTools(sources["tickets/write"], "query"), recovery["query"], sources["tickets/live"])
+	if err != nil {
+		t.Fatal(err)
+	}
 	pending, err := openActionJournal(g.storeRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim, err := pending.reserve(g.actionNamespace(who, key), actionFingerprint("tickets", "query", args, decisionV, citesV, sources["tickets/write"], recovery["query"], sources["tickets/live"]))
+	claim, err := pending.reserve(g.actionNamespace(who, key), fingerprint)
 	if err != nil {
 		t.Fatal(err)
 	}
 	claim.close()
-	pending.close()
 	afterCrash := makeService()
-	unknown, err := call(afterCrash, "after-crash", who, `{"ticket":"T-1"}`)
+	assertRead(call(afterCrash, "after-crash", who, `{"ticket":"T-1"}`))
+	if data, err := os.ReadFile(target); err != nil || strings.Count(string(data), key+"\n") != 1 {
+		t.Fatal("a reservation that never dispatched was not dispatched exactly once")
+	}
+	// A dispatch marker without its answer means the mutation may have been
+	// sent: a restart records uncertainty, reads back, and never sends again.
+	key = strings.Repeat("4", 64)
+	args, _ = parseJSON([]byte(`{"ticket":"T-1","request_id":"` + key + `"}`))
+	if fingerprint, err = actionFingerprint("tickets", "query", args, decisionV, citesV, narrowTools(sources["tickets/write"], "query"), recovery["query"], sources["tickets/live"]); err != nil {
+		t.Fatal(err)
+	}
+	claim, err = pending.reserve(g.actionNamespace(who, key), fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = claim.claimDispatch(1); err != nil {
+		t.Fatal(err)
+	}
+	claim.close()
+	pending.close()
+	unknown, err := call(makeService(), "after-marker", who, `{"ticket":"T-1"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,8 +264,8 @@ func TestActionReconciliationCommitThenDrop(t *testing.T) {
 	if member["outcome"] != "unknown" {
 		t.Fatal("absent correlated key became committed")
 	}
-	if data, err := os.ReadFile(target); err != nil || strings.Count(string(data), "\n") != 1 {
-		t.Fatal("restart of a reserved action dispatched a second mutation")
+	if data, err := os.ReadFile(target); err != nil || strings.Contains(string(data), key) {
+		t.Fatal("restart of a possibly dispatched action sent the mutation")
 	}
 
 	// A complete executor response is replayed without calling either operation.
@@ -256,6 +285,10 @@ func TestActionReconciliationCommitThenDrop(t *testing.T) {
 	b, _ := json.Marshal(secondResponse)
 	if string(a) != string(b) || completed.started.Load() != before {
 		t.Fatal("completed action was not replayed exactly without a target call")
+	}
+	// A replay opens no session of its own (#351 L2).
+	if _, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", "complete-again")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a replayed retry left a session: %v", err)
 	}
 	// No response is valid when its signed receipt has been altered in the journal.
 	journal, err := openActionJournal(g.storeRoot)
@@ -283,6 +316,9 @@ func TestActionReconciliationCommitThenDrop(t *testing.T) {
 	}
 	if completed.started.Load() != before {
 		t.Fatal("corrupt cache repeated a target call")
+	}
+	if _, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", "tampered-cache")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused retry left a session: %v", err)
 	}
 	// An unsupported binding still prevents replay and returns its action evidence.
 	key = strings.Repeat("3", 64)

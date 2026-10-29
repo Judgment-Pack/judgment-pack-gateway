@@ -5,6 +5,8 @@
 // engine's URL and the bearer are the credential's (authenticate in
 // credentials/JudgmentPackEngineApi.credentials.ts), never read here.
 
+import { createHash } from 'crypto';
+
 export interface EngineRequest {
 	method: 'POST';
 	path: '/acquire' | '/act' | '/seal';
@@ -100,6 +102,103 @@ export function acquireRequest(input: { session: unknown; source: unknown; argum
 	return c.built({ method: 'POST', path: '/acquire', body });
 }
 
+// The engine's action key form (SPEC.md §1.2b): 64 lowercase hexadecimal
+// characters.
+const actionKeyForm = /^[0-9a-f]{64}$/;
+
+// canonicalText spells a JSON value with every object's members in UTF-16
+// code-unit order, so one intent always spells, and hashes, the same.
+function canonicalText(value: unknown): string {
+	if (Array.isArray(value)) {
+		return `[${value.map(canonicalText).join(',')}]`;
+	}
+	if (value !== null && typeof value === 'object') {
+		const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+		return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalText(v)}`).join(',')}}`;
+	}
+	return JSON.stringify(value);
+}
+
+// ActionKeyError is why no key can be derived from the intent as given.
+export class ActionKeyError extends Error {}
+
+// unfaithful names the first value JSON does not carry as it is, or is
+// undefined: a function, a symbol or a bigint, and any object that is neither
+// an array, a plain object nor a Date -- a Map or a Set is sent as {}, so two
+// different writes would derive one key, and the second would never be sent.
+function unfaithful(value: unknown, at: string): string | undefined {
+	if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {
+		return at;
+	}
+	if (value === null || typeof value !== 'object' || value instanceof Date) {
+		return undefined;
+	}
+	if (Array.isArray(value)) {
+		for (let i = 0; i < value.length; i++) {
+			const found = unfaithful(value[i], `${at}[${i}]`);
+			if (found !== undefined) {
+				return found;
+			}
+		}
+		return undefined;
+	}
+	const prototype = Object.getPrototypeOf(value);
+	if ((prototype !== Object.prototype && prototype !== null) || 'toJSON' in value) {
+		return at;
+	}
+	for (const [name, member] of Object.entries(value as Record<string, unknown>)) {
+		const found = unfaithful(member, `${at}.${name}`);
+		if (found !== undefined) {
+			return found;
+		}
+	}
+	return undefined;
+}
+
+type Intent = { platform: unknown; tool: unknown; arguments: unknown; decision: unknown; cites: unknown };
+
+// intentAsSent is the intent exactly as the request's JSON carries it: a Date
+// as its ISO string, an undefined member left out. The request sends these
+// values, and the key is derived from them, so the key cannot name what is not
+// sent. A value JSON does not carry as it is refuses derivation.
+export function intentAsSent(intent: Intent): Record<string, unknown> {
+	const picked = {
+		platform: intent.platform,
+		tool: intent.tool,
+		arguments: intent.arguments,
+		decision: intent.decision,
+		cites: intent.cites,
+	};
+	const at = unfaithful(picked, 'the write');
+	if (at !== undefined) {
+		throw new ActionKeyError(
+			`the action key cannot be derived: ${at} is not a value JSON carries as it is (a Map, a Set or another object); give an explicit action key`,
+		);
+	}
+	return JSON.parse(JSON.stringify(picked)) as Record<string, unknown>;
+}
+
+function keyOf(sent: Record<string, unknown>): string {
+	return createHash('sha256').update('judgment-pack-plugin/action-key/1:' + canonicalText(sent), 'utf8').digest('hex');
+}
+
+// deriveActionKey names one approved intent: the same platform, tool,
+// arguments, decision and citations always give the same key, so every retry
+// of the item -- Retry On Fail, or the execution run again -- sends the key its
+// first attempt sent, and the engine answers it from its journal instead of
+// writing twice. Another intent gives another key. The session is left out: a
+// retry opens a new one.
+// The arguments are the ones evaluated for this attempt: an expression that
+// changes per execution (the current time, a random value) gives a retry a new
+// key, and the write would be sent again; give an explicit key for such a write.
+export function deriveActionKey(intent: Intent): string {
+	return keyOf(intentAsSent(intent));
+}
+
+// actRequest's action key: 'derive' (the default) names the intent as
+// deriveActionKey does; 'given' sends the key the workflow chose once for the
+// intent and keeps for its retries; 'none' sends no key, which an engine at
+// configuration version 14 refuses and with which a retry may write twice.
 export function actRequest(input: {
 	session: unknown;
 	platform: unknown;
@@ -107,6 +206,8 @@ export function actRequest(input: {
 	arguments: unknown;
 	decision: unknown;
 	cites: unknown;
+	actionKeyMode?: unknown;
+	actionKey?: unknown;
 }): Built {
 	const c = new check();
 	const decision = c.object(input.decision, 'the decision');
@@ -128,7 +229,7 @@ export function actRequest(input: {
 			c.refuse('a citation must carry sessionId, callIndex and signature');
 		}
 	}
-	const body = {
+	const body: Record<string, unknown> = {
 		session: c.session(input.session),
 		platform: c.text(input.platform, 'the platform'),
 		tool: c.text(input.tool, 'the tool'),
@@ -136,6 +237,29 @@ export function actRequest(input: {
 		decision,
 		cites,
 	};
+	switch (input.actionKeyMode ?? 'derive') {
+		case 'derive':
+			if (c.refusal === undefined) {
+				try {
+					const sent = intentAsSent({ platform: body.platform, tool: body.tool, arguments: body.arguments, decision, cites });
+					Object.assign(body, sent);
+					body.actionKey = keyOf(sent);
+				} catch (error) {
+					c.refuse((error as Error).message);
+				}
+			}
+			break;
+		case 'given':
+			if (typeof input.actionKey !== 'string' || !actionKeyForm.test(input.actionKey)) {
+				c.refuse('the action key must be 64 lowercase hexadecimal characters');
+			}
+			body.actionKey = input.actionKey;
+			break;
+		case 'none':
+			break;
+		default:
+			c.refuse('the action key mode must be derive, given or none');
+	}
 	return c.built({ method: 'POST', path: '/act', body });
 }
 
