@@ -34,6 +34,19 @@ func init() {
 	}
 	parent, _ := strconv.ParseUint(os.Args[4], 10, 32)
 	results := map[string]bool{}
+	station, _, _ := winUser.NewProc("GetProcessWindowStation").Call()
+	thread, _, _ := winKernel.NewProc("GetCurrentThreadId").Call()
+	desktop, _, _ := winUser.NewProc("GetThreadDesktop").Call(thread)
+	objectName := func(handle uintptr) string {
+		var buffer [256]uint16
+		var needed uint32
+		if err := winBool(winUser.NewProc("GetUserObjectInformationW"), handle, 2, uintptr(unsafe.Pointer(&buffer[0])), unsafe.Sizeof(buffer), uintptr(unsafe.Pointer(&needed))); err != nil {
+			return ""
+		}
+		return syscall.UTF16ToString(buffer[:])
+	}
+	results["private-station"] = strings.HasPrefix(objectName(station), "gateway-S-1-5-21-")
+	results["private-desktop"] = objectName(desktop) == "source"
 	results["inside"] = os.WriteFile(filepath.Join(os.Args[2], "new"), []byte("changed"), 0600) == nil
 	results["outside"] = os.WriteFile(os.Args[3], []byte("changed"), 0600) == nil
 	name, _ := syscall.UTF16PtrFromString(os.Args[3])
@@ -69,20 +82,11 @@ func aclString(t *testing.T, path string) string {
 	}
 	defer syscall.CloseHandle(a.handle)
 	defer winFree(a.original)
-	var text *uint16
-	if err = winBool(winSDString, a.original, 1, winSecurityParts, uintptr(unsafe.Pointer(&text)), 0); err != nil {
+	state, err := windowsSecurityState(a.original)
+	if err != nil {
 		t.Fatal(err)
 	}
-	defer winFree(uintptr(unsafe.Pointer(text)))
-	var units []uint16
-	for i := uintptr(0); i < 65536; i++ {
-		u := *(*uint16)(unsafe.Pointer(uintptr(unsafe.Pointer(text)) + 2*i))
-		if u == 0 {
-			break
-		}
-		units = append(units, u)
-	}
-	return syscall.UTF16ToString(units)
+	return state
 }
 
 func TestWindowsRestrictedTokenBoundary(t *testing.T) {
@@ -110,6 +114,9 @@ func TestWindowsRestrictedTokenBoundary(t *testing.T) {
 			var got map[string]bool
 			if err = json.Unmarshal(raw, &got); err != nil {
 				t.Fatal(err, string(raw))
+			}
+			if !got["private-station"] || !got["private-desktop"] {
+				t.Fatalf("restricted child did not inherit private desktop: %v", got)
 			}
 			if got["inside"] != (mode == WorkspaceWrite) {
 				t.Fatalf("workspace permission: %v", got)

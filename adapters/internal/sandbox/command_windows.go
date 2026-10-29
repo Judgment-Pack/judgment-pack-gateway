@@ -29,7 +29,10 @@ var winSetToken = winSecurity.NewProc("SetTokenInformation")
 var winGetSecurity = winSecurity.NewProc("GetSecurityInfo")
 var winSDString = winSecurity.NewProc("ConvertSecurityDescriptorToStringSecurityDescriptorW")
 var winStringSD = winSecurity.NewProc("ConvertStringSecurityDescriptorToSecurityDescriptorW")
-var winSetSecurity = winSecurity.NewProc("SetKernelObjectSecurity")
+var winSetSecurity = winSecurity.NewProc("SetSecurityInfo")
+var winGetDACL = winSecurity.NewProc("GetSecurityDescriptorDacl")
+var winGetSACL = winSecurity.NewProc("GetSecurityDescriptorSacl")
+var winGetControl = winSecurity.NewProc("GetSecurityDescriptorControl")
 var winCreateJob = winKernel.NewProc("CreateJobObjectW")
 var winSetJob = winKernel.NewProc("SetInformationJobObject")
 var winAssignJob = winKernel.NewProc("AssignProcessToJobObject")
@@ -41,7 +44,6 @@ var winCreateStation = winUser.NewProc("CreateWindowStationW")
 var winSetStation = winUser.NewProc("SetProcessWindowStation")
 var winCreateDesktop = winUser.NewProc("CreateDesktopW")
 var winSetDesktop = winUser.NewProc("SetThreadDesktop")
-var winIsRestricted = winSecurity.NewProc("IsTokenRestricted")
 
 const winHelperArg = "_gateway_windows_sandbox_exec_v1"
 const winSecurityParts = 0x4 | 0x10 // DACL and mandatory label, not audit SACL
@@ -64,7 +66,7 @@ func init() {
 		return
 	}
 	fail := func(err error) { fmt.Fprintln(os.Stderr, "sandbox-not-enforced:", err); os.Exit(125) }
-	if len(os.Args) < 6 {
+	if len(os.Args) < 5 {
 		fail(errors.New("invalid restricted launcher"))
 	}
 	handle, err := strconv.ParseUint(os.Args[2], 10, 64)
@@ -72,17 +74,6 @@ func init() {
 		fail(err)
 	}
 	job := syscall.Handle(handle)
-	tokenValue, err := strconv.ParseUint(os.Args[3], 10, 64)
-	if err != nil {
-		fail(err)
-	}
-	token := syscall.Token(tokenValue)
-	if err = winBool(winIsRestricted, uintptr(token)); err != nil {
-		fail(err)
-	}
-	if err = syscall.SetHandleInformation(syscall.Handle(token), 1, 0); err != nil {
-		fail(err)
-	}
 	self, err := syscall.GetCurrentProcess()
 	if err != nil {
 		fail(err)
@@ -97,10 +88,17 @@ func init() {
 	// restricted child. The operator's interactive desktop is never granted to
 	// the restricting SID. Startup with a nil Desktop inherits this association.
 	runtime.LockOSThread()
-	if err = privateWindowsDesktop(os.Args[4], token); err != nil {
+	// Create the restricted token from this launcher's primary token. The
+	// CreateProcessAsUser exception is specific to the caller's primary token,
+	// not a restricted token made by its parent before this process existed.
+	token, err := restrictedWindowsToken(os.Args[3])
+	if err != nil {
 		fail(err)
 	}
-	cmd := exec.Command(os.Args[5], os.Args[6:]...)
+	if err = privateWindowsDesktop(os.Args[3], token); err != nil {
+		fail(err)
+	}
+	cmd := exec.Command(os.Args[4], os.Args[5:]...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Token: token, CreationFlags: 0x08000000}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	err = cmd.Start()
@@ -117,6 +115,38 @@ func init() {
 	}
 	fmt.Fprintln(os.Stderr, "server-exec-failed:", err)
 	os.Exit(126)
+}
+
+func restrictedWindowsToken(sidText string) (syscall.Token, error) {
+	sid, err := syscall.StringToSid(sidText)
+	if err != nil {
+		return 0, err
+	}
+	current, err := syscall.GetCurrentProcess()
+	if err != nil {
+		return 0, err
+	}
+	var original syscall.Token
+	if err = syscall.OpenProcessToken(current, syscall.TOKEN_ALL_ACCESS, &original); err != nil {
+		return 0, err
+	}
+	defer original.Close()
+	var token syscall.Token
+	restricted := syscall.SIDAndAttributes{Sid: sid}
+	if err = winBool(winCreateRestricted, uintptr(original), 0x9, 0, 0, 0, 0, 1, uintptr(unsafe.Pointer(&restricted)), uintptr(unsafe.Pointer(&token))); err != nil {
+		return 0, err
+	}
+	low, err := syscall.StringToSid("S-1-16-4096")
+	if err != nil {
+		token.Close()
+		return 0, err
+	}
+	label := syscall.SIDAndAttributes{Sid: low, Attributes: 0x20}
+	if err = winBool(winSetToken, uintptr(token), 25, uintptr(unsafe.Pointer(&label)), unsafe.Sizeof(label)+uintptr(low.Len())); err != nil {
+		token.Close()
+		return 0, err
+	}
+	return token, nil
 }
 
 func privateWindowsDesktop(sid string, token syscall.Token) error {
@@ -164,7 +194,6 @@ type winACL struct {
 	changed  bool
 }
 type winResources struct {
-	token syscall.Token
 	job   syscall.Handle
 	lock  syscall.Handle
 	acls  []winACL
@@ -201,14 +230,11 @@ func (r *winResources) cleanup() error {
 			}
 			syscall.CloseHandle(r.job)
 		}
-		if r.token != 0 {
-			r.token.Close()
-		}
 		stopped := r.clean
 		for i := len(r.acls) - 1; i >= 0; i-- {
 			a := r.acls[i]
 			if a.changed && stopped {
-				if err := winBool(winSetSecurity, uintptr(a.handle), winSecurityParts, a.original); err != nil {
+				if err := restoreWindowsACL(a); err != nil {
 					r.clean = false
 				}
 			}
@@ -241,31 +267,7 @@ func platformCommand(ctx context.Context, executable string, args []string, mode
 		return nil, report, err
 	}
 	sidText := fmt.Sprintf("S-1-5-21-%d-%d-%d-%d", binary.LittleEndian.Uint32(random[0:4]), binary.LittleEndian.Uint32(random[4:8]), binary.LittleEndian.Uint32(random[8:12]), binary.LittleEndian.Uint32(random[12:16]))
-	sid, err := syscall.StringToSid(sidText)
-	if err != nil {
-		return nil, report, err
-	}
-	current, err := syscall.GetCurrentProcess()
-	if err != nil {
-		return nil, report, err
-	}
-	var original syscall.Token
-	if err = syscall.OpenProcessToken(current, syscall.TOKEN_ALL_ACCESS, &original); err != nil {
-		return nil, report, err
-	}
-	defer original.Close()
-	restricted := syscall.SIDAndAttributes{Sid: sid}
-	if err = winBool(winCreateRestricted, uintptr(original), 0x9, 0, 0, 0, 0, 1, uintptr(unsafe.Pointer(&restricted)), uintptr(unsafe.Pointer(&resources.token))); err != nil {
-		return nil, report, err
-	}
-	low, err := syscall.StringToSid("S-1-16-4096")
-	if err != nil {
-		return nil, report, err
-	}
-	label := syscall.SIDAndAttributes{Sid: low, Attributes: 0x20}
-	if err = winBool(winSetToken, uintptr(resources.token), 25, uintptr(unsafe.Pointer(&label)), unsafe.Sizeof(label)+uintptr(low.Len())); err != nil {
-		return nil, report, err
-	}
+	var err error
 	if mode == WorkspaceWrite {
 		// Validate the complete tree before changing any ACL. No delete sharing;
 		// reparse points and multiply-linked files are refused, not followed.
@@ -326,12 +328,9 @@ func platformCommand(ctx context.Context, executable string, args []string, mode
 	if err != nil {
 		return nil, report, err
 	}
-	if err = syscall.SetHandleInformation(syscall.Handle(resources.token), 1, 1); err != nil {
-		return nil, report, err
-	}
-	argv := append([]string{winHelperArg, strconv.FormatUint(uint64(job), 10), strconv.FormatUint(uint64(resources.token), 10), sidText, executable}, args...)
+	argv := append([]string{winHelperArg, strconv.FormatUint(uint64(job), 10), sidText, executable}, args...)
 	cmd := exec.CommandContext(ctx, self, argv...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000, AdditionalInheritedHandles: []syscall.Handle{resources.job, syscall.Handle(resources.token)}}
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000, AdditionalInheritedHandles: []syscall.Handle{resources.job}}
 	report.State = "partial"
 	report.Reason = "low-integrity write-restricted token and per-run ACLs restrict writes on access-controlled filesystems; network access and objects without usable access controls are not confined"
 	report.cleanup = resources.cleanup
@@ -364,7 +363,7 @@ func holdWindowsFile(path string) (winACL, error) {
 	}
 	// READ_CONTROL | WRITE_DAC | WRITE_OWNER | FILE_READ_ATTRIBUTES; open the
 	// reparse point itself and keep this exact object from being renamed.
-	handle, err := syscall.CreateFile(name, 0xe0080, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE, nil, syscall.OPEN_EXISTING, 0x02000000|0x00200000, 0)
+	handle, err := syscall.CreateFile(name, 0x020e0080, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE, nil, syscall.OPEN_EXISTING, 0x02000000|0x00200000, 0)
 	if err != nil {
 		return winACL{}, fmt.Errorf("sandbox-policy-invalid: workspace ACL handle: %w", err)
 	}
@@ -430,9 +429,89 @@ func grantWindowsACL(a *winACL, sid string) error {
 		return err
 	}
 	defer winFree(sd)
-	if err = winBool(winSetSecurity, uintptr(a.handle), winSecurityParts, sd); err != nil {
+	if err = setWindowsFileSecurity(a.handle, sd); err != nil {
 		return err
 	}
 	a.changed = true
+	return nil
+}
+
+// MAXIMUM_ALLOWED on every held file handle suppresses SetSecurityInfo's child
+// propagation. Explicit required rights still make opening fail if unavailable.
+// Only DACL and mandatory-label components are set, preserving audit SACL ACEs.
+func setWindowsFileSecurity(handle syscall.Handle, sd uintptr) error {
+	var dacl, sacl uintptr
+	var present, defaulted uint32
+	if err := winBool(winGetDACL, sd, uintptr(unsafe.Pointer(&present)), uintptr(unsafe.Pointer(&dacl)), uintptr(unsafe.Pointer(&defaulted))); err != nil {
+		return err
+	}
+	if present == 0 || dacl == 0 {
+		return errors.New("sandbox-policy-invalid: missing or null DACL")
+	}
+	if err := winBool(winGetSACL, sd, uintptr(unsafe.Pointer(&present)), uintptr(unsafe.Pointer(&sacl)), uintptr(unsafe.Pointer(&defaulted))); err != nil {
+		return err
+	}
+	var control uint16
+	var revision uint32
+	if err := winBool(winGetControl, sd, uintptr(unsafe.Pointer(&control)), uintptr(unsafe.Pointer(&revision))); err != nil {
+		return err
+	}
+	flags := uintptr(winSecurityParts | 0x20000000) // unprotected DACL
+	if control&0x1000 != 0 {
+		flags = winSecurityParts | 0x80000000
+	}
+	status, _, _ := winSetSecurity.Call(uintptr(handle), 1, flags, 0, 0, dacl, sacl)
+	if status != 0 {
+		return syscall.Errno(status)
+	}
+	return nil
+}
+
+func windowsSecurityState(sd uintptr) (string, error) {
+	var control uint16
+	var revision uint32
+	if err := winBool(winGetControl, sd, uintptr(unsafe.Pointer(&control)), uintptr(unsafe.Pointer(&revision))); err != nil {
+		return "", err
+	}
+	var text *uint16
+	if err := winBool(winSDString, sd, 1, winSecurityParts, uintptr(unsafe.Pointer(&text)), 0); err != nil {
+		return "", err
+	}
+	defer winFree(uintptr(unsafe.Pointer(text)))
+	var units []uint16
+	for i := uintptr(0); i < 65536; i++ {
+		u := *(*uint16)(unsafe.Pointer(uintptr(unsafe.Pointer(text)) + 2*i))
+		if u == 0 {
+			// GetSecurityInfo may represent no mandatory label with either an
+			// absent or null label-only SACL. Both contain no label ACE. Keep
+			// every DACL ACE flag and its control state, including inheritance.
+			s := strings.TrimSuffix(syscall.UTF16ToString(units), "S:NO_ACCESS_CONTROL")
+			return fmt.Sprintf("%04x:%s", control&0x150c, s), nil
+		}
+		units = append(units, u)
+	}
+	return "", errors.New("sandbox-cleanup-failed: security descriptor exceeds bound")
+}
+
+func restoreWindowsACL(a winACL) error {
+	before, err := windowsSecurityState(a.original)
+	if err != nil {
+		return err
+	}
+	if err = setWindowsFileSecurity(a.handle, a.original); err != nil {
+		return err
+	}
+	current := winACL{handle: a.handle}
+	if err = snapshotWindowsACL(&current); err != nil {
+		return err
+	}
+	defer winFree(current.original)
+	after, err := windowsSecurityState(current.original)
+	if err != nil {
+		return err
+	}
+	if before != after {
+		return errors.New("sandbox-cleanup-failed: restored DACL or mandatory label differs")
+	}
 	return nil
 }

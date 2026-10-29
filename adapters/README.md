@@ -2360,7 +2360,12 @@ objects while the command runs. Concurrent workspace-write uses of the same
 workspace are refused across logon sessions, with exclusion acquired before the
 ACL snapshot. New objects inherit the workspace grant. A job with
 kill-on-close and no breakaway contains the launcher and its descendants. Cleanup
-terminates that job and verifies it is empty before restoring held ACLs.
+terminates that job and verifies it is empty before restoring held ACLs. File handles
+request `MAXIMUM_ALLOWED` together with required security rights so `SetSecurityInfo`
+does not propagate ACL updates to children. Restoration reads the held objects back
+and verifies DACL entries, inheritance/protection state and mandatory labels. A
+representation with no label ACE is equivalent whether its label-only SACL is absent
+or null; explicit and inherited DACL entries are never treated as equivalent.
 
 The report is `partial`: network access is unchanged, objects without usable access
 controls are not confined, and workspace filesystem operations have the limits
