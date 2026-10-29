@@ -55,7 +55,7 @@ func TestConnectPinsTheSnapshotItCaptured(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, pin, data := pinnedSnapshot(t, f)
-	if cfg.version != "11" || pin == "" || digestOf(string(data)) != pin {
+	if cfg.version != "12" || pin == "" || digestOf(string(data)) != pin {
 		t.Fatalf("version %s, pin %q: the file names the snapshot kept, by its digest", cfg.version, pin)
 	}
 	s, err := parseSnapshot(data)
@@ -80,7 +80,7 @@ func TestConnectRequiresCompleteMetadataEvenWhenDisplayCandidatesAreAbsent(t *te
 		t.Fatal(err)
 	}
 	cfg, pin, raw := pinnedSnapshot(t, f)
-	if cfg.version != "11" || pin == "" || !bytes.Contains(raw, []byte(`"taxonomy"`)) {
+	if cfg.version != "12" || pin == "" || !bytes.Contains(raw, []byte(`"taxonomy"`)) {
 		t.Fatal("owner metadata dropped with absent candidates")
 	}
 	f = newConnectFixture(t, restrictedBinding, "")

@@ -1097,6 +1097,16 @@ func checkReceiptUnder(data []byte, storeRoot, sessionID, fileName, authority st
 	if hex.EncodeToString(sum[:]) != digestHex {
 		return r, "artifact-mismatch"
 	}
+	if r.version == receiptVersion3 && r.kind == "acquisition" {
+		a, _ := r.obj.get("acquisition")
+		acq := a.(*vObject)
+		if v, present := acq.get("descriptorProvenance"); present {
+			p, _ := descriptorProvenanceFrom(v) // already checked at lexical order 1
+			source, _ := memberString(r.obj, "source")
+			endpoint, _ := memberString(acq, "endpoint")
+			return r, checkDescriptorProvenance(storeRoot, *p, authority, source, endpoint, keys[:r.keyPos+1])
+		}
+	}
 	return r, "ok"
 }
 

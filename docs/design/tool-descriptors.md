@@ -6,9 +6,10 @@ the binding carries tool names only, and the frontend never runs a platform's se
 running it means holding its credentials. So a host validating arguments learns nothing about a
 tool's arguments, and a model must know the tool from elsewhere. It names the follow-on:
 descriptors captured by `connect`, which already runs the adapter in check mode under the
-platform's own user. This note designs that follow-on before code. It changes no receipt, no
-signer route and nothing in `SPEC.md`. **Nothing captured becomes an engine claim:** no receipt
-covers a description or a schema, and the engine's key signs neither.
+platform's own user. The original display snapshot remains readable. New captures
+also have the signed provenance specified in SPEC.md §9 and described below. The
+signature establishes reported capture bytes; it does not make the descriptions
+or schemas truthful.
 
 ## Scope
 
@@ -280,7 +281,7 @@ and add a provenance sentence and a quoted block:
 > under the engine's key. Its arguments are {declared by the platform's server's schema, as
 > captured | what the platform's server defines}. The answer carries {session, result, receipt,
 > salts}. When `connect` ran at `<time>`, the platform's server described it as follows, in its
-> own words, which are not the engine's and which no receipt covers:
+> own words, whose truth the engine does not establish:
 
 The quoted block is a fenced code block. Its fence is a run of backticks one longer than the
 longest run of backticks in its content, and at least three. It holds, in order:
@@ -427,7 +428,7 @@ capture of no tool pins nothing. `connect --no-descriptors` asks the live check 
 nothing and writes no pin: the choice for a deployment whose descriptors are confidential beyond
 what screening finds. The changes land in `engineVersions`, `platformMembers`, the parser and
 the renderer, and the version diagnostics name `"3"`. The signer parses a version-3
-configuration and never reads a snapshot. A signer binary older than this change refuses version
+configuration without signed provenance. A signer binary older than this change refuses version
 3, so the rollout is binaries first, then `connect`.
 
 ## What the frontend reads, once
@@ -604,11 +605,35 @@ annotations that contradict the owner's taxonomy refuse with
 A customer acquisition's content-addressed statement contains `tool`, `arguments`,
 `binding` and `descriptorSnapshot`. A version-3 receipt commits to that statement
 through its existing statement digest. The acquisition's `snapshot` field retains
-its upstream-currency meaning. This is an unsigned registration snapshot; signed
-capture statements and verifier enforcement are tracked separately in #313. The
+its upstream-currency meaning. New registrations retain a separate signed capture
+statement, referenced in acquisition receipts as described below. The
 pin says what the server reported, not whether the server or its tool is truthful.
 Shared handwritten acceptance/refusal vectors are in
 `testdata/tool-taxonomy/v3.json` and are read by both modules.
+
+## Signed capture provenance
+
+`connect` retains the validated snapshot and a signed statement in the configured
+store's content-addressed artifact space before it publishes the registration.
+The statement binds the snapshot digest, binding reference, source operation,
+reported capture endpoint/time, authority and signing key under a separate
+Ed25519 domain (SPEC.md §9). Each enabled captured operation has a
+`descriptorStatements` pin in engine configuration version 12, alongside its
+existing snapshot pin. A failed or interrupted registration may leave immutable
+unreferenced artifacts; these authorize no source and are safe to retain.
+
+The signer selects `acquisition.descriptorProvenance` from that configuration,
+not from a caller or adapter envelope, and checks the retained evidence before
+starting an acquisition. Both verifiers check the statement and snapshot bytes,
+signature and receipt relationships; absent evidence is
+`descriptor-provenance-missing`, invalid evidence
+`descriptor-provenance-mismatch`. A key reached after the receipt's signing key
+cannot attest its capture. Recapture with different bytes produces new digests;
+previous statements remain available for historical receipts.
+
+Registrations made before this extension remain readable without a provenance
+claim; explicit recapture upgrades them. This extension keeps receipt version 3,
+so an older verifier that ignores the new member cannot establish this property.
 
 ## Customer command snapshot version 4
 

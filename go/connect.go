@@ -353,6 +353,13 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if err != nil {
 		return out, err
 	}
+	if capturing && b.version != "2" {
+		op := strings.TrimPrefix(captureSource, req.platform+"/")
+		text, err = renderDescriptorStatements(text, req.platform, map[string]string{op: placeholder})
+		if err != nil {
+			return out, err
+		}
+	}
 	if len(text) > maxEngineConfigBytes {
 		return out, fmt.Errorf("the configuration with %s would exceed %d bytes, which serve does not read", req.platform, maxEngineConfigBytes)
 	}
@@ -432,15 +439,28 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	// A snapshot with a tool in it is published before any configuration
 	// names it; one that captured no tool is not pinned.
 	pin := ""
+	statementPins := map[string]string{}
 	var held *os.Root
 	if captured.data != nil && len(captured.snap.names) > 0 {
 		if pin, held, err = file.publishSnapshot(captured.data); err != nil {
 			return out, err
 		}
 		defer held.Close()
+		op := strings.TrimPrefix(captureSource, req.platform+"/")
+		provenance, err := retainConnectedCapture(candidate, captured.data, op)
+		if err != nil {
+			return out, err
+		}
+		statementPins[op] = provenance.statement
 	}
 	if text, err = renderPlatformEntry(data, req, ref, pin, entry.parameters); err != nil {
 		return out, err
+	}
+	if len(statementPins) > 0 {
+		text, err = renderDescriptorStatements(text, req.platform, statementPins)
+		if err != nil {
+			return out, err
+		}
 	}
 	if _, err := parseEngineConfig(text); err != nil {
 		return out, fmt.Errorf("the configuration as written would not parse: %v", err)

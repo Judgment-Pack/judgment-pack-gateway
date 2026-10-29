@@ -236,14 +236,17 @@ export function withRegular<T>(p: fs.PathLike, what: string, use: (fd: number, s
   }
 }
 
-// readDocument is a regular file's bytes, when within documentBound; a
+// readDocument is a regular file's bytes, when within its bound; a
 // larger file, or one that cannot be read, is no verdict.
-export function readDocument(p: string, what: string): Uint8Array {
+export function readDocument(p: string, what: string, limit = documentBound): Uint8Array {
+  if (!Number.isSafeInteger(limit) || limit < 0 || limit > documentBound) {
+    throw new NoVerdict("invalid document bound");
+  }
   try {
     return withRegular(p, what, (fd) => {
-      const bytes = readBounded(fd);
+      const bytes = readBounded(fd, limit);
       if (bytes === null) {
-        throw new NoVerdict(`${what} ${JSON.stringify(p)} is over ${documentBound} bytes`);
+        throw new NoVerdict(`${what} ${JSON.stringify(p)} is over ${limit} bytes`);
       }
       return bytes;
     });
@@ -295,16 +298,18 @@ export class Bytes {
 }
 
 // readBounded is the open file's bytes to its end, or null past
-// documentBound.
-function readBounded(fd: number): Uint8Array | null {
+// limit. Read at most one byte past it, even when the file grows after open.
+function readBounded(fd: number, limit: number): Uint8Array | null {
   const bytes = new Bytes();
-  const buffer = Buffer.alloc(chunk);
+  const buffer = Buffer.alloc(Math.min(chunk, limit + 1));
+  let total = 0;
   for (;;) {
-    const read = fs.readSync(fd, buffer, 0, buffer.length, null);
+    const read = fs.readSync(fd, buffer, 0, Math.min(buffer.length, limit + 1 - total), null);
     if (read === 0) {
       return bytes.take();
     }
-    if (!bytes.add(buffer.subarray(0, read))) {
+    total += read;
+    if (total > limit || !bytes.add(buffer.subarray(0, read))) {
       return null;
     }
   }

@@ -75,7 +75,7 @@ func TestGenericCustomerBindingRegistersAcquiresAndVerifies(t *testing.T) {
 	if err != nil || len(front.toolList()) != 3 {
 		t.Fatalf("declared tools plus seal: %v", err)
 	}
-	service, server := testService(t)
+	service, server := connectedTestService(t, cfg)
 	name := req.platform + "/live"
 	service.sources[name] = adapt(deriveSources(cfg, bindings)[name])
 	code, result := post(t, server, "/acquire", `{"session":"customer","source":"`+name+`","arguments":{"tool":"query","arguments":{}}}`)

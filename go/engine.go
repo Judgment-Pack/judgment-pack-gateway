@@ -37,16 +37,15 @@ import (
 // binding's templates (binding_template.go; ADR-0015, amended 2026-10-13),
 // version 9 a decision policy's optional `fix` and `closed`
 // (docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md),
-// and version 10 a decision policy's optional `shape`
-// (docs/adr/0018-a-policy-holds-a-containers-shape.md):
+// version 10 a decision policy's optional `shape`, version 11 per-operation
+// owner descriptor approvals, and version 12 signed `descriptorStatements`:
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
-// version 3 exactly when the entry it writes carries a pin, and to version 8
-// exactly when it carries parameters, and otherwise leaves the version as it
-// found it; it never lowers one.
-const engineVersion = "11"
+// version 12 when a capture is signed, retaining older registrations as they
+// were; it never lowers a configuration version.
+const engineVersion = "12"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -135,9 +134,10 @@ type platformConfig struct {
 	write       bool
 	// descriptors pins the snapshot of the live operation's tool
 	// descriptors that connect captured, sha256:<64 hex>; "" when none. The
-	// signer never reads it; the frontend does (tool-descriptors.md).
+	// frontend reads it; a new capture also has descriptorStatements provenance.
 	descriptors          string
 	operationDescriptors map[string]string
+	descriptorStatements map[string]string
 	// policies are the decision policies the operator holds write tools
 	// to (ADR-0011), by tool; nil when the platform carries none.
 	policies map[string]*decisionPolicy
@@ -263,7 +263,7 @@ var engineMembers = map[string]bool{
 
 var platformMembers = map[string]bool{
 	"binding": true, "credentials": true, "user": true,
-	"endpoint": false, "environment": false, "write": false, "descriptors": false, "operationDescriptors": false,
+	"endpoint": false, "environment": false, "write": false, "descriptors": false, "operationDescriptors": false, "descriptorStatements": false,
 	"decisionPolicy": false, "parameters": false,
 }
 
@@ -283,7 +283,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	var cfg engineConfig
 	version, _ := memberString(obj, "engineVersion")
 	if !engineVersions[version] {
-		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q, %q, %q, %q, %q, %q, %q or %q", version, "1", "2", "3", "4", "5", "6", "7", "8", "9", engineVersion)
+		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q, %q, %q, %q, %q, %q, %q, %q, %q or %q", version, "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", engineVersion)
 	}
 	cfg.version = version
 	if _, present := obj.get("mcp"); present && version == "1" {
@@ -514,6 +514,20 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 					return engineConfig{}, errors.New("invalid operation descriptor pin")
 				}
 				pc.operationDescriptors[name] = pin
+			}
+		}
+		if pins, present := p.get("descriptorStatements"); present {
+			obj, ok := pins.(*vObject)
+			if !versionAtLeast(version, "12") || !ok || len(obj.names) == 0 {
+				return engineConfig{}, errors.New("descriptorStatements requires engineVersion12 and a nonempty object")
+			}
+			pc.descriptorStatements = map[string]string{}
+			for _, name := range obj.names {
+				pin, ok := memberString(obj, name)
+				if !ok || !isDigest(pin) || (name != "live" && name != "write") {
+					return engineConfig{}, errors.New("invalid descriptor statement pin")
+				}
+				pc.descriptorStatements[name] = pin
 			}
 		}
 		if policiesValue, present := p.get("decisionPolicy"); present {
@@ -1134,7 +1148,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if len(b.live.command) > 0 {
 				argv = append(append(argv, "--"), b.live.command...)
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", check: check}
+			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live")}
 		}
 		// The write operation, for a platform that allows writes: the
 		// executor is adapter-mcp on the binding's write server with the
@@ -2024,6 +2038,9 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
 		if err := operationPinsMatch(*p, b); err != nil {
+			return nil, err
+		}
+		if err := descriptorStatementPinsMatch(*p, b); err != nil {
 			return nil, err
 		}
 		if b.version == "2" {

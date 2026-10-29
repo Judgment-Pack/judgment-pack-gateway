@@ -141,7 +141,7 @@ func TestConnectKeepsAShapedPolicyAndTheVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	kept := after.platforms[0].policies["execute"]
-	if after.version != "11" || after.platforms[0].operationDescriptors["live"] == "" || kept == nil || kept.digest != digest || len(kept.shape) != 1 {
+	if after.version != "12" || after.platforms[0].operationDescriptors["live"] == "" || kept == nil || kept.digest != digest || len(kept.shape) != 1 {
 		t.Fatalf("version %s, pin %q, policy %+v: the policy kept as written, the version neither raised nor lowered", after.version, after.platforms[0].operationDescriptors["live"], kept)
 	}
 }

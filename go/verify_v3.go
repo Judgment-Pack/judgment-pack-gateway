@@ -209,6 +209,14 @@ func validateAcquisition(v value) error {
 	if !acquisitionShapes[shape] {
 		return fmt.Errorf("acquisition: shape %q is outside its enumeration", shape)
 	}
+	if v, present := obj.get("descriptorProvenance"); present {
+		if shape != "mcp" {
+			return errors.New("descriptorProvenance requires an MCP acquisition")
+		}
+		if _, err := descriptorProvenanceFrom(v); err != nil {
+			return err
+		}
+	}
 	if err := nullableString(obj, "endpoint", nil); err != nil {
 		return fmt.Errorf("acquisition: %w", err)
 	}

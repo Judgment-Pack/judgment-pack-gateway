@@ -2,6 +2,10 @@
   "version": 1,
   "changed": [
     {
+      "paths": ["corpus/v3/stores/v3-descriptor-*.json", "testdata/descriptor-provenance/statement-mutations.json"],
+      "checks": ["ci-evidence"]
+    },
+    {
       "paths": ["go/**", "corpus/**", "SPEC.md", "catalog/**"],
       "checks": ["local-paths", "agent-docs", "diff-check",
                  "go-fmt", "go-vet", "go-test", "go-build", "conform", "smoke-stand-in",

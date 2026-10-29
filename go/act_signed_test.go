@@ -715,7 +715,7 @@ func TestConnectKeepsASignedRecordPolicyAndTheVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	kept := after.platforms[0].policies["execute"]
-	if after.version != "11" || kept == nil || kept.digest != before.platforms[0].policies["execute"].digest || len(kept.signers) != 1 {
+	if after.version != "12" || kept == nil || kept.digest != before.platforms[0].policies["execute"].digest || len(kept.signers) != 1 {
 		t.Fatalf("version %s, policy %+v: the policy kept as written, the version not lowered", after.version, kept)
 	}
 }

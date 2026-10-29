@@ -166,7 +166,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 64 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 68 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -478,3 +478,8 @@ history is kept, because it is the argument for writing specifications down.
    fails is excluded from the chain reconstruction, so a failure at `callIndex` 0
    also yields `sequence-broken`, while the same defect later in the session does
    not. That second finding is informative about *position*, not about the defect.
+
+The four `v3-descriptor-*` stores hold SPEC.md §9: a valid capture reference,
+missing statement or snapshot artifacts, and changed statement bytes. Inputs and
+expected findings are hand-authored; signatures were computed independently
+with the published corpus test key, without calling either implementation.

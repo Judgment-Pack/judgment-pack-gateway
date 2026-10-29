@@ -49,7 +49,9 @@ func renderOperationPlatformEntry(data []byte, req connectRequest, ref string, p
 		return nil, err
 	}
 	obj := raw.(*vObject)
-	obj.set("engineVersion", vString("11"))
+	if version, _ := memberString(obj, "engineVersion"); !versionAtLeast(version, "11") {
+		obj.set("engineVersion", vString("11"))
+	}
 	platforms, _ := obj.get("platforms")
 	entry, _ := platforms.(*vObject).get(req.platform)
 	values := newObject()
@@ -76,7 +78,11 @@ func connectTaxonomyOperations(ctx context.Context, req connectRequest, file *co
 	for name := range ops {
 		pins[name] = "sha256:" + strings.Repeat("0", 64)
 	}
-	if _, err := renderOperationPlatformEntry(data, req, entry.binding, pins, entry.parameters); err != nil {
+	placeholder, err := renderOperationPlatformEntry(data, req, entry.binding, pins, entry.parameters)
+	if err != nil {
+		return out, err
+	}
+	if _, err = renderDescriptorStatements(placeholder, req.platform, pins); err != nil {
 		return out, err
 	}
 	// Size-check every declaration before any publication or target is reached.
@@ -146,6 +152,7 @@ func connectTaxonomyOperations(ctx context.Context, req connectRequest, file *co
 		keys = append(keys, name)
 	}
 	sort.Strings(keys)
+	statementPins := map[string]string{}
 	for _, name := range keys {
 		captured, ok := captures[name]
 		if !ok || captured.data == nil {
@@ -178,6 +185,11 @@ func connectTaxonomyOperations(ctx context.Context, req connectRequest, file *co
 		}
 		held = append(held, root)
 		pins[name] = pin
+		provenance, err := retainConnectedCapture(cfg, captured.data, name)
+		if err != nil {
+			return out, err
+		}
+		statementPins[name] = provenance.statement
 		if previous != nil {
 			old := previous.operationDescriptors[name]
 			if old != pin {
@@ -186,6 +198,10 @@ func connectTaxonomyOperations(ctx context.Context, req connectRequest, file *co
 		}
 	}
 	text, err := renderOperationPlatformEntry(data, req, entry.binding, pins, entry.parameters)
+	if err != nil {
+		return out, err
+	}
+	text, err = renderDescriptorStatements(text, req.platform, statementPins)
 	if err != nil {
 		return out, err
 	}
