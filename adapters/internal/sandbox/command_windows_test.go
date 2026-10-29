@@ -73,6 +73,7 @@ func init() {
 		results["parent-token"] = err == nil
 		if err == nil {
 			probeParentImpersonation(token, os.Args[3], results, diagnostics)
+			probeParentLaunches(token, results, diagnostics)
 			token.Close()
 		}
 		syscall.CloseHandle(process)
@@ -134,7 +135,7 @@ func TestWindowsRestrictedTokenBoundary(t *testing.T) {
 			if got["inside"] != (mode == WorkspaceWrite) || got["existing"] != (mode == WorkspaceWrite) || got["rename-inside"] != (mode == WorkspaceWrite) {
 				t.Fatalf("workspace permission: %v", got)
 			}
-			for _, name := range []string{"outside", "outside-acl", "parent-handles", "parent-token", "impersonated-outside", "move-outside"} {
+			for _, name := range []string{"outside", "outside-acl", "parent-handles", "parent-token", "impersonated-outside", "move-outside", "restored-privilege", "parent-token-launch"} {
 				if got[name] {
 					t.Fatalf("boundary crossed: %s: %v", name, got)
 				}
@@ -443,5 +444,111 @@ func TestWindowsDeletedWorkspaceObjectFailsCleanup(t *testing.T) {
 	}
 	if err = resources.cleanup(); err == nil {
 		t.Fatal("deleted object silently skipped restoration")
+	}
+}
+
+// Exercise the remaining token routes once. Any process created by a probe is
+// suspended and terminated without executing its entry point.
+func probeParentLaunches(parent syscall.Token, results map[string]bool, diagnostics map[string]string) {
+	self, err := syscall.GetCurrentProcess()
+	if err != nil {
+		diagnostics["self-process"] = err.Error()
+		return
+	}
+	var own syscall.Token
+	if err = syscall.OpenProcessToken(self, syscall.TOKEN_QUERY|syscall.TOKEN_ADJUST_PRIVILEGES, &own); err != nil {
+		diagnostics["own-privileges"] = err.Error()
+	} else {
+		defer own.Close()
+		for _, privilege := range []string{"SeImpersonatePrivilege", "SeAssignPrimaryTokenPrivilege", "SeIncreaseQuotaPrivilege"} {
+			name, _ := syscall.UTF16PtrFromString(privilege)
+			var state struct {
+				Count      uint32
+				Low        uint32
+				High       int32
+				Attributes uint32
+			}
+			state.Count, state.Attributes = 1, 2
+			if err = winBool(winSecurity.NewProc("LookupPrivilegeValueW"), 0, uintptr(unsafe.Pointer(name)), uintptr(unsafe.Pointer(&state.Low))); err != nil {
+				diagnostics[privilege] = err.Error()
+				continue
+			}
+			ok, _, callErr := winSecurity.NewProc("AdjustTokenPrivileges").Call(uintptr(own), 0, uintptr(unsafe.Pointer(&state)), 0, 0, 0)
+			runtime.KeepAlive(state)
+			diagnostics[privilege] = fmt.Sprintf("return=%d status=%v", ok, callErr)
+			// Success with ERROR_NOT_ALL_ASSIGNED is a refusal, not a restored privilege.
+			if ok != 0 && callErr == syscall.Errno(0) {
+				results["restored-privilege"] = true
+			}
+		}
+	}
+	duplicate := func(input syscall.Token, kind uint32, label string) syscall.Token {
+		var token syscall.Token
+		err := winBool(winSecurity.NewProc("DuplicateTokenEx"), uintptr(input), syscall.TOKEN_QUERY|syscall.TOKEN_DUPLICATE|syscall.TOKEN_ASSIGN_PRIMARY, 0, 2, uintptr(kind), uintptr(unsafe.Pointer(&token)))
+		if err != nil {
+			diagnostics[label] = err.Error()
+			return 0
+		}
+		diagnostics[label] = "success"
+		return token
+	}
+	var identification syscall.Token
+	if err = winBool(winSecurity.NewProc("DuplicateToken"), uintptr(parent), 1, uintptr(unsafe.Pointer(&identification))); err != nil {
+		diagnostics["identification-duplicate"] = err.Error()
+	} else {
+		defer identification.Close()
+		for _, kind := range []uint32{1, 2} {
+			token := duplicate(identification, kind, fmt.Sprintf("identification-upgrade-%d", kind))
+			if token != 0 {
+				token.Close()
+			}
+		}
+	}
+	primary := duplicate(parent, 1, "parent-primary-duplicate")
+	if primary == 0 {
+		return
+	}
+	defer primary.Close()
+	executable, _ := syscall.UTF16PtrFromString(os.Args[0])
+	for _, api := range []string{"CreateProcessAsUser", "CreateProcessWithTokenW"} {
+		line, _ := syscall.UTF16PtrFromString(syscall.EscapeArg(os.Args[0]) + " _sandbox_windows_sleep")
+		startup := syscall.StartupInfo{}
+		startup.Cb = uint32(unsafe.Sizeof(startup))
+		var process syscall.ProcessInformation
+		if api == "CreateProcessAsUser" {
+			err = syscall.CreateProcessAsUser(primary, executable, line, nil, nil, false, 0x08000004, nil, nil, &startup, &process)
+		} else {
+			err = winBool(winSecurity.NewProc(api), uintptr(primary), 0, uintptr(unsafe.Pointer(executable)), uintptr(unsafe.Pointer(line)), 0x08000004, 0, 0, uintptr(unsafe.Pointer(&startup)), uintptr(unsafe.Pointer(&process)))
+		}
+		runtime.KeepAlive(executable)
+		runtime.KeepAlive(line)
+		if err != nil {
+			diagnostics[api] = err.Error()
+			continue
+		}
+		diagnostics[api] = "created suspended"
+		results["parent-token-launch"] = true
+		var launched syscall.Token
+		if err = syscall.OpenProcessToken(process.Process, syscall.TOKEN_QUERY, &launched); err == nil {
+			var size uint32
+			syscall.GetTokenInformation(launched, syscall.TokenRestrictedSids, nil, 0, &size)
+			if size >= 4 && size <= 65536 {
+				raw := make([]byte, size)
+				if err = syscall.GetTokenInformation(launched, syscall.TokenRestrictedSids, &raw[0], size, &size); err == nil {
+					diagnostics[api+"-restricting-sids"] = strconv.FormatUint(uint64(binary.LittleEndian.Uint32(raw)), 10)
+				}
+			}
+			launched.Close()
+		}
+		// Never resume a diagnostic child, even if token inspection fails.
+		if err = syscall.TerminateProcess(process.Process, 125); err != nil {
+			os.Exit(125)
+		}
+		waited, err := syscall.WaitForSingleObject(process.Process, 5000)
+		if err != nil || waited != syscall.WAIT_OBJECT_0 {
+			os.Exit(125)
+		}
+		syscall.CloseHandle(process.Thread)
+		syscall.CloseHandle(process.Process)
 	}
 }
