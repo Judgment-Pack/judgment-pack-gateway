@@ -136,7 +136,7 @@
     "ci": {
       "$comment": [
         "Only a push to main is evidence: ci.yml has no dispatch, so the fresh route is a re-run of all jobs of main's run.",
-        "Every job and every matrix leg is required; none is skipped on main. The go legs run the workflow's own steps,",
+        "Every job and every matrix leg is required; none is skipped on main. The go legs include native adapter sandbox boundary tests and run the workflow's own steps,",
         "not dev.json's, so their checks are none: the job's success is the API's, and the evidence adds the leg's",
         "platform and toolchain. The check job runs every dev.json check and setup step."
       ],

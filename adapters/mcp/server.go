@@ -40,6 +40,8 @@ func (s stdioConversation) initialized(_ context.Context, _ string) error {
 	return s.notify("notifications/initialized", map[string]any{})
 }
 
+var sandboxCommand = sandbox.Command
+
 // startServer starts the server the configuration names with the
 // credentials as its environment and nothing else added: a container gets
 // them through an env file in its private mount; a command gets them
@@ -92,7 +94,7 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 	cmd := exec.CommandContext(runCtx, path, cfg.Command[1:]...)
 	cmd.Args[0] = cfg.Command[0]
 	cmd.Env = append(os.Environ(), env...)
-	cleanup := func() {}
+	cleanup := func() error { return nil }
 	var protection *sandbox.Report
 	if cfg.Customer {
 		mode, err := sandbox.ModeForWorkspace(cfg.SandboxPolicy, cfg.SandboxSource, cfg.SandboxWorkspace)
@@ -101,7 +103,7 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 			return nil, err
 		}
 		var report sandbox.Report
-		cmd, report, cleanup, err = sandbox.Command(runCtx, path, cfg.Command[1:], mode, cfg.SandboxWorkspace)
+		cmd, report, cleanup, err = sandboxCommand(runCtx, path, cfg.Command[1:], mode, cfg.SandboxWorkspace)
 		if err != nil {
 			cancel()
 			return nil, err
@@ -126,27 +128,23 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 	// reached when it is stopped.
 	if err := adoptOrphans(); err != nil {
 		cancel()
-		cleanup()
-		return nil, err
+		return nil, errors.Join(err, cleanup())
 	}
 	stderr := &boundedBuffer{limit: containers.DiagnosticBytes}
 	cmd.Stderr = stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
-		cleanup()
-		return nil, err
+		return nil, errors.Join(err, cleanup())
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
-		cleanup()
-		return nil, err
+		return nil, errors.Join(err, cleanup())
 	}
 	if err := cmd.Start(); err != nil {
 		cancel()
-		cleanup()
-		return nil, fmt.Errorf("server could not be started: %v", err)
+		return nil, errors.Join(fmt.Errorf("server could not be started: %v", err), cleanup())
 	}
 	// A reader blocked on stdout, or a writer blocked on stdin because a
 	// descendant holds the pipe without reading, returns when the context
@@ -166,9 +164,10 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 		return waitErr
 	}
 	stopped := false
+	var stopErr error
 	stop := func() error {
 		if stopped {
-			return nil
+			return stopErr
 		}
 		stopped = true
 		// End of input ends a well-behaved server; one that lingers is
@@ -188,11 +187,11 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 		// A descendant that could not be established gone fails the
 		// stop, and with it the check or the acquisition: it may hold
 		// the credentials.
-		err := killDescendants()
-		if err == nil {
-			cleanup()
+		stopErr = killDescendants()
+		if stopErr == nil {
+			stopErr = cleanup()
 		}
-		return err
+		return stopErr
 	}
 	return &server{sandbox: protection, rpc: stdioConversation{newClient(stdin, stdout)}, stop: stop, firstLine: func() string { return stderr.firstLine(redactor) },
 		identity: adapterIdentity{Name: cfg.Command[0], Digest: digest}}, nil
