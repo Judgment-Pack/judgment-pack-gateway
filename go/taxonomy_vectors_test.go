@@ -13,6 +13,9 @@ func TestV2SharedSourceIdentityVectors(t *testing.T) {
 	sharedSourceIdentityVectors(t, "v2.json", false)
 }
 func TestV3SharedSourceIdentityVectors(t *testing.T) { sharedSourceIdentityVectors(t, "v3.json", true) }
+
+// V4 is a customer command's: V3 with the command's executable identity.
+func TestV4SharedSourceIdentityVectors(t *testing.T) { sharedSourceIdentityVectors(t, "v4.json", true) }
 func sharedSourceIdentityVectors(t *testing.T, filename string, customer bool) {
 	var v struct {
 		Binding, Platform, Operation, Endpoint, SnapshotText, SnapshotDigest, OwnerDeclarationText, OwnerDeclarationDigest string
@@ -24,6 +27,7 @@ func sharedSourceIdentityVectors(t *testing.T, filename string, customer bool) {
 		}
 		Tools         map[string]ToolTaxonomy
 		FrontendNames map[string]string
+		Command       []string
 		Refusals      []struct{ Name, Find, Replace string }
 	}
 	raw, err := os.ReadFile(filepath.Join("..", "testdata", "tool-taxonomy", filename))
@@ -33,7 +37,7 @@ func sharedSourceIdentityVectors(t *testing.T, filename string, customer bool) {
 	if digestOf(v.SnapshotText) != v.SnapshotDigest || digestOf(v.OwnerDeclarationText) != v.OwnerDeclarationDigest {
 		t.Fatal("fixture digest")
 	}
-	op := operation{customer: customer, name: v.Operation, taxonomies: v.Tools, url: v.Endpoint}
+	op := operation{customer: customer, name: v.Operation, taxonomies: v.Tools, url: v.Endpoint, command: v.Command}
 	accept := func(text string) bool {
 		s, err := parseSnapshot([]byte(text))
 		return err == nil && snapshotOwners(s, &op) == nil && s.platform == v.Platform && s.binding == v.Binding && snapshotEndpointProblem(s, &op) == nil

@@ -2118,6 +2118,9 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 				}
 			}
 		}
+		if err := customerCommandEnvironment(*p, b); err != nil {
+			return nil, err
+		}
 		bindings[p.name] = b
 	}
 	if err := validateEngineSandbox(*cfg, bindings); err != nil {
@@ -2223,4 +2226,30 @@ func readBoundedFrom(file io.Reader, path string, limit int) ([]byte, error) {
 		return nil, fmt.Errorf("%s is larger than %d bytes", path, limit)
 	}
 	return data, nil
+}
+
+// loaderVariable reports whether a dynamic loader honours the variable when
+// a program starts: LD_*, DYLD_* and GCONV_PATH.
+func loaderVariable(name string) bool {
+	upper := strings.ToUpper(name)
+	return strings.HasPrefix(upper, "LD_") || strings.HasPrefix(upper, "DYLD_") || upper == "GCONV_PATH"
+}
+
+// customerCommandEnvironment refuses a platform environment that names a
+// dynamic-loader variable when the platform's binding runs a customer
+// command: it would choose code before the command's sandbox applies. The
+// adapter refuses the same names, and credentials members, at every start.
+func customerCommandEnvironment(p platformConfig, b binding) error {
+	for _, op := range []*operation{b.live, b.write} {
+		if op == nil || !op.customer || len(op.command) == 0 {
+			continue
+		}
+		for _, pair := range p.environment {
+			name, _, _ := strings.Cut(pair, "=")
+			if loaderVariable(name) {
+				return fmt.Errorf("platform %s: sandbox-loader-variable-refused: environment.%s is a dynamic-loader variable (LD_*, DYLD_* or GCONV_PATH), which a customer command may not carry", p.name, name)
+			}
+		}
+	}
+	return nil
 }

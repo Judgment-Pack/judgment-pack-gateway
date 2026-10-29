@@ -25,8 +25,10 @@ func TestCustomerCleanupFailureRefusesRegistrationAndAcquisition(t *testing.T) {
 	t.Cleanup(func() { sandboxCommand = saved })
 	var cleanupErr error
 	cleanups := 0
-	sandboxCommand = func(ctx context.Context, executable string, args []string, mode, workspace string) (*exec.Cmd, sandbox.Report, func() error, error) {
-		return exec.CommandContext(ctx, executable, args...), sandbox.Report{Mode: mode, Backend: "test", State: "partial"}, func() error {
+	sandboxCommand = func(ctx context.Context, launch sandbox.Launch, mode, workspace string) (*exec.Cmd, sandbox.Report, func() error, error) {
+		cmd := exec.CommandContext(ctx, launch.Path, launch.Args...)
+		cmd.Env = launch.Env
+		return cmd, sandbox.Report{Mode: mode, Backend: "test", State: "partial"}, func() error {
 			cleanups++
 			return cleanupErr
 		}, nil

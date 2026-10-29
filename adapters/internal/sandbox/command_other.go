@@ -8,7 +8,7 @@ import (
 	"os/exec"
 )
 
-func platformCommand(_ context.Context, _ string, _ []string, mode, _, _ string) (*exec.Cmd, Report, error) {
+func platformCommand(_ context.Context, _ Launch, mode, _, _ string) (*exec.Cmd, Report, error) {
 	report := Report{Mode: mode, Backend: "none", State: "not-enforced", Reason: "no filesystem sandbox backend is implemented on this platform"}
 	return nil, report, errors.New("sandbox-not-enforced: no filesystem sandbox backend is implemented on this platform")
 }

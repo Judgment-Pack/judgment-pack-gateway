@@ -110,7 +110,7 @@ func runProgram(mode, workspace string, argv []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "sandbox-not-enforced:", err)
 		return 125
 	}
-	cmd, _, cleanup, err := sandbox.Command(context.Background(), path, argv[1:], mode, workspace)
+	cmd, _, cleanup, err := sandbox.Command(context.Background(), sandbox.Launch{Path: path, Argv0: argv[0], Args: argv[1:], Env: os.Environ()}, mode, workspace)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 125

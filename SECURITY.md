@@ -39,6 +39,20 @@ boundary. A standalone operator using that flag must supply the enclosing bounda
 Without the flag, customer command startup still establishes its own sandbox.
 The check reports the actual backend selected. These controls restrict local
 filesystem writes, not network effects or reads available to the source's user.
+A customer command's approval (snapshot version 4) binds its executable: the
+resolved absolute path and digest of the command's file and of a script operand.
+Each start re-resolves and re-digests both and refuses a difference before
+starting anything. On Linux the digested descriptor is the one executed; a `#!`
+script, a script operand, macOS and Windows execute by path after a digest taken
+immediately before the start, so a change inside that window is not detected.
+Code loaded by other means (modules, imports, packages fetched at launch) is not
+bound. The sandbox launcher is taken only from fixed root-owned locations
+(`/usr/bin/bwrap`, `/bin/bwrap`, `/usr/local/bin/bwrap`; `/usr/bin/sandbox-exec`),
+never from PATH; one there that is not root's, or that group or others can write
+along its path, refuses with `sandbox-launcher-untrusted` and nothing falls back.
+The sandbox launcher starts with an empty environment, and a configured
+environment or credentials member naming a dynamic-loader variable (`LD_*`,
+`DYLD_*`, `GCONV_PATH`) is refused at registration and every start.
 Keep the policy, credentials, signing material and approval evidence outside the
 source's writable workspace. Source user separation and the existing custody rules
 remain necessary. See [the customer binding contract](adapters/README.md#customer-bindings)

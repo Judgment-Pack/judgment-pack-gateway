@@ -56,7 +56,7 @@ func Probe(ctx context.Context, mode, workspace string) Report {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd, prepared, cleanup, err := Command(ctx, self, []string{probeArgument, inside.Name(), outside.Name()}, mode, workspace)
+	cmd, prepared, cleanup, err := Command(ctx, Launch{Path: self, Args: []string{probeArgument, inside.Name(), outside.Name()}}, mode, workspace)
 	report = prepared
 	if err != nil {
 		if report.Reason != "" {

@@ -29,7 +29,7 @@ func TestEnclosingSandboxKeepsCustomerRegistrationGates(t *testing.T) {
 	}
 	saved := sandboxCommand
 	t.Cleanup(func() { sandboxCommand = saved })
-	sandboxCommand = func(context.Context, string, []string, string, string) (*exec.Cmd, sandbox.Report, func() error, error) {
+	sandboxCommand = func(context.Context, sandbox.Launch, string, string) (*exec.Cmd, sandbox.Report, func() error, error) {
 		t.Error("enclosing assertion nested a native sandbox")
 		return nil, sandbox.Report{}, func() error { return nil }, errors.New("unexpected nested sandbox")
 	}
