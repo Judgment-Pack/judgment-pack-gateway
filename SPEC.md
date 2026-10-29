@@ -475,6 +475,59 @@ this receipt's signature. Appending anything anywhere, inside `acquisition` or
 a version 3 signature cannot be presented as a version 2 one or the reverse; the
 seal's prefix is unchanged (§3).
 
+### 1.2b Action delivery and reconciliation
+
+This extension is specified before its implementation (#316). A version 3 action
+receipt may carry `action.delivery`, exactly `{key, outcome, contract}`. `key` is
+64 lowercase hexadecimal characters; `outcome` is `response` or `uncertain`;
+`contract` is a digest (§1.2a). All three members are required together. A
+`response` means the executor returned a valid envelope, not that the target
+committed. An `uncertain` receipt retains a gateway uncertainty record, not a
+target response; its adapter identifies the gateway uncertainty recorder and its
+observation time is the time that recorder recorded uncertainty. It asserts
+neither that a request was sent nor that the target did not commit.
+
+A version 3 acquisition may carry `acquisition.reconciliation`, exactly
+`{action, key, contract, outcome}`. `action` is a citation of exactly
+`{sessionId, callIndex, signature}` in the forms of §1.2a; `key` and `contract`
+have the forms above; `outcome` is `committed` or `unknown`. Verification must
+resolve the cited action under the same authority and authenticated issuer and
+subject, require its delivery key and contract to match, and require that action
+to have an uncertain outcome. Missing or mismatched evidence fails verification.
+`committed` reports a matching key and committed value observed by the declared
+read tool; `unknown` never establishes absence of a commit. Neither permits
+another dispatch of the mutation. These optional members do not change the
+canonical form or meaning of receipts without them.
+
+For engine version 14, `/act` requires `actionKey` in the key form above. Older
+configurations may opt in by supplying it. The key is scoped to gateway
+authority, authenticated issuer and subject, independent of session and token
+renewal. A durable private reservation under `actions/` in the store precedes
+any dispatch; only its exclusive creator may send the mutation. Every subsequent
+request under that key either returns retained evidence, performs the declared
+read-back or refuses. Partial or unreadable reservations never grant dispatch.
+A key reused for different approved content is refused. Every attempt still
+passes the existing action authorization and admission checks. No automatic
+mutation retry is introduced. A platform without the required directory and file
+durability refuses the keyed path. Store export omits private action journals;
+operator backups must preserve them to preserve dispatch history.
+
+Binding version 3 retains version 2 owner declarations and adds required
+`actionRecovery` when it names a write operation. It maps exactly every write
+tool to null (unsupported) or an object with optional `idempotencyArgument` and
+`readBack`, at least one present. The former is a nonempty top-level argument
+name populated with the key before policy checks; a conflicting caller value
+is refused. `readBack` is exactly `{tool, arguments, keyPointer, outcomePointer,
+committedValue}`. The tool must be an allowed live tool whose owner declares
+operation `read` and effect `read` or `read-external`. Each argument maps to
+exactly one of `{actionKey: true}`, `{argument: <JSON pointer>}` or
+`{literal: <canonical JSON value>}`. Result pointers follow JSON Pointer; the
+observed key must equal the action key and the observed outcome must equal
+`committedValue`, a nonempty string, to report committed. Any other observation
+is unknown. Read-back runs with the live source's credentials and sandbox and
+retains its approved descriptor provenance. The binding digest pins this
+owner-supplied contract; a provider name alone establishes no guarantee.
+
 ### 1.3 Store layout
 
 ```
