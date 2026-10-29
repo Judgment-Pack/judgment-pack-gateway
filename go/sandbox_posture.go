@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -16,8 +17,9 @@ type sandboxProbeReport struct {
 		Approval   string   `json:"approval"`
 		Operations []string `json:"operations"`
 	} `json:"settings"`
-	Preset     string `json:"preset"`
-	Protection struct {
+	Preset       string `json:"preset"`
+	PolicyDigest string `json:"policyDigest"`
+	Protection   struct {
 		Mode    string `json:"mode"`
 		Backend string `json:"backend"`
 		State   string `json:"state"`
@@ -100,7 +102,7 @@ func runSandboxProbe(ctx context.Context, spec sourceSpec) (sandboxProbeReport, 
 	if err != nil {
 		return report, err
 	}
-	cmd := exec.CommandContext(ctx, helper, "probe", "--policy="+s.policy, "--source="+s.source, "--workspace="+s.workspace)
+	cmd := exec.CommandContext(ctx, helper, sandboxHelperArgs(s, "probe")...)
 	cmd.Env = sourceEnvironment(spec)
 	group, err := prepareSourceProcess(cmd, spec.user)
 	if err != nil {
@@ -133,7 +135,7 @@ func decodeSandboxProbe(raw []byte) (sandboxProbeReport, error) {
 	if err != nil {
 		return report, err
 	}
-	if err = exactlyMembers(top, map[string]bool{"settings": true, "preset": true, "protection": true}, "sandbox probe"); err != nil {
+	if err = exactlyMembers(top, map[string]bool{"settings": true, "preset": true, "policyDigest": true, "protection": true}, "sandbox probe"); err != nil {
 		return report, err
 	}
 	for key, members := range map[string]map[string]bool{
@@ -150,6 +152,9 @@ func decodeSandboxProbe(raw []byte) (sandboxProbeReport, error) {
 	}
 	if err = json.Unmarshal(raw, &report); err != nil {
 		return report, err
+	}
+	if d := report.PolicyDigest; d != "none" && !(len(d) == len("sha256:")+64 && strings.HasPrefix(d, "sha256:") && strings.Trim(d[len("sha256:"):], "0123456789abcdef") == "") {
+		return report, errors.New("invalid sandbox policy digest")
 	}
 	p := report.Protection
 	if p.Mode != report.Settings.Mode || p.Reason == "" || (p.Mode != "read-only" && p.Mode != "workspace-write" && p.Mode != "danger-full-access") {

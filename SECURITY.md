@@ -31,7 +31,13 @@ full access runs unrestricted and is reported as not enforced.
 A platform without an implemented backend refuses a
 restricted command with `sandbox-not-enforced`; full access is an explicit operator
 choice. Engine version 13 applies this boundary to the adapter itself and its
-descendants through the trusted `adapter-sandbox` executable. Its customer adapter
+descendants through `adapter-sandbox`, which the core holds as it holds an adapter;
+the launcher that helper runs comes only from the fixed locations below. Each
+launch is bound to the posture reported for its source: the probe's mode, backend
+and policy digest go to the helper, which refuses a changed policy or a backend
+that fails at launch rather than falling back. Inside bubblewrap the per-user
+runtime directory and known container-runtime sockets are masked, except for a
+container image source's runtime client, which is reported as partial. Its customer adapter
 receives the explicit operator flag `--sandbox-enclosing`, which skips only a
 redundant inner sandbox. That flag is not proof of enforcement: the adapter reports
 `enclosing-operator` / `not-enforced`; the core independently probes the enclosing
@@ -39,6 +45,21 @@ boundary. A standalone operator using that flag must supply the enclosing bounda
 Without the flag, customer command startup still establishes its own sandbox.
 The check reports the actual backend selected. These controls restrict local
 filesystem writes, not network effects or reads available to the source's user.
+A customer command's approval (snapshot version 4) binds its executable: the
+resolved absolute path and digest of the command's file and of a script operand.
+Each start re-resolves and re-digests both and refuses a difference before
+starting anything. On Linux the digested descriptor is the one executed; a `#!`
+script, a script operand, macOS and Windows execute by path after a digest taken
+immediately before the start, so a change inside that window is not detected.
+Code loaded by other means (modules, imports, packages fetched at launch) is not
+bound. The sandbox launcher is taken only from fixed root-owned locations
+(`/usr/bin/bwrap`, `/bin/bwrap`, `/usr/local/bin/bwrap`; `/usr/bin/sandbox-exec`),
+never from PATH; one there that is not root's, or that group or others can write
+along its path, refuses with `sandbox-launcher-untrusted` and nothing falls back.
+The sandbox launcher starts with an empty environment, and a configured
+environment or credentials member naming a dynamic-loader variable (`LD_*`,
+`DYLD_*`, `GCONV_PATH`) is refused at registration and every start; at engine
+version 13 a platform environment naming one is refused for every wrapped source.
 Keep the policy, credentials, signing material and approval evidence outside the
 source's writable workspace. Source user separation and the existing custody rules
 remain necessary. See [the customer binding contract](adapters/README.md#customer-bindings)

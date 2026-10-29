@@ -634,3 +634,18 @@ previous statements remain available for historical receipts.
 Registrations made before this extension remain readable without a provenance
 claim; explicit recapture upgrades them. This extension keeps receipt version 3,
 so an older verifier that ignores the new member cannot establish this property.
+
+## Customer command snapshot version 4
+
+A customer binding whose server is a local `command` uses `snapshotVersion: "4"`:
+version 3 with one more top-level member, `executable`, an object holding exactly
+`path` (absolute, links resolved) and `digest` (`sha256:` and 64 lowercase hex) of
+the file the command resolved to, and optionally `script` with exactly the same two
+members for the first non-flag operand that named a regular file. Both readers
+require the member on version 4 and refuse it elsewhere; the engine requires
+version 4 for a command operation and version 3 for an image or URL one. A
+version-3 snapshot offered for a command refuses with
+`mcp-approval-reapproval-required` and is never read as approved. The adapter
+compares the member with the command it resolves and digests at every start and
+refuses a difference with `mcp-executable-changed` before the start. Shared
+vectors are in `testdata/tool-taxonomy/v4.json`.

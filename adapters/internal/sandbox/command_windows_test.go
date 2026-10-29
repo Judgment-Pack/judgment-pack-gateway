@@ -14,7 +14,7 @@ func TestWindowsRestrictedCommandsRefuseBeforeExecution(t *testing.T) {
 	t.Setenv("TEMP", temporary)
 	marker := filepath.Join(workspace, "started")
 	for _, mode := range []string{ReadOnly, WorkspaceWrite} {
-		cmd, report, cleanup, err := Command(context.Background(), os.Args[0], []string{"_sandbox_test_write", marker}, mode, workspace)
+		cmd, report, cleanup, err := Command(context.Background(), Launch{Path: os.Args[0], Args: []string{"_sandbox_test_write", marker}, Env: os.Environ()}, mode, workspace)
 		if cmd != nil || err == nil || !strings.Contains(err.Error(), "sandbox-not-enforced:") {
 			t.Fatalf("restricted command did not refuse: command=%v error=%v", cmd, err)
 		}
@@ -37,7 +37,7 @@ func TestWindowsRestrictedCommandsRefuseBeforeExecution(t *testing.T) {
 func TestWindowsExplicitFullAccessRemainsUnrestricted(t *testing.T) {
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "written")
-	cmd, report, cleanup, err := Command(context.Background(), os.Args[0], []string{"_sandbox_test_write", outside}, FullAccess, workspace)
+	cmd, report, cleanup, err := Command(context.Background(), Launch{Path: os.Args[0], Args: []string{"_sandbox_test_write", outside}, Env: os.Environ()}, FullAccess, workspace)
 	defer cleanup()
 	if err != nil {
 		t.Fatal(err)

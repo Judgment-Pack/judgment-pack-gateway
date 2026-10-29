@@ -12,6 +12,7 @@ import (
 )
 
 func TestEnclosingSandboxKeepsCustomerRegistrationGates(t *testing.T) {
+	withoutLoaderVariables(t)
 	cfg := fake(t)
 	cfg.Customer, cfg.SandboxEnclosing = true, true
 	cfg.SandboxWorkspace = t.TempDir()
@@ -29,7 +30,7 @@ func TestEnclosingSandboxKeepsCustomerRegistrationGates(t *testing.T) {
 	}
 	saved := sandboxCommand
 	t.Cleanup(func() { sandboxCommand = saved })
-	sandboxCommand = func(context.Context, string, []string, string, string) (*exec.Cmd, sandbox.Report, func() error, error) {
+	sandboxCommand = func(context.Context, sandbox.Launch, string, string) (*exec.Cmd, sandbox.Report, func() error, error) {
 		t.Error("enclosing assertion nested a native sandbox")
 		return nil, sandbox.Report{}, func() error { return nil }, errors.New("unexpected nested sandbox")
 	}
@@ -68,6 +69,7 @@ func init() {
 }
 
 func TestEnclosingSandboxPreservesPrivateTemporaryEnvironment(t *testing.T) {
+	withoutLoaderVariables(t)
 	private := t.TempDir()
 	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(name, private)

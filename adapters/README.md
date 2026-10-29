@@ -327,6 +327,31 @@ representation changes within those bytes. Version 2 approvals remain readable
 for their existing bindings; they cannot substitute for a customer's version 3
 approval. Neither an acquisition nor a health check refreshes approval.
 
+A customer `command` captures `"snapshotVersion":"4"`: version 3 with an
+`executable` member that binds the program, not only its configured words. It
+holds the absolute path the command resolved to, links resolved, and the SHA-256
+of that file; when the first operand that is not a flag names a regular file,
+which is the script an interpreter runs, it also holds that file's path and digest
+as `script`. A bare name is looked up on the adapter's `PATH`; a relative word is
+resolved against the source workspace, the directory the server runs in, never
+the adapter's own working directory. Every start, registration and health checks
+included, resolves and digests both files again. With an approval held, another
+resolved path or another digest of either file refuses with
+`mcp-executable-changed` before anything is started. A version-3 approval of a
+command predates this binding and refuses with `mcp-approval-reapproval-required`;
+it is never read as approved, and `connect --replace` approves the source again.
+
+On Linux the command's file is opened once, digested from that descriptor, and
+that same descriptor is executed (through `/proc/self/fd`), under bubblewrap,
+Landlock and full access alike; a file put in place at the path after the digest
+is not what runs. A `#!` script, a bubblewrap without `--argv0`, macOS and Windows
+execute the path instead, and the adapter digests the file again immediately
+before the start; a change within that remaining window is not detected. The
+script operand is always opened by its interpreter by path and is re-checked the
+same way. Code an interpreter or a package runner loads by other means, such as a
+module name, an import from another file or a package fetched at launch, is not
+bound.
+
 Every call checks the exact allowed names, pinned snapshot bytes, binding,
 operation, endpoint, server identity and current descriptors before `tools/call`.
 The named refusals include `mcp-tool-not-allowed`, `mcp-descriptor-drift`,
@@ -352,8 +377,12 @@ directory. The policy file must resolve outside that workspace. The policy belon
 The successful check report includes `sandbox` with mode, backend, state and reason.
 No backend means `sandbox-not-enforced` and the restricted command is not started.
 
-Engine version 13 instead confines the adapter and its descendants with the
-trusted `adapter-sandbox` launcher. For a customer command it passes the explicit
+Engine version 13 instead confines the adapter and its descendants through
+`adapter-sandbox`. The core holds that helper as it holds an adapter (owner,
+ancestors, native executable, loader); the launcher the helper runs, bubblewrap
+or sandbox-exec, is not taken from `PATH` but only from the fixed root-owned
+locations below, and the Landlock fallback re-executes the held helper itself.
+For a customer command it passes the explicit
 operator flag `--sandbox-enclosing` along with the same effective policy, source
 identity and workspace. This skips a redundant inner sandbox, while keeping owner
 declarations, descriptor approval, drift checks, allowed tools and cleanup. The
@@ -367,15 +396,61 @@ noncustomer, remote and container configurations; tool arguments cannot set it.
 overrides in `sources`. It never writes a preset selector. The gateway enforces
 the filesystem mode; companion approval policy remains responsible for effects.
 `adapter-sandbox probe --policy FILE --source NAME --workspace DIR` performs a
-fixed native write check and emits canonical settings, derived preset and protection.
+fixed native write check and emits canonical settings, derived preset, protection
+and `policyDigest` (`sha256:` and the lowercase hex of the policy bytes it read,
+or `none` without a policy file).
 `adapter-sandbox run` accepts the same selection followed by `-- COMMAND ARGS...`.
+With `--expect-mode`, `--expect-backend` and `--expect-policy`, which the core
+always passes from the probe it reported for the source, `run` uses exactly that
+mode, policy and backend or refuses with `sandbox-not-enforced` before the program
+starts: a policy changed since the probe refuses, and a bubblewrap that fails at
+launch refuses rather than falling back to Landlock. `--container-runtime`, which
+the core passes to both `probe` and `run` for a container image source, keeps
+container-runtime sockets reachable for the runtime client; the report is then
+`partial`. Both refuse with `sandbox-loader-variable-refused` when their own
+environment names a dynamic-loader variable.
 Omitting the workspace creates a private invocation workspace. A child failure
 keeps its own exit status; setup or cleanup failures override success. Read-only
 mode denies temporary writes too, so programs that require scratch files may fail.
 
+A launcher (bubblewrap, the Landlock helper, or sandbox-exec and its helper on
+macOS) starts with an empty environment. The server's environment, the adapter's
+own and the credentials members, reaches the server only inside the sandbox,
+through an unlinked file on an inherited descriptor (bubblewrap's `--clearenv`
+and `--args`), never on a command line, with the private temporary-directory
+variables last. A customer command whose configured environment or credentials
+name a variable the dynamic loader honours (`LD_*`, `DYLD_*` or `GCONV_PATH`)
+refuses with `sandbox-loader-variable-refused` at registration and at every start,
+before anything is started; the engine refuses such a platform `environment` for a
+customer command binding when it loads the configuration, and at engine version 13
+for every platform whose sources run through the wrapper, whatever their kind.
+
+A launcher is never looked up on `PATH`. bubblewrap is taken only from
+`/usr/bin/bwrap`, `/bin/bwrap` or `/usr/local/bin/bwrap`, the first that exists,
+and sandbox-exec only from `/usr/bin/sandbox-exec`. The launcher must be an
+executable regular file owned by root and writable by neither group nor others,
+in directories that are each owned by root and writable by neither group nor
+others, both along the path as written and along the path it resolves to. A
+launcher there that fails this refuses with `sandbox-launcher-untrusted`; no later
+location, no `PATH` entry and no other backend is tried. With no bubblewrap at
+those locations, Linux uses Landlock and its report says so; macOS without a
+trusted sandbox-exec refuses with `sandbox-not-enforced`. A bubblewrap installed
+in a prefix an unprivileged user owns (a Homebrew prefix, for example) is never
+used.
+
 Linux tries bubblewrap and falls back to Landlock ABI 3 or newer. Landlock is
 reported as `partial`: file-content writes, truncation and directory mutations are
 restricted, while metadata operations such as chmod remain outside its controls.
+Inside bubblewrap the per-user runtime directory (`$XDG_RUNTIME_DIR`,
+`/run/user/UID`) is replaced by an empty one and each other known
+container-runtime socket (`/var/run/docker.sock`, `/run/docker.sock`,
+`/run/podman/podman.sock`, `/run/containerd/containerd.sock`,
+`/run/crio/crio.sock`, `/run/buildkit/buildkitd.sock`, and rootless or desktop
+sockets below the home directory) by `/dev/null`, so neither a container daemon
+nor the user's service manager can write for the program; the report names what
+was masked. Abstract Unix sockets and network access are unchanged. Landlock and
+Seatbelt cannot mask sockets: a reachable runtime socket is named in the report,
+and Seatbelt's state is then `partial`.
 macOS uses Seatbelt through sandbox-exec. Windows and other unsupported platforms
 refuse restricted customer commands before execution with `sandbox-not-enforced`. Network access is outside this filesystem policy.
 The mode does not establish a tool's declared effect or the truth of its answer.
