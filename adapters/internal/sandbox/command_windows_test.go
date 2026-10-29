@@ -425,6 +425,34 @@ func TestWindowsSecurityObjectIdentity(t *testing.T) {
 	}
 }
 
+// New goroutines begin with small stacks. Compare the wrapper's result with a
+// direct syscall result while repeated fresh calls exercise possible growth.
+func TestWindowsIdentitySurvivesFreshGoroutineStacks(t *testing.T) {
+	held, err := holdWindowsFile(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.CloseHandle(held.handle)
+	var expected winFileIdentity
+	ok, _, callErr := winKernel.NewProc("GetFileInformationByHandleEx").Call(uintptr(held.handle), 18, uintptr(unsafe.Pointer(&expected)), unsafe.Sizeof(expected))
+	if ok == 0 {
+		t.Fatal(callErr)
+	}
+	for range 64 {
+		done := make(chan error, 1)
+		go func() {
+			actual, err := windowsFileIdentity(held.handle)
+			if err == nil && actual != expected {
+				err = fmt.Errorf("identity differs across API wrapper: got %x/%x, want %x/%x", actual.Volume, actual.ID, expected.Volume, expected.ID)
+			}
+			done <- err
+		}()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestWindowsDeletedWorkspaceObjectFailsCleanup(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "deleted")
 	if err := os.WriteFile(name, nil, 0600); err != nil {

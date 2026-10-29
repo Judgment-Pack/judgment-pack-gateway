@@ -48,6 +48,11 @@ var winSetDesktop = winUser.NewProc("SetThreadDesktop")
 
 const winHelperArg = "_gateway_windows_sandbox_exec_v1"
 const winSecurityParts = 0x4 | 0x10 // DACL and mandatory label, not audit SACL
+
+// Pointer-valued uintptr arguments must remain live and stationary through this
+// Go wrapper, including stack growth while a lazy procedure is resolved.
+//
+//go:uintptrescapes
 func winBool(proc *syscall.LazyProc, args ...uintptr) error {
 	ok, _, err := proc.Call(args...)
 	if ok == 0 {
