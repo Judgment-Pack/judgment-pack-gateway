@@ -2,7 +2,8 @@
   "$comment": [
     "The release evidence gate's configuration, read at the release commit by scripts/dev/release_evidence.py",
     "(vendored from the development kit; its docs/ci-evidence.md is the contract, docs/releasing.md says how the",
-    "release uses it). .github/test_ci_evidence.py holds this file to ci.yml and release.yml."
+    "release uses it). .github/test_ci_evidence.py holds this file to ci.yml and release.yml.",
+    "Native sandbox coverage includes the Windows customer registration and approved-acquisition refusal."
   ],
   "schema": 2,
   "repository": "Judgment-Pack/judgment-pack-gateway",
@@ -136,7 +137,7 @@
     "ci": {
       "$comment": [
         "Only a push to main is evidence: ci.yml has no dispatch, so the fresh route is a re-run of all jobs of main's run.",
-        "Every job and every matrix leg is required; none is skipped on main. The go legs run the workflow's own steps,",
+        "Every job and every matrix leg is required; none is skipped on main. The go legs include native adapter sandbox boundary tests and run the workflow's own steps,",
         "not dev.json's, so their checks are none: the job's success is the API's, and the evidence adds the leg's",
         "platform and toolchain. The check job runs every dev.json check and setup step."
       ],

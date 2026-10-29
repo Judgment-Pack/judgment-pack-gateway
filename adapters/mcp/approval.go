@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -140,7 +142,7 @@ func approvedSnapshot(cfg Config) (*snapshot, []byte, error) {
 	}
 	for key := range fields {
 		switch key {
-		case "snapshotVersion", "operation", "binding", "capturedAt", "platform", "policy", "tools", "server", "endpoint":
+		case "snapshotVersion", "operation", "binding", "capturedAt", "platform", "policy", "tools", "server", "endpoint", "executable":
 		default:
 			return nil, nil, errors.New("unknown snapshot member")
 		}
@@ -159,8 +161,30 @@ func approvedSnapshot(cfg Config) (*snapshot, []byte, error) {
 			return nil, nil, errors.New("malformed approved server identity")
 		}
 	}
+	// Version 3 is a customer binding's; version 4 a customer command's,
+	// which also binds the command's executable identity. A version-3
+	// approval of a command predates that binding and is never read as
+	// approved: the source is approved again.
+	version := "2"
+	if cfg.Customer {
+		version = "3"
+		if len(cfg.Command) > 0 {
+			version = "4"
+			if string(fields["snapshotVersion"]) == `"3"` {
+				return nil, nil, errors.New("mcp-approval-reapproval-required: this approval of a customer command predates executable binding (snapshot version 3); approve the source again")
+			}
+		}
+	}
+	if _, present := fields["executable"]; present != (version == "4") {
+		return nil, nil, errors.New("approved executable identity is missing or not one this source binds")
+	}
+	if version == "4" {
+		if err := approvedExecutableShape(fields["executable"]); err != nil {
+			return nil, nil, err
+		}
+	}
 	var snap snapshot
-	if json.Unmarshal(raw, &snap) != nil || snap.SnapshotVersion != "2" || snap.Operation != cfg.ApprovedOperation || snap.Policy != displayPolicy || snap.Server == nil || snap.Platform != cfg.ApprovedPlatform || snap.Binding != cfg.ApprovedBinding || snap.Endpoint != cfg.URL || len(snap.Tools) != len(cfg.ToolTaxonomies) {
+	if json.Unmarshal(raw, &snap) != nil || snap.SnapshotVersion != version || snap.Operation != cfg.ApprovedOperation || snap.Policy != displayPolicy || snap.Server == nil || snap.Platform != cfg.ApprovedPlatform || snap.Binding != cfg.ApprovedBinding || snap.Endpoint != cfg.URL || len(snap.Tools) != len(cfg.ToolTaxonomies) {
 		return nil, nil, errors.New("approved V2 snapshot identity differs")
 	}
 	if snap.Server.Name == "" || checkIdentity(snap.Server.Name, snap.Server.Version, nil) != nil {
@@ -178,6 +202,9 @@ func approvedSnapshot(cfg Config) (*snapshot, []byte, error) {
 		if !ok || tool.Taxonomy == nil || *tool.Taxonomy != t {
 			return nil, nil, errors.New("approved owner map differs")
 		}
+		if cfg.Customer && !canon.IsDigestString(tool.DescriptorDigest) {
+			return nil, nil, errors.New("mcp-snapshot-invalid: missing complete descriptor digest")
+		}
 		// Decode the closed entry and owner shape independently of encoding/json's case folding.
 		var entries map[string]json.RawMessage
 		json.Unmarshal(fields["tools"], &entries)
@@ -186,7 +213,7 @@ func approvedSnapshot(cfg Config) (*snapshot, []byte, error) {
 			return nil, nil, err
 		}
 		for key := range entry {
-			if key != "taxonomy" && key != "serverAnnotations" && key != "description" && key != "inputSchemaText" {
+			if key != "taxonomy" && key != "serverAnnotations" && key != "description" && key != "inputSchemaText" && !(cfg.Customer && key == "descriptorDigest") {
 				return nil, nil, errors.New("unknown approved tool member")
 			}
 		}
@@ -264,7 +291,13 @@ func (c *capturer) addOwned(tool listedTool, owner ToolTaxonomy) error {
 		return err
 	}
 	if owner.Contradiction(hints) {
-		return errors.New("server constraints contradict owner taxonomy")
+		return errors.New("mcp-taxonomy-contradiction: server constraints contradict owner taxonomy")
+	}
+	if c.snap.SnapshotVersion == "3" || c.snap.SnapshotVersion == "4" {
+		// Digest the complete strict wire descriptor, including fields not used
+		// for display. Unsupported schemas cannot drift invisibly through a fallback.
+		sum := sha256.Sum256(tool.descriptor)
+		entry.DescriptorDigest = "sha256:" + hex.EncodeToString(sum[:])
 	}
 	entry.Taxonomy = &owner
 	entry.ServerAnnotations = hints
@@ -304,12 +337,12 @@ func (c *capturer) addOwned(tool listedTool, owner ToolTaxonomy) error {
 	return nil
 }
 
-func observedApprovedTool(ctx context.Context, cfg Config, rpc conversation, info initializeResult, secrets []string, approved *snapshot, original []byte, wanted string) (json.RawMessage, error) {
+func observedApprovedTool(ctx context.Context, cfg Config, rpc conversation, info initializeResult, secrets []string, approved *snapshot, original []byte, wanted string, executable *executableIdentity) (json.RawMessage, error) {
 	capture, err := newCapturer(DescriptorTarget{Platform: approved.Platform, Binding: approved.Binding}, info, secrets, approved.CapturedAt, cfg.URL)
 	if err != nil {
 		return nil, err
 	}
-	if err := capture.beginOwned(approved.Operation); err != nil {
+	if err := capture.beginOwnedVersion(approved.Operation, cfg.Customer, executable); err != nil {
 		return nil, err
 	}
 	if capture.snap.Server == nil {
@@ -328,7 +361,7 @@ func observedApprovedTool(ctx context.Context, cfg Config, rpc conversation, inf
 	for _, name := range ownerNames(cfg.ToolTaxonomies) {
 		tool, ok := found[name]
 		if !ok {
-			return nil, errors.New("approved tool missing from current server")
+			return nil, errors.New("mcp-descriptor-drift: approved tool missing from current server")
 		}
 		if err := capture.addOwned(tool, cfg.ToolTaxonomies[name]); err != nil {
 			return nil, err
@@ -340,7 +373,7 @@ func observedApprovedTool(ctx context.Context, cfg Config, rpc conversation, inf
 		return nil, err
 	}
 	if !bytes.Equal(projection, original) {
-		return nil, errors.New("current server descriptor projection differs from approved snapshot")
+		return nil, errors.New("mcp-descriptor-drift: current server descriptor projection differs from approved snapshot")
 	}
 	if selected == nil {
 		return nil, fmt.Errorf("requested tool was not approved")
@@ -358,10 +391,23 @@ func ownerNames(tools map[string]ToolTaxonomy) []string {
 }
 
 func (c *capturer) beginOwned(operation string) error {
+	return c.beginOwnedVersion(operation, false, nil)
+}
+
+// beginOwnedVersion starts an owner-declared snapshot: version 2, version 3
+// for a customer binding, and version 4 for a customer command, whose
+// snapshot also binds the command's executable identity.
+func (c *capturer) beginOwnedVersion(operation string, customer bool, executable *executableIdentity) error {
 	if operation != "live" && operation != "write" {
 		return errors.New("V2 capture requires exact operation")
 	}
 	c.snap.SnapshotVersion, c.snap.Operation = "2", operation
+	if customer {
+		c.snap.SnapshotVersion = "3"
+		if executable != nil {
+			c.snap.SnapshotVersion, c.snap.Executable = "4", executable
+		}
+	}
 	raw, err := canonicalJSON(c.snap)
 	if err != nil {
 		return err
@@ -371,4 +417,35 @@ func (c *capturer) beginOwned(operation string) error {
 		return errors.New("V2 snapshot identity exceeds bound")
 	}
 	return nil
+}
+
+// approvedExecutableShape holds an approved executable identity to its
+// exact members: an absolute path and a digest, and optionally a script
+// with the same two.
+func approvedExecutableShape(raw json.RawMessage) error {
+	bad := errors.New("malformed approved executable identity")
+	check := func(raw json.RawMessage, script bool) (json.RawMessage, error) {
+		members, err := exactMembers(raw)
+		if err != nil {
+			return nil, bad
+		}
+		for key := range members {
+			if key != "digest" && key != "path" && !(script && key == "script") {
+				return nil, bad
+			}
+		}
+		// Absolute on this system, or a POSIX absolute path: an approval is
+		// compared with the path measured where the command runs.
+		var digest, file string
+		if json.Unmarshal(members["digest"], &digest) != nil || !canon.IsDigestString(digest) || json.Unmarshal(members["path"], &file) != nil || !(filepath.IsAbs(file) || path.IsAbs(file)) {
+			return nil, bad
+		}
+		return members["script"], nil
+	}
+	script, err := check(raw, true)
+	if err != nil || script == nil {
+		return err
+	}
+	_, err = check(script, false)
+	return err
 }

@@ -341,7 +341,7 @@ func approveV2WriteFixture(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 	held.Close()
-	argv := mcpServerArgv(filepath.Join(cfg.adapters, "adapter-mcp"), *b.write, p.credentials["write"], cfg.runtime, p.endpoint, ownerFileArguments(cfg, p, b.write)...)
+	argv := mcpServerArgv(filepath.Join(cfg.adapters, "adapter-mcp"), *b.write, p.credentials["write"], cfg.runtime, p.endpoint, p.name+"/write", ownerFileArguments(cfg, p, b.write)...)
 	spec := sourceSpec{argv: argv, shape: "mcp", check: []string{"--descriptors-platform=" + p.name, "--descriptors-binding=" + p.binding, "--descriptors-operation=write"}}
 	report, err := runCheck(context.Background(), spec)
 	if err != nil {

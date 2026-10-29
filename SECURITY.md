@@ -1,5 +1,48 @@
 # Security policy
 
+## Customer MCP bindings
+
+Customer bindings are operator-reviewed source declarations. Their per-tool owner
+taxonomy is not an execution grant. Registration refuses contradictions with the
+server's recognized annotations, captures complete descriptor digests and pins the
+resulting version 3 snapshot. Dispatch checks that approval before calling a tool;
+it never refreshes approval on drift. The source's statement names the binding and
+snapshot digest, and the existing receipt commits to that statement. A valid receipt
+establishes byte lineage under the gateway key, not the honesty of a customer server,
+the truth of a descriptor, or that a tool obeyed its declared effect. The descriptor
+snapshot itself is not independently signed by this change.
+
+Registered customer commands default to workspace-write under the operator's
+separate sandbox policy. Bubblewrap on Linux restricts writable mounts; the Landlock
+fallback is reported as partial because it does not restrict filesystem metadata
+changes. macOS uses Seatbelt. Windows has no shipped restricted-command backend:
+read-only and workspace-write local customer commands refuse before execution,
+including registration and acquisition under an existing approval. No token/ACL
+sandbox or job-containment claim is made on Windows. Explicit operator-selected
+full access runs unrestricted and is reported as not enforced.
+A platform without an implemented backend refuses a
+restricted command with `sandbox-not-enforced`; full access is an explicit operator
+choice. The check reports the actual backend selected. These controls restrict local
+filesystem writes, not network effects or reads available to the source's user.
+A customer command's approval (snapshot version 4) binds its executable: the
+resolved absolute path and digest of the command's file and of a script operand.
+Each start re-resolves and re-digests both and refuses a difference before
+starting anything. On Linux the digested descriptor is the one executed; a `#!`
+script, a script operand, macOS and Windows execute by path after a digest taken
+immediately before the start, so a change inside that window is not detected.
+Code loaded by other means (modules, imports, packages fetched at launch) is not
+bound. The sandbox launcher is taken only from fixed root-owned locations
+(`/usr/bin/bwrap`, `/bin/bwrap`, `/usr/local/bin/bwrap`; `/usr/bin/sandbox-exec`),
+never from PATH; one there that is not root's, or that group or others can write
+along its path, refuses with `sandbox-launcher-untrusted` and nothing falls back.
+The sandbox launcher starts with an empty environment, and a configured
+environment or credentials member naming a dynamic-loader variable (`LD_*`,
+`DYLD_*`, `GCONV_PATH`) is refused at registration and every start.
+Keep the policy, credentials, signing material and approval evidence outside the
+source's writable workspace. Source user separation and the existing custody rules
+remain necessary. See [the customer binding contract](adapters/README.md#customer-bindings)
+for modes, limits and receipt interpretation.
+
 ## Support status
 
 This is a **reference gateway**, not a hardened deployment. It is pre-1.0, provides no security,

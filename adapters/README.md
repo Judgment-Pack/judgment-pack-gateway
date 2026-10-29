@@ -293,6 +293,121 @@ the adapter's canonicalizer answers to the same frozen vectors as the core's
 
 ## adapter-mcp
 
+### Customer bindings
+
+A customer server uses the same source contract as every MCP adapter, without a
+provider-specific connection implementation. A catalog binding with
+`"bindingVersion":"2","customer":true` names the server and declares `operation`
+and `effect` for every allowed tool in `toolTaxonomies`. `gateway connect` runs
+`--check --descriptors-binding=NAME@sha256:HEX` with the owner declaration and
+captures a separate snapshot for each enabled operation. Registration calls no
+tool; a customer binding accepts no probe. Missing declarations and contradictory
+server annotations refuse registration.
+
+The server is one of a digest-pinned `image`, a fixed `url`, or a `command` array.
+A command server additionally requires an absolute `workspace` directory and may
+name a separate operator policy file with `sandboxPolicy`. Arguments remain array
+elements, including spaces; they are never interpreted by a shell. A source
+derived from the binding has shape `mcp`, just as a manually declared source with
+`--source-shape NAME=mcp` does.
+
+For a manually declared source, pass `--customer-binding` alongside the existing
+owner-declaration, approved-platform, approved-binding, approved-operation,
+descriptor-snapshot and descriptor-pin flags. Capture uses the existing
+descriptors-platform, descriptors-binding and descriptors-operation flags with
+`--check` instead of the approved snapshot. A local command also requires
+`--sandbox-workspace`; `--sandbox-policy` selects the separate policy file and
+`--sandbox-source` selects its source override.
+
+Customer captures use `"snapshotVersion":"3"`. Each tool includes `descriptorDigest`,
+the SHA-256 of the complete tool descriptor's strict JSON bytes from `tools/list`,
+before display filtering. Changes to an unsupported schema, an output schema, a
+title, or any other descriptor member therefore refuse the next call, as do
+representation changes within those bytes. Version 2 approvals remain readable
+for their existing bindings; they cannot substitute for a customer's version 3
+approval. Neither an acquisition nor a health check refreshes approval.
+
+A customer `command` captures `"snapshotVersion":"4"`: version 3 with an
+`executable` member that binds the program, not only its configured words. It
+holds the absolute path the command resolved to, links resolved, and the SHA-256
+of that file; when the first operand that is not a flag names a regular file,
+which is the script an interpreter runs, it also holds that file's path and digest
+as `script`. A bare name is looked up on the adapter's `PATH`; a relative word is
+resolved against the source workspace, the directory the server runs in, never
+the adapter's own working directory. Every start, registration and health checks
+included, resolves and digests both files again. With an approval held, another
+resolved path or another digest of either file refuses with
+`mcp-executable-changed` before anything is started. A version-3 approval of a
+command predates this binding and refuses with `mcp-approval-reapproval-required`;
+it is never read as approved, and `connect --replace` approves the source again.
+
+On Linux the command's file is opened once, digested from that descriptor, and
+that same descriptor is executed (through `/proc/self/fd`), under bubblewrap,
+Landlock and full access alike; a file put in place at the path after the digest
+is not what runs. A `#!` script, a bubblewrap without `--argv0`, macOS and Windows
+execute the path instead, and the adapter digests the file again immediately
+before the start; a change within that remaining window is not detected. The
+script operand is always opened by its interpreter by path and is re-checked the
+same way. Code an interpreter or a package runner loads by other means, such as a
+module name, an import from another file or a package fetched at launch, is not
+bound.
+
+Every call checks the exact allowed names, pinned snapshot bytes, binding,
+operation, endpoint, server identity and current descriptors before `tools/call`.
+The named refusals include `mcp-tool-not-allowed`, `mcp-descriptor-drift`,
+`mcp-taxonomy-contradiction`, `mcp-owner-declaration-required` and
+`mcp-snapshot-required`. A descriptor refusal leaves approval unchanged.
+
+Receipt version 3 is unchanged. The acquisition's disclosed `statement` additionally
+names `binding` and `descriptorSnapshot` when a customer call uses an approved snapshot;
+the receipt commits to this statement using its existing salt. `acquisition.snapshot`
+continues to mean upstream currency and is not repurposed. The descriptor snapshot
+is not yet independently signed; signed provenance is the separate work in #313.
+
+The sandbox policy file has this shape:
+
+```json
+{"policyVersion":"1","defaultMode":"workspace-write","sources":{"customer/live":"read-only"}}
+```
+
+Absent a policy file, a customer command uses `workspace-write`. The three modes
+are `read-only`, `workspace-write` and explicitly selected `danger-full-access`.
+Workspace-write permits writes under the source workspace and a private temporary
+directory. The policy file must resolve outside that workspace. The policy belongs to the operator; a tool's arguments cannot select it.
+The successful check report includes `sandbox` with mode, backend, state and reason.
+No backend means `sandbox-not-enforced` and the restricted command is not started.
+
+A launcher (bubblewrap, the Landlock helper, or sandbox-exec and its helper on
+macOS) starts with an empty environment. The server's environment, the adapter's
+own and the credentials members, reaches the server only inside the sandbox,
+through an unlinked file on an inherited descriptor (bubblewrap's `--clearenv`
+and `--args`), never on a command line, with the private temporary-directory
+variables last. A customer command whose configured environment or credentials
+name a variable the dynamic loader honours (`LD_*`, `DYLD_*` or `GCONV_PATH`)
+refuses with `sandbox-loader-variable-refused` at registration and at every start,
+before anything is started; the engine refuses such a platform `environment` for a
+customer command binding when it loads the configuration.
+
+A launcher is never looked up on `PATH`. bubblewrap is taken only from
+`/usr/bin/bwrap`, `/bin/bwrap` or `/usr/local/bin/bwrap`, the first that exists,
+and sandbox-exec only from `/usr/bin/sandbox-exec`. The launcher must be an
+executable regular file owned by root and writable by neither group nor others,
+in directories that are each owned by root and writable by neither group nor
+others, both along the path as written and along the path it resolves to. A
+launcher there that fails this refuses with `sandbox-launcher-untrusted`; no later
+location, no `PATH` entry and no other backend is tried. With no bubblewrap at
+those locations, Linux uses Landlock and its report says so; macOS without a
+trusted sandbox-exec refuses with `sandbox-not-enforced`. A bubblewrap installed
+in a prefix an unprivileged user owns (a Homebrew prefix, for example) is never
+used.
+
+Linux tries bubblewrap and falls back to Landlock ABI 3 or newer. Landlock is
+reported as `partial`: file-content writes, truncation and directory mutations are
+restricted, while metadata operations such as chmod remain outside its controls.
+macOS uses Seatbelt through sandbox-exec. Windows and other unsupported platforms
+refuse restricted customer commands before execution with `sandbox-not-enforced`. Network access is outside this filesystem policy.
+The mode does not establish a tool's declared effect or the truth of its answer.
+
 A client of a [Model Context Protocol](https://modelcontextprotocol.io) server reached over
 stdio, or over Streamable HTTP at a URL (the remote form, below) — the servers vendors now
 publish for their own systems — that calls **one tool** per acquisition: the tool's whole result as the result, and the acquisition as the adapter
@@ -2272,3 +2387,24 @@ The optional `site` enforces the exact origin and robots rules again, including
 redirects. Each page then has its own verified document and citation; fetching
 again may observe newer content. Those later reads have their own limits and
 are not counted in the discovery budget. Direct `{"url":...}` reads are unchanged.
+
+### Windows customer-command availability
+
+Restricted local customer commands are unavailable on Windows. Both `read-only`
+and `workspace-write` refuse before starting the executable, including descriptor
+registration and acquisition against an existing approval. The report names
+`backend: "none"`, `state: "not-enforced"` and the missing Windows backend. There
+is no automatic fallback to broader permissions.
+
+An operator may explicitly select `danger-full-access` in the separate policy.
+That runs without a filesystem sandbox or a sandbox job-containment guarantee.
+It is not a workaround a tool request can select. Remote and container bindings
+retain their own policy paths; their availability is not evidence of confinement
+of remote servers, container-runtime helpers or other spawned programs.
+
+The experimental restricted-token/ACL backend is not shipped. Native validation
+found unresolved token-capability, ACL identity and cleanup behavior. Removing
+that implementation is a feature limitation, not a claim that its defects were
+repaired. Native refusal tests establish that restricted commands do not execute,
+that preparation cleans up its temporary directory, and that explicit full access
+is reported as unrestricted.

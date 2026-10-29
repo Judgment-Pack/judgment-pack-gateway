@@ -126,7 +126,11 @@ func (c *client) call(ctx context.Context, method string, params any) (json.RawM
 			// A server may ask its client for roots or sampling; this
 			// client serves nothing, and says so rather than hang the
 			// server waiting.
-			if err := c.send(map[string]any{"jsonrpc": "2.0", "id": m.id(), "error": rpcError{Code: -32601, Message: "this client serves no requests"}}); err != nil {
+			message := "this client serves no requests"
+			if m.str("method") == "sandbox/escalate" {
+				message = "sandbox-escalation-refused: only the operator configures the sandbox policy"
+			}
+			if err := c.send(map[string]any{"jsonrpc": "2.0", "id": m.id(), "error": rpcError{Code: -32601, Message: message}}); err != nil {
 				return nil, err
 			}
 		case m.str("method") != "":

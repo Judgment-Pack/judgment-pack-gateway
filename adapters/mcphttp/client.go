@@ -710,6 +710,9 @@ func (c *Client) message(ctx context.Context, body []byte, id int) (json.RawMess
 		}
 		if requestID, ok := m["id"]; ok {
 			var response any = map[string]any{"code": -32601, "message": "This client serves no requests"}
+			if name == "sandbox/escalate" {
+				response = map[string]any{"code": -32601, "message": "sandbox-escalation-refused: only the operator configures the sandbox policy"}
+			}
 			key := "error"
 			if name == "ping" {
 				key = "result"

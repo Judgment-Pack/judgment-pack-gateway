@@ -45,6 +45,7 @@ func fake(t *testing.T) Config {
 		t.Setenv(name, "")
 	}
 	t.Setenv(fakemcp.EnvActivate, "1")
+	withoutLoaderVariables(t)
 	t.Setenv(fakemcp.EnvTrace, filepath.Join(dir, "trace.jsonl"))
 	t.Setenv(fakemcp.EnvKills, filepath.Join(dir, "kills"))
 	t.Setenv(fakemcp.EnvHolderPid, filepath.Join(dir, "holder"))

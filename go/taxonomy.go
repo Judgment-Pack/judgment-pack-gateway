@@ -220,7 +220,23 @@ func snapshotOwners(s snapshot, op *operation) error {
 		}
 		return nil
 	}
-	if s.version != "2" || s.operation != op.name || s.server == nil || len(s.tools) != len(op.taxonomies) {
+	// Version 3 is a customer binding's; version 4 a customer command's,
+	// which also binds the command's executable. A version-3 snapshot of a
+	// command predates that binding and is never read as approved.
+	version := "2"
+	if op.customer {
+		version = "3"
+		if len(op.command) > 0 {
+			version = "4"
+			if s.version == "3" {
+				return fmt.Errorf("mcp-approval-reapproval-required: this approval of a customer command predates executable binding (snapshot version 3); approve the source again with connect --replace")
+			}
+		}
+	}
+	if (s.executable != nil) != (version == "4") {
+		return fmt.Errorf("V2 owner binding requires complete V2 snapshot evidence")
+	}
+	if s.version != version || s.operation != op.name || s.server == nil || len(s.tools) != len(op.taxonomies) {
 		return fmt.Errorf("V2 owner binding requires complete V2 snapshot evidence")
 	}
 	for name, t := range op.taxonomies {

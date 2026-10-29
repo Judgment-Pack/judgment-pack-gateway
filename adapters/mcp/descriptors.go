@@ -70,6 +70,7 @@ type snapshot struct {
 
 	Binding    string                  `json:"binding"`
 	Endpoint   string                  `json:"endpoint,omitempty"`
+	Executable *executableIdentity     `json:"executable,omitempty"`
 	CapturedAt string                  `json:"capturedAt"`
 	Platform   string                  `json:"platform"`
 	Policy     int                     `json:"policy"`
@@ -81,6 +82,7 @@ type snapshot struct {
 // its input schema's original text, as a string, so no encoder along the
 // way compacts, reorders or respells it.
 type capturedTool struct {
+	DescriptorDigest  string          `json:"descriptorDigest,omitempty"`
 	Taxonomy          *ToolTaxonomy   `json:"taxonomy,omitempty"`
 	ServerAnnotations map[string]bool `json:"serverAnnotations,omitempty"`
 

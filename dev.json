@@ -22,6 +22,7 @@
     {"name": "adapters-fmt", "run": "export GOWORK=off; test -z \"$(gofmt -l .)\" || { gofmt -l .; exit 1; }", "toolchain": "go", "cwd": "adapters", "timeout": 600},
     {"name": "adapters-vet", "run": "export GOWORK=off; go vet ./...", "toolchain": "go", "cwd": "adapters", "timeout": 3000},
     {"name": "adapters-vet-windows", "run": "export GOWORK=off; GOOS=windows go vet ./...", "toolchain": "go", "cwd": "adapters", "timeout": 3000},
+    {"name": "sandbox-boundary", "run": "export GOWORK=off; go test -count=1 -timeout 90s ./internal/sandbox && go test -count=1 -timeout 120s -run '^(TestWindowsCustomerSandboxUnavailable|TestCustomerExecutable.*|TestCustomerLoaderVariableRefused)$' ./mcp", "toolchain": "go", "cwd": "adapters", "summary": "^(ok|FAIL|---) ", "timeout": 240},
     {"name": "adapters-test", "run": "export GOWORK=off; go test ./...", "toolchain": "go", "cwd": "adapters", "summary": "^(ok|FAIL|---) ", "timeout": 3000},
     {"name": "adapters-build", "run": "export GOWORK=off; go build -buildvcs=false ./...", "toolchain": "go", "cwd": "adapters", "timeout": 3000},
     {"name": "acquisition-fixture", "run": "../scripts/checks/acquisition-fixture.sh", "toolchain": "go", "cwd": "adapters", "summary": "^(ok|FAIL|---) ", "timeout": 3000},

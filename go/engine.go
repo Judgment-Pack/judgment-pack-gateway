@@ -159,7 +159,8 @@ type identitySpec struct {
 // binding is a catalog entry: which pinned artifact serves which operation
 // of a platform, with the licence of each stated.
 type binding struct {
-	version string
+	customer bool
+	version  string
 
 	platform string
 	history  *operation
@@ -172,7 +173,11 @@ type binding struct {
 }
 
 type operation struct {
-	name string
+	customer      bool
+	name          string
+	command       []string
+	workspace     string
+	sandboxPolicy string
 
 	taxonomy   ToolTaxonomy
 	taxonomies map[string]ToolTaxonomy
@@ -779,7 +784,7 @@ func loadBinding(catalog, ref string) (binding, error) {
 	return b, nil
 }
 
-var bindingMembers = map[string]bool{"bindingVersion": true, "platform": true, "operations": true}
+var bindingMembers = map[string]bool{"bindingVersion": true, "platform": true, "operations": true, "customer": false}
 
 // parseBinding holds a catalog entry to its shape: one entry per operation,
 // each naming its shape, a digest-pinned artifact, and its licence.
@@ -800,6 +805,13 @@ func parseBinding(data []byte) (binding, error) {
 		return binding{}, fmt.Errorf("unsupported bindingVersion %q", version)
 	}
 	b := binding{version: version}
+	if raw, present := obj.get("customer"); present {
+		flag, ok := raw.(vBool)
+		if !ok || !bool(flag) || version != "2" {
+			return binding{}, errors.New("customer must be true on a bindingVersion 2 binding")
+		}
+		b.customer = true
+	}
 	if b.platform, err = requireString(obj, "platform"); err != nil || b.platform == "" {
 		return binding{}, errors.New("platform must be a non-empty string")
 	}
@@ -820,6 +832,13 @@ func parseBinding(data []byte) (binding, error) {
 		}
 		if err != nil {
 			return binding{}, err
+		}
+		parsed.customer = b.customer
+		if b.customer && (parsed.shape != "mcp" || parsed.probe != "") {
+			return binding{}, errors.New("customer bindings contain MCP operations without probes")
+		}
+		if len(parsed.command) > 0 && !b.customer {
+			return binding{}, errors.New("customer command bindings require customer: true and bindingVersion 2 owner declarations")
 		}
 		switch name {
 		case "history":
@@ -884,7 +903,33 @@ func parseOperation(op *vObject, name string) (operation, error) {
 		if err != nil {
 			return o, fmt.Errorf("operation %s: %v", name, err)
 		}
-		if _, remote := server.get("url"); remote {
+		if _, command := server.get("command"); command {
+			if err := exactlyMembers(server, map[string]bool{"command": true, "workspace": true, "sandboxPolicy": false}, "customer server"); err != nil {
+				return o, err
+			}
+			words, _ := server.get("command")
+			argv, ok := words.(vArray)
+			if !ok || len(argv) == 0 || len(argv) > 128 {
+				return o, errors.New("customer server.command must contain 1 to 128 words")
+			}
+			for _, word := range argv {
+				s, ok := word.(vString)
+				if !ok || s == "" || len(s) > 4096 || strings.ContainsAny(string(s), "\r\n\x00") {
+					return o, errors.New("customer server.command has an invalid word")
+				}
+				o.command = append(o.command, string(s))
+			}
+			o.workspace, err = requireString(server, "workspace")
+			if err != nil || !filepath.IsAbs(o.workspace) {
+				return o, errors.New("customer server.workspace must be an absolute directory")
+			}
+			if _, present := server.get("sandboxPolicy"); present {
+				o.sandboxPolicy, err = requireString(server, "sandboxPolicy")
+				if err != nil || !filepath.IsAbs(o.sandboxPolicy) {
+					return o, errors.New("customer server.sandboxPolicy must be an absolute policy-file path")
+				}
+			}
+		} else if _, remote := server.get("url"); remote {
 			if err := parseRemoteServer(server, name, &o); err != nil {
 				return o, err
 			}
@@ -1073,7 +1118,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte"}
 		}
 		if b.live != nil {
-			argv := mcpServerArgv(adapter("adapter-mcp"), *b.live, p.credentials["live"], cfg.runtime, p.endpoint, append(ownerFileArguments(cfg, p, b.live), approvedArguments(cfg, p, b.live)...)...)
+			argv := mcpServerArgv(adapter("adapter-mcp"), *b.live, p.credentials["live"], cfg.runtime, p.endpoint, p.name+"/"+b.live.name, append(ownerFileArguments(cfg, p, b.live), approvedArguments(cfg, p, b.live)...)...)
 			// Each as one word, flag=value: a value of "--" as its own word
 			// would be the delimiter the adapter splits its line at.
 			var check []string
@@ -1086,6 +1131,9 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if len(b.live.args) > 0 {
 				argv = append(append(argv, "--"), b.live.args...)
 			}
+			if len(b.live.command) > 0 {
+				argv = append(append(argv, "--"), b.live.command...)
+			}
 			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", check: check}
 		}
 		// The write operation, for a platform that allows writes: the
@@ -1096,9 +1144,12 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 		if b.write != nil && p.write {
 			// --error-results: a target's refusal of a write is a response
 			// to receipt, not a read that did not happen (executor.md).
-			argv := mcpServerArgv(adapter("adapter-mcp"), *b.write, p.credentials["write"], cfg.runtime, p.endpoint, append(append([]string{"--error-results"}, ownerFileArguments(cfg, p, b.write)...), approvedArguments(cfg, p, b.write)...)...)
+			argv := mcpServerArgv(adapter("adapter-mcp"), *b.write, p.credentials["write"], cfg.runtime, p.endpoint, p.name+"/"+b.write.name, append(append([]string{"--error-results"}, ownerFileArguments(cfg, p, b.write)...), approvedArguments(cfg, p, b.write)...)...)
 			if len(b.write.args) > 0 {
 				argv = append(append(argv, "--"), b.write.args...)
+			}
+			if len(b.write.command) > 0 {
+				argv = append(append(argv, "--"), b.write.command...)
 			}
 			// What the action receipt names as the tool's endpoint: the
 			// platform's, for a server the adapter runs; a remote server's
@@ -1121,7 +1172,17 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 // member of the credentials file it is sent and its fixed headers -- no
 // runtime, and no endpoint but the URL, which the receipt records. extra
 // follows the tools.
-func mcpServerArgv(adapter string, op operation, credentials, runtime, endpoint string, extra ...string) []string {
+func mcpServerArgv(adapter string, op operation, credentials, runtime, endpoint, source string, extra ...string) []string {
+	if op.customer {
+		extra = append(extra, "--customer-binding")
+	}
+	if len(op.command) > 0 {
+		argv := []string{adapter, "--credentials=" + credentials, "--tools=" + strings.Join(op.tools, ","), "--sandbox-workspace=" + op.workspace, "--sandbox-policy=" + op.sandboxPolicy, "--sandbox-source=" + source}
+		if endpoint != "" {
+			argv = append(argv, "--endpoint="+endpoint)
+		}
+		return append(argv, extra...)
+	}
 	if op.url != "" {
 		argv := []string{adapter, "--url=" + op.url, "--credentials=" + credentials, "--bearer=" + op.bearer}
 		for _, h := range op.headers {
@@ -1972,6 +2033,9 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 				}
 			}
 		}
+		if err := customerCommandEnvironment(*p, b); err != nil {
+			return nil, err
+		}
 		bindings[p.name] = b
 	}
 	return bindings, nil
@@ -2074,4 +2138,30 @@ func readBoundedFrom(file io.Reader, path string, limit int) ([]byte, error) {
 		return nil, fmt.Errorf("%s is larger than %d bytes", path, limit)
 	}
 	return data, nil
+}
+
+// loaderVariable reports whether a dynamic loader honours the variable when
+// a program starts: LD_*, DYLD_* and GCONV_PATH.
+func loaderVariable(name string) bool {
+	upper := strings.ToUpper(name)
+	return strings.HasPrefix(upper, "LD_") || strings.HasPrefix(upper, "DYLD_") || upper == "GCONV_PATH"
+}
+
+// customerCommandEnvironment refuses a platform environment that names a
+// dynamic-loader variable when the platform's binding runs a customer
+// command: it would choose code before the command's sandbox applies. The
+// adapter refuses the same names, and credentials members, at every start.
+func customerCommandEnvironment(p platformConfig, b binding) error {
+	for _, op := range []*operation{b.live, b.write} {
+		if op == nil || !op.customer || len(op.command) == 0 {
+			continue
+		}
+		for _, pair := range p.environment {
+			name, _, _ := strings.Cut(pair, "=")
+			if loaderVariable(name) {
+				return fmt.Errorf("platform %s: sandbox-loader-variable-refused: environment.%s is a dynamic-loader variable (LD_*, DYLD_* or GCONV_PATH), which a customer command may not carry", p.name, name)
+			}
+		}
+	}
+	return nil
 }

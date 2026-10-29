@@ -61,6 +61,14 @@ jobs:
         run: go vet ./...
       - name: Tests
         run: go test ./...
+      - name: Native sandbox boundary tests
+        shell: bash
+        working-directory: adapters
+        env:
+          GOWORK: off
+        run: |
+          go test -count=1 -timeout 90s ./internal/sandbox
+          go test -count=1 -timeout 120s -run '^(TestWindowsCustomerSandboxUnavailable|TestCustomerExecutable.*|TestCustomerLoaderVariableRefused)$' ./mcp
       - name: Build
         run: go build -buildvcs=false -o gateway .
       # The corpus is the arbiter: frozen data, not output regenerated from

@@ -31,6 +31,10 @@ func (h *headerList) Set(v string) error { *h = append(*h, v); return nil }
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("adapter-mcp", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	customer := fs.Bool("customer-binding", false, "require owner-declared tools and descriptor approval; sandbox a local server command")
+	sandboxPolicy := fs.String("sandbox-policy", "", "separate operator sandbox policy file; workspace-write by default")
+	sandboxSource := fs.String("sandbox-source", "", "source identity for a sandbox policy override")
+	sandboxWorkspace := fs.String("sandbox-workspace", "", "absolute workspace directory for a customer command")
 	image := fs.String("image", "", "pinned server image, name[:tag]@sha256:<64 hex>; or give a local server command after --, or a remote server's --url")
 	url := fs.String("url", "", "a remote server reached over Streamable HTTP, used as written: https, or http at a loopback address written as one; no user, no query, no fragment")
 	bearer := fs.String("bearer", "", "with --url, the member of the --credentials file sent as Authorization: Bearer")
@@ -80,6 +84,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	cfg := mcp.Config{Runtime: *runtime, Image: *image, URL: *url, Bearer: *bearer, Headers: headers, CAFile: *caFile, Credentials: *credentials, Endpoint: *endpoint, MaxOutput: *maxOutput}
+	cfg.Customer = *customer
+	cfg.SandboxPolicy, cfg.SandboxSource, cfg.SandboxWorkspace = *sandboxPolicy, *sandboxSource, *sandboxWorkspace
+	if !*customer && (*sandboxPolicy != "" || *sandboxSource != "" || *sandboxWorkspace != "") {
+		fmt.Fprintln(stderr, "sandbox-policy-invalid: sandbox flags require --customer-binding")
+		return 2
+	}
 	if *image != "" {
 		cfg.Args = positional
 	} else {
