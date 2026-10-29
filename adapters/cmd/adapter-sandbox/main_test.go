@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"adapters/internal/sandbox"
 )
 
 func init() {
@@ -53,6 +55,7 @@ func TestWrapperConfinesAdapterAndHelperDescendants(t *testing.T) {
 			}
 			inside, outside := filepath.Join(workspace, "written"), filepath.Join(t.TempDir(), "outside")
 			cmd := exec.Command(os.Args[0], "_sandbox_cli_test", "run", "--policy="+policy, "--source=fixture/live", "--workspace="+workspace, "--", os.Args[0], "_sandbox_cli_descendant", inside, outside, "argument with spaces")
+			cmd.Env = helperEnv()
 			raw, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("wrapper: %v: %s", err, raw)
@@ -77,6 +80,7 @@ func TestWrapperKeepsChildFailureDistinct(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(os.Args[0], "_sandbox_cli_test", "run", "--policy="+policy, "--source=fixture/live", "--", os.Args[0], "_sandbox_cli_failure")
+	cmd.Env = helperEnv()
 	raw, err := cmd.CombinedOutput()
 	if err == nil || cmd.ProcessState.ExitCode() != 42 || string(raw) != "fixture-child-failure\n" {
 		t.Fatalf("child failure changed: %v %s", err, raw)
@@ -132,7 +136,7 @@ func TestWrapperLaunchIsBoundToProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	selection := []string{"--policy=" + policy, "--source=fixture/live", "--workspace=" + workspace}
-	mode, backend, digest := probeSelection(t, os.Environ(), selection...)
+	mode, backend, digest := probeSelection(t, helperEnv(), selection...)
 	if mode != "workspace-write" || !strings.HasPrefix(digest, "sha256:") {
 		t.Fatalf("probe: %s %s %s", mode, backend, digest)
 	}
@@ -140,6 +144,7 @@ func TestWrapperLaunchIsBoundToProbe(t *testing.T) {
 		inside, outside := filepath.Join(workspace, "written"), filepath.Join(t.TempDir(), "outside")
 		args := append(append([]string{"_sandbox_cli_test", "run"}, selection...), expect...)
 		cmd := exec.Command(os.Args[0], append(args, "--", os.Args[0], "_sandbox_cli_writer", inside, outside, "x")...)
+		cmd.Env = helperEnv()
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		cmd.Run()
@@ -185,7 +190,7 @@ func TestWrapperNeverUsesALauncherOnPath(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	env := append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	env := append(helperEnv(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	workspace := t.TempDir()
 	selection := []string{"--source=fixture/live", "--workspace=" + workspace}
 	mode, backend, digest := probeSelection(t, env, selection...)
@@ -214,9 +219,9 @@ func TestWrapperRefusesLoaderVariables(t *testing.T) {
 				args = append(args, "--", os.Args[0], "_sandbox_cli_writer", marker, marker, "x")
 			}
 			cmd := exec.Command(os.Args[0], args...)
-			cmd.Env = append(os.Environ(), name+"=/nonexistent/library.so")
+			cmd.Env = append(helperEnv(), name+"=/nonexistent/library.so")
 			raw, err := cmd.CombinedOutput()
-			if err == nil || cmd.ProcessState.ExitCode() != 125 || !strings.Contains(string(raw), "sandbox-loader-variable-refused:") {
+			if err == nil || cmd.ProcessState.ExitCode() != 125 || !strings.Contains(string(raw), "sandbox-loader-variable-refused: "+name+" ") {
 				t.Fatalf("%s %s: %v %s", verb, name, err, raw)
 			}
 			if _, statErr := os.Stat(marker); statErr == nil {
@@ -224,4 +229,17 @@ func TestWrapperRefusesLoaderVariables(t *testing.T) {
 			}
 		}
 	}
+}
+
+// helperEnv is this test's environment without the dynamic-loader variables
+// the helper refuses (a runner's toolchain may set LD_LIBRARY_PATH); the core
+// hands the helper only a source's declared environment, which holds none.
+func helperEnv() []string {
+	var env []string
+	for _, pair := range os.Environ() {
+		if name, _, _ := strings.Cut(pair, "="); !sandbox.LoaderVariable(name) {
+			env = append(env, pair)
+		}
+	}
+	return env
 }
