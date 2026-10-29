@@ -63,6 +63,7 @@ type sessionState struct {
 // unless declared, because a source that cannot find `/bin/sh` is not a
 // source, and PATH carries no secret.
 type sourceSpec struct {
+	sandbox *sourceSandbox
 	// Descriptor provenance is selected by the operator's configuration. A
 	// source's own envelope cannot introduce or replace this reference.
 	descriptorProvenance *descriptorProvenance
@@ -912,9 +913,10 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 			return nil, "", "", err
 		}
 	}
-	cmd := exec.CommandContext(ctx, path, spec.argv[1:]...)
-	// The source sees the command as configured, not as resolved.
-	cmd.Args = append([]string{spec.argv[0]}, spec.argv[1:]...)
+	cmd, err := sandboxSourceCommand(ctx, spec, path, append([]string(nil), spec.argv...))
+	if err != nil {
+		return nil, "", "", err
+	}
 	cmd.Stdin = bytes.NewReader(stdin)
 	// The declared environment and nothing else (sourceSpec). An explicit
 	// slice is what stops os/exec from handing the child this process's

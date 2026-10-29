@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -114,7 +115,24 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 		launch := sandbox.Launch{Path: measured.identity.Path, File: measured.file, Argv0: measured.identity.Path, Args: cfg.Command[1:], Env: append(os.Environ(), env...)}
 		var report sandbox.Report
 		var release func() error
-		cmd, report, release, err = sandboxCommand(runCtx, launch, mode, cfg.SandboxWorkspace)
+		if cfg.SandboxEnclosing {
+			// Only operator launch configuration selects this branch. The outer
+			// wrapper confines the adapter and all descendants; no tool argument
+			// or environment marker can select it. The command runs directly
+			// (through its digested descriptor where the platform allows), with
+			// the enclosing wrapper's private temporary-directory variables
+			// last, so no credential replaces them. Report the assertion honestly.
+			for _, pair := range os.Environ() {
+				if strings.HasPrefix(pair, "TMPDIR=") || strings.HasPrefix(pair, "TMP=") || strings.HasPrefix(pair, "TEMP=") {
+					launch.Env = append(launch.Env, pair)
+				}
+			}
+			cmd, report, release, err = sandbox.Command(runCtx, launch, sandbox.FullAccess, cfg.SandboxWorkspace)
+			report.Mode, report.Backend, report.State = mode, "enclosing-operator", "not-enforced"
+			report.Reason = "the operator asserts an enclosing process boundary; this adapter did not independently establish or measure it"
+		} else {
+			cmd, report, release, err = sandboxCommand(runCtx, launch, mode, cfg.SandboxWorkspace)
+		}
 		if err != nil {
 			measured.file.Close()
 			cancel()

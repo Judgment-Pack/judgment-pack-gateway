@@ -53,7 +53,7 @@ func TestVersionTwoCarriesTheMCPMember(t *testing.T) {
 	}
 	refused := []struct{ name, text, want string }{
 		{"version 1 with mcp", engineJSON(t, catalog, `,"mcp":{"listen":"127.0.0.1:8788"}`, ``), "mcp is a version-2 member"},
-		{"version 13", strings.Replace(engineJSON(t, catalog, ``, ``), `"engineVersion":"1"`, `"engineVersion":"13"`, 1), `engineVersion "13" is not "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11" or "12"`},
+		{"version 14", strings.Replace(engineJSON(t, catalog, ``, ``), `"engineVersion":"1"`, `"engineVersion":"14"`, 1), `unsupported engineVersion "14" (latest "13")`},
 		{"mcp not an object", v2(`"127.0.0.1:8788"`), "mcp"},
 		{"an unknown mcp member", v2(`{"listen":"127.0.0.1:8788","transport":"http"}`), "transport"},
 		{"no listen", v2(`{"resource":"https://e/mcp"}`), "listen"},

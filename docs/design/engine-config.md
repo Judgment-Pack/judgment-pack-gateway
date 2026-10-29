@@ -565,7 +565,7 @@ managed gateway's posture beside the gateway's status. The answer is canonical J
 
 - `platform` is the operating system as Go names it: `linux`, `darwin`, `windows`.
 - `protections` holds the five protections, always in this order, each with exactly `name`,
-  `state` — `enforced`, `not-enforced` or `not-applicable` — and `reason`, one sentence for a
+  `state` — `enforced`, `partial`, `not-enforced` or `not-applicable` — and `reason`, one sentence for a
   reader, which a consumer shows and never parses. A reason `/posture` answers names no path and
   no account; the command, run by the operator, may. `not-applicable` is a protection with nothing
   to hold here: no source, no seed, an image this platform does not run.
@@ -595,10 +595,26 @@ managed gateway's posture beside the gateway's status. The answer is canonical J
   as `serve` opens it — a regular file owned by the signer, readable by nobody else by its mode
   bits; an access-control list is not seen.
   On Windows it is stated as `not-enforced`.
-- `operator-program-confinement`: always `not-enforced`.
+- `operator-program-confinement`: `not-enforced` without a selected wrapper or a
+  completed successful boundary check. With version 13 sources it aggregates the
+  per-program entries below: `enforced` only when every entry is enforced, otherwise
+  `partial` when any entry is enforced or partial.
+
+Windows has no shipped restricted-command backend. Engine versions 13 and later
+wrap every configured source adapter, including adapters for remote and container
+sources. Omitting `sandbox` settings still selects workspace-write by default.
+Read-only and workspace-write wrappers therefore refuse those adapter launches
+on Windows and report `backend: none`,
+`state: not-enforced`, with the Windows unavailability reason. An explicit
+full-access policy is required to launch these adapters there and remains
+unrestricted. Remote-server and container-daemon
+availability does not establish their confinement by this local wrapper.
 
 The seed and the sources are judged at each request, so a mode changed after the start shows;
-the probe's verdict is kept for the process. As `/verify` does, `/posture` takes a bearer token where `identity` is
+the descendant probe's verdict is kept for the process. Source sandbox probes are
+cached per resolved source after the first completed check; restart the engine to
+measure changed policy or backend availability. A failed helper launch is retried
+on a later report. As `/verify` does, `/posture` takes a bearer token where `identity` is
 configured, and is open where it is not, as on a desk's local gateway. Nothing the engine does
 depends on the report.
 
@@ -984,3 +1000,85 @@ The policy must resolve outside the source workspace; its directory and ancestor
 must remain operator controlled. `sandbox/escalate` from a server receives the
 named refusal `sandbox-escalation-refused`. Backend and enforcement limitations
 are documented in [the adapter reference](../../adapters/README.md#customer-bindings).
+
+
+## Source sandbox policy (engine version 13)
+
+Version 13 launches every source adapter through `adapter-sandbox`, under the
+source's configured operating-system user and declared environment. The helper
+belongs to the adapters module; the core continues to import only the standard
+library. Older configuration versions retain their existing launch behavior and
+posture identifies sources without this wrapper as not enforced.
+The helper has the same ownership, ancestor, native-executable and loader checks
+as the adapter, and both execution and probing use its retained resolved path.
+The launcher it runs (bubblewrap, sandbox-exec) is never looked up on `PATH`; it
+is taken only from fixed root-owned locations (see the adapter reference).
+
+An optional top-level `sandbox` object has `policy` (an absolute operator policy
+file path) and `workspaces` (exact source identities mapped to absolute existing
+directories). Omitted settings select workspace-write and a fresh private source
+workspace for each invocation. A customer command retains its binding's workspace.
+A configured workspace or policy that contradicts that binding is refused, and
+unknown workspace selectors are refused. Every effective policy file must lie
+outside every configured source workspace, another source's included; the engine
+refuses the configuration otherwise. A platform `environment` naming a
+dynamic-loader variable (`LD_*`, `DYLD_*`, `GCONV_PATH`) is refused for every
+wrapped source, and the helper refuses one in its own environment. Full filesystem
+access always requires an explicit policy setting.
+
+Customer commands receive `--sandbox-enclosing` before their command delimiter.
+This explicit operator assertion skips only redundant native setup inside the
+already-confined adapter. Wrapper and adapter receive one effective policy,
+source identity and workspace. The adapter keeps all customer approval gates and
+reports the assertion as `enclosing-operator` / `not-enforced`; it does not turn
+the flag into proof. Its child inherits the wrapper's restrictions and private
+temporary environment, which credential variables cannot replace.
+
+Policy version 1 remains readable. Policy version 2 records `default` settings
+and whole-setting overrides in `sources`. Each setting records `mode`, `approval`
+(`always` or `policy`) and a sorted, duplicate-free `operations` array. `ask` is
+always present. `adapter-sandbox preset review|work|full` writes the canonical
+expanded policy, with no persisted preset selector:
+
+| Preset | Filesystem mode | Host approval setting | Operation families |
+| --- | --- | --- | --- |
+| review | read-only | always | ask, check, discover, read |
+| work | workspace-write | policy | act, ask, check, discover, propose, read |
+| full | danger-full-access | policy | act, ask, check, discover, propose, read |
+
+The active preset is derived from the expanded settings; differing settings are
+`custom`. Legacy policies carry no approval or operation-family claim. The gateway
+implements the filesystem half; a host consumes the expanded approval and family
+settings through its existing policy gate. Neither a preset nor filesystem full
+access removes gateway write authorization, receipt checks or effect approvals.
+
+The native probe executes a fixed child as the source user and verifies inside and
+outside writes against the selected mode. It invokes no customer program. Its
+report concerns filesystem writes at probe time; reads, network access, container
+daemon authority and process-lifecycle guarantees remain separately stated.
+
+When sources are configured, canonical posture also contains `programs`, ordered
+by source then by the fixed classes `adapter`, `customer-command` or
+`container-helper` as applicable. Each entry contains exactly `source`, `class`,
+`mode`, `backend`, `state`, `reason`, `preset`, `approval` and `operations`.
+Legacy/unavailable selections use mode `unconfigured`, backend `none`, state
+`not-enforced`, preset `custom`, approval `""` and operations `[]`. A completed
+probe reports its actual selection; policy version 1 has empty approval/families.
+No-source posture keeps the original five-line shape without `programs`.
+Container-helper entries concern the local runtime client, and are partial even
+when its backend enforces all filesystem writes: the external daemon is not
+confined by that client boundary. Such a source's probe and launch keep
+container-runtime sockets reachable (`--container-runtime`), so its adapter entry
+is partial too. For every other source, bubblewrap masks the per-user runtime
+directory and known runtime sockets; Landlock and Seatbelt name a reachable
+runtime socket in the reason, and Seatbelt is then partial.
+
+A completed probe is cached for the resolved source until restart, and every
+launch is bound to it. The first launch of a source without a completed probe
+takes one first, and refuses if it does not complete. The launch passes the
+probe's mode, backend and `policyDigest` to `adapter-sandbox run`, which refuses
+with `sandbox-not-enforced` before the program starts when the policy bytes or
+mode now differ, or when the reported backend cannot be used: a bubblewrap that
+fails at launch does not fall back to Landlock. A changed policy therefore takes
+effect only after a restart measures it, and posture never reports a selection a
+launch does not use.

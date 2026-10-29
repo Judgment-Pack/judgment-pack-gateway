@@ -30,7 +30,20 @@ sandbox or job-containment claim is made on Windows. Explicit operator-selected
 full access runs unrestricted and is reported as not enforced.
 A platform without an implemented backend refuses a
 restricted command with `sandbox-not-enforced`; full access is an explicit operator
-choice. The check reports the actual backend selected. These controls restrict local
+choice. Engine version 13 applies this boundary to the adapter itself and its
+descendants through `adapter-sandbox`, which the core holds as it holds an adapter;
+the launcher that helper runs comes only from the fixed locations below. Each
+launch is bound to the posture reported for its source: the probe's mode, backend
+and policy digest go to the helper, which refuses a changed policy or a backend
+that fails at launch rather than falling back. Inside bubblewrap the per-user
+runtime directory and known container-runtime sockets are masked, except for a
+container image source's runtime client, which is reported as partial. Its customer adapter
+receives the explicit operator flag `--sandbox-enclosing`, which skips only a
+redundant inner sandbox. That flag is not proof of enforcement: the adapter reports
+`enclosing-operator` / `not-enforced`; the core independently probes the enclosing
+boundary. A standalone operator using that flag must supply the enclosing boundary.
+Without the flag, customer command startup still establishes its own sandbox.
+The check reports the actual backend selected. These controls restrict local
 filesystem writes, not network effects or reads available to the source's user.
 A customer command's approval (snapshot version 4) binds its executable: the
 resolved absolute path and digest of the command's file and of a script operand.
@@ -45,11 +58,21 @@ never from PATH; one there that is not root's, or that group or others can write
 along its path, refuses with `sandbox-launcher-untrusted` and nothing falls back.
 The sandbox launcher starts with an empty environment, and a configured
 environment or credentials member naming a dynamic-loader variable (`LD_*`,
-`DYLD_*`, `GCONV_PATH`) is refused at registration and every start.
+`DYLD_*`, `GCONV_PATH`) is refused at registration and every start; at engine
+version 13 a platform environment naming one is refused for every wrapped source.
 Keep the policy, credentials, signing material and approval evidence outside the
 source's writable workspace. Source user separation and the existing custody rules
 remain necessary. See [the customer binding contract](adapters/README.md#customer-bindings)
 for modes, limits and receipt interpretation.
+
+The wrapper confines container runtime clients, not an external container daemon.
+Program posture reports that class as partial even when the client's filesystem
+restriction is complete. A runtime socket retains the daemon authority the operator
+gave that source. Read-only mode permits no temporary writes; adapters or runtime
+clients that require scratch files can fail under it. Such a child failure is not
+evidence that the sandbox failed. Expanded permission presets describe companion
+approval and operation-family settings; this gateway's filesystem backend enforces
+only the mode and does not replace effect approval or source-user separation.
 
 ## Support status
 
@@ -469,9 +492,10 @@ child only the handles it is told to.
 
 What none of this gives: a source that runs as the gateway's own user, because no `--source-user`
 was given, can read what that user can read, including the seed; a gateway that runs as root
-can read the files a source user holds; and the gateway does not confine the programs it starts —
-a source, or a program an adapter runs to recognise or render a document, reads what its
-operating-system user can read, reaches the network and writes files. The separation is only as strong as the identities the
+can read the files a source user holds. Sources still read what their operating-system
+user can read and reach the network. Legacy source configurations do not confine
+program writes; engine version 13 adds the filesystem policy described above, whose
+backend limitations remain material. The separation is only as strong as the identities the
 operator gives the two sides. **`serve --config`** holds a configuration to both sides at once
 ([docs/design/engine-config.md](docs/design/engine-config.md)): every platform's adapters run as
 a user of their own that is neither root nor the signer nor another platform's, each credentials
@@ -494,8 +518,12 @@ are, and nothing is signed from it.
 
 **See `gateway posture`** for which of these protections the host it runs on enforces: the user
 switch for sources, the reaping of a source's descendants, the engine image's custody, the seed
-file's owner and mode, and the confinement of the programs the gateway starts, which is never
-enforced — one line each, `enforced`, `not-enforced` or `not-applicable`, with the reason. Linux
+file's owner and mode, and the confinement of the programs the gateway starts — one
+line each, `enforced`, `partial`, `not-enforced` or `not-applicable`, with the reason.
+Version 13 adds per-source program-class entries backed by a fixed native write probe
+run as the source's user. The probe selects no customer code and emits no credentials;
+its result is cached for that resolved source until restart. The original descendant
+probe still runs as the gateway's own user. Linux
 checks every line it can, the descendants' by a probe that kills a source group holding a
 grandchild, kept for the life of the process once it reaches a verdict and saying when it ran;
 macOS and Windows state the descendants' and the image's lines from this section and
