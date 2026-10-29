@@ -31,7 +31,13 @@ full access runs unrestricted and is reported as not enforced.
 A platform without an implemented backend refuses a
 restricted command with `sandbox-not-enforced`; full access is an explicit operator
 choice. Engine version 13 applies this boundary to the adapter itself and its
-descendants through the trusted `adapter-sandbox` executable. Its customer adapter
+descendants through `adapter-sandbox`, which the core holds as it holds an adapter;
+the launcher that helper runs comes only from the fixed locations below. Each
+launch is bound to the posture reported for its source: the probe's mode, backend
+and policy digest go to the helper, which refuses a changed policy or a backend
+that fails at launch rather than falling back. Inside bubblewrap the per-user
+runtime directory and known container-runtime sockets are masked, except for a
+container image source's runtime client, which is reported as partial. Its customer adapter
 receives the explicit operator flag `--sandbox-enclosing`, which skips only a
 redundant inner sandbox. That flag is not proof of enforcement: the adapter reports
 `enclosing-operator` / `not-enforced`; the core independently probes the enclosing
@@ -52,7 +58,8 @@ never from PATH; one there that is not root's, or that group or others can write
 along its path, refuses with `sandbox-launcher-untrusted` and nothing falls back.
 The sandbox launcher starts with an empty environment, and a configured
 environment or credentials member naming a dynamic-loader variable (`LD_*`,
-`DYLD_*`, `GCONV_PATH`) is refused at registration and every start.
+`DYLD_*`, `GCONV_PATH`) is refused at registration and every start; at engine
+version 13 a platform environment naming one is refused for every wrapped source.
 Keep the policy, credentials, signing material and approval evidence outside the
 source's writable workspace. Source user separation and the existing custody rules
 remain necessary. See [the customer binding contract](adapters/README.md#customer-bindings)

@@ -9,7 +9,7 @@ import (
 
 func TestPostureProbeReportsActualBackend(t *testing.T) {
 	for _, mode := range []string{ReadOnly, WorkspaceWrite} {
-		r := Probe(context.Background(), mode, t.TempDir())
+		r := Probe(context.Background(), mode, t.TempDir(), false)
 		if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 			if r.Mode != mode || r.State != "not-enforced" || r.Backend != "none" || r.Reason == "" {
 				t.Fatalf("unavailable backend claims protection: %+v", r)
@@ -27,7 +27,7 @@ func TestPostureProbeReportsActualBackend(t *testing.T) {
 
 func TestPostureProbeDoesNotClaimUnrestrictedOrUnavailableProtection(t *testing.T) {
 	for _, mode := range []string{FullAccess, "invalid", ReadOnly} {
-		r := Probe(context.Background(), mode, "")
+		r := Probe(context.Background(), mode, "", false)
 		if r.State != "not-enforced" || r.Reason == "" {
 			t.Fatalf("false enforcement: %+v", r)
 		}

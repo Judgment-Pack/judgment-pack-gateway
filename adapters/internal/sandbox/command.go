@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,12 +16,24 @@ import (
 // or mount the descriptor itself does so, and Report.ExecutesDigestedFile
 // then says so. Env is the server's complete environment: it reaches the
 // server and never the launcher that confines it.
+//
+// Backend, when set, is the only backend this launch may use: the one a
+// posture probe reported for it. A launch that cannot use exactly that backend
+// refuses; nothing falls back to another. Empty selects the platform's usual
+// order, and the returned report says which backend was used.
+//
+// RuntimeSockets keeps known container-runtime sockets reachable inside the
+// sandbox, for a container runtime client; the report is then partial,
+// because the runtime's daemon is not confined. Otherwise bubblewrap masks
+// them (runtimeSocketPaths) and the per-user runtime directory.
 type Launch struct {
-	Path  string
-	File  *os.File
-	Argv0 string
-	Args  []string
-	Env   []string
+	Path           string
+	File           *os.File
+	Argv0          string
+	Args           []string
+	Env            []string
+	Backend        string
+	RuntimeSockets bool
 }
 
 // LoaderVariable reports whether an environment variable is one a dynamic
@@ -53,6 +66,9 @@ func Command(ctx context.Context, launch Launch, mode, workspace string) (*exec.
 		launch.Argv0 = launch.Path
 	}
 	if mode == FullAccess {
+		if launch.Backend != "" && launch.Backend != "none" {
+			return nil, report, noop, fmt.Errorf("sandbox-not-enforced: the launch was bound to backend %s, but unrestricted access uses none", launch.Backend)
+		}
 		report.Reason = "the operator explicitly selected unrestricted filesystem access"
 		cmd, exact := directCommand(ctx, launch)
 		report.exactFile = exact
@@ -62,6 +78,9 @@ func Command(ctx context.Context, launch Launch, mode, workspace string) (*exec.
 	}
 	if workspace == "" || !filepath.IsAbs(workspace) {
 		return nil, report, noop, errors.New("sandbox-policy-invalid: restricted commands require an absolute workspace directory")
+	}
+	if launch.Backend == "none" {
+		return nil, report, noop, errors.New("sandbox-not-enforced: the launch was bound to no backend, and a restricted mode needs one")
 	}
 	resolved, err := filepath.EvalSymlinks(workspace)
 	if err != nil {
@@ -80,6 +99,12 @@ func Command(ctx context.Context, launch Launch, mode, workspace string) (*exec.
 	// platform environment nor a credential replaces them.
 	launch.Env = dedupEnv(append(append([]string{}, launch.Env...), "TMPDIR="+tmp, "TMP="+tmp, "TEMP="+tmp))
 	cmd, report, err := platformCommand(ctx, launch, mode, resolved, tmp)
+	if err == nil && launch.Backend != "" && report.Backend != launch.Backend {
+		// platformCommand honours the binding; this keeps any backend from
+		// ever starting under a report that names another.
+		err = fmt.Errorf("sandbox-not-enforced: the launch was bound to backend %s, but %s was selected", launch.Backend, report.Backend)
+		cmd = nil
+	}
 	if err != nil {
 		if report.cleanup != nil {
 			if cleanupErr := report.cleanup(); cleanupErr != nil {

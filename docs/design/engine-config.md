@@ -1011,15 +1011,20 @@ library. Older configuration versions retain their existing launch behavior and
 posture identifies sources without this wrapper as not enforced.
 The helper has the same ownership, ancestor, native-executable and loader checks
 as the adapter, and both execution and probing use its retained resolved path.
+The launcher it runs (bubblewrap, sandbox-exec) is never looked up on `PATH`; it
+is taken only from fixed root-owned locations (see the adapter reference).
 
 An optional top-level `sandbox` object has `policy` (an absolute operator policy
 file path) and `workspaces` (exact source identities mapped to absolute existing
 directories). Omitted settings select workspace-write and a fresh private source
 workspace for each invocation. A customer command retains its binding's workspace.
 A configured workspace or policy that contradicts that binding is refused, and
-unknown workspace selectors are refused. The policy must remain outside every
-writable source workspace. Full filesystem access always requires an explicit
-policy setting.
+unknown workspace selectors are refused. Every effective policy file must lie
+outside every configured source workspace, another source's included; the engine
+refuses the configuration otherwise. A platform `environment` naming a
+dynamic-loader variable (`LD_*`, `DYLD_*`, `GCONV_PATH`) is refused for every
+wrapped source, and the helper refuses one in its own environment. Full filesystem
+access always requires an explicit policy setting.
 
 Customer commands receive `--sandbox-enclosing` before their command delimiter.
 This explicit operator assertion skips only redundant native setup inside the
@@ -1062,5 +1067,18 @@ probe reports its actual selection; policy version 1 has empty approval/families
 No-source posture keeps the original five-line shape without `programs`.
 Container-helper entries concern the local runtime client, and are partial even
 when its backend enforces all filesystem writes: the external daemon is not
-confined by that client boundary. A completed probe is cached for the resolved
-source until restart; this is probe-time evidence, not a live per-call assertion.
+confined by that client boundary. Such a source's probe and launch keep
+container-runtime sockets reachable (`--container-runtime`), so its adapter entry
+is partial too. For every other source, bubblewrap masks the per-user runtime
+directory and known runtime sockets; Landlock and Seatbelt name a reachable
+runtime socket in the reason, and Seatbelt is then partial.
+
+A completed probe is cached for the resolved source until restart, and every
+launch is bound to it. The first launch of a source without a completed probe
+takes one first, and refuses if it does not complete. The launch passes the
+probe's mode, backend and `policyDigest` to `adapter-sandbox run`, which refuses
+with `sandbox-not-enforced` before the program starts when the policy bytes or
+mode now differ, or when the reported backend cannot be used: a bubblewrap that
+fails at launch does not fall back to Landlock. A changed policy therefore takes
+effect only after a restart measures it, and posture never reports a selection a
+launch does not use.

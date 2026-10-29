@@ -41,6 +41,11 @@ func init() {
 // executed by path and the caller re-checks its digest just before the start.
 func platformCommand(ctx context.Context, launch Launch, mode, workspace, tmp string) (*exec.Cmd, Report, error) {
 	report := Report{Mode: mode, Backend: "seatbelt", State: "not-enforced", Reason: "Seatbelt launcher is unavailable"}
+	if launch.Backend != "" && launch.Backend != "seatbelt" {
+		err := fmt.Errorf("sandbox-not-enforced: the launch was bound to backend %s, which this platform does not provide", launch.Backend)
+		report.Reason = err.Error()
+		return nil, report, err
+	}
 	// sandbox-exec only from its fixed, verified location, never PATH.
 	launcher, found, err := trustedLauncher(sandboxExecLocations)
 	if err != nil {
@@ -64,6 +69,11 @@ func platformCommand(ctx context.Context, launch Launch, mode, workspace, tmp st
 	}
 	argv := []string{"-D", "WORKSPACE=" + workspace, "-D", "PRIVATE_TMP=" + tmp, "-p", profile, self, envHelperArg, launch.Path, launch.Argv0}
 	report.State, report.Reason = "enforced", "Seatbelt denies file writes outside the declared writable directories; network access is unchanged"
+	// The profile does not mask Unix sockets: a reachable container runtime
+	// could write for the server, so the report says partial and names it.
+	if note := runtimeSocketNote(launch, reachableRuntimeSockets(launch.Env)); note != "" {
+		report.State, report.Reason = "partial", report.Reason+"; "+note
+	}
 	report.cleanup = func() error { env.Close(); return nil }
 	cmd := exec.CommandContext(ctx, launcher, append(argv, launch.Args...)...)
 	cmd.Env = launcherEnv()

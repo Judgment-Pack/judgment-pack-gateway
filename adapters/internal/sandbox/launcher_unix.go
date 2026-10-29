@@ -20,6 +20,9 @@ var (
 	sandboxExecLocations = []string{"/usr/bin/sandbox-exec"}
 	// trustedOwner is the only owner a launcher and its directories may have.
 	trustedOwner uint32 = 0
+	// launcherTrusted is trustedFile; a test replaces it to stand a failing
+	// launcher at a fixed location.
+	launcherTrusted = trustedFile
 )
 
 // trustedLauncher returns the launcher at the first of locations that
@@ -30,7 +33,7 @@ func trustedLauncher(locations []string) (path string, found bool, err error) {
 		if _, statErr := os.Lstat(candidate); statErr != nil {
 			continue
 		}
-		if err := trustedFile(candidate); err != nil {
+		if err := launcherTrusted(candidate); err != nil {
 			return "", true, err
 		}
 		return candidate, true, nil

@@ -29,7 +29,8 @@ func init() {
 // Probe actually executes a fixed write test under the selected backend and
 // this process's operating-system identity. It reports only a current filesystem
 // check, never read/network isolation or the safety of a customer program.
-func Probe(ctx context.Context, mode, workspace string) Report {
+// runtimeSockets is Launch.RuntimeSockets, as the launch it measures will set it.
+func Probe(ctx context.Context, mode, workspace string, runtimeSockets bool) Report {
 	report := Report{Mode: mode, Backend: "none", State: "not-enforced"}
 	fail := func(reason string) Report { report.State, report.Reason = "not-enforced", reason; return report }
 	if !ValidMode(mode) {
@@ -56,7 +57,7 @@ func Probe(ctx context.Context, mode, workspace string) Report {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd, prepared, cleanup, err := Command(ctx, Launch{Path: self, Args: []string{probeArgument, inside.Name(), outside.Name()}}, mode, workspace)
+	cmd, prepared, cleanup, err := Command(ctx, Launch{Path: self, Args: []string{probeArgument, inside.Name(), outside.Name()}, Env: os.Environ(), RuntimeSockets: runtimeSockets}, mode, workspace)
 	report = prepared
 	if err != nil {
 		if report.Reason != "" {
