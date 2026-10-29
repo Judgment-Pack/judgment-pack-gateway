@@ -96,39 +96,6 @@ func aclString(t *testing.T, path string) string {
 	return state
 }
 
-// Distinguish a native handle failure from token and job failures, without
-// changing the ACL or relying on a path-based reopen in production.
-func TestWindowsSecurityHandleReopen(t *testing.T) {
-	dir := t.TempDir()
-	file := filepath.Join(dir, "file")
-	if err := os.WriteFile(file, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	for _, item := range []struct{ kind, path string }{{"directory", dir}, {"file", file}} {
-		t.Run(item.kind, func(t *testing.T) {
-			a, err := holdWindowsFile(item.path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer syscall.CloseHandle(a.handle)
-			for _, access := range []uintptr{0x020e0080, 0x02000000, 0xe0080} {
-				for _, flags := range []uintptr{0x02200000, 0x02000000} {
-					h, _, callErr := winReopenFile.Call(uintptr(a.handle), access, 7, flags)
-					if syscall.Handle(h) != syscall.InvalidHandle {
-						syscall.CloseHandle(syscall.Handle(h))
-						t.Logf("access=%x flags=%x: success", access, flags)
-					} else {
-						t.Logf("access=%x flags=%x: %v", access, flags, callErr)
-						if access == 0x020e0080 && flags == 0x02200000 {
-							t.Error("production security handle cannot be reopened")
-						}
-					}
-				}
-			}
-		})
-	}
-}
-
 func TestWindowsRestrictedTokenBoundary(t *testing.T) {
 	for _, mode := range []string{ReadOnly, WorkspaceWrite} {
 		t.Run(mode, func(t *testing.T) {
@@ -394,20 +361,22 @@ func probeParentImpersonation(parent syscall.Token, outside string, results map[
 	err := os.WriteFile(outside, []byte("changed-through-impersonation"), 0600)
 	results["impersonated-outside"] = err == nil
 	if err != nil {
-		diagnostics["outside-write"] = err.Error()
+		if pathErr, ok := err.(*os.PathError); ok {
+			diagnostics["outside-write"] = pathErr.Err.Error()
+		} else {
+			diagnostics["outside-write"] = err.Error()
+		}
 	} else {
 		diagnostics["outside-write"] = "success"
 	}
 }
 
-// OpenFileById is a candidate for directory mutation handles. This diagnostic
-// changes no ACL, uses the held handle's volume, and verifies the full identity
-// before and after a rename. Unsupported filesystems must fail, not reopen paths.
-func TestWindowsOpenFileByIDCandidate(t *testing.T) {
-	root := t.TempDir()
+// The production reopen path retains full identity across renames and refuses
+// delete-pending files instead of using a pathname or silently skipping cleanup.
+func TestWindowsSecurityObjectIdentity(t *testing.T) {
 	for _, kind := range []string{"directory", "file"} {
 		t.Run(kind, func(t *testing.T) {
-			name := filepath.Join(root, kind)
+			name := filepath.Join(t.TempDir(), kind)
 			var err error
 			if kind == "directory" {
 				err = os.Mkdir(name, 0700)
@@ -422,46 +391,57 @@ func TestWindowsOpenFileByIDCandidate(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer syscall.CloseHandle(held.handle)
-			type fileIdentity struct {
-				Volume uint64
-				ID     [16]byte
-			}
-			identity := func(handle syscall.Handle) fileIdentity {
-				var id fileIdentity
-				if err := winBool(winKernel.NewProc("GetFileInformationByHandleEx"), uintptr(handle), 18, uintptr(unsafe.Pointer(&id)), unsafe.Sizeof(id)); err != nil {
-					t.Fatal(err)
-				}
-				return id
-			}
-			before := identity(held.handle)
-			var info syscall.ByHandleFileInformation
-			if err = syscall.GetFileInformationByHandle(held.handle, &info); err != nil {
+			before, err := windowsFileIdentity(held.handle)
+			if err != nil {
 				t.Fatal(err)
 			}
-			descriptor := struct {
-				Size, Type uint32
-				ID         [16]byte
-			}{Type: 0}
-			descriptor.Size = uint32(unsafe.Sizeof(descriptor))
-			binary.LittleEndian.PutUint64(descriptor.ID[:8], uint64(info.FileIndexHigh)<<32|uint64(info.FileIndexLow))
 			for _, rename := range []bool{false, true} {
 				if rename {
 					if err = os.Rename(name, name+"-renamed"); err != nil {
 						t.Fatal(err)
 					}
+					name += "-renamed"
 				}
-				handle, _, callErr := winKernel.NewProc("OpenFileById").Call(uintptr(held.handle), uintptr(unsafe.Pointer(&descriptor)), 0x020e0080, 7, 0, 0x02200000)
-				runtime.KeepAlive(descriptor)
-				if syscall.Handle(handle) == syscall.InvalidHandle {
-					t.Fatalf("rename=%v OpenFileById: %v", rename, callErr)
+				handle, err := reopenWindowsSecurityObject(held.handle)
+				if err != nil {
+					t.Fatal(err)
 				}
-				after := identity(syscall.Handle(handle))
-				syscall.CloseHandle(syscall.Handle(handle))
-				if before != after {
-					t.Fatal("opened a different physical object")
+				after, err := windowsFileIdentity(handle)
+				syscall.CloseHandle(handle)
+				if err != nil || before != after {
+					t.Fatalf("identity mismatch: %v", err)
 				}
-				t.Logf("rename=%v: full identity and mutation access verified", rename)
+			}
+			if err = os.Remove(name); err != nil {
+				t.Fatal(err)
+			}
+			handle, err := reopenWindowsSecurityObject(held.handle)
+			if err == nil {
+				syscall.CloseHandle(handle)
+				t.Fatal("delete-pending object unexpectedly reopened")
 			}
 		})
+	}
+}
+
+func TestWindowsDeletedWorkspaceObjectFailsCleanup(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "deleted")
+	if err := os.WriteFile(name, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := holdWindowsACL(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resources := &winResources{acls: []winACL{held}}
+	defer resources.cleanup()
+	if err = grantWindowsACL(&resources.acls[0], "S-1-5-21-100-200-300-400"); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Remove(name); err != nil {
+		t.Fatal(err)
+	}
+	if err = resources.cleanup(); err == nil {
+		t.Fatal("deleted object silently skipped restoration")
 	}
 }

@@ -2368,7 +2368,12 @@ terminates that job and verifies it is empty before restoring held ACLs. File ha
 retain physical identity without DELETE access. Each ACL update briefly reopens
 that same object with `MAXIMUM_ALLOWED` and required security rights, so
 `SetSecurityInfo` does not propagate ACL updates to children; the mutation handle
-closes before ordinary file I/O. A rename cannot redirect that reopen. Restoration reads the held objects back
+closes before ordinary file I/O. `OpenFileById` uses the retained handle's volume,
+and the full volume/file identity must match before mutation. A rename cannot
+redirect that reopen. Filesystems without this operation (including SMB shares)
+are refused. Deleting an existing held object makes it delete-pending and prevents
+reopening it: cleanup then fails explicitly, even if the command otherwise succeeded.
+Restoration reads the held objects back
 and verifies DACL entries, inheritance/protection state and mandatory labels. A
 representation with no label ACE is equivalent whether its label-only SACL is absent
 or null; explicit and inherited DACL entries are never treated as equivalent.
@@ -2389,3 +2394,7 @@ These checks execute on the Windows runner; cross-compilation alone does not
 establish that enforcement works. The implementation follows the documented
 [restricted-token access checks](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)
 and [mandatory integrity rules](https://learn.microsoft.com/en-us/windows/win32/secauthz/mandatory-integrity-control).
+The handle reopening and delete-pending limits follow
+[OpenFileById](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-openfilebyid);
+the mutation handle's access follows
+[SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo).

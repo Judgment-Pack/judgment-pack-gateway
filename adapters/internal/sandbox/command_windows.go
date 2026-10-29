@@ -38,7 +38,7 @@ var winSetJob = winKernel.NewProc("SetInformationJobObject")
 var winAssignJob = winKernel.NewProc("AssignProcessToJobObject")
 var winTerminateJob = winKernel.NewProc("TerminateJobObject")
 var winQueryJob = winKernel.NewProc("QueryInformationJobObject")
-var winReopenFile = winKernel.NewProc("ReOpenFile")
+var winOpenFileByID = winKernel.NewProc("OpenFileById")
 var winCreateEvent = winKernel.NewProc("CreateEventW")
 var winUser = syscall.NewLazyDLL("user32.dll")
 var winCreateStation = winUser.NewProc("CreateWindowStationW")
@@ -463,7 +463,7 @@ func holdWindowsFile(path string) (winACL, error) {
 		return winACL{}, err
 	}
 	// READ_CONTROL | WRITE_DAC | WRITE_OWNER | FILE_READ_ATTRIBUTES; open the
-	// reparse point itself and keep this exact object from being renamed.
+	// reparse point itself and retain this exact object across renames.
 	handle, err := syscall.CreateFile(name, 0xe0080, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, nil, syscall.OPEN_EXISTING, 0x02000000|0x00200000, 0)
 	if err != nil {
 		return winACL{}, fmt.Errorf("sandbox-policy-invalid: workspace ACL handle: %w", err)
@@ -537,17 +537,74 @@ func grantWindowsACL(a *winACL, sid string) error {
 	return nil
 }
 
-// ReOpenFile binds a short-lived mutation handle to the held physical object,
-// even after a rename. MAXIMUM_ALLOWED suppresses SetSecurityInfo propagation,
+type winFileIdentity struct {
+	Volume uint64
+	ID     [16]byte
+}
+
+func windowsFileIdentity(handle syscall.Handle) (winFileIdentity, error) {
+	var id winFileIdentity
+	err := winBool(winKernel.NewProc("GetFileInformationByHandleEx"), uintptr(handle), 18, uintptr(unsafe.Pointer(&id)), unsafe.Sizeof(id))
+	return id, err
+}
+
+// Open by the held object's identity on its own volume, never by its pathname.
+// The complete identity must match before the handle can mutate any ACL.
+// Unsupported filesystems and delete-pending objects fail closed.
+func reopenWindowsSecurityObject(handle syscall.Handle) (syscall.Handle, error) {
+	before, err := windowsFileIdentity(handle)
+	if err != nil {
+		return 0, err
+	}
+	descriptor := struct {
+		Size, Type uint32
+		ID         [16]byte
+	}{Type: 2, ID: before.ID}
+	descriptor.Size = uint32(unsafe.Sizeof(descriptor))
+	open := func() (syscall.Handle, error) {
+		h, _, callErr := winOpenFileByID.Call(uintptr(handle), uintptr(unsafe.Pointer(&descriptor)), 0x020e0080, 7, 0, 0x02200000)
+		runtime.KeepAlive(descriptor)
+		if syscall.Handle(h) == syscall.InvalidHandle {
+			return 0, callErr
+		}
+		return syscall.Handle(h), nil
+	}
+	mutation, err := open()
+	if err == syscall.Errno(87) || err == syscall.Errno(50) {
+		// Older filesystems may accept only FileIdType. Obtain that ID from
+		// the API that defines it; never truncate the 128-bit identity.
+		var info syscall.ByHandleFileInformation
+		if err = syscall.GetFileInformationByHandle(handle, &info); err != nil {
+			return 0, err
+		}
+		descriptor.Type, descriptor.ID = 0, [16]byte{}
+		binary.LittleEndian.PutUint64(descriptor.ID[:8], uint64(info.FileIndexHigh)<<32|uint64(info.FileIndexLow))
+		mutation, err = open()
+	}
+	if err != nil {
+		return 0, fmt.Errorf("reopen held security object: %w", err)
+	}
+	after, err := windowsFileIdentity(mutation)
+	if err != nil || before != after {
+		syscall.CloseHandle(mutation)
+		if err != nil {
+			return 0, err
+		}
+		return 0, errors.New("sandbox-cleanup-failed: security object identity changed")
+	}
+	return mutation, nil
+}
+
+// MAXIMUM_ALLOWED suppresses SetSecurityInfo propagation,
 // but its DELETE access would conflict with normal Go opens while it remained
 // open. Close this handle before ordinary I/O; the retained handle lacks DELETE.
 // Only DACL and mandatory-label components are set, preserving audit SACL ACEs.
 func setWindowsFileSecurity(handle syscall.Handle, sd uintptr) error {
-	mutation, _, reopenErr := winReopenFile.Call(uintptr(handle), 0x020e0080, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, 0x02000000|0x00200000)
-	if syscall.Handle(mutation) == syscall.InvalidHandle {
-		return fmt.Errorf("reopen held security object: %w", reopenErr)
+	mutation, err := reopenWindowsSecurityObject(handle)
+	if err != nil {
+		return err
 	}
-	defer syscall.CloseHandle(syscall.Handle(mutation))
+	defer syscall.CloseHandle(mutation)
 	var dacl, sacl uintptr
 	var present, defaulted uint32
 	if err := winBool(winGetDACL, sd, uintptr(unsafe.Pointer(&present)), uintptr(unsafe.Pointer(&dacl)), uintptr(unsafe.Pointer(&defaulted))); err != nil {
@@ -568,7 +625,7 @@ func setWindowsFileSecurity(handle syscall.Handle, sd uintptr) error {
 	if control&0x1000 != 0 {
 		flags = winSecurityParts | 0x80000000
 	}
-	status, _, _ := winSetSecurity.Call(mutation, 1, flags, 0, 0, dacl, sacl)
+	status, _, _ := winSetSecurity.Call(uintptr(mutation), 1, flags, 0, 0, dacl, sacl)
 	if status != 0 {
 		return syscall.Errno(status)
 	}

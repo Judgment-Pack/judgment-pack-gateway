@@ -19,7 +19,9 @@ changes. macOS uses Seatbelt. Windows uses a low-integrity, write-restricted tok
 with a fresh per-run SID, workspace ACL grants and a non-breakaway job; it reports
 partial enforcement. Access-control-free objects and network effects remain outside
 that Windows claim. Existing workspace ACLs are restored after the job is empty;
-an abrupt parent termination can leave the temporary ACL grants and low labels in
+restoration requires identity-based reopening and fails explicitly for deleted
+held objects. Filesystems without that operation are refused.
+An abrupt parent termination can leave the temporary ACL grants and low labels in
 place, and newly created objects retain their inherited ACLs and labels. The SID is
 never reused. Use a dedicated workspace, and inspect its permissions after a crash.
 A platform without an implemented backend refuses a
