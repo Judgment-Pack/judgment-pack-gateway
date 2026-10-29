@@ -482,9 +482,9 @@ func probeParentLaunches(parent syscall.Token, results map[string]bool, diagnost
 			}
 		}
 	}
-	duplicate := func(input syscall.Token, kind uint32, label string) syscall.Token {
+	duplicate := func(input syscall.Token, kind, access uint32, label string) syscall.Token {
 		var token syscall.Token
-		err := winBool(winSecurity.NewProc("DuplicateTokenEx"), uintptr(input), syscall.TOKEN_QUERY|syscall.TOKEN_DUPLICATE|syscall.TOKEN_ASSIGN_PRIMARY, 0, 2, uintptr(kind), uintptr(unsafe.Pointer(&token)))
+		err := winBool(winSecurity.NewProc("DuplicateTokenEx"), uintptr(input), uintptr(access), 0, 2, uintptr(kind), uintptr(unsafe.Pointer(&token)))
 		if err != nil {
 			diagnostics[label] = err.Error()
 			return 0
@@ -493,18 +493,18 @@ func probeParentLaunches(parent syscall.Token, results map[string]bool, diagnost
 		return token
 	}
 	var identification syscall.Token
-	if err = winBool(winSecurity.NewProc("DuplicateToken"), uintptr(parent), 1, uintptr(unsafe.Pointer(&identification))); err != nil {
+	if err = winBool(winSecurity.NewProc("DuplicateTokenEx"), uintptr(parent), syscall.TOKEN_QUERY|syscall.TOKEN_DUPLICATE|syscall.TOKEN_IMPERSONATE, 0, 1, 2, uintptr(unsafe.Pointer(&identification))); err != nil {
 		diagnostics["identification-duplicate"] = err.Error()
 	} else {
 		defer identification.Close()
 		for _, kind := range []uint32{1, 2} {
-			token := duplicate(identification, kind, fmt.Sprintf("identification-upgrade-%d", kind))
+			token := duplicate(identification, kind, syscall.TOKEN_QUERY|syscall.TOKEN_DUPLICATE, fmt.Sprintf("identification-upgrade-%d", kind))
 			if token != 0 {
 				token.Close()
 			}
 		}
 	}
-	primary := duplicate(parent, 1, "parent-primary-duplicate")
+	primary := duplicate(parent, 1, syscall.TOKEN_QUERY|syscall.TOKEN_DUPLICATE|syscall.TOKEN_ASSIGN_PRIMARY, "parent-primary-duplicate")
 	if primary == 0 {
 		return
 	}
