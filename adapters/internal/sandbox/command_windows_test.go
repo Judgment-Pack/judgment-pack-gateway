@@ -92,6 +92,39 @@ func aclString(t *testing.T, path string) string {
 	return state
 }
 
+// Distinguish a native handle failure from token and job failures, without
+// changing the ACL or relying on a path-based reopen in production.
+func TestWindowsSecurityHandleReopen(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []struct{ kind, path string }{{"directory", dir}, {"file", file}} {
+		t.Run(item.kind, func(t *testing.T) {
+			a, err := holdWindowsFile(item.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer syscall.CloseHandle(a.handle)
+			for _, access := range []uintptr{0x020e0080, 0x02000000, 0xe0080} {
+				for _, flags := range []uintptr{0x02200000, 0x02000000} {
+					h, _, callErr := winReopenFile.Call(uintptr(a.handle), access, 7, flags)
+					if syscall.Handle(h) != syscall.InvalidHandle {
+						syscall.CloseHandle(syscall.Handle(h))
+						t.Logf("access=%x flags=%x: success", access, flags)
+					} else {
+						t.Logf("access=%x flags=%x: %v", access, flags, callErr)
+						if access == 0x020e0080 && flags == 0x02200000 {
+							t.Error("production security handle cannot be reopened")
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestWindowsRestrictedTokenBoundary(t *testing.T) {
 	for _, mode := range []string{ReadOnly, WorkspaceWrite} {
 		t.Run(mode, func(t *testing.T) {

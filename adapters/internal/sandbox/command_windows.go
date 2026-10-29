@@ -87,7 +87,7 @@ func init() {
 	}
 	// The trusted launcher prepares a private desktop before starting the
 	// restricted child. The operator's interactive desktop is never granted to
-	// the restricting SID. Startup with a nil Desktop inherits this association.
+	// the restricting SID. The child explicitly names this private desktop.
 	runtime.LockOSThread()
 	// Create the restricted token from this launcher's primary token. The
 	// CreateProcessAsUser exception is specific to the caller's primary token,
@@ -99,23 +99,88 @@ func init() {
 	if err = privateWindowsDesktop(os.Args[3], token); err != nil {
 		fail(err)
 	}
-	cmd := exec.Command(os.Args[4], os.Args[5:]...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Token: token, CreationFlags: 0x08000000}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	err = cmd.Start()
+	code, err := runWindowsChild(token, "gateway-"+os.Args[3]+`\source`, os.Args[4:])
 	token.Close()
 	if err == nil {
-		err = cmd.Wait()
-	}
-	if err == nil {
-		os.Exit(0)
-	}
-	var exited *exec.ExitError
-	if errors.As(err, &exited) {
-		os.Exit(exited.ExitCode())
+		os.Exit(int(code))
 	}
 	fmt.Fprintln(os.Stderr, "server-exec-failed:", err)
 	os.Exit(126)
+}
+
+// Go's SysProcAttr has no Desktop field. Use an explicit standard-handle
+// allowlist and private desktop. The job, token and ACL handles stay private.
+func runWindowsChild(token syscall.Token, desktop string, argv []string) (uint32, error) {
+	executable, err := syscall.UTF16PtrFromString(argv[0])
+	if err != nil {
+		return 0, err
+	}
+	words := make([]string, len(argv))
+	for i, arg := range argv {
+		words[i] = syscall.EscapeArg(arg)
+	}
+	line, err := syscall.UTF16PtrFromString(strings.Join(words, " "))
+	if err != nil {
+		return 0, err
+	}
+	name, err := syscall.UTF16PtrFromString(desktop)
+	if err != nil {
+		return 0, err
+	}
+	self, err := syscall.GetCurrentProcess()
+	if err != nil {
+		return 0, err
+	}
+	var handles [3]syscall.Handle
+	for i, file := range []*os.File{os.Stdin, os.Stdout, os.Stderr} {
+		if err = syscall.DuplicateHandle(self, syscall.Handle(file.Fd()), self, &handles[i], 0, true, syscall.DUPLICATE_SAME_ACCESS); err != nil {
+			return 0, err
+		}
+		defer syscall.CloseHandle(handles[i])
+	}
+	initialize := winKernel.NewProc("InitializeProcThreadAttributeList")
+	var size uintptr
+	initialize.Call(0, 1, 0, uintptr(unsafe.Pointer(&size)))
+	if size == 0 || size > 1<<20 {
+		return 0, errors.New("invalid process attribute size")
+	}
+	attributes := make([]byte, size)
+	list := uintptr(unsafe.Pointer(&attributes[0]))
+	if err = winBool(initialize, list, 1, 0, uintptr(unsafe.Pointer(&size))); err != nil {
+		return 0, err
+	}
+	defer func() {
+		winKernel.NewProc("DeleteProcThreadAttributeList").Call(list)
+		runtime.KeepAlive(attributes)
+	}()
+	if err = winBool(winKernel.NewProc("UpdateProcThreadAttribute"), list, 0, 0x20002, uintptr(unsafe.Pointer(&handles[0])), unsafe.Sizeof(handles), 0, 0); err != nil {
+		return 0, err
+	}
+	startup := struct {
+		syscall.StartupInfo
+		attributes *byte
+	}{attributes: &attributes[0]}
+	startup.Cb = uint32(unsafe.Sizeof(startup))
+	startup.Desktop = name
+	startup.Flags = syscall.STARTF_USESTDHANDLES
+	startup.StdInput, startup.StdOutput, startup.StdErr = handles[0], handles[1], handles[2]
+	var process syscall.ProcessInformation
+	// Null environment and directory inherit the trusted launcher's selected
+	// source environment and workspace. CREATE_NO_WINDOW; extended startup info.
+	err = syscall.CreateProcessAsUser(token, executable, line, nil, nil, true, 0x08080000, nil, nil, &startup.StartupInfo, &process)
+	runtime.KeepAlive(attributes)
+	runtime.KeepAlive(handles)
+	if err != nil {
+		return 0, err
+	}
+	defer syscall.CloseHandle(process.Process)
+	syscall.CloseHandle(process.Thread)
+	if _, err = syscall.WaitForSingleObject(process.Process, syscall.INFINITE); err != nil {
+		return 0, err
+	}
+	var code uint32
+	err = syscall.GetExitCodeProcess(process.Process, &code)
+	return code, err
 }
 
 func restrictedWindowsToken(sidText string) (syscall.Token, error) {
