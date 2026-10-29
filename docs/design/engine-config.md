@@ -9,7 +9,7 @@ without a corpus vector moving.
 
 The file names **platforms, not processes**. An operator writes which systems the engine may
 reach and where their credentials are; the engine derives every `--source NAME=CMD` from that
-and spawns what it needs. Nothing in the file is a command line, and nothing in it is a secret.
+and spawns what it needs. The engine file contains no command line or secret. A pinned customer binding may name a local executable and its argument vector.
 
 ## Shape
 
@@ -939,3 +939,33 @@ and the rule; the flag is never silently ignored.
 bindingVersion2, per-operation snapshotV2/engine11 approval, and opt-in CatalogV5.
 Historical readers do not admit unclassified current tools. Metadata grants no authority;
 existing acquisition, sealing and action checks remain required.
+
+## Customer MCP bindings
+
+A catalog binding may opt into customer registration with `"customer": true` on
+`bindingVersion: "2"`. It offers MCP `live` and optionally `write` operations, each
+with an explicit allowed tool set and owner operation/effect declarations. Missing
+owner declarations refuse registration. Probes and history operations are refused.
+Existing pinned-image and remote-URL server shapes apply. A customer server may
+instead use `{"command":["executable","argument"],"workspace":"/srv/source"}`;
+`command` is an argument array, never shell text, and `workspace` is an absolute
+existing directory below the filesystem root. An optional absolute `sandboxPolicy`
+path names the separate operator policy file. No credential belongs in this array.
+The binding digest covers the complete server configuration and owner declarations.
+
+Registration uses `adapter-mcp --check --customer-binding` with the existing
+`--descriptors-binding`, platform and operation selectors. It captures snapshot
+version 3, which adds a complete descriptor digest for every allowed tool.
+`connect` stores the snapshot and owner declaration using the existing immutable
+approval path; subsequent acquisition refuses a version downgrade or descriptor
+drift before `tools/call`. A customer binding is not an exemption from per-platform
+OS users, credential separation, write approval or source shape `mcp`.
+
+Local commands use `workspace-write` by default. The optional policy file has
+`policyVersion: "1"`, a `defaultMode`, and a `sources` object whose exact
+`platform/operation` keys override that default. Supported mode names are
+`read-only`, `workspace-write`, and the explicit `danger-full-access`.
+The policy must resolve outside the source workspace; its directory and ancestors
+must remain operator controlled. `sandbox/escalate` from a server receives the
+named refusal `sandbox-escalation-refused`. Backend and enforcement limitations
+are documented in [the adapter reference](../../adapters/README.md#customer-bindings).

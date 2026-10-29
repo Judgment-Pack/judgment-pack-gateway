@@ -45,6 +45,7 @@ type snapshotServer struct{ name, version string }
 
 // snapshotTool is a tool's captured candidates; at least one is present.
 type snapshotTool struct {
+	descriptorDigest  string
 	taxonomy          ToolTaxonomy
 	serverAnnotations map[string]bool
 
@@ -103,7 +104,7 @@ func parseSnapshot(data []byte) (snapshot, error) {
 	members := snapshotMembers
 	version, hasVersion := memberString(obj, "snapshotVersion")
 	if _, present := obj.get("snapshotVersion"); present {
-		if !hasVersion || version != "2" {
+		if !hasVersion || (version != "2" && version != "3") {
 			return snapshot{}, errors.New("snapshot: unsupported snapshotVersion")
 		}
 		members = map[string]bool{}
@@ -117,7 +118,7 @@ func parseSnapshot(data []byte) (snapshot, error) {
 		return snapshot{}, err
 	}
 	s := snapshot{version: version}
-	if version == "2" {
+	if version == "2" || version == "3" {
 		s.operation, err = requireString(obj, "operation")
 		if err != nil || (s.operation != "live" && s.operation != "write") {
 			return snapshot{}, errors.New("snapshot: invalid operation identity")
@@ -174,7 +175,13 @@ func parseSnapshot(data []byte) (snapshot, error) {
 			return snapshot{}, errors.New("snapshot: a tool is not an object holding a description, an input schema's text, or both")
 		}
 		var t snapshotTool
-		if version == "2" {
+		if version == "3" {
+			t.descriptorDigest, err = requireString(entry, "descriptorDigest")
+			if err != nil || !isDigest(t.descriptorDigest) {
+				return snapshot{}, errors.New("snapshot: missing complete descriptor digest")
+			}
+		}
+		if version == "2" || version == "3" {
 			raw, _ := entry.get("taxonomy")
 			t.taxonomy, err = taxonomyValue(raw)
 			if err != nil || !t.taxonomy.External() {
@@ -200,7 +207,10 @@ func parseSnapshot(data []byte) (snapshot, error) {
 			}
 		}
 		for _, member := range entry.names {
-			if version == "2" && (member == "taxonomy" || member == "serverAnnotations") {
+			if version == "3" && member == "descriptorDigest" {
+				continue
+			}
+			if (version == "2" || version == "3") && (member == "taxonomy" || member == "serverAnnotations") {
 				continue
 			}
 			text, ok := memberString(entry, member)

@@ -220,7 +220,11 @@ func snapshotOwners(s snapshot, op *operation) error {
 		}
 		return nil
 	}
-	if s.version != "2" || s.operation != op.name || s.server == nil || len(s.tools) != len(op.taxonomies) {
+	version := "2"
+	if op.customer {
+		version = "3"
+	}
+	if s.version != version || s.operation != op.name || s.server == nil || len(s.tools) != len(op.taxonomies) {
 		return fmt.Errorf("V2 owner binding requires complete V2 snapshot evidence")
 	}
 	for name, t := range op.taxonomies {

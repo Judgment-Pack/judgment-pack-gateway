@@ -24,14 +24,18 @@ import (
 
 	"adapters/internal/canon"
 	"adapters/internal/redact"
+	"adapters/internal/sandbox"
 )
 
 // Config is the operator's configuration of one adapter invocation, from
 // the command line the gateway spawned it with.
 type Config struct {
-	OwnerDeclarationFile   string
-	OwnerDeclarationPin    string
-	ownerDeclarationLoaded bool
+	// Customer requires a pinned owner-declared snapshot for every call.
+	Customer                                       bool
+	SandboxPolicy, SandboxSource, SandboxWorkspace string
+	OwnerDeclarationFile                           string
+	OwnerDeclarationPin                            string
+	ownerDeclarationLoaded                         bool
 
 	ToolTaxonomies                    map[string]ToolTaxonomy
 	DescriptorSnapshot, DescriptorPin string
@@ -215,6 +219,20 @@ func credentialsEnv(path string) (env []string, secrets []string, err error) {
 // form takes. It reads nothing -- not the request, not the credentials --
 // so a configuration refused is refused before anything is read.
 func (cfg Config) Refusal() error {
+	if cfg.Customer {
+		if cfg.ToolTaxonomies == nil && cfg.OwnerDeclarationFile == "" {
+			return errors.New("mcp-owner-declaration-required: a customer binding requires per-tool owner declarations")
+		}
+		if cfg.Descriptors == nil && cfg.DescriptorSnapshot == "" {
+			return errors.New("mcp-snapshot-required: a customer binding requires descriptor approval")
+		}
+		if len(cfg.Command) > 0 && cfg.SandboxWorkspace == "" {
+			return errors.New("sandbox-policy-invalid: a customer command requires its own workspace directory")
+		}
+		if cfg.Probe != "" {
+			return errors.New("mcp-registration-probe-refused: customer registration calls no tool")
+		}
+	}
 	if err := cfg.ownerRefusal(); err != nil {
 		return err
 	}
@@ -267,7 +285,7 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 		return nil, errors.New("max-output must be positive")
 	}
 	if len(cfg.Tools) > 0 && !contains(cfg.Tools, req.Tool) {
-		return nil, fmt.Errorf("tool %q is not one this source may call: %v", req.Tool, cfg.Tools)
+		return nil, fmt.Errorf("mcp-tool-not-allowed: tool %q is not one this source may call: %v", req.Tool, cfg.Tools)
 	}
 	approved, original, err := approvedSnapshot(cfg)
 	if err != nil {
@@ -416,6 +434,7 @@ func (cfg Config) serverRefusal() error {
 // most maxReportList bytes with what passes it counted, so the report
 // stays within reportBound with any snapshot inside it.
 type checkReport struct {
+	Sandbox *sandbox.Report `json:"sandbox,omitempty"`
 	Status  string          `json:"status"`
 	Adapter adapterIdentity `json:"adapter"`
 	// Transport, Endpoint and PeerIdentity are a remote server's: "http",
@@ -563,7 +582,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 			return finish(nil, err)
 		}
 		if cfg.ToolTaxonomies != nil {
-			if err := capture.beginOwned(cfg.Descriptors.Operation); err != nil {
+			if err := capture.beginOwnedVersion(cfg.Descriptors.Operation, cfg.Customer); err != nil {
 				return finish(nil, err)
 			}
 			if capture.snap.Server == nil {
@@ -610,7 +629,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		if original != nil {
 			projection, err := canonicalJSON(capture.snap)
 			if err != nil || !bytes.Equal(projection, original) {
-				return finish(nil, errors.New("current descriptor projection differs from approved snapshot"))
+				return finish(nil, errors.New("mcp-descriptor-drift: current descriptor projection differs from approved snapshot"))
 			}
 		}
 	}
@@ -654,9 +673,13 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	identity = adapterIdentity{Name: capField(identity.Name), Version: capField(identity.Version), Digest: capField(identity.Digest)}
 	redacted := make([]string, 0, len(names))
 	for _, name := range names {
+		if cfg.Customer && !contains(cfg.Tools, name) {
+			continue
+		}
 		redacted = append(redacted, reportField(name, secrets))
 	}
 	report := checkReport{
+		Sandbox:         srv.sandbox,
 		Status:          "succeeded",
 		Adapter:         identity,
 		Server:          serverIdentity{Name: reportField(initialized.name, secrets), Version: reportField(initialized.version, secrets)},
@@ -1118,7 +1141,15 @@ type envelope struct {
 // it gave itself, with this adapter as the adapter. A tool call is one
 // result, never a page.
 func buildEnvelope(cfg Config, identity adapterIdentity, req Request, schema, result []byte, observedAt string, reached *remoteAcquisition) ([]byte, error) {
-	statement, err := canon.EncodeJSON(map[string]any{"tool": req.Tool, "arguments": req.Arguments})
+	request := map[string]any{"tool": req.Tool, "arguments": req.Arguments}
+	if cfg.Customer && cfg.DescriptorPin != "" {
+		// This is a disclosure of the source's approved configuration, committed
+		// by the existing statement salt. It is not an upstream currency bookmark
+		// (acquisition.snapshot) or a claim that the descriptors are truthful.
+		request["binding"] = cfg.ApprovedBinding
+		request["descriptorSnapshot"] = cfg.DescriptorPin
+	}
+	statement, err := canon.EncodeJSON(request)
 	if err != nil {
 		return nil, err
 	}

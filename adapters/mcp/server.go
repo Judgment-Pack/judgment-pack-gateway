@@ -9,11 +9,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
 	"adapters/internal/containers"
 	"adapters/internal/redact"
+	"adapters/internal/sandbox"
 	"adapters/mcphttp"
 )
 
@@ -22,6 +24,7 @@ import (
 // runtime, or a local command -- or a remote one reached over Streamable
 // HTTP (remote.go), whose client is remote.
 type server struct {
+	sandbox   *sandbox.Report
 	rpc       conversation
 	stop      func() error
 	firstLine func() string
@@ -82,6 +85,33 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 	cmd := exec.CommandContext(runCtx, path, cfg.Command[1:]...)
 	cmd.Args[0] = cfg.Command[0]
 	cmd.Env = append(os.Environ(), env...)
+	cleanup := func() {}
+	var protection *sandbox.Report
+	if cfg.Customer {
+		mode, err := sandbox.ModeForWorkspace(cfg.SandboxPolicy, cfg.SandboxSource, cfg.SandboxWorkspace)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		var report sandbox.Report
+		cmd, report, cleanup, err = sandbox.Command(runCtx, path, cfg.Command[1:], mode, cfg.SandboxWorkspace)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		protection = &report
+		if cmd.Env == nil {
+			cmd.Env = os.Environ()
+		}
+		// Credentials cannot replace the private temporary-directory variables.
+		private := []string{}
+		for _, pair := range cmd.Env {
+			if strings.HasPrefix(pair, "TMPDIR=") || strings.HasPrefix(pair, "TMP=") || strings.HasPrefix(pair, "TEMP=") {
+				private = append(private, pair)
+			}
+		}
+		cmd.Env = append(append(cmd.Env, env...), private...)
+	}
 	cmd.WaitDelay = containers.WaitDelay
 	// The server stays in this process's group, so a kill of the group
 	// -- the gateway's, when this adapter is ended -- reaches it and what
@@ -89,6 +119,7 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 	// reached when it is stopped.
 	if err := adoptOrphans(); err != nil {
 		cancel()
+		cleanup()
 		return nil, err
 	}
 	stderr := &boundedBuffer{limit: containers.DiagnosticBytes}
@@ -96,15 +127,18 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
+		cleanup()
 		return nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
+		cleanup()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
 		cancel()
+		cleanup()
 		return nil, fmt.Errorf("server could not be started: %v", err)
 	}
 	// A reader blocked on stdout, or a writer blocked on stdin because a
@@ -147,9 +181,13 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 		// A descendant that could not be established gone fails the
 		// stop, and with it the check or the acquisition: it may hold
 		// the credentials.
-		return killDescendants()
+		err := killDescendants()
+		if err == nil {
+			cleanup()
+		}
+		return err
 	}
-	return &server{rpc: stdioConversation{newClient(stdin, stdout)}, stop: stop, firstLine: func() string { return stderr.firstLine(redactor) },
+	return &server{sandbox: protection, rpc: stdioConversation{newClient(stdin, stdout)}, stop: stop, firstLine: func() string { return stderr.firstLine(redactor) },
 		identity: adapterIdentity{Name: cfg.Command[0], Digest: digest}}, nil
 }
 

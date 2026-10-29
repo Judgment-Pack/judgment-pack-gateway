@@ -325,8 +325,11 @@ func serve() int {
 				out.WriteString("Connected to database\n")
 				out.Flush()
 			}
-			if os.Getenv(EnvServerRequest) == "1" {
-				emit(map[string]any{"jsonrpc": "2.0", "id": "srv-1", "method": "roots/list", "params": map[string]any{}})
+			if method := os.Getenv(EnvServerRequest); method != "" {
+				if method == "1" {
+					method = "roots/list"
+				}
+				emit(map[string]any{"jsonrpc": "2.0", "id": "srv-1", "method": method, "params": map[string]any{}})
 				if scanner.Scan() {
 					appendLine(os.Getenv(EnvTrace), string(scanner.Bytes()))
 				}

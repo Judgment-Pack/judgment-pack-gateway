@@ -1,5 +1,29 @@
 # Security policy
 
+## Customer MCP bindings
+
+Customer bindings are operator-reviewed source declarations. Their per-tool owner
+taxonomy is not an execution grant. Registration refuses contradictions with the
+server's recognized annotations, captures complete descriptor digests and pins the
+resulting version 3 snapshot. Dispatch checks that approval before calling a tool;
+it never refreshes approval on drift. The source's statement names the binding and
+snapshot digest, and the existing receipt commits to that statement. A valid receipt
+establishes byte lineage under the gateway key, not the honesty of a customer server,
+the truth of a descriptor, or that a tool obeyed its declared effect. The descriptor
+snapshot itself is not independently signed by this change.
+
+Registered customer commands default to workspace-write under the operator's
+separate sandbox policy. Bubblewrap on Linux restricts writable mounts; the Landlock
+fallback is reported as partial because it does not restrict filesystem metadata
+changes. macOS uses Seatbelt. A platform without an implemented backend refuses a
+restricted command with `sandbox-not-enforced`; full access is an explicit operator
+choice. The check reports the actual backend selected. These controls restrict local
+filesystem writes, not network effects or reads available to the source's user.
+Keep the policy, credentials, signing material and approval evidence outside the
+source's writable workspace. Source user separation and the existing custody rules
+remain necessary. See [the customer binding contract](adapters/README.md#customer-bindings)
+for modes, limits and receipt interpretation.
+
 ## Support status
 
 This is a **reference gateway**, not a hardened deployment. It is pre-1.0, provides no security,

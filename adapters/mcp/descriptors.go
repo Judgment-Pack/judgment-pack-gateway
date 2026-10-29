@@ -81,6 +81,7 @@ type snapshot struct {
 // its input schema's original text, as a string, so no encoder along the
 // way compacts, reorders or respells it.
 type capturedTool struct {
+	DescriptorDigest  string          `json:"descriptorDigest,omitempty"`
 	Taxonomy          *ToolTaxonomy   `json:"taxonomy,omitempty"`
 	ServerAnnotations map[string]bool `json:"serverAnnotations,omitempty"`
 

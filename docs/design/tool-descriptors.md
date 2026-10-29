@@ -581,3 +581,31 @@ each tool for a fixture platform whose live tools are a discover, a read, an exp
 an act, and for the seal tool: a change to what is served is a change to that file. A test walks
 every operation of every shipped binding and every tool of the frontend's table, and names the
 first without both fields.
+
+## Customer snapshot version 3
+
+An owner-declared customer binding uses `snapshotVersion: "3"`. It retains the
+version-2 identity, operation, owner taxonomy, display policy and recognized server
+annotations, and requires `descriptorDigest` on every allowed tool entry. That
+member is `sha256:` followed by 64 lowercase hexadecimal digits: the SHA-256 of
+the exact strict JSON descriptor bytes for that tool in `tools/list`, including
+fields omitted from display. Formatting changes also change this digest and
+require operator recapture. Array order or whitespace outside that descriptor
+object does not change it. The complete snapshot remains canonical and byte pinned.
+
+Both snapshot readers reject a missing or malformed complete-descriptor digest;
+customer acquisition rejects a version-2 downgrade. Immediately before a call the
+adapter reconstructs the approved tool set from the server's current descriptors.
+A removed tool or changed descriptor refuses with `mcp-descriptor-drift` before
+`tools/call`. An unknown tool refuses with `mcp-tool-not-allowed`. Recognized server
+annotations that contradict the owner's taxonomy refuse with
+`mcp-taxonomy-contradiction`. Tools without owner declarations are never offered.
+
+A customer acquisition's content-addressed statement contains `tool`, `arguments`,
+`binding` and `descriptorSnapshot`. A version-3 receipt commits to that statement
+through its existing statement digest. The acquisition's `snapshot` field retains
+its upstream-currency meaning. This is an unsigned registration snapshot; signed
+capture statements and verifier enforcement are tracked separately in #313. The
+pin says what the server reported, not whether the server or its tool is truthful.
+Shared handwritten acceptance/refusal vectors are in
+`testdata/tool-taxonomy/v3.json` and are read by both modules.

@@ -12,6 +12,10 @@ import (
 )
 
 func TestV2SharedSourceIdentityVectors(t *testing.T) {
+	sharedSourceIdentityVectors(t, "v2.json", false)
+}
+func TestV3SharedSourceIdentityVectors(t *testing.T) { sharedSourceIdentityVectors(t, "v3.json", true) }
+func sharedSourceIdentityVectors(t *testing.T, filename string, customer bool) {
 	var v struct {
 		Binding, Platform, Operation, Endpoint, SnapshotText, SnapshotDigest, OwnerDeclarationText, OwnerDeclarationDigest string
 		Groups                                                                                                             []struct {
@@ -23,11 +27,11 @@ func TestV2SharedSourceIdentityVectors(t *testing.T) {
 		Tools    map[string]ToolTaxonomy
 		Refusals []struct{ Name, Find, Replace string }
 	}
-	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "tool-taxonomy", "v2.json"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "tool-taxonomy", filename))
 	if err != nil || json.Unmarshal(raw, &v) != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{URL: v.Endpoint, ToolTaxonomies: v.Tools, Tools: []string{"search", "write"}, ApprovedPlatform: v.Platform, ApprovedBinding: v.Binding, ApprovedOperation: v.Operation, DescriptorSnapshot: filepath.Join(t.TempDir(), "snapshot.json")}
+	cfg := Config{Customer: customer, URL: v.Endpoint, ToolTaxonomies: v.Tools, Tools: []string{"search", "write"}, ApprovedPlatform: v.Platform, ApprovedBinding: v.Binding, ApprovedOperation: v.Operation, DescriptorSnapshot: filepath.Join(t.TempDir(), "snapshot.json")}
 	writeApproval(t, &cfg, []byte(v.SnapshotText))
 	if cfg.DescriptorPin != v.SnapshotDigest {
 		t.Fatal("fixture digest")

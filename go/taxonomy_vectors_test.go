@@ -10,6 +10,10 @@ import (
 )
 
 func TestV2SharedSourceIdentityVectors(t *testing.T) {
+	sharedSourceIdentityVectors(t, "v2.json", false)
+}
+func TestV3SharedSourceIdentityVectors(t *testing.T) { sharedSourceIdentityVectors(t, "v3.json", true) }
+func sharedSourceIdentityVectors(t *testing.T, filename string, customer bool) {
 	var v struct {
 		Binding, Platform, Operation, Endpoint, SnapshotText, SnapshotDigest, OwnerDeclarationText, OwnerDeclarationDigest string
 		Groups                                                                                                             []struct {
@@ -22,20 +26,20 @@ func TestV2SharedSourceIdentityVectors(t *testing.T) {
 		FrontendNames map[string]string
 		Refusals      []struct{ Name, Find, Replace string }
 	}
-	raw, err := os.ReadFile(filepath.Join("..", "testdata", "tool-taxonomy", "v2.json"))
+	raw, err := os.ReadFile(filepath.Join("..", "testdata", "tool-taxonomy", filename))
 	if err != nil || json.Unmarshal(raw, &v) != nil {
 		t.Fatal(err)
 	}
 	if digestOf(v.SnapshotText) != v.SnapshotDigest || digestOf(v.OwnerDeclarationText) != v.OwnerDeclarationDigest {
 		t.Fatal("fixture digest")
 	}
-	op := operation{name: v.Operation, taxonomies: v.Tools, url: v.Endpoint}
+	op := operation{customer: customer, name: v.Operation, taxonomies: v.Tools, url: v.Endpoint}
 	accept := func(text string) bool {
 		s, err := parseSnapshot([]byte(text))
 		return err == nil && snapshotOwners(s, &op) == nil && s.platform == v.Platform && s.binding == v.Binding && snapshotEndpointProblem(s, &op) == nil
 	}
 	if !accept(v.SnapshotText) {
-		t.Fatal("canonical V2 vector refused")
+		t.Fatal("canonical source-identity vector refused")
 	}
 	for raw, name := range v.FrontendNames {
 		if name != v.Platform+"."+raw {

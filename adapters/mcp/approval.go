@@ -159,8 +159,12 @@ func approvedSnapshot(cfg Config) (*snapshot, []byte, error) {
 			return nil, nil, errors.New("malformed approved server identity")
 		}
 	}
+	version := "2"
+	if cfg.Customer {
+		version = "3"
+	}
 	var snap snapshot
-	if json.Unmarshal(raw, &snap) != nil || snap.SnapshotVersion != "2" || snap.Operation != cfg.ApprovedOperation || snap.Policy != displayPolicy || snap.Server == nil || snap.Platform != cfg.ApprovedPlatform || snap.Binding != cfg.ApprovedBinding || snap.Endpoint != cfg.URL || len(snap.Tools) != len(cfg.ToolTaxonomies) {
+	if json.Unmarshal(raw, &snap) != nil || snap.SnapshotVersion != version || snap.Operation != cfg.ApprovedOperation || snap.Policy != displayPolicy || snap.Server == nil || snap.Platform != cfg.ApprovedPlatform || snap.Binding != cfg.ApprovedBinding || snap.Endpoint != cfg.URL || len(snap.Tools) != len(cfg.ToolTaxonomies) {
 		return nil, nil, errors.New("approved V2 snapshot identity differs")
 	}
 	if snap.Server.Name == "" || checkIdentity(snap.Server.Name, snap.Server.Version, nil) != nil {
@@ -178,6 +182,9 @@ func approvedSnapshot(cfg Config) (*snapshot, []byte, error) {
 		if !ok || tool.Taxonomy == nil || *tool.Taxonomy != t {
 			return nil, nil, errors.New("approved owner map differs")
 		}
+		if cfg.Customer && !canon.IsDigestString(tool.DescriptorDigest) {
+			return nil, nil, errors.New("mcp-snapshot-invalid: missing complete descriptor digest")
+		}
 		// Decode the closed entry and owner shape independently of encoding/json's case folding.
 		var entries map[string]json.RawMessage
 		json.Unmarshal(fields["tools"], &entries)
@@ -186,7 +193,7 @@ func approvedSnapshot(cfg Config) (*snapshot, []byte, error) {
 			return nil, nil, err
 		}
 		for key := range entry {
-			if key != "taxonomy" && key != "serverAnnotations" && key != "description" && key != "inputSchemaText" {
+			if key != "taxonomy" && key != "serverAnnotations" && key != "description" && key != "inputSchemaText" && !(cfg.Customer && key == "descriptorDigest") {
 				return nil, nil, errors.New("unknown approved tool member")
 			}
 		}
@@ -264,7 +271,13 @@ func (c *capturer) addOwned(tool listedTool, owner ToolTaxonomy) error {
 		return err
 	}
 	if owner.Contradiction(hints) {
-		return errors.New("server constraints contradict owner taxonomy")
+		return errors.New("mcp-taxonomy-contradiction: server constraints contradict owner taxonomy")
+	}
+	if c.snap.SnapshotVersion == "3" {
+		// Digest the complete strict wire descriptor, including fields not used
+		// for display. Unsupported schemas cannot drift invisibly through a fallback.
+		sum := sha256.Sum256(tool.descriptor)
+		entry.DescriptorDigest = "sha256:" + hex.EncodeToString(sum[:])
 	}
 	entry.Taxonomy = &owner
 	entry.ServerAnnotations = hints
@@ -309,7 +322,7 @@ func observedApprovedTool(ctx context.Context, cfg Config, rpc conversation, inf
 	if err != nil {
 		return nil, err
 	}
-	if err := capture.beginOwned(approved.Operation); err != nil {
+	if err := capture.beginOwnedVersion(approved.Operation, cfg.Customer); err != nil {
 		return nil, err
 	}
 	if capture.snap.Server == nil {
@@ -328,7 +341,7 @@ func observedApprovedTool(ctx context.Context, cfg Config, rpc conversation, inf
 	for _, name := range ownerNames(cfg.ToolTaxonomies) {
 		tool, ok := found[name]
 		if !ok {
-			return nil, errors.New("approved tool missing from current server")
+			return nil, errors.New("mcp-descriptor-drift: approved tool missing from current server")
 		}
 		if err := capture.addOwned(tool, cfg.ToolTaxonomies[name]); err != nil {
 			return nil, err
@@ -340,7 +353,7 @@ func observedApprovedTool(ctx context.Context, cfg Config, rpc conversation, inf
 		return nil, err
 	}
 	if !bytes.Equal(projection, original) {
-		return nil, errors.New("current server descriptor projection differs from approved snapshot")
+		return nil, errors.New("mcp-descriptor-drift: current server descriptor projection differs from approved snapshot")
 	}
 	if selected == nil {
 		return nil, fmt.Errorf("requested tool was not approved")
@@ -357,11 +370,16 @@ func ownerNames(tools map[string]ToolTaxonomy) []string {
 	return names
 }
 
-func (c *capturer) beginOwned(operation string) error {
+func (c *capturer) beginOwned(operation string) error { return c.beginOwnedVersion(operation, false) }
+
+func (c *capturer) beginOwnedVersion(operation string, customer bool) error {
 	if operation != "live" && operation != "write" {
 		return errors.New("V2 capture requires exact operation")
 	}
 	c.snap.SnapshotVersion, c.snap.Operation = "2", operation
+	if customer {
+		c.snap.SnapshotVersion = "3"
+	}
 	raw, err := canonicalJSON(c.snap)
 	if err != nil {
 		return err
