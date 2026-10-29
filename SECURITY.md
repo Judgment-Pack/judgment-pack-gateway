@@ -23,13 +23,11 @@ establish descriptor provenance, because it may ignore the new receipt member.
 Registered customer commands default to workspace-write under the operator's
 separate sandbox policy. Bubblewrap on Linux restricts writable mounts; the Landlock
 fallback is reported as partial because it does not restrict filesystem metadata
-changes. macOS uses Seatbelt. Windows uses a low-integrity, write-restricted token
-with a fresh per-run SID, workspace ACL grants and a non-breakaway job; it reports
-partial enforcement. Access-control-free objects and network effects remain outside
-that Windows claim. Existing workspace ACLs are restored after the job is empty;
-an abrupt parent termination can leave the temporary ACL grants and low labels in
-place, and newly created objects retain their inherited ACLs and labels. The SID is
-never reused. Use a dedicated workspace, and inspect its permissions after a crash.
+changes. macOS uses Seatbelt. Windows has no shipped restricted-command backend:
+read-only and workspace-write local customer commands refuse before execution,
+including registration and acquisition under an existing approval. No token/ACL
+sandbox or job-containment claim is made on Windows. Explicit operator-selected
+full access runs unrestricted and is reported as not enforced.
 A platform without an implemented backend refuses a
 restricted command with `sandbox-not-enforced`; full access is an explicit operator
 choice. The check reports the actual backend selected. These controls restrict local
