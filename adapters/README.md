@@ -2373,6 +2373,10 @@ That runs without a filesystem sandbox or a sandbox job-containment guarantee.
 It is not a workaround a tool request can select. Remote and container bindings
 retain their own policy paths; their availability is not evidence of confinement
 of remote servers, container-runtime helpers or other spawned programs.
+Engine versions 13 and later wrap every source adapter, including remote and
+container adapters, and default to workspace-write even when sandbox settings are
+omitted. Those wrapped launches also refuse on Windows unless the operator
+explicitly selects full access.
 
 The experimental restricted-token/ACL backend is not shipped. Native validation
 found unresolved token-capability, ACL identity and cleanup behavior. Removing

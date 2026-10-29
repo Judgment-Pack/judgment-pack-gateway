@@ -600,10 +600,15 @@ managed gateway's posture beside the gateway's status. The answer is canonical J
   per-program entries below: `enforced` only when every entry is enforced, otherwise
   `partial` when any entry is enforced or partial.
 
-Windows has no shipped restricted-command backend. Its selected read-only and
-workspace-write wrappers refuse source execution and report `backend: none`,
+Windows has no shipped restricted-command backend. Engine versions 13 and later
+wrap every configured source adapter, including adapters for remote and container
+sources. Omitting `sandbox` settings still selects workspace-write by default.
+Read-only and workspace-write wrappers therefore refuse those adapter launches
+on Windows and report `backend: none`,
 `state: not-enforced`, with the Windows unavailability reason. An explicit
-full-access policy remains unrestricted. Remote-server and container-daemon
+full-access policy is required to launch these adapters there and remains
+unrestricted. It does not enable keyed action dispatch on an unsupported host.
+Remote-server and container-daemon
 availability does not establish their confinement by this local wrapper.
 
 The seed and the sources are judged at each request, so a mode changed after the start shows;
