@@ -152,6 +152,7 @@ func runWindowsChild(token syscall.Token, desktop string, argv []string) (uint32
 	defer func() {
 		winKernel.NewProc("DeleteProcThreadAttributeList").Call(list)
 		runtime.KeepAlive(attributes)
+		runtime.KeepAlive(handles)
 	}()
 	if err = winBool(winKernel.NewProc("UpdateProcThreadAttribute"), list, 0, 0x20002, uintptr(unsafe.Pointer(&handles[0])), unsafe.Sizeof(handles), 0, 0); err != nil {
 		return 0, err
