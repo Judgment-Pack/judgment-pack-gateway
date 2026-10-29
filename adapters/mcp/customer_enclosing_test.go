@@ -12,6 +12,7 @@ import (
 )
 
 func TestEnclosingSandboxKeepsCustomerRegistrationGates(t *testing.T) {
+	withoutLoaderVariables(t)
 	cfg := fake(t)
 	cfg.Customer, cfg.SandboxEnclosing = true, true
 	cfg.SandboxWorkspace = t.TempDir()
@@ -68,6 +69,7 @@ func init() {
 }
 
 func TestEnclosingSandboxPreservesPrivateTemporaryEnvironment(t *testing.T) {
+	withoutLoaderVariables(t)
 	private := t.TempDir()
 	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(name, private)
