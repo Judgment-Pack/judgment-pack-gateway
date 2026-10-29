@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -201,8 +202,11 @@ func bubblewrapCommand(ctx context.Context, path string, launch Launch, mode, wo
 	return nil, nil
 }
 
-// bubblewrapFlags are the launcher's options up to the command, what they
-// mask, and, when something stays reachable, what (open; "" otherwise).
+// bubblewrapFlags are the launcher's options up to the command; what they
+// mask, for the report: each runtime directory and known runtime socket by
+// name, and the other listening sockets by count, which keeps the report
+// within its bound on a host with many; and, when something stays
+// reachable, what (open; "" otherwise).
 //
 // Unless launch.RuntimeSockets, each per-user runtime directory becomes an
 // empty tmpfs, and every other socket the server could connect to -- each
@@ -244,7 +248,9 @@ func bubblewrapFlags(launch Launch, mode, workspace, tmp string) (flags, masked 
 			masked = append(masked, dir)
 		}
 		listening, abstract, ok := listeningSockets()
-		for _, socket := range existingSockets(append(reachableRuntimeSockets(launch.Env), listening...)) {
+		known := reachableRuntimeSockets(launch.Env)
+		others := 0
+		for _, socket := range existingSockets(append(append([]string{}, known...), listening...)) {
 			hidden := within(socket, "/dev") || within(socket, "/proc")
 			for _, dir := range after {
 				hidden = hidden || within(socket, dir)
@@ -257,7 +263,14 @@ func bubblewrapFlags(launch Launch, mode, workspace, tmp string) (flags, masked 
 				continue
 			}
 			sockets = append(sockets, socket)
-			masked = append(masked, socket)
+			if slices.Contains(known, socket) {
+				masked = append(masked, socket)
+			} else {
+				others++
+			}
+		}
+		if others > 0 {
+			masked = append(masked, strconv.Itoa(others)+" other listening sockets")
 		}
 		switch {
 		case !ok:

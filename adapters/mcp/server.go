@@ -282,7 +282,7 @@ func executionStatement(m *measuredCommand, exact bool) string {
 	}
 	statement := "the server's binary runs from a sealed in-memory copy of the digested bytes"
 	if !exact {
-		statement = "the server is executed by path"
+		statement = "the server does not run from a sealed copy of the digested bytes"
 	}
 	if len(byPath) > 0 {
 		statement += "; " + strings.Join(byPath, ", ") + " are opened by path and digested again immediately before the start, and a change after that re-check is not detected"

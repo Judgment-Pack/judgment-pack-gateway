@@ -48,8 +48,13 @@ func TestSocketMasksCoverListeningSocketsAfterBinds(t *testing.T) {
 	env := []string{"HOME=/nonexistent", "DOCKER_HOST=unix://" + hosted}
 	flags, masked, open := bubblewrapFlags(Launch{Env: env}, WorkspaceWrite, ws, "/t")
 	joined := strings.Join(flags, " ")
+	// The socket a runtime host variable names is reported by name, the
+	// others by count.
+	if !slices.Contains(masked, hosted) || !slices.Contains(masked, "2 other listening sockets") {
+		t.Fatalf("report of what was masked: %v", masked)
+	}
 	for _, socket := range []string{workspace, daemon, hosted} {
-		if !slices.Contains(masked, socket) || !strings.Contains(joined, "--ro-bind /dev/null "+socket) {
+		if !strings.Contains(joined, "--ro-bind /dev/null "+socket) {
 			t.Fatalf("%s not masked: %v", socket, flags)
 		}
 		if i, j := strings.Index(joined, "/dev/null "+socket), strings.Index(joined, "--bind "+ws); j < 0 || i < j {
