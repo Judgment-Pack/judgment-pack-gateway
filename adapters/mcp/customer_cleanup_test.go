@@ -11,7 +11,7 @@ import (
 	"adapters/internal/sandbox"
 )
 
-func TestCustomerCleanupFailureRefusesRegistrationAndAcquisition(t *testing.T) {
+func TestCustomerCleanupFailureRefusesRegistrationNotACompletedCall(t *testing.T) {
 	cfg := fake(t)
 	cfg.Customer = true
 	cfg.SandboxWorkspace = t.TempDir()
@@ -49,12 +49,14 @@ func TestCustomerCleanupFailureRefusesRegistrationAndAcquisition(t *testing.T) {
 	cfg.DescriptorSnapshot = filepath.Join(t.TempDir(), "approved.json")
 	cfg.ApprovedPlatform, cfg.ApprovedBinding, cfg.ApprovedOperation = "tickets", testBinding, "live"
 	writeApproval(t, &cfg, raw)
-	cleanupErr = errors.New("sandbox-cleanup-failed: injected job termination failure")
+	// After the call a write may have been applied: temporary files the
+	// server left behind do not take its receipt away.
+	cleanupErr = errors.New("sandbox-cleanup-failed: injected restoration failure")
 	out, err = Acquire(within(t), cfg, query("select 1"))
-	if err == nil || !strings.Contains(err.Error(), "sandbox-cleanup-failed:") || out != nil || cleanups != 3 {
-		t.Fatalf("acquisition ignored cleanup failure: output=%s error=%v cleanups=%d", out, err, cleanups)
+	if err != nil || out == nil || cleanups != 3 {
+		t.Fatalf("a completed call failed on cleanup: output=%s error=%v cleanups=%d", out, err, cleanups)
 	}
 	if !strings.Contains(strings.Join(methods(trace(t)), ","), "tools/call") {
-		t.Fatal("failure did not follow an actual tool call")
+		t.Fatal("the acquisition did not make the call")
 	}
 }

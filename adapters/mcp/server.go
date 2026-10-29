@@ -99,7 +99,8 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 		}
 		// Resolved and digested afresh at every start; with an approval
 		// held, a different file or digest refuses before anything runs.
-		measured, err = measureCustomerCommand(cfg.Command, cfg.SandboxWorkspace)
+		serverEnv := append(os.Environ(), env...)
+		measured, err = measureCustomerCommand(cfg.Command, cfg.SandboxWorkspace, serverEnv)
 		if err != nil {
 			cancel()
 			return nil, err
@@ -112,7 +113,9 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 			}
 		}
 		digest = measured.identity.Digest
-		launch := sandbox.Launch{Path: measured.identity.Path, File: measured.file, Argv0: measured.identity.Path, Args: cfg.Command[1:], Env: append(os.Environ(), env...)}
+		// argv[0] is the configured word: a multi-call program (busybox)
+		// dispatches on it. The binding is the resolved path and digest.
+		launch := sandbox.Launch{Path: measured.identity.Path, File: measured.file, Argv0: cfg.Command[0], Args: cfg.Command[1:], Env: serverEnv}
 		var report sandbox.Report
 		var release func() error
 		if cfg.SandboxEnclosing {
@@ -138,6 +141,7 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 			cancel()
 			return nil, err
 		}
+		report.Reason += "; " + executionStatement(measured, report.ExecutesDigestedFile())
 		protection = &report
 		file := measured.file
 		cleanup = func() error {
@@ -194,6 +198,11 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 	}
 	if err := cmd.Start(); err != nil {
 		cancel()
+		if protection != nil && protection.ExecutesDigestedFile() && errors.Is(err, os.ErrPermission) {
+			// Never another copy instead: the sealed bytes run or nothing does.
+			err = errors.New("sandbox-sealed-exec-refused: this host refused to execute the sealed in-memory copy of the approved bytes (a security module may forbid executing memory files); nothing was started")
+			return nil, errors.Join(err, cleanup())
+		}
 		return nil, errors.Join(fmt.Errorf("server could not be started: %v", err), cleanup())
 	}
 	// A reader blocked on stdout, or a writer blocked on stdin because a
@@ -236,10 +245,13 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 		cancel()
 		// A descendant that could not be established gone fails the
 		// stop, and with it the check or the acquisition: it may hold
-		// the credentials.
+		// the credentials. Temporary files left behind are a leftover,
+		// which a completed acquisition reports and does not fail on.
 		stopErr = killDescendants()
 		if stopErr == nil {
-			stopErr = cleanup()
+			if err := cleanup(); err != nil {
+				stopErr = &leftoverError{err}
+			}
 		}
 		return stopErr
 	}
@@ -250,6 +262,37 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 		srv.executable = &identity
 	}
 	return srv, nil
+}
+
+// leftoverError is a stop that ended every process but could not remove
+// what the server left in its private temporary directory.
+type leftoverError struct{ err error }
+
+func (e *leftoverError) Error() string { return e.err.Error() }
+func (e *leftoverError) Unwrap() error { return e.err }
+
+// executionStatement says what runs and what is re-checked, and when: the
+// sealed in-memory copy of the digested bytes, or the files executed or
+// opened by path, digested again immediately before the start.
+func executionStatement(m *measuredCommand, exact bool) string {
+	var byPath []string
+	if !exact {
+		byPath = append(byPath, "the command's file")
+	}
+	if len(m.identity.Interpreters) > 0 {
+		byPath = append(byPath, "its #! interpreters")
+	}
+	if m.identity.Script != nil {
+		byPath = append(byPath, "the script operand")
+	}
+	statement := "the server's binary runs from a sealed in-memory copy of the digested bytes"
+	if !exact {
+		statement = "the server does not run from a sealed copy of the digested bytes"
+	}
+	if len(byPath) > 0 {
+		statement += "; " + strings.Join(byPath, ", ") + " are opened by path and digested again immediately before the start, and a change after that re-check is not detected"
+	}
+	return statement
 }
 
 // executableDigest is the SHA-256 of the regular file at path, streamed,

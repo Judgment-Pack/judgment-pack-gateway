@@ -1021,7 +1021,10 @@ workspace for each invocation. A customer command retains its binding's workspac
 A configured workspace or policy that contradicts that binding is refused, and
 unknown workspace selectors are refused. Every effective policy file must lie
 outside every configured source workspace, another source's included; the engine
-refuses the configuration otherwise. A platform `environment` naming a
+refuses the configuration otherwise. At start the engine holds each policy file as
+it holds an adapter: its way walked for the signer, and the file, where it exists,
+owned by root or the signer and writable by nobody else. The helper also refuses a
+policy path that passes through a link inside the source's workspace. A platform `environment` naming a
 dynamic-loader variable (`LD_*`, `DYLD_*`, `GCONV_PATH`) is refused for every
 wrapped source, and the helper refuses one in its own environment. Full filesystem
 access always requires an explicit policy setting.
@@ -1070,12 +1073,27 @@ when its backend enforces all filesystem writes: the external daemon is not
 confined by that client boundary. Such a source's probe and launch keep
 container-runtime sockets reachable (`--container-runtime`), so its adapter entry
 is partial too. For every other source, bubblewrap masks the per-user runtime
-directory and known runtime sockets; Landlock and Seatbelt name a reachable
-runtime socket in the reason, and Seatbelt is then partial.
+directory, every listening socket bound to a path, the known runtime sockets and
+the one a `unix://` `DOCKER_HOST` or `CONTAINER_HOST` names, after the writable
+binds; a listening socket with an abstract name, which no mask hides, makes its
+state partial. The masks are defence in depth: `enforced` means the filesystem
+write boundary holds, and local services reached over Unix sockets may remain
+reachable (a socket created after the launch, bound in another network namespace
+or by a relative path is not masked). Every bubblewrap entry, `/posture`'s fixed
+sentence included, states that limit. Landlock and Seatbelt name a reachable runtime socket in the reason,
+and both are always partial. A `customer-command` entry's reason also says what
+runs as the exact approved bytes and what is re-checked by path before the start.
+
+The reasons `/posture` answers for program entries are fixed sentences chosen by
+mode, backend, state and class. They name no launcher location, masked path, home
+directory or uid; `gateway posture`, run by the operator, keeps the helper's own
+words.
 
 A completed probe is cached for the resolved source until restart, and every
-launch is bound to it. The first launch of a source without a completed probe
-takes one first, and refuses if it does not complete. The launch passes the
+launch is bound to it; a probe that timed out is not cached. The first launch of a
+source without a completed probe takes one first, and refuses if it does not
+complete. A restricted launch whose probe measured the boundary as not holding
+(`not-enforced` under a restricted mode) refuses with `sandbox-not-enforced`. The launch passes the
 probe's mode, backend and `policyDigest` to `adapter-sandbox run`, which refuses
 with `sandbox-not-enforced` before the program starts when the policy bytes or
 mode now differ, or when the reported backend cannot be used: a bubblewrap that

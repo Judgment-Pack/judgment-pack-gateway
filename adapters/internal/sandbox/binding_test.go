@@ -143,14 +143,14 @@ func TestRuntimeSocketsMaskedOrReported(t *testing.T) {
 	saved := runtimeSocketPaths
 	t.Cleanup(func() { runtimeSocketPaths = saved })
 	runtimeSocketPaths = []string{socket}
-	flags, masked := bubblewrapFlags(Launch{Env: []string{"HOME=/nonexistent"}}, WorkspaceWrite, "/w", "/t")
-	if !slices.Contains(masked, socket) || !strings.Contains(strings.Join(flags, " "), "--ro-bind /dev/null "+socket+" --dev") {
+	flags, masked, _ := bubblewrapFlags(Launch{Env: []string{"HOME=/nonexistent"}}, WorkspaceWrite, "/w", "/t")
+	if !slices.Contains(masked, socket) || !strings.Contains(strings.Join(flags, " "), "--ro-bind /dev/null "+socket) {
 		t.Fatalf("socket not masked: %v", flags)
 	}
-	if i, j := slices.Index(flags, socket), slices.Index(flags, "--bind"); i < 0 || j < i {
-		t.Fatalf("masks must precede the writable binds: %v", flags)
+	if i, j := slices.Index(flags, socket), slices.Index(flags, "--bind"); i < 0 || j < 0 || i < j {
+		t.Fatalf("socket masks must follow the writable binds: %v", flags)
 	}
-	flags, masked = bubblewrapFlags(Launch{Env: []string{"HOME=/nonexistent"}, RuntimeSockets: true}, WorkspaceWrite, "/w", "/t")
+	flags, masked, _ = bubblewrapFlags(Launch{Env: []string{"HOME=/nonexistent"}, RuntimeSockets: true}, WorkspaceWrite, "/w", "/t")
 	if len(masked) != 0 || slices.Contains(flags, socket) {
 		t.Fatalf("a runtime client's socket was masked: %v", flags)
 	}

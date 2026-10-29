@@ -1767,11 +1767,45 @@ func holdAdapterSources(sources map[string]sourceSpec, host engineHost) error {
 				}
 				resolved[command] = helper
 			}
+			if err := holdSandboxPolicy(spec.sandbox.policy, host); err != nil {
+				return fmt.Errorf("source %s: sandbox policy: %v", name, err)
+			}
 			selection := *spec.sandbox
 			selection.helper = helper
 			spec.sandbox = &selection
 		}
 		sources[name] = spec
+	}
+	return nil
+}
+
+// holdSandboxPolicy holds a source sandbox policy file as an adapter is held,
+// since its bytes choose every source's filesystem mode: its way walked for
+// the signer (trustedFile), and the file, where it is there, owned by root or
+// the signer and writable by nobody else. A policy not there is left to the
+// helper, which refuses it. Like the adapters' hold, this is a check at
+// start-up, and a launch is bound to the digest of the bytes its posture
+// probe read.
+func holdSandboxPolicy(path string, host engineHost) error {
+	if path == "" {
+		return nil
+	}
+	resolved, err := trustedFile(path, host.euid, linkOwners{other: host.euid}, host)
+	if err != nil {
+		return err
+	}
+	owner, err := host.fileOwner(resolved)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil
+	case err != nil:
+		return fmt.Errorf("%s: %v", resolved, err)
+	case owner.dir:
+		return fmt.Errorf("%s is a directory, not a policy file", resolved)
+	case owner.uid != 0 && owner.uid != host.euid:
+		return fmt.Errorf("%s is owned by uid %d, neither root nor the signer (uid %d), so its owner could choose every source's filesystem mode", resolved, owner.uid, host.euid)
+	case owner.mode&0o022 != 0:
+		return fmt.Errorf("%s is writable beyond its owner (mode %04o), so another user could choose every source's filesystem mode; chmod go-w %s", resolved, owner.mode, resolved)
 	}
 	return nil
 }

@@ -815,6 +815,16 @@ func TestDescribeCheckReportsTheProbe(t *testing.T) {
 	}
 }
 
+// The protection a customer command ran under at registration is shown to
+// the operator who connects it, not dropped with the rest of the report.
+func TestDescribeCheckShowsTheSandbox(t *testing.T) {
+	report := `{"check":{"status":"succeeded","adapter":{"name":"server","version":"","digest":"sha256:ab"},"server":{"name":"s","version":"1"},"protocolVersion":"2025-03-26","tools":["query"],"sandbox":{"mode":"workspace-write","backend":"landlock","state":"partial","reason":"fixed"}}}`
+	got, err := describeCheck("mcp", []byte(report), "")
+	if err != nil || !strings.HasSuffix(got, "; sandbox workspace-write under landlock, partial") {
+		t.Fatalf("%q %v", got, err)
+	}
+}
+
 func TestConnectJudgesThePathsServeMakes(t *testing.T) {
 	// Written out rather than tabled: each case changes a different path.
 	f := newConnectFixture(t, restrictedBinding, ``)
