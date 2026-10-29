@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -74,6 +75,12 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 			identity: adapterIdentity{Name: image.Name, Version: image.Version, Digest: image.Digest}}, nil
 	}
 	path, err := exec.LookPath(cfg.Command[0])
+	if err != nil {
+		return nil, fmt.Errorf("server command could not be resolved: %v", err)
+	}
+	// The sandbox changes the child's working directory. Resolve the command
+	// once here so the file we identify is the file launched in that directory.
+	path, err = filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("server command could not be resolved: %v", err)
 	}
