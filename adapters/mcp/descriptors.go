@@ -70,6 +70,7 @@ type snapshot struct {
 
 	Binding    string                  `json:"binding"`
 	Endpoint   string                  `json:"endpoint,omitempty"`
+	Executable *executableIdentity     `json:"executable,omitempty"`
 	CapturedAt string                  `json:"capturedAt"`
 	Platform   string                  `json:"platform"`
 	Policy     int                     `json:"policy"`
