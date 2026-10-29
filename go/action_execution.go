@@ -36,6 +36,17 @@ func actionFingerprint(platform, tool string, args, decision, cites value, spec 
 		identity.set("endpoint", vString(source.endpoint))
 		identity.set("transport", vString(source.transport))
 		identity.set("user", vString(source.user))
+		var sandbox value = vNull{}
+		if boundary := source.sandbox; boundary != nil {
+			expanded := newObject()
+			expanded.set("helper", vString(boundary.helper))
+			expanded.set("policy", vString(boundary.policy))
+			expanded.set("workspace", vString(boundary.workspace))
+			expanded.set("source", vString(boundary.source))
+			sandbox = expanded
+		}
+		identity.set("sandbox", sandbox)
+
 		argv := vArray{}
 		for _, word := range source.argv {
 			argv = append(argv, vString(word))

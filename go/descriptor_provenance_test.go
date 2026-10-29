@@ -268,3 +268,32 @@ func TestDescriptorStatementRequiresEveryMember(t *testing.T) {
 		})
 	}
 }
+
+// Capturing provenance may upgrade an older file but cannot disable newer
+// engine requirements or discard a newer configuration member.
+func TestDescriptorStatementsPreserveNewerEngineVersion(t *testing.T) {
+	for _, version := range []string{"11", "12", "13", "14"} {
+		raw := []byte(`{"engineVersion":"` + version + `","sandbox":{"policy":"/policy"},"platforms":{"tickets":{"binding":"tickets@sha256:` + strings.Repeat("a", 64) + `"}}}`)
+		rendered, err := renderDescriptorStatements(raw, "tickets", map[string]string{"live": "sha256:" + strings.Repeat("b", 64)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, err := parseJSON(rendered)
+		if err != nil {
+			t.Fatal(err)
+		}
+		o := v.(*vObject)
+		want := version
+		if version == "11" {
+			want = "12"
+		}
+		got, _ := memberString(o, "engineVersion")
+		if got != want {
+			t.Fatalf("version %s became %s", version, got)
+		}
+		sandbox, _ := o.get("sandbox")
+		if string(canon(sandbox)) != `{"policy":"/policy"}` {
+			t.Fatal("sandbox changed during descriptor capture")
+		}
+	}
+}

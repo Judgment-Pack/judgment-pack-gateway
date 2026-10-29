@@ -204,7 +204,9 @@ func renderDescriptorStatements(data []byte, platform string, pins map[string]st
 		return nil, err
 	}
 	o := v.(*vObject)
-	o.set("engineVersion", vString("12"))
+	if version, _ := memberString(o, "engineVersion"); !versionAtLeast(version, "12") {
+		o.set("engineVersion", vString("12"))
+	}
 	ps, _ := o.get("platforms")
 	pv, _ := ps.(*vObject).get(platform)
 	values := newObject()
