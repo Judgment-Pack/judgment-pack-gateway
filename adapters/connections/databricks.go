@@ -526,7 +526,7 @@ func (b *Broker) databricksOperation(ctx context.Context, method string, raw []b
 			// connection names: one that no operation it enables declares
 			// is refused, by name (least privilege at connect).
 			if q.Auth == "service-principal" {
-				if extra := excessOf(scopeList(q.scope()), requiredOf("databricks", databricksOperations(q))); len(extra) > 0 {
+				if extra := excessOfKind("databricks", scopeList(q.scope()), requiredOf("databricks", databricksOperations(q))); len(extra) > 0 {
 					return excessScope(extra)
 				}
 			}
@@ -712,6 +712,27 @@ func databricksCurrent(s *Store, c DatabricksConnection) error {
 // one minted now. A held token that is not so is removed before another is
 // asked for, so custody never holds a token past its expiry record.
 func (p provider) databricksBearer(ctx context.Context, s *Store, c DatabricksConnection) (string, error) {
+	// Every use of the credential passes the grant's check, a connection
+	// test's among them (grantCredential); and the grant's state is read
+	// again once a token is held, immediately before the call is sent, so
+	// that a quarantine or revocation made while a token was minted refuses
+	// it.
+	if err := s.grantCredential(ctx, p, c.ID, c.ID); err != nil {
+		return "", err
+	}
+	bearer, err := p.databricksBearerHeld(ctx, s, c)
+	if err != nil {
+		return "", err
+	}
+	if err := s.locked(func(*state) error { return s.grantGate("databricks", c.ID, c.ID) }); err != nil {
+		return "", err
+	}
+	return bearer, nil
+}
+
+// databricksBearerHeld is the token a call is sent under: the personal
+// access token, or a service principal's token held or minted.
+func (p provider) databricksBearerHeld(ctx context.Context, s *Store, c DatabricksConnection) (string, error) {
 	if c.Auth == "token" {
 		return c.Token, nil
 	}
@@ -1168,7 +1189,7 @@ func databricksAcquire(ctx context.Context, s *Store, q DatabricksRequest, p pro
 	if q.Read == "mcp" {
 		operation = databricksServerOperation(q.Server)
 	}
-	if err = s.grantUse(ctx, p, c.ID, operation); err != nil {
+	if ctx, err = s.grantUse(ctx, p, c.ID, operation); err != nil {
 		return nil, err
 	}
 	if q.Read == "mcp" {

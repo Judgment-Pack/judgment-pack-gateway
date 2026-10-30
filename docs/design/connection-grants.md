@@ -40,7 +40,8 @@ inside it, because an earlier release refuses a state member it does not know. E
 | `scopes.required` | strings, sorted | the union of the scopes the connection's operations declare |
 | `scopes.granted` | strings, sorted, or `null` | what the provider granted, as last read; `null` where the provider does not report it to the gateway |
 | `scopes.used` | `[{"scope", "lastUsedAt"}]`, sorted by scope | each granted scope that a dispatched call's operation declares, and when last |
-| `excess` | strings | granted scopes that no operation declares |
+| `excess` | strings | granted scopes that no operation declares; they refuse |
+| `wider` | strings | granted scopes wider than any operation needs, admitted and reported (Databricks' `all-apis`) |
 | `createdAt` | time | when the record was made |
 | `lastUsedAt` | time or `null` | the last dispatched acquisition or action |
 | `idleExpiry` | integer milliseconds or `null` | the idle bound; `null` is none, the default |
@@ -61,17 +62,17 @@ The record is reconciled with custody whenever it is read:
 
 ## Least privilege
 
-Each operation declares the scopes it needs. The table is `grantDeclarations`, and the
+Each operation declares the narrowest scope it needs. The table is `grantDeclarations`, and the
 declarations are the gateway's own, since few providers report which scope a call exercised.
 
-| Provider | Operation | Declared scope (any one of) |
+| Provider | Operation | Declared scope |
 | --- | --- | --- |
 | Google Drive | read, observe, storage | `https://www.googleapis.com/auth/drive` (ADR-0010) |
 | Gmail | read | `https://www.googleapis.com/auth/gmail.readonly` |
 | Notion | read | `default` |
-| Databricks | statement | `sql`, `all-apis` |
-| | catalog | `unity-catalog`, `all-apis` |
-| | MCP `sql` / `genie` / `functions` / `ai-search` | `sql` / `genie` / `unity-catalog` / `ai-search`, or `all-apis` |
+| Databricks | statement (Statement Execution) | `sql` |
+| | catalog (Unity Catalog catalogs) | `unity-catalog` |
+| | MCP `sql` / `genie` / `functions` / `ai-search` | `sql` / `genie` / `unity-catalog` / `ai-search` |
 | | MCP `unity-gateway` | `ai-gateway` |
 | Azure DevOps | `workitems.*` | `vso.work` |
 | | `repos.*`, `pullrequests.list` | `vso.code` |
@@ -81,15 +82,25 @@ A connection's required scopes are the union of the declarations of the operatio
 Databricks connection offers a statement, a catalog listing, and each managed MCP server it
 enables.
 
-**At connect.** A Google token whose stated scope is more than the scope requested is refused
-with `excess-scope: <extra scopes>`. A token of another or a narrower scope is still
+**A scope wider than needed.** Databricks' `all-apis` reaches every REST API the service principal
+may use. It is what a service principal configured with no scope asks for. So it is admitted, but
+recorded in `wider` and reported as `wider-than-needed`; it is not `required` and never refuses.
+A statement or a catalog listing made under `all-apis` alone records `all-apis` as used. Whether
+`all-apis` covers the managed MCP servers, no Databricks page states: an MCP call made under
+`all-apis` alone records no scope as used, and the gateway does not take `all-apis` as sufficient
+for one.
+
+**At connect.** A Google or Notion token whose stated scope is more than the scope requested is
+refused with `excess-scope: <extra scopes>`. A token of another or a narrower scope is still
 `provider-unavailable`. A Databricks service principal configured with a scope that none of its
 operations declares is refused the same way, and the connection is not saved.
 
 **Drift.** Google states a token's scope at every renewal. A renewal that states a scope added
 since consent is refused with `excess-scope`. The record then takes the granted scopes the
 provider stated and the excess, and the connection is refused at every use until it is consented
-to again. A Databricks connection's scope is read from custody at each use. So a connection saved
+to again. A Notion renewal is held to its own check: one that states another scope, a wider one
+included, is refused as `provider-unavailable`, and no drift is recorded. A Databricks
+connection's scope is read from custody at each use. So a connection saved
 by an earlier release that asks for more than it declares is refused at its next use, and
 reported.
 
@@ -108,8 +119,8 @@ second owner is refused (`owner-recorded`). This release has no reassignment. A 
 before this release, or with no owner set, has no owner record. It is used as before, and the
 report flags it `owner-missing` (spec #284 NC3).
 
-**The owner read.** Before every acquisition or action through a grant that has an owner, the
-gateway asks the owner's issuing host whether the owner is still a current principal. The request
+**The owner read.** Before every use of the credential of a grant that has an owner, the gateway
+asks the owner's issuing host whether the owner is still a current principal. The request
 is a synchronous HTTPS `POST` to the address the operator configured for that host (`owner-reads`):
 
 - it carries `Authorization: Bearer <credential>`;
@@ -126,8 +137,15 @@ What follows:
 - Anything else refuses the call with `owner-unknown` and changes nothing. That covers an
   unconfigured host, a refusal, a timeout, an unreadable answer or another standing.
 
-Control operations (status, search, select, test, configure) check the grant's state, but make no
-owner read.
+A use is any call that reads the grant's credential to reach the provider: an acquisition, an
+action, a search, a file operation, a selection's read, and a connection test, MCP included
+(`grantCredential`, at `provider.access` for Drive, Gmail and Notion, at the token for Databricks,
+and at each read and test for Azure DevOps). One call makes one owner read: an acquisition's
+check marks its call, and the credential read in the same call re-reads the grant's state under the
+lock without a second read. Its cost is one synchronous request to the issuing host per call.
+Operations that do not reach the provider (status, configure, disconnect, a selection's
+listing) make none. An owner's grants in other providers' custody are refused at their own next
+use of any kind, since each makes its own read.
 
 **Owner removal.** `remove-owner` names an owner and its host. Every grant of that owner, in every
 provider's custody for the principal, is then revoked or quarantined:
@@ -141,8 +159,9 @@ before its credential is read. It leaves quarantine only when the operator revok
 
 **Idle expiry.** `set-idle-expiry` sets or clears the bound. A grant is expired when its last use
 is at least the bound before now; a grant never used is measured from its record's creation, and
-equal counts as expired. An expired grant is revoked at its next use, which is refused as
-`grant-idle-expired`, or by the next `sweep`. A grant with no bound that has been unused for 90
+equal counts as expired. A time the record cannot be read for counts as expired. An expired grant
+is revoked at its next use of any kind (as above: a search or a connection test as much as an
+acquisition), which is refused as `grant-idle-expired`, or by the next `sweep`. A grant with no bound that has been unused for 90
 days or more is reported as `idle` (open question 14).
 
 **Revocation.** The gateway deletes the credential from custody, records the reason, and then:
@@ -186,7 +205,7 @@ The report gives each grant the record's members except the custody identifier, 
 - `scopes.unused`;
 - `idle`, one of `none`, `within`, `idle` or `expired`;
 - `findings`, each a code and a fixed sentence: `owner-missing`, `quarantined`, `excess-scope`,
-  `scopes-unreadable`, `unused-scopes`, `idle`, `idle-expired` and `provider-grant-may-persist`.
+  `wider-than-needed`, `scopes-unreadable`, `unused-scopes`, `idle`, `idle-expired` and `provider-grant-may-persist`.
 
 A finding's sentence names no path, no account and no token, as `/posture`'s public reasons do
 not (#350). The report's members are the owner reference and scope names, and never a provider
@@ -194,25 +213,26 @@ account.
 
 ## Departures from RFC 0030 §5
 
-- **More members.** The record adds `provider`, `createdAt`, `excess` and `revocation`, and keeps
+- **More members.** The record adds `provider`, `createdAt`, `excess`, `wider` and `revocation`, and keeps
   an unreported custody identifier. `createdAt` is what "a grant never used is measured from its
   creation" needs.
 - **An unreadable grant.** `scopes.granted` is `null` where the provider does not report the
   grant. The RFC has only an array.
-- **Declarations with alternatives.** A Databricks operation may declare alternatives (any one of
-  them is enough), and `required` is the union of every accepted name.
+- **A wider scope admitted.** Databricks' `all-apis` is not in `required` and is reported as
+  `wider-than-needed`, but it is admitted rather than refused, because a service principal
+  configured with no scope asks for it; refusing it would refuse every such connection.
 - **Drift at renewal.** Drift is read where the provider states a token's scope, which for Google
   is at each renewal, and not by an extra provider request on every use. A Databricks connection's
   configured scope is read at each use.
-- **Excess is always refused.** Every provider with a record can narrow its grant, so excess is
-  refused and reported. This release has no admitted-and-reported case.
-- **Owner reads at acquisitions and actions only.** The owner read is made before every
-  acquisition and every action, but not before control operations (search, select, test), which
-  check the grant's state only.
+- **Excess is refused.** Every provider with a record can narrow its grant, so a scope no
+  operation declares is refused and reported; the one admitted-and-reported case is `all-apis`
+  above.
+- **One owner read per call.** The owner read is made before every use of the credential, and once
+  per call: an acquisition's credential read re-checks the grant's state, not the owner.
 - **The owner read's wire.** The RFC names the read but not its wire. The address and credential
   are the operator's configuration, held in custody.
 - **Not built.** Delegated calls and the admission read carrying the owner (spec #284 NC2) belong
   to #356. Reassignment out of quarantine, and acceptance, are not built.
 - **Owner removal at use.** An owner read that answers `removed` changes the grants in the custody
-  being used. The owner's grants in other providers' custody are caught at their own next use, by
-  a `sweep`, or by `remove-owner`.
+  being used. The owner's grants in other providers' custody are refused at their own next use of
+  any kind, by their own owner read, and changed then, by a `sweep`, or by `remove-owner`.

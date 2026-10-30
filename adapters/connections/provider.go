@@ -145,9 +145,12 @@ func (p provider) exchange(ctx context.Context, client Client, values url.Values
 // reconfiguration can revoke it while the provider is slow; commit rechecks that
 // generation and never restores credentials that were removed in the meantime.
 func (p provider) access(ctx context.Context, s *Store, client Client, c credential, epoch string) (string, error) {
-	// A grant the operator quarantined admits no call: its credential is
-	// kept, and not used.
-	if err := s.locked(func(*state) error { return s.grantGate(p.kind(), p.kind(), c.ID) }); err != nil {
+	// Every use of the credential passes the grant's check: a search, a
+	// selection's read, a file operation, an acquisition (grantCredential).
+	// A quarantined, revoked, idle-expired or excess grant, and one whose
+	// owner the issuing host has removed or does not answer for, admits no
+	// call.
+	if err := s.grantCredential(ctx, p, p.kind(), c.ID); err != nil {
 		return "", err
 	}
 	if p.notion {
