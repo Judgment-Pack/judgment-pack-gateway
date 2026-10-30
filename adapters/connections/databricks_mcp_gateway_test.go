@@ -173,9 +173,11 @@ func TestDatabricksMCPUnityGatewayNamesAndScope(t *testing.T) {
 		"a service principal with sql alone":         {"service-principal", "sql", dbGatewayServers(), databricksGatewayScope},
 		"a scope that only contains the word":        {"service-principal", "ai-gateway-extra", dbGatewayServers(), databricksGatewayScope},
 		"a service principal with ai-gateway":        {"service-principal", "ai-gateway", dbGatewayServers(), nil},
-		"ai-gateway among others":                    {"service-principal", "sql ai-gateway genie", dbGatewayServers(), nil},
-		"a workspace endpoint with the default":      {"service-principal", "", dbServers(), nil},
-		"a personal access token":                    {"token", "", dbGatewayServers(), nil},
+		"ai-gateway among others":                    {"service-principal", "sql ai-gateway", dbGatewayServers(), nil},
+		// A scope no enabled operation declares is refused by name (#357).
+		"ai-gateway beside an undeclared scope": {"service-principal", "sql ai-gateway genie", dbGatewayServers(), excessScope([]string{"genie"})},
+		"a workspace endpoint with the default": {"service-principal", "", dbServers(), nil},
+		"a personal access token":               {"token", "", dbGatewayServers(), nil},
 	} {
 		fields := dbTokenFields()
 		if k.auth == "service-principal" {

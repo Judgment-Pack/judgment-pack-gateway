@@ -5,12 +5,14 @@ import (
 	"adapters/connections"
 	"adapters/internal/canon"
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"time"
 )
 
@@ -29,8 +31,12 @@ func run() int {
 	sourceCapabilities := fs.Bool("source-capabilities", false, "")
 	disabled := fs.Bool("disabled", false, "")
 	exportObservations := fs.Bool("export-observations", false, "")
+	grants := fs.String("grants", "", "")
 	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 {
 		return 2
+	}
+	if *grants != "" {
+		return runGrants(fs, *grants, *dir, *principal, *provider)
 	}
 	if *exportObservations {
 		// The observation journal, for an audit export: read under the
@@ -193,6 +199,53 @@ func run() int {
 		}
 	}
 	if scan.Err() != nil {
+		return 1
+	}
+	return 0
+}
+
+// runGrants is the operator's connection-grant operation (#357): the
+// connections report, or one change to the grants of the principal's
+// custody. Every provider with grants is taken unless --provider names one.
+// The report reads no input; every other operation reads one JSON request
+// from stdin. The answer is one JSON line on stdout; a refusal is its code
+// on stderr, and exit 1. Nothing is served, and no other mode is taken.
+func runGrants(fs *flag.FlagSet, operation, dir, principal, provider string) int {
+	named := false
+	other := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "provider":
+			named = true
+		case "grants", "state-dir", "principal":
+		default:
+			other = true
+		}
+	})
+	if other || !slices.Contains(connections.GrantOperations, operation) {
+		return 2
+	}
+	if !named {
+		provider = ""
+	}
+	var raw []byte
+	if operation != "report" {
+		var err error
+		raw, err = io.ReadAll(io.LimitReader(os.Stdin, connections.ControlLineBytes+1))
+		if err != nil || len(raw) > connections.ControlLineBytes {
+			fmt.Fprintln(os.Stderr, "grants:", connections.ErrRequest)
+			return 1
+		}
+		raw = bytes.TrimSpace(raw)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	out, err := connections.GrantOperation(ctx, dir, principal, provider, operation, raw)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "grants:", err)
+		return 1
+	}
+	if json.NewEncoder(os.Stdout).Encode(out) != nil {
 		return 1
 	}
 	return 0

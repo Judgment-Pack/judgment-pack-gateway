@@ -522,6 +522,14 @@ func (b *Broker) databricksOperation(ctx context.Context, method string, raw []b
 			if !q.valid() {
 				return ErrRequest
 			}
+			// A service principal's token is asked for the scope the
+			// connection names: one that no operation it enables declares
+			// is refused, by name (least privilege at connect).
+			if q.Auth == "service-principal" {
+				if extra := excessOf(scopeList(q.scope()), requiredOf("databricks", databricksOperations(q))); len(extra) > 0 {
+					return excessScope(extra)
+				}
+			}
 			q.Revision = randomID()
 			if index < 0 {
 				v.Databricks.Connections = append(v.Databricks.Connections, q)
@@ -660,6 +668,9 @@ func databricksSnapshot(s *Store, id, revision string) (DatabricksConnection, er
 				}
 				if !c.valid() {
 					return ErrSetup
+				}
+				if err := s.grantGate("databricks", c.ID, c.ID); err != nil {
+					return err
 				}
 				found = c
 				return nil
@@ -1151,6 +1162,13 @@ func databricksAcquire(ctx context.Context, s *Store, q DatabricksRequest, p pro
 		return nil, err
 	}
 	if q, err = q.check(c); err != nil {
+		return nil, err
+	}
+	operation := q.Read
+	if q.Read == "mcp" {
+		operation = databricksServerOperation(q.Server)
+	}
+	if err = s.grantUse(ctx, p, c.ID, operation); err != nil {
 		return nil, err
 	}
 	if q.Read == "mcp" {

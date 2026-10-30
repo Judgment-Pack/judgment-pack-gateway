@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -125,6 +126,13 @@ func (p provider) exchange(ctx context.Context, client Client, values url.Values
 		return t, ErrProvider
 	}
 	if t.Scope != "" && t.Scope != p.scope() {
+		// A token of more than the scope asked holds a scope no operation
+		// declares, and is refused by name (excess-scope); one of another
+		// scope, or of less, is the provider's failure.
+		granted := scopeList(t.Scope)
+		if slices.Contains(granted, p.scope()) {
+			return t, excessScope(excessOf(granted, []string{p.scope()}))
+		}
 		return t, ErrProvider
 	}
 	if p.notion {
@@ -137,6 +145,11 @@ func (p provider) exchange(ctx context.Context, client Client, values url.Values
 // reconfiguration can revoke it while the provider is slow; commit rechecks that
 // generation and never restores credentials that were removed in the meantime.
 func (p provider) access(ctx context.Context, s *Store, client Client, c credential, epoch string) (string, error) {
+	// A grant the operator quarantined admits no call: its credential is
+	// kept, and not used.
+	if err := s.locked(func(*state) error { return s.grantGate(p.kind(), p.kind(), c.ID) }); err != nil {
+		return "", err
+	}
 	if p.notion {
 		return p.notionAccess(ctx, s, client, c, epoch)
 	}
@@ -171,6 +184,12 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 		return "", ErrRevoked
 	}
 	t, err := p.exchange(ctx, client, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {c.Refresh}})
+	if IsExcessScope(err) {
+		// The provider reports the grant holds more than it did (drift):
+		// the record says so, and the token is neither kept nor used.
+		s.noteGranted(p.kind(), c.ID, scopeList(t.Scope))
+		return "", err
+	}
 	if err != nil {
 		// The refresh token may have been spent by another process's
 		// renewal that was given another in its place. What that process

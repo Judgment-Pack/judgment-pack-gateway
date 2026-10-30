@@ -624,6 +624,9 @@ func azureDevOpsSnapshot(s *Store, id, revision string) (AzureDevOpsConnection, 
 				if !c.valid() {
 					return ErrSetup
 				}
+				if err := s.grantGate("azure-devops", c.ID, c.ID); err != nil {
+					return err
+				}
 				found, active = c, joinSecrets(azureDevOpsActiveOf(v), c.secrets())
 				return nil
 			}
@@ -1200,6 +1203,9 @@ func azureDevOpsAcquire(ctx context.Context, s *Store, q AzureDevOpsRequest, p p
 	}
 	if c.expired() {
 		return nil, azureDevOpsExpired
+	}
+	if err = s.grantUse(ctx, p, c.ID, q.Read); err != nil {
+		return nil, err
 	}
 	if q.Read == "mcp" {
 		return p.azureDevOpsMCPAcquire(ctx, s, c, q, secrets)

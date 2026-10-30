@@ -399,6 +399,9 @@ func (b *Broker) observeSource(ctx context.Context, id string) (any, error) {
 		}
 		return nil
 	}
+	if err := b.store.grantUse(ctx, b.provider, b.provider.kind(), "observe"); err != nil {
+		return nil, err
+	}
 	var profile driveReadProfile
 	raw, err := b.provider.readDriveDocument(ctx, b.store, r.ResourceID, client, c, epoch, guard, &profile)
 	if err != nil {

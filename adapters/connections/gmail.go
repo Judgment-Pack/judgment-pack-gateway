@@ -443,6 +443,9 @@ func (p provider) readMail(ctx context.Context, s *Store, raw []byte) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
+	if err := s.grantUse(ctx, p, p.kind(), "read"); err != nil {
+		return nil, err
+	}
 	token, err := p.access(ctx, s, client, credentials, epoch)
 	if err != nil {
 		return nil, err
