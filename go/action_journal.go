@@ -109,6 +109,37 @@ func syncActionAncestry(path string, held *os.Root) error {
 	}
 }
 
+// syncActionEvidence makes durable, strictly, the directory entries that the
+// receipt an action record is about to cite rests on: its result's blob in
+// artifacts/, the receipt in receipts/<session>/, and that session in
+// receipts/. The store links each with a best-effort directory sync, which is
+// not enough for a record that is synced strictly and refuses its key for
+// good when the receipt it cites is gone (#352 L4). The store directory's own
+// entries for artifacts/ and receipts/ were synced when the journal was opened
+// (openActionJournal), and each file's bytes before it was linked.
+func syncActionEvidence(storeRoot, sessionID string) error {
+	if err := requireSession(sessionID); err != nil {
+		return errors.New("action-journal-invalid: the receipt's session is not a session name")
+	}
+	store, err := os.OpenRoot(storeRoot)
+	if err != nil {
+		return errors.New("action-journal-unavailable: cannot hold the store to make the receipt durable")
+	}
+	defer store.Close()
+	for _, dir := range []string{"artifacts", "receipts/" + sessionID, "receipts"} {
+		held, err := store.OpenRoot(dir)
+		if err != nil {
+			return errors.New("action-journal-unavailable: cannot hold the receipt's directory to make it durable")
+		}
+		err = syncActionDirectory(held)
+		held.Close()
+		if err != nil {
+			return errors.New("action-journal-unavailable: the durability of the receipt the action record cites was not established")
+		}
+	}
+	return nil
+}
+
 func (j *actionJournal) close() { j.root.Close() }
 func (c *actionClaim) close()   { c.root.Close() }
 
