@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -90,26 +91,38 @@ func stubSandboxPolicyDigests(t *testing.T, policies map[string]string) {
 	t.Cleanup(func() { sandboxPostureProbe = saved })
 }
 
-// #351 M1: the fingerprint is the approved identity. What a retry means
-// changes it; where the programs are installed, the platform's environment
-// and the OS user do not.
+// #351 M1 and #355: the fingerprint is the approved identity. What a retry
+// means changes it; where the programs are installed, the platform's
+// environment and the OS user do not, and in identity version 2 neither does
+// how a release composes the adapter's command line. Version 1 (v0.23.0's)
+// is computed as it was, so that its reservations are still recognized.
 func TestActionFingerprintBindsApprovedIdentityNotInstall(t *testing.T) {
 	stubSandboxPolicyDigests(t, map[string]string{"/etc/a/policy.json": "policy-v1", "/etc/b/policy.json": "policy-v1", "/etc/c/policy.json": "policy-v2", "/broken": "unmeasurable"})
+	pin := func(c string) string { return "sha256:" + strings.Repeat(c, 64) }
 	base := sourceSpec{
-		argv:                 []string{"/opt/gateway-1/adapter-mcp", "--credentials=/home/engine/.credentials/tickets", "--runtime=/usr/bin/docker", "--tools=write", "--sandbox-workspace=/srv/work", "--sandbox-policy=/etc/a/policy.json", "--sandbox-source=tickets/write", "--descriptor-snapshot=/etc/engine.json.descriptors/b.json", "--descriptor-pin=sha256:" + strings.Repeat("b", 64), "--owner-declaration-file=/etc/engine.json.descriptors/c.json", "--owner-declaration-pin=sha256:" + strings.Repeat("c", 64), "--endpoint=https://tickets.example", "--", "/opt/server/bin/tickets", "serve"},
+		argv:                 []string{"/opt/gateway-1/adapter-mcp", "--credentials=/home/engine/.credentials/tickets", "--tools=write", "--sandbox-workspace=/srv/work", "--sandbox-policy=/etc/a/policy.json", "--sandbox-source=tickets/write", "--endpoint=https://tickets.example", "--error-results", "--customer-binding", "--owner-declaration-file=/etc/engine.json.descriptors/c.json", "--owner-declaration-pin=" + pin("c"), "--descriptor-snapshot=/etc/engine.json.descriptors/b.json", "--descriptor-pin=" + pin("b"), "--approved-operation=write", "--approved-platform=tickets", "--approved-binding=tickets@" + pin("a"), "--sandbox-enclosing", "--", "/opt/server/bin/tickets", "serve"},
 		env:                  []string{"HOME=/home/engine", "PATH=/usr/bin"},
 		user:                 "engine-tickets",
-		binding:              "tickets@sha256:" + strings.Repeat("a", 64),
+		binding:              "tickets@" + pin("a"),
+		tools:                []string{"write"},
 		endpoint:             "https://tickets.example",
 		sandbox:              &sourceSandbox{helper: "/opt/gateway-1/adapter-sandbox", policy: "/etc/a/policy.json", workspace: "/srv/work", source: "tickets/write"},
-		descriptorProvenance: &descriptorProvenance{snapshot: "sha256:" + strings.Repeat("d", 64), statement: "sha256:" + strings.Repeat("e", 64), binding: "tickets@sha256:" + strings.Repeat("a", 64)},
+		descriptorProvenance: &descriptorProvenance{snapshot: pin("d"), statement: pin("e"), binding: "tickets@" + pin("a")},
+		approval: &sourceApproval{
+			platformEndpoint: "https://tickets.example", command: []string{"/opt/server/bin/tickets", "serve"}, customer: true,
+			descriptorPin: pin("b"), ownerDeclarationPin: pin("c"), approvedOperation: "write", approvedPlatform: "tickets", approvedBinding: "tickets@" + pin("a"),
+			sandboxSource: "tickets/write",
+		},
 	}
 	recovery := &actionRecovery{declaration: newObject(), readBack: &actionReadBack{tool: "read"}}
-	fingerprint := func(write, live sourceSpec) string {
+	fingerprint := func(write, live sourceSpec) actionIdentity {
 		t.Helper()
 		got, err := actionFingerprint("tickets", "write", newObject(), newObject(), vArray{}, write, recovery, live)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if !isLowerHexOfLen(got.fingerprint, 64) || !isLowerHexOfLen(got.previous, 64) || got.fingerprint == got.previous {
+			t.Fatalf("identity %+v", got)
 		}
 		return got
 	}
@@ -127,9 +140,12 @@ func TestActionFingerprintBindsApprovedIdentityNotInstall(t *testing.T) {
 		c := base
 		boundary := *base.sandbox
 		c.sandbox = &boundary
+		approval := *base.approval
+		c.approval = &approval
 		edit(&c)
 		return c
 	}
+	// Neither version changes.
 	same := map[string]sourceSpec{
 		"adapter installed elsewhere": changed(func(s *sourceSpec) {
 			s.argv = replaceWord(s.argv, "/opt/gateway-1/adapter-mcp", "/opt/gateway-2/adapter-mcp")
@@ -137,7 +153,6 @@ func TestActionFingerprintBindsApprovedIdentityNotInstall(t *testing.T) {
 		"credentials path": changed(func(s *sourceSpec) {
 			s.argv = replaceWord(s.argv, "--credentials=", "--credentials=/var/lib/engine/tickets")
 		}),
-		"runtime path": changed(func(s *sourceSpec) { s.argv = replaceWord(s.argv, "--runtime=", "--runtime=/usr/local/bin/docker") }),
 		"workspace path": changed(func(s *sourceSpec) {
 			s.argv = replaceWord(s.argv, "--sandbox-workspace=", "--sandbox-workspace=/srv/other")
 			s.sandbox.workspace = "/srv/other"
@@ -163,37 +178,105 @@ func TestActionFingerprintBindsApprovedIdentityNotInstall(t *testing.T) {
 			t.Errorf("%s changed the action's identity", name)
 		}
 	}
+	// A later release's composition of the same approval: version 2 stays,
+	// version 1 moves (the reason for version 2).
+	release := map[string]sourceSpec{
+		"a derived flag added": changed(func(s *sourceSpec) {
+			s.argv = append(append(append([]string(nil), s.argv[:3]...), "--max-response=1048576"), s.argv[3:]...)
+		}),
+		"derived flags reordered": changed(func(s *sourceSpec) {
+			s.argv = append([]string(nil), s.argv...)
+			s.argv[2], s.argv[6] = s.argv[6], s.argv[2]
+		}),
+		"a derived flag renamed": changed(func(s *sourceSpec) { s.argv = replaceWord(s.argv, "--error-results", "--results-as-errors") }),
+		"a derived flag dropped": changed(func(s *sourceSpec) {
+			s.argv = slices.DeleteFunc(append([]string(nil), s.argv...), func(w string) bool { return w == "--sandbox-enclosing" })
+		}),
+	}
+	for name, spec := range release {
+		for _, got := range []actionIdentity{fingerprint(spec, base), fingerprint(base, spec)} {
+			if got.fingerprint != want.fingerprint {
+				t.Errorf("%s changed identity version 2", name)
+			}
+			if got.previous == want.previous {
+				t.Errorf("%s left identity version 1 as it was; the case shows nothing", name)
+			}
+		}
+	}
+	// What a retry means changes both versions.
 	differs := map[string]sourceSpec{
 		"sandbox presence": changed(func(s *sourceSpec) { s.sandbox = nil }),
 		"sandbox selector": changed(func(s *sourceSpec) { s.sandbox.source = "other/write" }),
 		"policy bytes":     changed(func(s *sourceSpec) { s.sandbox.policy = "/etc/c/policy.json" }),
-		"binding":          changed(func(s *sourceSpec) { s.binding = "tickets@sha256:" + strings.Repeat("f", 64) }),
+		"binding":          changed(func(s *sourceSpec) { s.binding = "tickets@" + pin("f") }),
 		"endpoint":         changed(func(s *sourceSpec) { s.endpoint = "https://other.example" }),
 		"transport":        changed(func(s *sourceSpec) { s.transport = "http" }),
-		"descriptor approval": changed(func(s *sourceSpec) {
-			s.argv = replaceWord(s.argv, "--descriptor-pin=", "--descriptor-pin=sha256:"+strings.Repeat("f", 64))
-		}),
-		"owner declaration": changed(func(s *sourceSpec) {
-			s.argv = replaceWord(s.argv, "--owner-declaration-pin=", "--owner-declaration-pin=sha256:"+strings.Repeat("f", 64))
-		}),
-		"platform endpoint":   changed(func(s *sourceSpec) { s.argv = replaceWord(s.argv, "--endpoint=", "--endpoint=https://other.example") }),
-		"server command line": changed(func(s *sourceSpec) { s.argv = replaceWord(s.argv, "serve", "serve-all") }),
 		"descriptor provenance": changed(func(s *sourceSpec) {
-			s.descriptorProvenance = &descriptorProvenance{snapshot: "sha256:" + strings.Repeat("f", 64), statement: s.descriptorProvenance.statement, binding: s.descriptorProvenance.binding}
+			s.descriptorProvenance = &descriptorProvenance{snapshot: pin("f"), statement: s.descriptorProvenance.statement, binding: s.descriptorProvenance.binding}
 		}),
 		"descriptor provenance gone": changed(func(s *sourceSpec) { s.descriptorProvenance = nil }),
 	}
 	for name, spec := range differs {
-		if fingerprint(spec, base) == want || fingerprint(base, spec) == want {
-			t.Errorf("%s did not change the write and read identities", name)
+		for _, got := range []actionIdentity{fingerprint(spec, base), fingerprint(base, spec)} {
+			if got.fingerprint == want.fingerprint || got.previous == want.previous {
+				t.Errorf("%s did not change both identities of the write and read sources", name)
+			}
 		}
 	}
-	// The read-back source is narrowed to its read tool whatever it lists;
-	// the write source's tool is its own.
-	if fingerprint(changed(func(s *sourceSpec) { s.argv = replaceWord(s.argv, "--tools=", "--tools=other") }), base) == want {
-		t.Error("the write tool did not change the action's identity")
+	// Each named approval field, in version 2.
+	approvals := map[string]func(*sourceApproval){
+		"descriptor approval":       func(a *sourceApproval) { a.descriptorPin = pin("f") },
+		"owner declaration":         func(a *sourceApproval) { a.ownerDeclarationPin = pin("f") },
+		"approved operation":        func(a *sourceApproval) { a.approvedOperation = "other" },
+		"approved platform":         func(a *sourceApproval) { a.approvedPlatform = "other" },
+		"approved binding":          func(a *sourceApproval) { a.approvedBinding = "tickets@" + pin("f") },
+		"platform endpoint":         func(a *sourceApproval) { a.platformEndpoint = "https://other.example" },
+		"server command line":       func(a *sourceApproval) { a.command = []string{"/opt/server/bin/tickets", "serve-all"} },
+		"server command word order": func(a *sourceApproval) { a.command = []string{"serve", "/opt/server/bin/tickets"} },
+		"server arguments":          func(a *sourceApproval) { a.serverArgs = []string{"--read-only"} },
+		"image":                     func(a *sourceApproval) { a.image = "registry.example/tickets@" + pin("f") },
+		"remote URL":                func(a *sourceApproval) { a.url = "https://other.example/mcp" },
+		"fixed headers":             func(a *sourceApproval) { a.headers = []string{"X-Mode=read"} },
+		"customer binding":          func(a *sourceApproval) { a.customer = false },
+		"sandbox source":            func(a *sourceApproval) { a.sandboxSource = "other/write" },
+		"approval absent":           nil,
 	}
-	if got, err := actionFingerprint("tickets", "write", newObject(), newObject(), vArray{}, changed(func(s *sourceSpec) { s.sandbox.policy = "/broken" }), recovery, base); err == nil || got != "" {
+	for name, edit := range approvals {
+		spec := changed(func(s *sourceSpec) {
+			if edit == nil {
+				s.approval = nil
+			} else {
+				edit(s.approval)
+			}
+		})
+		if fingerprint(spec, base).fingerprint == want.fingerprint || fingerprint(base, spec).fingerprint == want.fingerprint {
+			t.Errorf("%s did not change identity version 2", name)
+		}
+	}
+	// The same changes as version 1 read them, from the command line.
+	for name, argv := range map[string][]string{
+		"descriptor approval": replaceWord(base.argv, "--descriptor-pin=", "--descriptor-pin="+pin("f")),
+		"owner declaration":   replaceWord(base.argv, "--owner-declaration-pin=", "--owner-declaration-pin="+pin("f")),
+		"platform endpoint":   replaceWord(base.argv, "--endpoint=", "--endpoint=https://other.example"),
+		"server command line": replaceWord(base.argv, "serve", "serve-all"),
+	} {
+		spec := changed(func(s *sourceSpec) { s.argv = argv })
+		if fingerprint(spec, base).previous == want.previous || fingerprint(base, spec).previous == want.previous {
+			t.Errorf("%s did not change identity version 1", name)
+		}
+	}
+	// The write source's tool is its own; the read-back source is narrowed to
+	// its read tool whatever it lists.
+	if got := fingerprint(changed(func(s *sourceSpec) { s.tools = []string{"other"} }), base); got.fingerprint == want.fingerprint {
+		t.Error("the write tool did not change identity version 2")
+	}
+	if got := fingerprint(changed(func(s *sourceSpec) { s.argv = replaceWord(s.argv, "--tools=", "--tools=other") }), base); got.previous == want.previous {
+		t.Error("the write tool did not change identity version 1")
+	}
+	if got := fingerprint(base, changed(func(s *sourceSpec) { s.tools = []string{"other", "more"} })); got != want {
+		t.Error("the read-back source's listed tools changed the identity")
+	}
+	if got, err := actionFingerprint("tickets", "write", newObject(), newObject(), vArray{}, changed(func(s *sourceSpec) { s.sandbox.policy = "/broken" }), recovery, base); err == nil || got != (actionIdentity{}) {
 		t.Fatal("an unmeasurable sandbox policy identified the action")
 	}
 }

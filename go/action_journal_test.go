@@ -26,7 +26,7 @@ func TestActionJournalReservationSurvivesRestartAndConcurrency(t *testing.T) {
 				return
 			}
 			defer j.close()
-			c, err := j.reserve(key, fingerprint)
+			c, err := j.reserve(key, actionIdentity{fingerprint: fingerprint})
 			if err != nil {
 				return
 			} // A racing partial intent is conservative uncertainty.
@@ -45,7 +45,7 @@ func TestActionJournalReservationSurvivesRestartAndConcurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer j.close()
-	c, err := j.reserve(key, fingerprint)
+	c, err := j.reserve(key, actionIdentity{fingerprint: fingerprint})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestActionJournalReservationSurvivesRestartAndConcurrency(t *testing.T) {
 	if c.fresh {
 		t.Fatal("restart granted a second dispatch")
 	}
-	if _, err = j.reserve(key, strings.Repeat("3", 64)); err == nil || !strings.Contains(err.Error(), "action-key-conflict") {
+	if _, err = j.reserve(key, actionIdentity{fingerprint: strings.Repeat("3", 64)}); err == nil || !strings.Contains(err.Error(), "action-key-conflict") {
 		t.Fatal("changed payload reused the key", err)
 	}
 	if err = c.put("response.json", []byte(`{"result":"committed"}`), actionJournalResponseLimit); err != nil {
@@ -80,7 +80,7 @@ func TestActionJournalSyncFailureNeverGrantsDispatch(t *testing.T) {
 		syncActionFile = saved
 		t.Fatal(err)
 	}
-	claim, err := baseline.reserve(strings.Repeat("1", 64), strings.Repeat("2", 64))
+	claim, err := baseline.reserve(strings.Repeat("1", 64), actionIdentity{fingerprint: strings.Repeat("2", 64)})
 	baseline.close()
 	syncActionFile = saved
 	if err != nil {
@@ -103,7 +103,7 @@ func TestActionJournalSyncFailureNeverGrantsDispatch(t *testing.T) {
 			if err == nil {
 				defer j.close()
 				var c *actionClaim
-				c, err = j.reserve(strings.Repeat("1", 64), strings.Repeat("2", 64))
+				c, err = j.reserve(strings.Repeat("1", 64), actionIdentity{fingerprint: strings.Repeat("2", 64)})
 				if c != nil {
 					c.close()
 				}
@@ -135,7 +135,7 @@ func TestActionJournalPartialAndMalformedEntriesRefuse(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if c, err := j.reserve(key, fingerprint); err == nil {
+		if c, err := j.reserve(key, actionIdentity{fingerprint: fingerprint}); err == nil {
 			c.close()
 			t.Fatal("partial/corrupt reservation granted dispatch")
 		}
@@ -157,12 +157,12 @@ func TestActionJournalRejectsLinkedAndPublicEntries(t *testing.T) {
 	if err = os.Symlink("absent", filepath.Join(dir, "actions", key)); err != nil {
 		t.Fatal(err)
 	}
-	if c, err := j.reserve(key, fingerprint); err == nil {
+	if c, err := j.reserve(key, actionIdentity{fingerprint: fingerprint}); err == nil {
 		c.close()
 		t.Fatal("dangling link was treated as absence")
 	}
 	other := strings.Repeat("3", 64)
-	c, err := j.reserve(other, fingerprint)
+	c, err := j.reserve(other, actionIdentity{fingerprint: fingerprint})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestActionJournalDispatchMarkers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c, err := j.reserve(key, fingerprint)
+		c, err := j.reserve(key, actionIdentity{fingerprint: fingerprint})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -270,7 +270,7 @@ func TestActionJournalDispatchMarkers(t *testing.T) {
 				return
 			}
 			defer j.close()
-			c, err := j.reserve(key, fingerprint)
+			c, err := j.reserve(key, actionIdentity{fingerprint: fingerprint})
 			if err != nil {
 				t.Error(err)
 				return
@@ -320,7 +320,7 @@ func TestActionJournalDispatchMarkerSyncFailureNeverDispatches(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c, err := j.reserve(strings.Repeat("1", 64), strings.Repeat("2", 64))
+		c, err := j.reserve(strings.Repeat("1", 64), actionIdentity{fingerprint: strings.Repeat("2", 64)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -364,7 +364,7 @@ func TestActionJournalRefusesALegacyReservation(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, "actions", key, "intent.json"), []byte(`{"journalVersion":"1","fingerprint":"`+fingerprint+`"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = j.reserve(key, fingerprint); err == nil {
+	if _, err = j.reserve(key, actionIdentity{fingerprint: fingerprint}); err == nil {
 		t.Fatal("a version 1 reservation was accepted")
 	}
 }

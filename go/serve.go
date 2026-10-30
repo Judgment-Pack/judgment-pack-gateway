@@ -69,9 +69,13 @@ type sourceSpec struct {
 	// Descriptor provenance is selected by the operator's configuration. A
 	// source's own envelope cannot introduce or replace this reference.
 	descriptorProvenance *descriptorProvenance
-	argv                 []string
-	env                  []string
-	user                 string
+	// approval is what the configuration approved a write or live source to
+	// run, by named field (sourceApproval): what a keyed action's identity
+	// binds instead of the command line below; nil for other sources.
+	approval *sourceApproval
+	argv     []string
+	env      []string
+	user     string
 	// shape is the adapter shape declared with --source-shape (SPEC.md §1.2a);
 	// empty for a bare command, whose stdout is the result itself.
 	shape string

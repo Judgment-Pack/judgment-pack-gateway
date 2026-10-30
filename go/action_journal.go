@@ -35,6 +35,7 @@ type actionClaim struct {
 }
 type actionIntent struct {
 	Version     string `json:"journalVersion"`
+	Identity    string `json:"identityVersion"`
 	Fingerprint string `json:"fingerprint"`
 }
 
@@ -143,7 +144,13 @@ func openActionDirectory(parent *os.Root, name string) (*os.Root, error) {
 	return root, nil
 }
 
-func (j *actionJournal) reserve(namespace, fingerprint string) (*actionClaim, error) {
+// reserve holds the key's reservation to the request's identity. A new
+// reservation records identity version 2. A reservation that records no
+// identityVersion was made by v0.23.0 under identity version 1, and is held
+// to the request's version 1 identity: it is the same approved content if
+// that matches (#355). A version this release does not read refuses.
+func (j *actionJournal) reserve(namespace string, identity actionIdentity) (*actionClaim, error) {
+	fingerprint := identity.fingerprint
 	if !isLowerHexOfLen(namespace, 64) || !isLowerHexOfLen(fingerprint, 64) {
 		return nil, errors.New("action-key-invalid: invalid journal identity")
 	}
@@ -162,7 +169,7 @@ func (j *actionJournal) reserve(namespace, fingerprint string) (*actionClaim, er
 	claim := &actionClaim{root: root, fresh: fresh}
 	fail := func(err error) (*actionClaim, error) { root.Close(); return nil, err }
 	if fresh {
-		raw, _ := json.Marshal(actionIntent{Version: actionJournalVersion, Fingerprint: fingerprint})
+		raw, _ := json.Marshal(actionIntent{Version: actionJournalVersion, Identity: actionIdentityVersion, Fingerprint: fingerprint})
 		if err = claim.put("intent.json", raw, 1024); err != nil {
 			return fail(err)
 		}
@@ -180,7 +187,7 @@ func (j *actionJournal) reserve(namespace, fingerprint string) (*actionClaim, er
 	if err != nil {
 		return fail(err)
 	}
-	if err = exactlyMembers(object, map[string]bool{"journalVersion": true, "fingerprint": true}, "action intent"); err != nil {
+	if err = exactlyMembers(object, map[string]bool{"journalVersion": true, "identityVersion": false, "fingerprint": true}, "action intent"); err != nil {
 		return fail(err)
 	}
 	version, _ := memberString(object, "journalVersion")
@@ -188,7 +195,14 @@ func (j *actionJournal) reserve(namespace, fingerprint string) (*actionClaim, er
 	if version != actionJournalVersion || !isLowerHexOfLen(stored, 64) {
 		return fail(errors.New("action-journal-invalid: invalid intent"))
 	}
-	if stored != fingerprint {
+	want := identity.previous
+	if _, present := object.get("identityVersion"); present {
+		if recorded, _ := memberString(object, "identityVersion"); recorded != actionIdentityVersion {
+			return fail(errors.New("action-journal-invalid: the reservation records an identity version this release does not read"))
+		}
+		want = fingerprint
+	}
+	if stored != want {
 		return fail(errors.New("action-key-conflict: this key already identifies different approved content"))
 	}
 	return claim, nil

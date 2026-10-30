@@ -283,9 +283,19 @@ func ownerArguments(op operation) []string {
 	}
 	return args
 }
+
+// approvedPin is the descriptor approval pin of an operation with owner
+// declarations, or "" when it has none.
+func approvedPin(p platformConfig, op *operation) string {
+	if op.taxonomies == nil {
+		return ""
+	}
+	return p.operationDescriptors[op.name]
+}
+
 func approvedArguments(cfg engineConfig, p platformConfig, op *operation) []string {
-	pin := p.operationDescriptors[op.name]
-	if op.taxonomies == nil || pin == "" {
+	pin := approvedPin(p, op)
+	if pin == "" {
 		return nil
 	}
 	return []string{"--descriptor-snapshot=" + cfg.configPath + ".descriptors/" + strings.TrimPrefix(pin, "sha256:") + ".json", "--descriptor-pin=" + pin, "--approved-operation=" + op.name, "--approved-platform=" + p.name, "--approved-binding=" + p.binding}
@@ -333,16 +343,26 @@ func ownerFileDeclaration(p platformConfig, op *operation) ([]byte, error) {
 	}
 	return raw, nil
 }
-func ownerFileArguments(cfg engineConfig, p platformConfig, op *operation) []string {
+
+// ownerFilePin is the pin of an operation's owner declaration file, or ""
+// when it has no owner declarations.
+func ownerFilePin(p platformConfig, op *operation) string {
 	if op.taxonomies == nil {
-		return nil
+		return ""
 	}
 	raw, err := ownerFileDeclaration(p, op)
 	if err != nil {
-		return nil
+		return ""
 	}
 	sum := sha256.Sum256(raw)
-	pin := "sha256:" + hex.EncodeToString(sum[:])
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func ownerFileArguments(cfg engineConfig, p platformConfig, op *operation) []string {
+	pin := ownerFilePin(p, op)
+	if pin == "" {
+		return nil
+	}
 	return []string{"--owner-declaration-file=" + cfg.configPath + ".descriptors/" + strings.TrimPrefix(pin, "sha256:") + ".json", "--owner-declaration-pin=" + pin}
 }
 
