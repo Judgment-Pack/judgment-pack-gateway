@@ -18,16 +18,25 @@ renewed authentication token or fresh post-restart session cannot cause another
 dispatch. A retained fingerprint binds the approved identity: the platform, tool,
 canonical effective arguments, decision, citations, pinned binding, recovery
 declaration and decision policy, and for the write and read-back sources their
-binding, endpoint, transport, command line without install paths (keeping the
-descriptor and executable approval pins), signed descriptor provenance and the
-digest of the sandbox policy bytes the launch is bound to. Where the programs are
-installed (the adapter, the runtime client, the credentials file, the sandbox
-helper, policy and workspace paths, the configuration's copies of approvals), the
-platform's environment and the OS user are left out, so an upgrade into another
-directory or an added environment variable does not strand a key. Reusing a key for
-different content is an `action-key-conflict` refusal. A new key denotes a new
-action; callers must not invent one merely because an answer was lost, and must
-never send a conflicting key's write again under a new key.
+binding, endpoint, transport, tools, signed descriptor provenance, the digest of
+the sandbox policy bytes the launch is bound to, and the fields the configuration
+approves each source to run, read from the configuration by name: the pinned
+image, the remote URL and its fixed headers, or the customer command; the
+server's own arguments; the platform endpoint; the descriptor and
+owner-declaration approval pins with the operation, platform and binding they
+approve; and the sandbox selector. The adapter command line a release derives from
+those fields is not part of it, so a release that adds, renames or reorders a
+derived flag does not strand a key (#355). Where the programs are installed (the
+adapter, the runtime client, the credentials file, the sandbox helper, policy and
+workspace paths, the configuration's copies of approvals), the platform's
+environment and the OS user are left out too, so an upgrade into another
+directory or an added environment variable does not strand a key. A field a later
+release adds to the approval is bound only where it is set, so the identity of a
+source that does not set it stays as it was; a change to what an existing field
+means is a new identity version. Reusing a key for different content is an
+`action-key-conflict` refusal. A new key denotes a new action; callers must not
+invent one merely because an answer was lost, and must never send a conflicting
+key's write again under a new key.
 
 What does change the identity, and so strands a pending key with
 `action-key-conflict`: a new binding pin, a recaptured descriptor or executable
@@ -35,12 +44,32 @@ approval, another sandbox policy, moving an opted-in deployment from engine
 version 12 to 13 (which adds the sandbox), or another endpoint. Settle pending
 keys (each answered from the journal, or read back) before such a change.
 
+**Identity versions.** A reservation's `intent.json` records the identity version
+it was made under: `{"journalVersion":"2","identityVersion":"2","fingerprint":…}`.
+Version 1 is v0.23.0's, which recorded no `identityVersion` and bound the derived
+command line without install paths in place of the named fields. A reservation
+recorded under version 1 is held to the request's version 1 identity, computed
+beside version 2 as v0.23.0 computed it, so a key v0.23.0 reserved keeps
+answering: a replay, a read-back or a freed attempt, as before. Each version is
+compared only with its own computation, and the two are hashed under different
+domains. An identity version this release does not read (one a later release
+wrote, after a downgrade) refuses as `action-journal-invalid` and never grants
+dispatch.
+
 All existing requester, session, citation, record, descriptor and effect-policy
 checks still run. The gateway reserves the key durably before dispatch, after
 authorization. A journal failure refuses the write. A reservation is never removed
 to make a retry possible. A partial or corrupt reservation is uncertainty, not
 absence. Directory, file and final-name durability are required before a result
 is relied on; a platform unable to provide that guarantee refuses the keyed path.
+The action record (`action.json`) cites the receipt the request just stamped. The
+store links that receipt, its session and the retained result under a
+best-effort directory sync, so before the record is written the gateway syncs,
+strictly, the result's directory (`artifacts/`), the session's directory and
+`receipts/`; the store directory's own entries were synced when the journal was
+opened, and each file's bytes before it was linked (#352 L4). If that fails, the
+record is not written and the request fails; the dispatch marker then has no
+answer, so the next request under the key records uncertainty and reads back.
 
 Dispatch takes a second exclusive transition: the gateway creates
 `dispatch-<n>.json` in the reservation, synced, immediately before starting the
@@ -149,19 +178,111 @@ the original reservation retained. Unsupported read-back returns HTTP 409 with t
 No automatic mutation retry is introduced. Target idempotency is additional
 defense when supported, not a substitute for the gateway's durable reservation.
 
+## Operating the journal
+
+The journal is `actions/` in the store: one private directory per key, named by
+the key's namespace. The namespace is the lowercase hex SHA-256 of
+`judgment-pack-gateway/action-key/1:` followed by the canonical JSON (SPEC.md
+§1.1) of `{"authority", "issuer", "key", "subject"}`: the gateway authority, the
+caller's authenticated issuer and subject, and the action key. An entry holds:
+
+| File | Written | Bound |
+| --- | --- | --- |
+| `intent.json` | when the key is reserved | 1 KiB |
+| `dispatch-<n>.json` | immediately before the write program is started, attempt `n` | 1 KiB each, `n` ≤ 16 |
+| `not-dispatched-<n>.json` | when attempt `n`'s program was never started | 1 KiB each |
+| `action.json` | after the receipt is stamped: the response, its receipt and salts | 16 MiB |
+
+No file is ever rewritten. An entry is at most 16 MiB and 33 KiB, and in
+practice about the size of its response. The gateway sets no bound on the number
+of entries: there is one for every key every caller has used.
+
+**The journal and the dispatch history.** The history of what was dispatched is
+the store's: every action receipt, with its delivery key and outcome, and every
+read-back receipt. The journal entry is what refuses a second dispatch under a
+key, and `action.json` is the only server-side copy of the salts that open its
+receipt's commitments. Removing an entry therefore loses no receipt. It
+re-enables dispatch under that key, and it loses the replay of the response and
+the salts unless the entry is kept elsewhere.
+
+### Retention
+
+Keep an entry for as long as a client may retry under its key. The operator sets
+that retention period: at least the longest time any client keeps retrying one
+write (a workflow platform's retry window, an agent's run lease), and longer
+where an operator wants replays served. Within it, no entry is removed. Back up
+`actions/` with the store; a restored store without its journal re-enables
+dispatch for every key.
+
+### Compaction
+
+The gateway does not compact the journal itself. An operator compacts it
+offline, without losing dispatch history:
+
+1. Stop every gateway process that serves the store. The per-key lock holds one
+   process only, and the journal's exclusive creation does not guard against a
+   removal while a request is in flight.
+2. Back up the store with `actions/`.
+3. Classify each entry:
+   - **Never sent:** no `action.json`, and every `dispatch-<n>.json` has its
+     `not-dispatched-<n>.json` (including an entry with no marker, and a key
+     refused as `action-journal-exhausted`). It may be removed at any time: a retry
+     dispatches it, as it would have.
+   - **Answered:** `action.json` whose receipt's `action.delivery.outcome` is
+     `response`. It may be removed once its receipt's `servedAt` is older than the
+     retention period.
+   - **Uncertain:** `action.json` whose outcome is `uncertain`. It may be removed
+     once the retention period has passed and the target has been checked (a
+     read-back receipt reporting `committed`, or the operator's own check,
+     recorded as below).
+   - **Begun without a record:** a `dispatch-<n>.json` without a readable answer
+     and no `action.json`. Keep it: the next request under the key records
+     uncertainty and reads back, and the entry is then uncertain.
+   - **Does not read:** keep it, and follow the procedure for a damaged entry.
+4. Move each entry to be removed to an archive outside the store, whole, and
+   record one line per entry: the namespace, the receipt it cites, its outcome,
+   the reason, and the date. The archive keeps the salts and the evidence that
+   the key was used.
+5. Restart the gateway. A client that retries a removed key sends the write
+   again; the retention period is what makes that safe.
+
+### A damaged entry
+
+A key whose entry does not read (a missing or malformed `intent.json`, an
+`action.json` that is partial or does not verify against the store, an identity
+version this release does not read) is refused for good, as
+`action-journal-invalid`, and never grants dispatch. A partial or unreadable
+marker or answer is not refused: it counts as a dispatch that may have begun, and
+the key is answered as uncertain and read back. To resolve a refused key:
+
+1. **Find the entry** from the refused request's authority, issuer, subject and
+   key (the namespace above). Stop the gateway processes serving the store, and
+   copy the entry out whole before anything else.
+2. **Read what is there,** without editing it:
+   - an `identityVersion` this release does not read was written by a later
+     release: upgrade again rather than remove it;
+   - `action.json` present: the write was dispatched, or its uncertainty
+     recorded. Find the receipt it cites (`receipt.sessionId`,
+     `receipt.callIndex`) under `receipts/` and verify the store (`gateway
+     verify`). A receipt the store lost, or one that does not verify, means the
+     record cannot be served, not that nothing was sent;
+   - a `dispatch-<n>.json` without its `not-dispatched-<n>.json`: the write may
+     have been sent;
+   - only `intent.json` and answered markers: nothing was sent.
+3. **Check at the target** whether the write under that key took effect: the
+   declared read-back tool with the key, or the target's own records.
+4. **Decide:**
+   - it took effect, or it cannot be told: keep the entry. The key stays refused,
+     and the client treats the write as done or unknown. Never send that write
+     again under a new key;
+   - it provably did not take effect, and nothing under the key is in flight:
+     move the entry to the archive. The next request under the key dispatches it.
+5. **Record** the namespace, the files found and what each held, the receipts
+   involved, how the target was checked and what it showed, the decision, and who
+   made it and when. Keep the record with the archived entry.
+
 ## Known limits
 
-- **A damaged journal entry needs an operator.** A partial or unreadable intent,
-  marker or response refuses its key for good: it never grants dispatch. Before
-  removing such an entry, the operator checks at the target whether the write
-  happened and records what was found; removing it re-enables dispatch under that
-  key.
-- **The journal grows with every key.** Each key keeps a directory holding its
-  intent, markers and full retained response. There is no retention policy yet;
-  removing a settled entry loses the replay of its response.
-- **The receipt a journal entry cites is synced best-effort.** After a power loss
-  the journal can name a receipt the store lost; that key then refuses as
-  `action-journal-invalid` instead of replaying. Nothing is sent twice.
 - **The key is scoped to the authority and the authenticated issuer and subject.**
   A takeover that authenticates as another subject reaches another reservation,
   and so does every key after the configured issuer string or the authority
@@ -172,7 +293,11 @@ defense when supported, not a substitute for the gateway's durable reservation.
   answered as not dispatched, so nothing was sent: the client may send the write
   under a new key, or an operator may remove that key's entry once the cause is
   fixed.
-- **The identity keeps this release's derived command line.** The adapter command
-  line, less its install paths, is part of the identity, so a later release that
-  adds or reorders a derived flag turns pending keys into conflicts. Reconcile or
-  drain pending uncertain keys before upgrading.
+- **Version 1 reservations are recognized through this release's command line.**
+  A reservation v0.23.0 recorded is held to version 1 as computed from the adapter
+  command line this release derives, which is v0.23.0's. A later release that
+  changes a derived flag either keeps that computation or asks operators to
+  settle the keys v0.23.0 reserved before upgrading. Keys reserved under version
+  2 are not affected.
+- **The gateway does not compact the journal.** Compaction is the offline
+  procedure above; the gateway bounds each entry, not their number.
