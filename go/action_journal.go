@@ -35,6 +35,7 @@ type actionClaim struct {
 }
 type actionIntent struct {
 	Version     string `json:"journalVersion"`
+	Identity    string `json:"identityVersion"`
 	Fingerprint string `json:"fingerprint"`
 }
 
@@ -108,6 +109,37 @@ func syncActionAncestry(path string, held *os.Root) error {
 	}
 }
 
+// syncActionEvidence makes durable, strictly, the directory entries that the
+// receipt an action record is about to cite rests on: its result's blob in
+// artifacts/, the receipt in receipts/<session>/, and that session in
+// receipts/. The store links each with a best-effort directory sync, which is
+// not enough for a record that is synced strictly and refuses its key for
+// good when the receipt it cites is gone (#352 L4). The store directory's own
+// entries for artifacts/ and receipts/ were synced when the journal was opened
+// (openActionJournal), and each file's bytes before it was linked.
+func syncActionEvidence(storeRoot, sessionID string) error {
+	if err := requireSession(sessionID); err != nil {
+		return errors.New("action-journal-invalid: the receipt's session is not a session name")
+	}
+	store, err := os.OpenRoot(storeRoot)
+	if err != nil {
+		return errors.New("action-journal-unavailable: cannot hold the store to make the receipt durable")
+	}
+	defer store.Close()
+	for _, dir := range []string{"artifacts", "receipts/" + sessionID, "receipts"} {
+		held, err := store.OpenRoot(dir)
+		if err != nil {
+			return errors.New("action-journal-unavailable: cannot hold the receipt's directory to make it durable")
+		}
+		err = syncActionDirectory(held)
+		held.Close()
+		if err != nil {
+			return errors.New("action-journal-unavailable: the durability of the receipt the action record cites was not established")
+		}
+	}
+	return nil
+}
+
 func (j *actionJournal) close() { j.root.Close() }
 func (c *actionClaim) close()   { c.root.Close() }
 
@@ -143,7 +175,13 @@ func openActionDirectory(parent *os.Root, name string) (*os.Root, error) {
 	return root, nil
 }
 
-func (j *actionJournal) reserve(namespace, fingerprint string) (*actionClaim, error) {
+// reserve holds the key's reservation to the request's identity. A new
+// reservation records identity version 2. A reservation that records no
+// identityVersion was made by v0.23.0 under identity version 1, and is held
+// to the request's version 1 identity: it is the same approved content if
+// that matches (#355). A version this release does not read refuses.
+func (j *actionJournal) reserve(namespace string, identity actionIdentity) (*actionClaim, error) {
+	fingerprint := identity.fingerprint
 	if !isLowerHexOfLen(namespace, 64) || !isLowerHexOfLen(fingerprint, 64) {
 		return nil, errors.New("action-key-invalid: invalid journal identity")
 	}
@@ -162,7 +200,7 @@ func (j *actionJournal) reserve(namespace, fingerprint string) (*actionClaim, er
 	claim := &actionClaim{root: root, fresh: fresh}
 	fail := func(err error) (*actionClaim, error) { root.Close(); return nil, err }
 	if fresh {
-		raw, _ := json.Marshal(actionIntent{Version: actionJournalVersion, Fingerprint: fingerprint})
+		raw, _ := json.Marshal(actionIntent{Version: actionJournalVersion, Identity: actionIdentityVersion, Fingerprint: fingerprint})
 		if err = claim.put("intent.json", raw, 1024); err != nil {
 			return fail(err)
 		}
@@ -180,7 +218,7 @@ func (j *actionJournal) reserve(namespace, fingerprint string) (*actionClaim, er
 	if err != nil {
 		return fail(err)
 	}
-	if err = exactlyMembers(object, map[string]bool{"journalVersion": true, "fingerprint": true}, "action intent"); err != nil {
+	if err = exactlyMembers(object, map[string]bool{"journalVersion": true, "identityVersion": false, "fingerprint": true}, "action intent"); err != nil {
 		return fail(err)
 	}
 	version, _ := memberString(object, "journalVersion")
@@ -188,7 +226,14 @@ func (j *actionJournal) reserve(namespace, fingerprint string) (*actionClaim, er
 	if version != actionJournalVersion || !isLowerHexOfLen(stored, 64) {
 		return fail(errors.New("action-journal-invalid: invalid intent"))
 	}
-	if stored != fingerprint {
+	want := identity.previous
+	if _, present := object.get("identityVersion"); present {
+		if recorded, _ := memberString(object, "identityVersion"); recorded != actionIdentityVersion {
+			return fail(errors.New("action-journal-invalid: the reservation records an identity version this release does not read"))
+		}
+		want = fingerprint
+	}
+	if stored != want {
 		return fail(errors.New("action-key-conflict: this key already identifies different approved content"))
 	}
 	return claim, nil

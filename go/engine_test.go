@@ -158,6 +158,9 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 			argv: []string{filepath.Join(binDir, "adapter-mcp"), "--image=ghcr.io/example/mcp-postgres:2.1@" + testImageDigest,
 				"--credentials=" + p.credentials["live"], "--runtime=podman", "--tools=query,explain", "--endpoint=warehouse.internal:5432"},
 			env: env, user: "engine-warehouse", shape: "mcp", binding: ref, tools: []string{"query", "explain"},
+			// What the configuration approves it to run, by field (#355);
+			// DeepEqual compares the approval's contents.
+			approval: &sourceApproval{image: "ghcr.io/example/mcp-postgres:2.1@" + testImageDigest, platformEndpoint: "warehouse.internal:5432"},
 		},
 		// The write operation, since the platform allows writes: the
 		// executor is adapter-mcp on the binding's write server, with the
@@ -166,6 +169,7 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 			argv: []string{filepath.Join(binDir, "adapter-mcp"), "--image=ghcr.io/example/mcp-postgres:2.1@" + testImageDigest,
 				"--credentials=" + p.credentials["write"], "--runtime=podman", "--tools=execute,drop", "--error-results", "--endpoint=warehouse.internal:5432"},
 			env: env, user: "engine-warehouse", shape: "mcp", tools: []string{"execute", "drop"}, endpoint: "warehouse.internal:5432", binding: ref,
+			approval: &sourceApproval{image: "ghcr.io/example/mcp-postgres:2.1@" + testImageDigest, platformEndpoint: "warehouse.internal:5432"},
 		},
 	}
 	if !reflect.DeepEqual(sources, want) {

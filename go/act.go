@@ -434,6 +434,14 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		return nil, err
 	}
 	if claim != nil {
+		// The record cites the receipt just stamped, and the store made its
+		// entries durable only as far as it could: make them so first, or the
+		// record may outlive the receipt it cites (#352 L4). On failure the
+		// record is not written, and the dispatch marker keeps the key
+		// uncertain: a retry reads back and never sends again.
+		if err = syncActionEvidence(g.storeRoot, sessionID); err != nil {
+			return nil, err
+		}
 		raw, err := json.Marshal(out)
 		if err != nil {
 			return nil, err

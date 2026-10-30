@@ -1176,7 +1176,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if len(b.live.command) > 0 {
 				argv = append(append(argv, "--"), b.live.command...)
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", binding: p.binding, tools: b.live.tools, check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live")}
+			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", binding: p.binding, tools: b.live.tools, check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live"), approval: approvalOf(p, b.live)}
 		}
 		// The write operation, for a platform that allows writes: the
 		// executor is adapter-mcp on the binding's write server with the
@@ -1202,7 +1202,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.write.url != "" {
 				endpoint, transport = b.write.url, "http"
 			}
-			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write)}
 		}
 	}
 	if cfg.sandbox != nil {
@@ -1246,6 +1246,26 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 		}
 	}
 	return sources
+}
+
+// approvalOf is what the platform's configuration and pinned binding approve
+// an mcp operation to run, by named field: the fields mcpServerArgv,
+// ownerFileArguments and approvedArguments compose the command line from,
+// read here from the configuration itself, so that a keyed action's identity
+// does not depend on that composition (#355).
+func approvalOf(p platformConfig, op *operation) *sourceApproval {
+	a := &sourceApproval{image: op.image, url: op.url, headers: op.headers, serverArgs: op.args, command: op.command, customer: op.customer}
+	if op.url == "" {
+		a.platformEndpoint = p.endpoint
+	}
+	if len(op.command) > 0 {
+		a.sandboxSource = p.name + "/" + op.name
+	}
+	a.ownerDeclarationPin = ownerFilePin(p, op)
+	if pin := approvedPin(p, op); pin != "" {
+		a.descriptorPin, a.approvedOperation, a.approvedPlatform, a.approvedBinding = pin, op.name, p.name, p.binding
+	}
+	return a
 }
 
 // mcpServerArgv is adapter-mcp's command line for an mcp operation, up to

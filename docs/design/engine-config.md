@@ -1106,9 +1106,13 @@ launch does not use.
 Version 14 requires a caller-chosen `actionKey` on `/act`: 64 lowercase hex
 characters, retained and reused for the same approved intent across retries.
 Older configurations may opt in per request. A changed payload or approval under
-the same key is refused as `action-key-conflict`; install paths, the platform
-environment and the OS user are not part of the key's identity, so an upgrade
-into another directory does not strand it. Never send a conflicting key's write
+the same key is refused as `action-key-conflict`; install paths, the adapter
+command line a release derives, the platform environment and the OS user are not
+part of the key's identity, so an upgrade into another directory, or to a release
+that derives other adapter flags, does not strand a key reserved under identity
+version 2. A key v0.23.0 reserved keeps v0.23.0's identity, which binds the
+derived command line: under a release that derives other adapter flags it answers
+`action-key-conflict`, settled or not, and nothing is sent. Never send a conflicting key's write
 again under a new key. A write program that was never started answers
 `action-not-dispatched` and frees the key for the same request. The key does not replace authorization, decision policy or a
 lease fence. Clients must retain the key and approved content before submitting
@@ -1132,4 +1136,6 @@ The initial durable journal requires Unix file and directory synchronization;
 other hosts refuse keyed dispatch. A failed sync, partial record or corrupt
 cache refuses safely and never creates a fresh dispatch opportunity. Preserve
 `actions/` with the receipt store in operational backups. Attestation exports
-exclude this private journal and cannot serve as a dispatch-history backup.
+exclude this private journal and cannot serve as a dispatch-history backup. The
+journal's retention, its offline compaction and the procedure for a damaged entry
+are in [action reconciliation](action-reconciliation.md#operating-the-journal).

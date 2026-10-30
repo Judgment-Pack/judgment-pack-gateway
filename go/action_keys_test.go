@@ -56,6 +56,13 @@ func TestActionKeysTarget(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 		}
+		// A directory the write leaves unreadable to its owner, as a store
+		// can be left (#358 MEDIUM-2).
+		if dir := os.Getenv("ACTION_KEYS_UNREADABLE"); dir != "" {
+			if err := os.Chmod(dir, 0o300); err != nil {
+				os.Exit(9)
+			}
+		}
 		f, err := os.OpenFile(state, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if err != nil {
 			os.Exit(5)
