@@ -71,6 +71,9 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	if !contains(spec.tools, tool) {
 		return nil, actRefusal{"tool", fmt.Sprintf("tool %q is not one the platform's write binding names", requestText(tool))}
 	}
+	if err := publisherRefusal(spec.publishers, platform, spec.binding); err != nil {
+		return nil, actRefusal{"platform", err.Error()}
+	}
 	// The executor is started for this tool alone (executor.md): a binding
 	// naming several write tools offers each request one of them.
 	spec = narrowTools(spec, tool)

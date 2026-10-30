@@ -23,8 +23,8 @@ These have no record in this release:
 - an object store's access keys;
 - a search service's or a processing service's API key.
 
-The gateway has no GitHub connection. A customer MCP server's publisher is a separate record (the
-publisher-trust change).
+The gateway has no GitHub connection. A customer MCP server's publisher has its own record, kept by
+the core beside the engine configuration ([below](#publisher-trust-for-customer-mcp)).
 
 ## The record
 
@@ -155,7 +155,8 @@ provider's custody for the principal, is then revoked or quarantined:
 - without either, the grant is revoked (open question 13).
 
 A quarantined grant keeps its credential, admits no call, and is refused as `grant-quarantined`
-before its credential is read. Its state is read again once a Google token is renewed or a Databricks
+before its credential is read. Its state is read again once a token is held after a renewal (a Google
+renewal of this call's, another process's renewal taken in its place, or Notion's) or a Databricks
 token is held, immediately before the call is sent. The gate holds the ledger to custody before it
 reads a grant's state, so a connection made again under its id after its grant was revoked is a
 new grant there, as in the report. It leaves quarantine only when the operator revokes it.
@@ -214,6 +215,133 @@ A finding's sentence names no path, no account and no token, as `/posture`'s pub
 not (#350). The report's members are the owner reference and scope names, and never a provider
 account.
 
+## Publisher trust for customer MCP
+
+A customer binding (`"customer": true`, #348) may declare its server's publisher with a binding
+member:
+
+```json
+"publisher": {"kind": "registry", "name": "npm:@acme/tickets-mcp"}
+"publisher": {"kind": "repository", "name": "github.com/acme/tickets-mcp"}
+"publisher": {"kind": "domain", "name": "acme.example"}
+```
+
+The member is refused on a binding that is not a customer's.
+
+**A domain publisher is a registrable domain:** the name a registrant holds at its registry, such
+as `acme.example` or `acme.co.uk`, never a host under it. The core reads no public-suffix list, so
+the rule at parse is this:
+
+- the name has exactly two labels, or exactly three under a two-label public suffix of a fixed,
+  partial list (`co.uk`, `nhs.uk`, `com.au`, `co.jp`, `com.es`, `on.ca` and so on);
+- a host under a domain of that list's suffixes is refused, and the message names the domain to
+  declare (`tickets.acme.co.uk` → declare `acme.co.uk`);
+- any other name of three labels or more is refused without naming a domain: the gateway cannot
+  tell a host under a registrable domain (`tickets.acme.example`) from a registrable domain under a
+  public suffix it does not list (`acme.com.zz`), and the name it would suggest could be another's
+  domain or a suffix; such a server declares its repository or package, or no publisher;
+- a listed public suffix itself (`co.uk`, `nhs.uk`) is refused. The list is partial: a public
+  suffix it does not name, declared as a two-label domain, parses, and is read as that suffix's
+  registry object, which says nothing of a publisher. Such a declaration is meaningless, and
+  is the operator's to avoid;
+- a shared platform's domain, under which anyone may be given a host (`vercel.app`, `netlify.app`,
+  `github.io`, `pages.dev`, `herokuapp.com`, `azurewebsites.net` and others), is refused, and so
+  is any host on one.
+
+Such a server declares its repository or its package as its publisher instead. The binding digest covers it, as it
+covers every member.
+
+**Liveness.** The gateway reads it from public sources:
+
+| Kind | Source | Unmaintained when (evidence of a lapse) | Unverifiable when | Maintained when |
+| --- | --- | --- | --- | --- |
+| `registry` | the npm registry | the package's latest version is deprecated (a message, or `true`) | the registry shows no public package of that name (private, or never published) | the latest version is listed and not deprecated |
+| `repository` | GitHub's repository API | the repository is archived or disabled | no public repository of that name answers (private, or not there) | it is neither |
+| `domain` | the registry's own RDAP service, as the IANA RDAP bootstrap names it for the top-level domain | the registry answers that the domain is not registered (it lapsed and was deleted, or was never registered), the registration has expired (equal is expired), or the domain is in its redemption period or pending deletion | the bootstrap names no RDAP service for the top-level domain | the registration is current |
+
+The 404 cases are these, exactly:
+
+- **npm and GitHub:** a 404 is `unverifiable`. An unauthenticated read cannot tell a private
+  package or repository from one unpublished or deleted.
+- **RDAP:** a 404 from the registry's own service for the registrable domain declared is
+  `unmaintained`, with the reason "the registry's RDAP service answers that the domain is not
+  registered". That is the window in which another can register the name.
+- **No service:** a top-level domain absent from the bootstrap (for example `.io`) is
+  `unverifiable`. A bootstrap that cannot be read, is empty, or lists the top-level domain with no
+  HTTPS service, is inconclusive (`unknown`).
+- **Never the name above:** the gateway asks for the declared name alone. It never reads the
+  object of a name above it, such as a public suffix's own object.
+
+Any other answer leaves the state `unknown`.
+
+**An inconclusive reading never lifts a conclusive one.** `maintained` and `unmaintained` are
+conclusive; `unknown` (a read that failed, timed out, was refused or rate-limited, or answered
+what cannot be read) and `unverifiable` are not. When a re-check or a recapture reads a publisher
+inconclusively, and its record holds a conclusive reading of the same declared publisher:
+
+- the record keeps that state and its time;
+- the failed read is recorded beside it (`lastAttempt`, `attemptState` and `attemptReason`) and
+  reported as `publisher-read-inconclusive`;
+- `gateway publishers --check` warns on stderr and exits 3, after writing the record.
+
+So under `refuse`, an unmaintained publisher stays refused until a conclusive `maintained`
+reading, and a recapture whose reading fails is refused as before. A platform with no conclusive
+reading yet takes the inconclusive state, and is not refused. A customer binding that declares no publisher is
+`undeclared`. The reads disclose to those public services which servers an operator uses, so their
+schedule is the operator's.
+
+**Where it is read and kept.** The read happens at registration: `gateway connect` for a customer
+binding, `--replace` (a recapture) included. It happens before any adapter is run, and its lines
+are shown with the approval. It happens again on the operator's schedule, with
+`gateway publishers --config <engine.json> --check`. What was read goes in
+`<engine.json>.publishers.json`, by platform: the binding reference it was read for, the
+publisher, its state, when it was checked, and a fixed reason. The reason names no path, no
+account and no token.
+
+Every read-modify-write of the record is made under the configuration's own lock
+(`<engine.json>.lock`, the one `connect` holds). `connect` writes the record under its lock once
+the configuration is in place. `gateway publishers --check` makes its liveness reads without the
+lock, then merges what it read into the record as it stands under the lock. A policy set
+meanwhile is kept. So is a platform's record written meanwhile, by a `connect` or a recapture: a
+record whose binding or reading time differs from the one the re-check started from is left as
+written, and is read again at the next re-check. A `gateway publishers` that finds a `connect` holding the lock
+waits up to ten seconds, then refuses. The record is given the configuration's own mode and
+owner, as a replaced configuration is: a root `connect` or a root-run `gateway publishers` over a
+configuration the signer owns leaves a record the signer can read.
+
+**Policy.** `gateway publishers --config <engine.json> --policy report|refuse` sets the operator's
+policy; `report` is the default (open question 15). An unmaintained publisher is always reported
+as `publisher-unmaintained`, and an unverifiable one as `publisher-unverifiable`. Under `refuse`,
+a record of the platform's own binding that says `unmaintained` (evidence of a lapse, never a
+404) also refuses three things:
+
+- its registration;
+- each acquisition, before the source starts;
+- each action, before an executor runs.
+
+A record that cannot be read refuses as `publisher-record-unreadable`; the reason answered to
+`/acquire` and `/act` names no path. An `unverifiable`, `unknown` or `undeclared` publisher is not
+refused, under either policy.
+
+**Name lookalike.** A registration is flagged `name-lookalike` when its platform name, or its
+binding's platform name, closely matches one of the integrations the gateway ships while its
+declared publisher is not that integration's. The integrations are `azure-devops`, `databricks`,
+`postgres`, `google-drive`, `gmail`, `notion`, `obsidian` and `aws-s3`. Names are compared after
+folding case, punctuation and look-alike characters: fullwidth letters to their
+ASCII forms, Cyrillic and Greek letters drawn like a Latin letter to that letter (capitals and
+small letters, from a fixed table), Latin letters with a diacritic to their base letter (the
+Latin-1 Supplement and Latin Extended-A, and a decomposed spelling, whose combining mark is
+dropped), the mathematical alphanumeric symbols, small capitals and a few Armenian letters
+(`օ`, `ս`, `հ`, `ո`, `ց`), and `0`→`o`, `1`→`l`, `3`→`e`, `5`→`s`, `rn`→`m`, `vv`→`w`. The core
+has no Unicode normalization or confusables data, so letters outside these tables are known
+misses. A close match is any of these, after that folding:
+
+- the name equals the integration's;
+- the name is one edit away from it (two edits for a name of ten characters or more);
+- the name contains it.
+
+The flag is shown with the approval and recorded. It is a report, never a refusal.
+
 ## Departures from RFC 0030 §5
 
 - **More members.** The record adds `provider`, `createdAt`, `excess`, `wider` and `revocation`, and keeps
@@ -236,6 +364,24 @@ account.
   are the operator's configuration, held in custody.
 - **Not built.** Delegated calls and the admission read carrying the owner (spec #284 NC2) belong
   to #356. Reassignment out of quarantine, and acceptance, are not built.
+- **Where the publisher record lives.** It is kept beside the engine configuration and not in the
+  connection grant record. A customer MCP server is registered by the core (`gateway connect`), not
+  by a connection custody. A customer binding without a declared publisher is `undeclared`. The
+  RFC has `null` for "otherwise".
+- **Publisher sources.** Liveness is read from npm, GitHub and RDAP only. The `registry` and
+  `repository` kinds accept only those, and another registry or forge is refused at parse.
+- **No policy refuses a lookalike.** The RFC lets an operator policy make `name-lookalike` a
+  refusal. This release reports it only; no policy refuses it.
+- **Unverifiable is its own state.** The RFC's states are `maintained`, `unmaintained` and
+  `unknown`. A package or repository the public source does not show (a 404), and a top-level
+  domain with no RDAP service, are `unverifiable`: reported, never refused. A registry's own 404
+  for a declared domain is `unmaintained`.
+- **A domain publisher is a registrable domain, by a partial list.** Without a public-suffix
+  list, a domain under a two-label public suffix the gateway does not list cannot be declared as a
+  domain publisher. Hosts, including hosts on shared platforms, cannot be declared at all; such a
+  server declares its repository or package.
+- **Name lookalike against the gateway's own integrations.** The known integrations are the ones
+  the gateway ships, a fixed list. The operator cannot extend it in this release.
 - **Owner removal at use.** An owner read that answers `removed` changes the grants in the custody
   being used. The owner's grants in other providers' custody are refused at their own next use of
   any kind, by their own owner read, and changed then, by a `sweep`, or by `remove-owner`.

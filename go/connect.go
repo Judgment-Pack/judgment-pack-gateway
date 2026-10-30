@@ -46,6 +46,10 @@ type connectRequest struct {
 	// nothing written (--preview-descriptors).
 	preview          string
 	previewOperation string
+	// afterWrite is run once the configuration is in place, under the
+	// lock connect holds (the publisher record, publisher.go); nil for
+	// none. Its error is connect's, the configuration written.
+	afterWrite func(*configFile) error
 }
 
 // connectOutcome is what connect has to say: the statements the
@@ -105,7 +109,7 @@ func cmdConnect(args []string) int {
 	closeInheritedDescriptors()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	outcome, err := connect(ctx, req, osEngineHost(), runCheck)
+	outcome, err := connectPublisher(ctx, req, osEngineHost(), runCheck, defaultPublisherChecker())
 	return printOutcome(os.Stdout, os.Stderr, req.platform, outcome, err)
 }
 
@@ -511,6 +515,11 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		return out, err
 	}
 	out.written = req.config
+	if req.afterWrite != nil {
+		if err := req.afterWrite(file); err != nil {
+			return out, err
+		}
+	}
 	if previous != nil {
 		written.descriptors = pin
 		out.after = restartLines(*previous, written)

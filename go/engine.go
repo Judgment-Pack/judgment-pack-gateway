@@ -161,7 +161,10 @@ type identitySpec struct {
 // binding is a catalog entry: which pinned artifact serves which operation
 // of a platform, with the licence of each stated.
 type binding struct {
-	customer       bool
+	customer bool
+	// publisher is who publishes a customer server, as its binding declares
+	// (publisher.go); nil where it declares none.
+	publisher      *publisherDecl
 	version        string
 	actionRecovery map[string]*actionRecovery
 
@@ -813,7 +816,7 @@ func loadBinding(catalog, ref string) (binding, error) {
 	return b, nil
 }
 
-var bindingMembers = map[string]bool{"bindingVersion": true, "platform": true, "operations": true, "customer": false, "actionRecovery": false}
+var bindingMembers = map[string]bool{"bindingVersion": true, "platform": true, "operations": true, "customer": false, "actionRecovery": false, "publisher": false}
 
 // parseBinding holds a catalog entry to its shape: one entry per operation,
 // each naming its shape, a digest-pinned artifact, and its licence.
@@ -840,6 +843,14 @@ func parseBinding(data []byte) (binding, error) {
 			return binding{}, errors.New("customer must be true on a bindingVersion 2 binding")
 		}
 		b.customer = true
+	}
+	if raw, present := obj.get("publisher"); present {
+		if !b.customer {
+			return binding{}, errors.New("publisher is declared only on a customer binding")
+		}
+		if b.publisher, err = parsePublisher(raw); err != nil {
+			return binding{}, err
+		}
 	}
 	if b.platform, err = requireString(obj, "platform"); err != nil || b.platform == "" {
 		return binding{}, errors.New("platform must be a non-empty string")
@@ -1132,6 +1143,16 @@ func isPinnedImage(ref string) bool {
 	return ok && imageReference.MatchString(name) && isDigest(digest)
 }
 
+// customerPublishers is the publisher record a customer binding's sources
+// are held to (publisher.go): the file beside the configuration it was
+// loaded from; none for another binding, or a configuration with no path.
+func customerPublishers(cfg engineConfig, b binding) string {
+	if !b.customer || cfg.configPath == "" {
+		return ""
+	}
+	return publishersPath(cfg.configPath)
+}
+
 // deriveSources turns platforms and their bindings into the sources `serve`
 // runs: `<platform>/history` through adapter-airbyte, `<platform>/live`
 // through adapter-mcp, each with the adapter's command line, the platform's
@@ -1176,7 +1197,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if len(b.live.command) > 0 {
 				argv = append(append(argv, "--"), b.live.command...)
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", binding: p.binding, tools: b.live.tools, check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live"), approval: approvalOf(p, b.live)}
+			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", binding: p.binding, tools: b.live.tools, check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live"), approval: approvalOf(p, b.live), publishers: customerPublishers(cfg, b)}
 		}
 		// The write operation, for a platform that allows writes: the
 		// executor is adapter-mcp on the binding's write server with the
@@ -1202,7 +1223,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.write.url != "" {
 				endpoint, transport = b.write.url, "http"
 			}
-			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write)}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b)}
 		}
 	}
 	if cfg.sandbox != nil {

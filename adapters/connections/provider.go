@@ -154,7 +154,11 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 		return "", err
 	}
 	if p.notion {
-		return p.notionAccess(ctx, s, client, c, epoch)
+		token, err := p.notionAccess(ctx, s, client, c, epoch)
+		if err != nil {
+			return "", err
+		}
+		return p.regate(s, c, token)
 	}
 	// A renewal need not say what scope its token is of, so what a Drive
 	// connection may do is held to the record of its consent, and not to
@@ -211,7 +215,7 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 		}) != nil {
 			return "", ErrRevoked
 		}
-		return access, nil
+		return p.regate(s, c, access)
 	}
 	var access string
 	err = s.locked(func(v *state) error {
@@ -256,13 +260,18 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 	if err != nil {
 		return "", err
 	}
-	// The grant's state is read again once the token is renewed,
-	// immediately before it is used: a quarantine made while the renewal
-	// was under way refuses this call too.
+	return p.regate(s, c, access)
+}
+
+// regate reads the grant's state again once a token is held after a
+// renewal -- this call's, another process's, or Notion's -- immediately
+// before it is used: a quarantine made while the renewal was under way
+// refuses this call too.
+func (p provider) regate(s *Store, c credential, token string) (string, error) {
 	if err := s.locked(func(v *state) error { return s.grantGate(p.kind(), v, p.kind(), c.ID) }); err != nil {
 		return "", err
 	}
-	return access, nil
+	return token, nil
 }
 func (p provider) scope() string {
 	if p.notion {
