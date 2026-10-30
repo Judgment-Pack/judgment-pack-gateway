@@ -23,8 +23,8 @@ These have no record in this release:
 - an object store's access keys;
 - a search service's or a processing service's API key.
 
-The gateway has no GitHub connection. A customer MCP server's publisher is a separate record (the
-publisher-trust change).
+The gateway has no GitHub connection. A customer MCP server's publisher has its own record, kept by
+the core beside the engine configuration ([below](#publisher-trust-for-customer-mcp)).
 
 ## The record
 
@@ -192,6 +192,65 @@ A finding's sentence names no path, no account and no token, as `/posture`'s pub
 not (#350). The report's members are the owner reference and scope names, and never a provider
 account.
 
+## Publisher trust for customer MCP
+
+A customer binding (`"customer": true`, #348) may declare its server's publisher with a binding
+member:
+
+```json
+"publisher": {"kind": "registry", "name": "npm:@acme/tickets-mcp"}
+"publisher": {"kind": "repository", "name": "github.com/acme/tickets-mcp"}
+"publisher": {"kind": "domain", "name": "tickets.acme.example"}
+```
+
+The member is refused on a binding that is not a customer's. The binding digest covers it, as it
+covers every member.
+
+**Liveness.** The gateway reads it from public sources:
+
+| Kind | Source | Unmaintained when | Maintained when |
+| --- | --- | --- | --- |
+| `registry` | the npm registry | the package's latest version is deprecated, or the package is not in the registry | the latest version is listed and not deprecated |
+| `repository` | GitHub's repository API | the repository is archived or disabled, or not found | it is neither |
+| `domain` | RDAP | the registration has expired (equal is expired), the domain is in its redemption period or pending deletion, or it is not registered | the registration is current |
+
+Any other answer leaves the state `unknown`. A customer binding that declares no publisher is
+`undeclared`. The reads disclose to those public services which servers an operator uses, so their
+schedule is the operator's.
+
+**Where it is read and kept.** The read happens at registration: `gateway connect` for a customer
+binding, `--replace` (a recapture) included. It happens before any adapter is run, and its lines
+are shown with the approval. It happens again on the operator's schedule, with
+`gateway publishers --config <engine.json> --check`. What was read goes in
+`<engine.json>.publishers.json` (mode 0600), by platform: the binding reference it was read for,
+the publisher, its state, when it was checked, and a fixed reason. The reason names no path, no
+account and no token.
+
+**Policy.** `gateway publishers --config <engine.json> --policy report|refuse` sets the operator's
+policy; `report` is the default (open question 15). An unmaintained publisher is always reported
+as `publisher-unmaintained`. Under `refuse`, a record of the platform's own binding that says
+`unmaintained` also refuses three things:
+
+- its registration;
+- each acquisition, before the source starts;
+- each action, before an executor runs.
+
+A record that cannot be read refuses as `publisher-record-unreadable`. An `unknown` or
+`undeclared` publisher is not refused.
+
+**Name lookalike.** A registration is flagged `name-lookalike` when its platform name, or its
+binding's platform name, closely matches one of the integrations the gateway ships while its
+declared publisher is not that integration's. The integrations are `azure-devops`, `databricks`,
+`postgres`, `google-drive`, `gmail`, `notion`, `obsidian` and `aws-s3`. A close match is any of
+these, after folding case, punctuation and common look-alike characters (`0`→`o`, `1`→`l`, `3`→`e`,
+`5`→`s`, `rn`→`m`, `vv`→`w`):
+
+- the name equals the integration's;
+- the name is one edit away from it (two edits for a name of ten characters or more);
+- the name contains it.
+
+The flag is shown with the approval and recorded. It is a report, never a refusal.
+
 ## Departures from RFC 0030 §5
 
 - **More members.** The record adds `provider`, `createdAt`, `excess` and `revocation`, and keeps
@@ -213,6 +272,14 @@ account.
   are the operator's configuration, held in custody.
 - **Not built.** Delegated calls and the admission read carrying the owner (spec #284 NC2) belong
   to #356. Reassignment out of quarantine, and acceptance, are not built.
+- **Where the publisher record lives.** It is kept beside the engine configuration and not in the
+  connection grant record. A customer MCP server is registered by the core (`gateway connect`), not
+  by a connection custody. A customer binding without a declared publisher is `undeclared`. The
+  RFC has `null` for "otherwise".
+- **Publisher sources.** Liveness is read from npm, GitHub and RDAP only. The `registry` and
+  `repository` kinds accept only those, and another registry or forge is refused at parse.
+- **Name lookalike against the gateway's own integrations.** The known integrations are the ones
+  the gateway ships, a fixed list. The operator cannot extend it in this release.
 - **Owner removal at use.** An owner read that answers `removed` changes the grants in the custody
   being used. The owner's grants in other providers' custody are caught at their own next use, by
   a `sweep`, or by `remove-owner`.

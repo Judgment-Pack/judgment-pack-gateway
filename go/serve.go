@@ -73,9 +73,13 @@ type sourceSpec struct {
 	// run, by named field (sourceApproval): what a keyed action's identity
 	// binds instead of the command line below; nil for other sources.
 	approval *sourceApproval
-	argv     []string
-	env      []string
-	user     string
+	// publishers is the publisher record a customer platform's calls are
+	// held to under the operator's publisher policy (publisher.go); "" for
+	// every other source.
+	publishers string
+	argv       []string
+	env        []string
+	user       string
 	// shape is the adapter shape declared with --source-shape (SPEC.md §1.2a);
 	// empty for a bare command, whose stdout is the result itself.
 	shape string
@@ -767,6 +771,11 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 	}
 	if spec.shape != "" && g.receiptVersion != receiptVersion3 {
 		return nil, fmt.Errorf("source %s is an adapter and needs receipt version 3", source)
+	}
+	if platform, _, _ := strings.Cut(source, "/"); spec.publishers != "" {
+		if err := publisherRefusal(spec.publishers, platform, spec.binding); err != nil {
+			return nil, err
+		}
 	}
 	if p := spec.descriptorProvenance; p != nil {
 		// Re-read before every source execution, including after a restart.

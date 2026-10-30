@@ -105,7 +105,7 @@ func cmdConnect(args []string) int {
 	closeInheritedDescriptors()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	outcome, err := connect(ctx, req, osEngineHost(), runCheck)
+	outcome, err := connectPublisher(ctx, req, osEngineHost(), runCheck, defaultPublisherChecker())
 	return printOutcome(os.Stdout, os.Stderr, req.platform, outcome, err)
 }
 

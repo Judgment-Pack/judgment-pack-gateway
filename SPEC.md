@@ -2126,3 +2126,10 @@ no credential, no token, no token digest, no provider account and no content.
    reports `provider-grant-may-persist`.
 7. Revoking or quarantining a grant deletes no record of a pending action. An action that the
    revoked grant would have read back stays `unknown`.
+8. A customer MCP binding may declare its publisher: `{"kind": "registry" | "repository" |
+   "domain", "name"}`. Its liveness is read at registration and on the operator's schedule, and
+   kept beside the engine configuration: `maintained`, `unmaintained`, `unknown` or `undeclared`,
+   with the time it was checked. An unmaintained publisher is reported as
+   `publisher-unmaintained`. Under the operator's `refuse` policy, it refuses the registration
+   and each acquisition and action of that binding. A registration whose name closely matches an
+   integration the gateway ships, under another publisher, is flagged `name-lookalike`.

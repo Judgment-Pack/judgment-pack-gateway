@@ -992,6 +992,15 @@ approval path; subsequent acquisition refuses a version downgrade or descriptor
 drift before `tools/call`. A customer binding is not an exemption from per-platform
 OS users, credential separation, write approval or source shape `mcp`.
 
+A customer binding may also declare its server's publisher, `"publisher": {"kind": "registry" |
+"repository" | "domain", "name": ...}`, which is refused on a binding that is not a customer's.
+`connect` reads its liveness before it runs anything and shows it with the approval. It also flags
+a name that closely matches an integration the gateway ships under another publisher
+(`name-lookalike`). What it read is kept in `<engine.json>.publishers.json`, which
+`gateway publishers --check` reads again on the operator's schedule. Under
+`gateway publishers --policy refuse`, an unmaintained publisher refuses the registration and each
+acquisition and action. See [connection grants](connection-grants.md#publisher-trust-for-customer-mcp).
+
 Local commands use `workspace-write` by default. The optional policy file has
 `policyVersion: "1"`, a `defaultMode`, and a `sources` object whose exact
 `platform/operation` keys override that default. Supported mode names are
