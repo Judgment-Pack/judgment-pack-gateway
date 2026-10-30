@@ -253,7 +253,16 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 		access = current.Access
 		return nil
 	})
-	return access, err
+	if err != nil {
+		return "", err
+	}
+	// The grant's state is read again once the token is renewed,
+	// immediately before it is used: a quarantine made while the renewal
+	// was under way refuses this call too.
+	if err := s.locked(func(v *state) error { return s.grantGate(p.kind(), v, p.kind(), c.ID) }); err != nil {
+		return "", err
+	}
+	return access, nil
 }
 func (p provider) scope() string {
 	if p.notion {

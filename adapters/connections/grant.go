@@ -495,13 +495,21 @@ func retire(r *grantRecord, reason string, now time.Time) {
 // grantGate is the check the credential's every use passes under the
 // custody lock: a quarantined grant admits no call, and a revoked one none.
 // A connection made again since its grant was revoked is a new grant.
-func (s *Store) grantGate(kind, connection, generation string) error {
+func (s *Store) grantGate(kind string, v *state, connection, generation string) error {
 	if !grantProvider(kind) {
 		return nil
 	}
 	l, err := s.grants()
 	if err != nil {
 		return err
+	}
+	// The ledger is held to custody first, and saved where that changes it:
+	// a connection made again under its id after its grant was revoked is a
+	// new grant here as in the report, not the revoked one.
+	if reconcileGrants(kind, s, v, &l, grantClock()) {
+		if err := s.saveGrants(l); err != nil {
+			return err
+		}
 	}
 	i := l.find(connection)
 	if i < 0 || l.Grants[i].Generation != generation {
@@ -539,7 +547,7 @@ func (s *Store) grantCredential(ctx context.Context, p provider, connection, gen
 		return nil
 	}
 	if c, ok := ctx.Value(grantCheckedKey{}).(grantChecked); ok && c.kind == kind && c.generation == generation {
-		return s.locked(func(*state) error { return s.grantGate(kind, connection, generation) })
+		return s.locked(func(v *state) error { return s.grantGate(kind, v, connection, generation) })
 	}
 	_, err := s.grantPass(ctx, p, connection, generation, "", false)
 	return err

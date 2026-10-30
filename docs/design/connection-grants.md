@@ -155,7 +155,10 @@ provider's custody for the principal, is then revoked or quarantined:
 - without either, the grant is revoked (open question 13).
 
 A quarantined grant keeps its credential, admits no call, and is refused as `grant-quarantined`
-before its credential is read. It leaves quarantine only when the operator revokes it.
+before its credential is read. Its state is read again once a Google token is renewed or a Databricks
+token is held, immediately before the call is sent. The gate holds the ledger to custody before it
+reads a grant's state, so a connection made again under its id after its grant was revoked is a
+new grant there, as in the report. It leaves quarantine only when the operator revokes it.
 
 **Idle expiry.** `set-idle-expiry` sets or clears the bound. A grant is expired when its last use
 is at least the bound before now; a grant never used is measured from its record's creation, and

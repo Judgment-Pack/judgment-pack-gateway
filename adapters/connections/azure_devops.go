@@ -624,7 +624,7 @@ func azureDevOpsSnapshot(s *Store, id, revision string) (AzureDevOpsConnection, 
 				if !c.valid() {
 					return ErrSetup
 				}
-				if err := s.grantGate("azure-devops", c.ID, c.ID); err != nil {
+				if err := s.grantGate("azure-devops", v, c.ID, c.ID); err != nil {
 					return err
 				}
 				found, active = c, joinSecrets(azureDevOpsActiveOf(v), c.secrets())

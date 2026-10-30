@@ -2111,7 +2111,10 @@ no credential, no token, no token digest, no provider account and no content.
    states it, and at each use. A scope admitted as wider than needed (Databricks' `all-apis`) is
    recorded in `wider` and reported, not refused.
 2. A scope is used when a dispatched acquisition or action's operation declares it and it is
-   granted. The report lists granted minus used.
+   granted; where none it declares is granted, a scope admitted as wider than needed that is
+   documented to cover the operation (Databricks' `all-apis`, for a statement or a catalog
+   listing, never a managed MCP server's call) is used instead. The report lists granted minus
+   used.
 3. Before each use of the credential of a grant with an owner (an acquisition, an action, a
    search, a connection test), the gateway reads the owner's standing from its issuing host. `removed` applies the operator's removal and refuses
    (`owner-removed`); any answer other than `current` or `removed`, and no answer, refuses

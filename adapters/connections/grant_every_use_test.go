@@ -276,3 +276,77 @@ func TestQuarantineDuringMintRefusesBeforeDispatch(t *testing.T) {
 		t.Fatalf("mints %d, API requests %d", f.mints.Load(), f.api.Load())
 	}
 }
+
+// N7: a Databricks or Azure DevOps connection made again under its id after
+// its grant was revoked is a new grant at its credential's gate, as in the
+// report, not the revoked one.
+func TestReaddedConnectionIsANewGrantAtTheGate(t *testing.T) {
+	db, dbb, _, dir := dbFixture(t, dbTokenFields())
+	ado, err := OpenAzureDevOpsStore(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ado.Close()
+	adob := NewAzureDevOps(ado, false)
+	defer adob.Close()
+	if err := adoConfigure(adob, adoTokenFields()); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range [][2]string{{"databricks", "lake"}, {"azure-devops", "board"}} {
+		if _, err := grantOp(t, dir, "test", "", "revoke", map[string]any{"provider": k[0], "connection": k[1]}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := dbConfigure(dbb, dbTokenFields()); err != nil {
+		t.Fatal(err)
+	}
+	if err := adoConfigure(adob, adoTokenFields()); err != nil {
+		t.Fatal(err)
+	}
+	c := dbConnection(t, db, "lake")
+	if _, err := databricksSnapshot(db, c.ID, c.Revision); err != nil {
+		t.Fatalf("the re-added Databricks connection at its gate: %v", err)
+	}
+	a := adoConnection(t, ado, "board")
+	if _, _, err := azureDevOpsSnapshot(ado, a.ID, a.Revision); err != nil {
+		t.Fatalf("the re-added Azure DevOps connection at its gate: %v", err)
+	}
+	if _, err := db.grantUse(context.Background(), databricksProvider(), "lake", "statement"); err != nil {
+		t.Fatalf("the re-added Databricks connection's use: %v", err)
+	}
+	rows := mustReportOf(t, dir, "test")
+	rowOf(t, rows, "databricks", "lake", "active")
+	rowOf(t, rows, "azure-devops", "board", "active")
+}
+
+// N6: a quarantine made while a Google token is renewed refuses the call
+// that renewed it, before the file is asked for.
+func TestQuarantineDuringRenewalRefusesTheCall(t *testing.T) {
+	b, count, dir, r := driveGrant(t)
+	if _, err := grantOp(t, dir, "alice", "", "set-owner", map[string]any{"provider": "google-drive", "connection": "google-drive", "owner": owner, "ownerHost": "desk"}); err != nil {
+		t.Fatal(err)
+	}
+	standing := `{"standing":"current"}`
+	_, cfg := ownerHost(t, &standing, quarantineRemoval)
+	if _, err := grantOp(t, dir, "alice", "", "owner-reads", cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.store.locked(func(v *state) error { v.Connection.Expires = 1; return b.store.write("state.json", v) }); err != nil {
+		t.Fatal(err)
+	}
+	renewal := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := GrantOperation(context.Background(), dir, "alice", "", "remove-owner", mustJSON(map[string]any{"owner": owner, "ownerHost": "desk", "removal": "quarantine"})); err != nil {
+			t.Error(err)
+		}
+		io.WriteString(w, `{"access_token":"renewed","expires_in":3600,"token_type":"Bearer","scope":"https://www.googleapis.com/auth/drive"}`)
+	}))
+	defer renewal.Close()
+	b.provider.token = renewal.URL
+	b.provider.client = renewal.Client()
+	if err := driveRead(b, r.Selections[0]); err != ErrGrantQuarantined {
+		t.Fatalf("a read quarantined during its renewal: %v", err)
+	}
+	if count.Load() != 0 {
+		t.Fatal("the file was asked for")
+	}
+}
