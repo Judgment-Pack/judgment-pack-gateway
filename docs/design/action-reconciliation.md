@@ -26,7 +26,7 @@ server's own arguments; the platform endpoint; the descriptor and
 owner-declaration approval pins with the operation, platform and binding they
 approve; and the sandbox selector. The adapter command line a release derives from
 those fields is not part of it, so a release that adds, renames or reorders a
-derived flag does not strand a key (#355). Where the programs are installed (the
+derived flag does not strand a key reserved under this identity, version 2 (#355). Where the programs are installed (the
 adapter, the runtime client, the credentials file, the sandbox helper, policy and
 workspace paths, the configuration's copies of approvals), the platform's
 environment and the OS user are left out too, so an upgrade into another
@@ -49,8 +49,9 @@ it was made under: `{"journalVersion":"2","identityVersion":"2","fingerprint":â€
 Version 1 is v0.23.0's, which recorded no `identityVersion` and bound the derived
 command line without install paths in place of the named fields. A reservation
 recorded under version 1 is held to the request's version 1 identity, computed
-beside version 2 as v0.23.0 computed it, so a key v0.23.0 reserved keeps
-answering: a replay, a read-back or a freed attempt, as before. Each version is
+beside version 2 as v0.23.0 computed it, so under this release a key v0.23.0
+reserved keeps answering: a replay, a read-back or a freed attempt, as before. It
+stays version 1 for good (see Known limits). Each version is
 compared only with its own computation, and the two are hashed under different
 domains. An identity version this release does not read (one a later release
 wrote, after a downgrade) refuses as `action-journal-invalid` and never grants
@@ -224,9 +225,10 @@ offline, without losing dispatch history:
    removal while a request is in flight.
 2. Back up the store with `actions/`.
 3. Classify each entry:
-   - **Never sent:** no `action.json`, and every `dispatch-<n>.json` has its
-     `not-dispatched-<n>.json` (including an entry with no marker, and a key
-     refused as `action-journal-exhausted`). It may be removed at any time: a retry
+   - **Never sent:** no `action.json`, and every `dispatch-<n>.json` has a
+     complete, readable `not-dispatched-<n>.json`, as the gateway itself
+     requires (including an entry with no marker, and a key refused as
+     `action-journal-exhausted`). It may be removed at any time: a retry
      dispatches it, as it would have.
    - **Answered:** `action.json` whose receipt's `action.delivery.outcome` is
      `response`. It may be removed once its receipt's `servedAt` is older than the
@@ -293,11 +295,27 @@ the key is answered as uncertain and read back. To resolve a refused key:
   answered as not dispatched, so nothing was sent: the client may send the write
   under a new key, or an operator may remove that key's entry once the cause is
   fixed.
-- **Version 1 reservations are recognized through this release's command line.**
-  A reservation v0.23.0 recorded is held to version 1 as computed from the adapter
-  command line this release derives, which is v0.23.0's. A later release that
-  changes a derived flag either keeps that computation or asks operators to
-  settle the keys v0.23.0 reserved before upgrading. Keys reserved under version
-  2 are not affected.
+- **Keys v0.23.0 reserved keep identity version 1 for good.** No journal file is
+  rewritten, so their reservations never become version 2. Version 1 is computed
+  from the adapter command line the running release derives, which in this
+  release is v0.23.0's. Under a later release that changes a derived flag, every
+  key v0.23.0 reserved answers `action-key-conflict`: a pending one is not read
+  back, and a settled one no longer replays its response. Nothing is sent again.
+  Settling a key first does not avoid this; only a release that keeps the
+  version 1 computation does. Keys reserved under version 2 are not affected.
+  (Writing a version 2 companion record when a version 1 reservation matches was
+  considered and left out: it would cover only the keys a client retries under
+  this release, and it adds a journal file with its own partial-write state.)
+- **The owner-declaration pin is a digest of a document the release composes.**
+  Version 2 binds the owner-declaration pin, which is the digest of the
+  declaration file this release writes from the binding's owner declarations
+  (its declaration version, platform, binding, operation and tools). Its inputs
+  are bound already by the binding pin, but a release that changes how that
+  document is composed changes version 2 for every key with owner declarations;
+  such a release is a change of identity and must say so.
+- **The remote bearer member is not bound by name.** Version 1 bound
+  `--bearer=`; version 2 has no member for it. This admits nothing unapproved:
+  the member's name comes only from the pinned binding, whose digest version 2
+  binds, so another bearer member is another binding pin and another identity.
 - **The gateway does not compact the journal.** Compaction is the offline
   procedure above; the gateway bounds each entry, not their number.

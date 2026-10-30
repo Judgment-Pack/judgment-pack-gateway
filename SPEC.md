@@ -540,13 +540,16 @@ owner-declaration approval pins with the operation, platform and binding they
 approve; and the sandbox selector. The adapter command line a release derives
 from those fields is not part of it, and neither are where the programs are
 installed, the platform environment and the operating-system user: a release
-that adds, renames or reorders a derived flag leaves every key's content as it
-was. A reservation records the version of this identity it was made under
-(`identityVersion` `"2"`). A reservation that records none was made under
-version 1 (v0.23.0), which bound the derived command line without install paths
-instead of the named fields; it is held to the request's version 1 identity,
-and an identity version the gateway does not read refuses as
-`action-journal-invalid`. Before an action record cites a receipt, the receipt,
+that adds, renames or reorders a derived flag leaves the content of every key
+reserved under identity version 2 as it was. A reservation records the version
+of this identity it was made under (`identityVersion` `"2"`). A reservation that
+records none was made under version 1 (v0.23.0), which bound the derived command
+line without install paths instead of the named fields; it is held to the
+request's version 1 identity, and an identity version the gateway does not read
+refuses as `action-journal-invalid`. A version 1 reservation stays version 1, as
+no journal file is rewritten: under a release whose derived command line
+differs from v0.23.0's, such a key answers `action-key-conflict`, whether it is
+pending or settled, and nothing is sent. Before an action record cites a receipt, the receipt,
 its session and its retained result are durable in the store. A client
 never sends a conflicting key's write again under a new key: the conflict means
 the key already names a write that may have been sent. Every attempt still

@@ -121,3 +121,45 @@ func TestActionRecordRefusedWhenItsReceiptIsNotDurable(t *testing.T) {
 		})
 	}
 }
+
+// #352 L4: a directory of the receipt that cannot be held is refused like a
+// failed sync: no record cites the receipt, and the retry reads back with one
+// write at the target. The write program makes the directory unreadable to
+// its owner after admission, so the store can still link into it.
+func TestActionRecordRefusedWhenItsReceiptsDirectoryCannotBeHeld(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission bits do not hold the superuser")
+	}
+	for _, dir := range []string{"artifacts", "receipts/act"} {
+		t.Run(dir, func(t *testing.T) {
+			root, _, c := actionKeysSetup(t)
+			key := strings.Repeat("5", 64)
+			path := filepath.Join(root, "store", filepath.FromSlash(dir))
+			t.Cleanup(func() { os.Chmod(path, 0o755) })
+			g := actionKeysService(t, root, actionKeysSources(t, root, os.Args[0], "ACTION_KEYS_UNREADABLE="+path))
+			_, err := actionKeysAct(g, c, "act", key)
+			if f, openErr := os.Open(path); openErr == nil {
+				f.Close()
+				t.Skip("this platform reads a directory without its read permission")
+			}
+			if err == nil || !strings.Contains(err.Error(), "action-journal-unavailable") {
+				t.Fatalf("a receipt whose directory could not be held was cited: %v", err)
+			}
+			namespace := filepath.Join(g.storeRoot, "actions", g.actionNamespace(actionKeysWho, key))
+			if _, err := os.Lstat(filepath.Join(namespace, "action.json")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("an action record was written: %v", err)
+			}
+			if err := os.Chmod(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			restarted := actionKeysService(t, root, actionKeysSources(t, root, os.Args[0]))
+			out, err := actionKeysAct(restarted, c, "retry", key)
+			if err != nil || out["reconciliation"] == nil {
+				t.Fatalf("the retry was not read back: %v %v", out, err)
+			}
+			if sent := actionKeysSent(root, key); sent != 1 {
+				t.Fatalf("the target received %d writes", sent)
+			}
+		})
+	}
+}

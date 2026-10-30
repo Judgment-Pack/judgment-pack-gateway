@@ -223,6 +223,27 @@ func TestActionFingerprintBindsApprovedIdentityNotInstall(t *testing.T) {
 			}
 		}
 	}
+	// The request's decision policy and recovery contract change both
+	// versions: the policy is the write source's, the contract the tool's.
+	withPolicy := changed(func(s *sourceSpec) { s.policies = map[string]*decisionPolicy{"write": {digest: pin("9")}} })
+	otherPolicy := changed(func(s *sourceSpec) { s.policies = map[string]*decisionPolicy{"write": {digest: pin("8")}} })
+	if got, other := fingerprint(withPolicy, base), fingerprint(otherPolicy, base); got.fingerprint == want.fingerprint || got.previous == want.previous || got.fingerprint == other.fingerprint || got.previous == other.previous {
+		t.Error("the decision policy did not change both identities")
+	}
+	declaration := newObject()
+	declaration.set("idempotencyArgument", vString("request_id"))
+	for name, contract := range map[string]*actionRecovery{
+		"another recovery contract": {declaration: declaration, readBack: recovery.readBack},
+		"no recovery contract":      nil,
+	} {
+		got, err := actionFingerprint("tickets", "write", newObject(), newObject(), vArray{}, base, contract, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.fingerprint == want.fingerprint || got.previous == want.previous {
+			t.Errorf("%s did not change both identities", name)
+		}
+	}
 	// Each named approval field, in version 2.
 	approvals := map[string]func(*sourceApproval){
 		"descriptor approval":       func(a *sourceApproval) { a.descriptorPin = pin("f") },
