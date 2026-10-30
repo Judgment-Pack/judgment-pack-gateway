@@ -996,9 +996,11 @@ A customer binding may also declare its server's publisher, `"publisher": {"kind
 "repository" | "domain", "name": ...}`, which is refused on a binding that is not a customer's.
 `connect` reads its liveness before it runs anything and shows it with the approval. It also flags
 a name that closely matches an integration the gateway ships under another publisher
-(`name-lookalike`). What it read is kept in `<engine.json>.publishers.json`, which
+(`name-lookalike`). What it read is kept in `<engine.json>.publishers.json`, under the configuration's lock and
+with its mode and owner, which
 `gateway publishers --check` reads again on the operator's schedule. Under
-`gateway publishers --policy refuse`, an unmaintained publisher refuses the registration and each
+`gateway publishers --policy refuse`, an unmaintained publisher (evidence of a lapse, never an
+unverifiable one) refuses the registration and each
 acquisition and action. See [connection grants](connection-grants.md#publisher-trust-for-customer-mcp).
 
 Local commands use `workspace-write` by default. The optional policy file has

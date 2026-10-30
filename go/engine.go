@@ -846,7 +846,7 @@ func parseBinding(data []byte) (binding, error) {
 	}
 	if raw, present := obj.get("publisher"); present {
 		if !b.customer {
-			return binding{}, errors.New("publisher is declared on a customer binding")
+			return binding{}, errors.New("publisher is declared only on a customer binding")
 		}
 		if b.publisher, err = parsePublisher(raw); err != nil {
 			return binding{}, err

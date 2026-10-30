@@ -16,6 +16,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +35,11 @@ import (
 const (
 	publisherMaintained   = "maintained"
 	publisherUnmaintained = "unmaintained"
+	// unverifiable is a publisher the public source does not show: a
+	// package or a repository that is private or unpublished, a domain no
+	// RDAP service answers for. It is reported, and never refused: only
+	// evidence of a lapse is unmaintained.
+	publisherUnverifiable = "unverifiable"
 	publisherUnknown      = "unknown"
 	publisherUndeclared   = "undeclared"
 
@@ -143,33 +150,72 @@ func readPublishers(path string) (publisherFile, error) {
 	return f, nil
 }
 
-// writePublishers replaces the record by renaming a synced file over it.
-func writePublishers(path string, f publisherFile) error {
-	data, err := json.MarshalIndent(f, "", "  ")
+// writePublishers replaces the record beside the configuration, under the
+// configuration's lock, which the caller holds (withConfigLock, or connect
+// through afterWrite): every read-modify-write of the record is made under
+// it, so no writer's change is lost to another's. The record is given the
+// configuration's own mode and owner, through the descriptor, as connect
+// gives a replaced configuration (configFile.replace): a root connect, or a
+// root-run gateway publishers, over a configuration the signer owns leaves
+// a record the signer can read. It is written to a file made beside it and
+// renamed over it, and the directory synced.
+func (f *configFile) writePublishers(pf publisherFile) error {
+	data, err := json.MarshalIndent(pf, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-")
+	name := f.base + publishersSuffix
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return err
+	}
+	tmp := "." + name + ".tmp-" + hex.EncodeToString(nonce[:])
+	file, err := f.dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, f.mode)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		tmp.Close()
+	defer f.dir.Remove(tmp)
+	fail := func(err error) error {
+		file.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		return fail(err)
+	}
+	if err := file.Chmod(f.mode); err != nil {
+		return fail(err)
+	}
+	if err := keepOwner(file, f.owner); err != nil {
+		return fail(err)
+	}
+	if err := syncFile(file); err != nil {
+		return fail(err)
+	}
+	if err := file.Close(); err != nil {
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+	if err := f.dir.Rename(tmp, name); err != nil {
 		return err
 	}
-	if err := tmp.Close(); err != nil {
-		return err
+	return f.syncDir(".")
+}
+
+// withConfigLock runs fn holding the configuration's lock, the one connect
+// holds (lockBeside): a connect that holds it is waited for up to ten
+// seconds, then refused.
+func withConfigLock(config string, fn func(*configFile) error) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		f, err := openConfigFile(config)
+		if err == nil {
+			defer f.close()
+			return fn(f)
+		}
+		if !strings.Contains(err.Error(), "another connect holds") || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	return os.Rename(tmp.Name(), path)
 }
 
 // publisherChecker reads a publisher's liveness from the npm registry,
@@ -196,14 +242,14 @@ func defaultPublisherChecker() publisherChecker {
 // The reasons, fixed sentences that name no path, account or token.
 const (
 	reasonPackageDeprecated = "the package's latest version is deprecated in its registry"
-	reasonPackageMissing    = "the package is not in its registry"
+	reasonPackageMissing    = "the registry shows no public package of that name: it may be private, or not published"
 	reasonPackageLive       = "the registry lists the package, and its latest version is not deprecated"
 	reasonRepoArchived      = "the repository is archived or disabled"
-	reasonRepoMissing       = "the repository was not found"
+	reasonRepoMissing       = "no public repository of that name was found: it may be private, or not there"
 	reasonRepoLive          = "the repository is neither archived nor disabled"
 	reasonDomainExpired     = "the domain's registration has expired"
 	reasonDomainPending     = "the domain is in its redemption period or pending deletion"
-	reasonDomainMissing     = "the domain is not registered"
+	reasonDomainMissing     = "no RDAP service answered for the name or a domain above it"
 	reasonDomainLive        = "the domain's registration is current"
 	reasonUnreadable        = "the publisher's liveness could not be read"
 	reasonUndeclared        = "the binding declares no publisher"
@@ -246,7 +292,7 @@ func (c publisherChecker) check(ctx context.Context, d *publisherDecl) (string, 
 		switch {
 		case err != nil:
 		case status == 404:
-			return publisherUnmaintained, reasonPackageMissing
+			return publisherUnverifiable, reasonPackageMissing
 		case status == 200:
 			var doc struct {
 				Tags     map[string]string `json:"dist-tags"`
@@ -271,7 +317,7 @@ func (c publisherChecker) check(ctx context.Context, d *publisherDecl) (string, 
 		switch {
 		case err != nil:
 		case status == 404:
-			return publisherUnmaintained, reasonRepoMissing
+			return publisherUnverifiable, reasonRepoMissing
 		case status == 200:
 			var repo struct {
 				Archived *bool `json:"archived"`
@@ -286,11 +332,19 @@ func (c publisherChecker) check(ctx context.Context, d *publisherDecl) (string, 
 			return publisherMaintained, reasonRepoLive
 		}
 	case "domain":
-		status, body, err := c.get(ctx, c.rdap+d.name, "application/rdap+json")
+		// A host name is not itself a registration: a registry's RDAP answers
+		// 404 for it. Each name above it is asked in turn, down to two
+		// labels, and the first registration answered is the one read.
+		name := d.name
+		status, body, err := c.get(ctx, c.rdap+name, "application/rdap+json")
+		for err == nil && status == 404 && strings.Count(name, ".") > 1 {
+			_, name, _ = strings.Cut(name, ".")
+			status, body, err = c.get(ctx, c.rdap+name, "application/rdap+json")
+		}
 		switch {
 		case err != nil:
 		case status == 404:
-			return publisherUnmaintained, reasonDomainMissing
+			return publisherUnverifiable, reasonDomainMissing
 		case status == 200:
 			var reply struct {
 				Name   string   `json:"ldhName"`
@@ -300,7 +354,7 @@ func (c publisherChecker) check(ctx context.Context, d *publisherDecl) (string, 
 					Date   string `json:"eventDate"`
 				} `json:"events"`
 			}
-			if json.Unmarshal(body, &reply) != nil || !strings.EqualFold(reply.Name, d.name) {
+			if json.Unmarshal(body, &reply) != nil || !strings.EqualFold(reply.Name, name) {
 				break
 			}
 			for _, s := range reply.Status {
@@ -368,10 +422,56 @@ func publishedBy(d *publisherDecl, k knownIntegration) bool {
 	return false
 }
 
+// homoglyphs are lower-case letters of the Cyrillic and Greek scripts, and
+// a few Latin ones, that are drawn like a Latin letter, with that letter.
+var homoglyphs = map[rune]rune{
+	// Cyrillic
+	'а': 'a', 'в': 'b', 'е': 'e', 'ё': 'e', 'һ': 'h', 'н': 'h', 'і': 'i', 'ї': 'i', 'ј': 'j', 'к': 'k',
+	'ӏ': 'l', 'м': 'm', 'о': 'o', 'р': 'p', 'ԛ': 'q', 'г': 'r', 'ѕ': 's', 'т': 't', 'ц': 'u', 'ѵ': 'v',
+	'ԝ': 'w', 'х': 'x', 'у': 'y', 'ԁ': 'd', 'ɡ': 'g', 'ԍ': 'g', 'с': 'c', 'ѡ': 'w',
+	// Greek
+	'α': 'a', 'β': 'b', 'ε': 'e', 'η': 'n', 'ι': 'i', 'κ': 'k', 'μ': 'u', 'ν': 'v', 'ο': 'o', 'ρ': 'p',
+	'τ': 't', 'υ': 'u', 'χ': 'x', 'γ': 'y', 'ζ': 'z', 'ϲ': 'c', 'ϳ': 'j',
+	// Latin look-alikes
+	'ı': 'i', 'ł': 'l', 'ℓ': 'l', 'ß': 's', 'ɑ': 'a',
+}
+
+// capitalHomoglyphs are Cyrillic and Greek capitals drawn like a Latin
+// capital, with that letter.
+var capitalHomoglyphs = map[rune]rune{
+	'А': 'a', 'В': 'b', 'Е': 'e', 'К': 'k', 'М': 'm', 'Н': 'h', 'О': 'o', 'Р': 'p', 'С': 'c', 'Т': 't',
+	'Х': 'x', 'І': 'i', 'Ј': 'j', 'Ѕ': 's', 'Ү': 'y',
+	'Α': 'a', 'Β': 'b', 'Ε': 'e', 'Ζ': 'z', 'Η': 'h', 'Ι': 'i', 'Κ': 'k', 'Μ': 'm', 'Ν': 'n', 'Ο': 'o',
+	'Ρ': 'p', 'Τ': 't', 'Υ': 'y', 'Χ': 'x',
+}
+
 // confusable folds the characters a name is commonly spoofed with, and
 // drops everything but letters and digits.
 func confusable(s string) string {
+	// Capitals first: a capital of another script can look like a Latin
+	// capital its own lower case does not look like (Greek Ν, ν).
+	s = strings.Map(func(r rune) rune {
+		if latin, ok := capitalHomoglyphs[r]; ok {
+			return latin
+		}
+		return r
+	}, s)
 	s = strings.ToLower(s)
+	// Letters of other scripts that a Latin letter is imitated with, and
+	// the fullwidth forms, are taken for the Latin letter first.
+	s = strings.Map(func(r rune) rune {
+		if r >= 0xFF01 && r <= 0xFF5E {
+			r -= 0xFEE0
+			if r >= 'A' && r <= 'Z' {
+				r += 'a' - 'A'
+			}
+			return r
+		}
+		if latin, ok := homoglyphs[r]; ok {
+			return latin
+		}
+		return r
+	}, s)
 	s = strings.NewReplacer("rn", "m", "vv", "w", "0", "o", "1", "l", "3", "e", "5", "s", "@", "a").Replace(s)
 	var b strings.Builder
 	for _, r := range s {
@@ -442,8 +542,11 @@ func publisherLines(platform string, r publisherRecord) []string {
 		what = r.Kind + " " + r.Name
 	}
 	lines := []string{fmt.Sprintf("%s: publisher %s: %s at %s: %s", platform, what, r.State, r.CheckedAt, r.Reason)}
-	if r.State == publisherUnmaintained {
+	switch r.State {
+	case publisherUnmaintained:
 		lines = append(lines, fmt.Sprintf("%s: publisher-unmaintained: %s", platform, r.Reason))
+	case publisherUnverifiable:
+		lines = append(lines, fmt.Sprintf("%s: publisher-unverifiable: %s", platform, r.Reason))
 	}
 	if r.Lookalike != "" {
 		lines = append(lines, fmt.Sprintf("%s: name-lookalike: the name closely matches the integration %s, which another publisher publishes", platform, r.Lookalike))
@@ -477,7 +580,8 @@ func publisherRefusal(path, platform, ref string) error {
 	}
 	f, err := readPublishers(path)
 	if err != nil {
-		return fmt.Errorf("publisher-record-unreadable: platform %s: %v", platform, err)
+		// The reason names no path: it is answered to /acquire and /act.
+		return fmt.Errorf("publisher-record-unreadable: platform %s: the publisher record could not be read", platform)
 	}
 	r, ok := f.Publishers[platform]
 	if f.Policy == publisherPolicyRefuse && ok && r.Binding == ref && r.State == publisherUnmaintained {
@@ -516,19 +620,23 @@ func connectPublisher(ctx context.Context, req connectRequest, host engineHost, 
 	if f.Policy == publisherPolicyRefuse && record.State == publisherUnmaintained {
 		return connectOutcome{statements: lines}, errPublisherUnmaintained(req.platform)
 	}
+	// The record is written under the lock connect holds, once the
+	// configuration is in place, read again there so that no other
+	// writer's change is lost.
+	req.afterWrite = func(held *configFile) error {
+		f, err := readPublishers(path)
+		if err != nil {
+			return err
+		}
+		f.Publishers[req.platform] = record
+		if err := held.writePublishers(f); err != nil {
+			return fmt.Errorf("the configuration was written, and the publisher record was not: %v", err)
+		}
+		return nil
+	}
 	out, err := connect(ctx, req, host, check)
 	out.statements = append(out.statements, lines...)
-	if err != nil || out.written == "" {
-		return out, err
-	}
-	if f, err = readPublishers(path); err != nil {
-		return out, err
-	}
-	f.Publishers[req.platform] = record
-	if err := writePublishers(path, f); err != nil {
-		return out, fmt.Errorf("the configuration was written, and the publisher record was not: %v", err)
-	}
-	return out, nil
+	return out, err
 }
 
 const publishersUsage = "usage: gateway publishers --config <engine.json> [--check] [--policy report|refuse]"
@@ -574,10 +682,11 @@ func runPublishers(ctx context.Context, args []string, stdout, stderr io.Writer,
 		fmt.Fprintln(stderr, "publishers:", printable(err.Error()))
 		return 1
 	}
-	changed := false
-	if policy != "" && policy != f.Policy {
-		f.Policy, changed = policy, true
-	}
+	// The liveness reads are made without the lock, which a connect would
+	// otherwise wait for; what they read is merged into the record as it
+	// stands under the lock, the policy included, so a policy set or a
+	// record written meanwhile is kept.
+	checked := map[string]publisherRecord{}
 	if recheck {
 		data, err := readBounded(config, maxEngineConfigBytes)
 		if err != nil {
@@ -598,12 +707,28 @@ func runPublishers(ctx context.Context, args []string, stdout, stderr io.Writer,
 			if !b.customer {
 				continue
 			}
-			f.Publishers[p.name] = checker.read(ctx, p.name, p.binding, b)
+			checked[p.name] = checker.read(ctx, p.name, p.binding, b)
 		}
-		changed = true
 	}
-	if changed {
-		if err := writePublishers(path, f); err != nil {
+	if recheck || policy != "" {
+		err := withConfigLock(config, func(held *configFile) error {
+			current, err := readPublishers(path)
+			if err != nil {
+				return err
+			}
+			if policy != "" {
+				current.Policy = policy
+			}
+			for name, r := range checked {
+				current.Publishers[name] = r
+			}
+			if err := held.writePublishers(current); err != nil {
+				return err
+			}
+			f = current
+			return nil
+		})
+		if err != nil {
 			fmt.Fprintln(stderr, "publishers:", printable(err.Error()))
 			return 1
 		}

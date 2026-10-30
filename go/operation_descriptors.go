@@ -227,6 +227,11 @@ func connectTaxonomyOperations(ctx context.Context, req connectRequest, file *co
 		return out, err
 	}
 	out.written = req.config
+	if req.afterWrite != nil {
+		if err := req.afterWrite(file); err != nil {
+			return out, err
+		}
+	}
 	written.operationDescriptors = pins
 	if previous != nil {
 		out.after = restartLines(*previous, written)

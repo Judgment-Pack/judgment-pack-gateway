@@ -227,13 +227,17 @@ covers every member.
 
 **Liveness.** The gateway reads it from public sources:
 
-| Kind | Source | Unmaintained when | Maintained when |
-| --- | --- | --- | --- |
-| `registry` | the npm registry | the package's latest version is deprecated, or the package is not in the registry | the latest version is listed and not deprecated |
-| `repository` | GitHub's repository API | the repository is archived or disabled, or not found | it is neither |
-| `domain` | RDAP | the registration has expired (equal is expired), the domain is in its redemption period or pending deletion, or it is not registered | the registration is current |
+| Kind | Source | Unmaintained when (evidence of a lapse) | Unverifiable when | Maintained when |
+| --- | --- | --- | --- | --- |
+| `registry` | the npm registry | the package's latest version is deprecated (a message, or `true`) | the registry shows no public package of that name (private, or never published) | the latest version is listed and not deprecated |
+| `repository` | GitHub's repository API | the repository is archived or disabled | no public repository of that name answers (private, or not there) | it is neither |
+| `domain` | RDAP | the registration has expired (equal is expired), or the domain is in its redemption period or pending deletion | no RDAP service answers for the name or any domain above it | the registration is current |
 
-Any other answer leaves the state `unknown`. A customer binding that declares no publisher is
+A host name is not itself a registration, so a `domain` publisher such as `tickets.acme.example` is
+read at the first name above it that RDAP answers for (`acme.example`), down to two labels. A
+404 is never taken as a lapse: a private package or repository, a host name, or a top-level domain
+the RDAP bootstrap knows no service for all answer it. Any other answer leaves the state
+`unknown`. A customer binding that declares no publisher is
 `undeclared`. The reads disclose to those public services which servers an operator uses, so their
 schedule is the operator's.
 
@@ -241,28 +245,40 @@ schedule is the operator's.
 binding, `--replace` (a recapture) included. It happens before any adapter is run, and its lines
 are shown with the approval. It happens again on the operator's schedule, with
 `gateway publishers --config <engine.json> --check`. What was read goes in
-`<engine.json>.publishers.json` (mode 0600), by platform: the binding reference it was read for,
-the publisher, its state, when it was checked, and a fixed reason. The reason names no path, no
+`<engine.json>.publishers.json`, by platform: the binding reference it was read for, the
+publisher, its state, when it was checked, and a fixed reason. The reason names no path, no
 account and no token.
+
+Every read-modify-write of the record is made under the configuration's own lock
+(`<engine.json>.lock`, the one `connect` holds). `connect` writes the record under its lock once
+the configuration is in place. `gateway publishers --check` makes its liveness reads without the
+lock, then merges what it read into the record as it stands under the lock, so a policy set or a
+record written meanwhile is kept. A `gateway publishers` that finds a `connect` holding the lock
+waits up to ten seconds, then refuses. The record is given the configuration's own mode and
+owner, as a replaced configuration is: a root `connect` or a root-run `gateway publishers` over a
+configuration the signer owns leaves a record the signer can read.
 
 **Policy.** `gateway publishers --config <engine.json> --policy report|refuse` sets the operator's
 policy; `report` is the default (open question 15). An unmaintained publisher is always reported
-as `publisher-unmaintained`. Under `refuse`, a record of the platform's own binding that says
-`unmaintained` also refuses three things:
+as `publisher-unmaintained`, and an unverifiable one as `publisher-unverifiable`. Under `refuse`,
+a record of the platform's own binding that says `unmaintained` (evidence of a lapse, never a
+404) also refuses three things:
 
 - its registration;
 - each acquisition, before the source starts;
 - each action, before an executor runs.
 
-A record that cannot be read refuses as `publisher-record-unreadable`. An `unknown` or
-`undeclared` publisher is not refused.
+A record that cannot be read refuses as `publisher-record-unreadable`; the reason answered to
+`/acquire` and `/act` names no path. An `unverifiable`, `unknown` or `undeclared` publisher is not
+refused, under either policy.
 
 **Name lookalike.** A registration is flagged `name-lookalike` when its platform name, or its
 binding's platform name, closely matches one of the integrations the gateway ships while its
 declared publisher is not that integration's. The integrations are `azure-devops`, `databricks`,
 `postgres`, `google-drive`, `gmail`, `notion`, `obsidian` and `aws-s3`. A close match is any of
-these, after folding case, punctuation and common look-alike characters (`0`→`o`, `1`→`l`, `3`→`e`,
-`5`→`s`, `rn`→`m`, `vv`→`w`):
+these, after folding case, punctuation and look-alike characters: fullwidth letters to their
+ASCII forms, Cyrillic and Greek letters drawn like a Latin letter to that letter (capitals and
+small letters, from a fixed table), and `0`→`o`, `1`→`l`, `3`→`e`, `5`→`s`, `rn`→`m`, `vv`→`w`:
 
 - the name equals the integration's;
 - the name is one edit away from it (two edits for a name of ten characters or more);
@@ -298,6 +314,11 @@ The flag is shown with the approval and recorded. It is a report, never a refusa
   RFC has `null` for "otherwise".
 - **Publisher sources.** Liveness is read from npm, GitHub and RDAP only. The `registry` and
   `repository` kinds accept only those, and another registry or forge is refused at parse.
+- **No policy refuses a lookalike.** The RFC lets an operator policy make `name-lookalike` a
+  refusal. This release reports it only; no policy refuses it.
+- **Unverifiable is its own state.** The RFC's states are `maintained`, `unmaintained` and
+  `unknown`. A publisher the public source does not show (a 404) is `unverifiable`: reported,
+  never refused.
 - **Name lookalike against the gateway's own integrations.** The known integrations are the ones
   the gateway ships, a fixed list. The operator cannot extend it in this release.
 - **Owner removal at use.** An owner read that answers `removed` changes the grants in the custody

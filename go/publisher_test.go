@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -79,6 +80,8 @@ func TestPublisherLiveness(t *testing.T) {
 		"/npm/live-pkg":            {"200", `{"dist-tags":{"latest":"2.0.0"},"versions":{"1.0.0":{"deprecated":"old"},"2.0.0":{}}}`},
 		"/npm/@acme%2fold":         {"200", `{"dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":{"deprecated":"no longer maintained"}}}`},
 		"/npm/garbled":             {"200", `{"dist-tags":{},"versions":{}}`},
+		"/npm/flagged":             {"200", `{"dist-tags":{"latest":"3.0.0"},"versions":{"3.0.0":{"deprecated":true}}}`},
+		"/rdap/redeemed.example":   {"200", `{"ldhName":"redeemed.example","status":["active","Redemption Period"],"events":[]}`},
 		"/gh/acme/live":            {"200", `{"archived":false,"disabled":false}`},
 		"/gh/acme/archived":        {"200", `{"archived":true,"disabled":false}`},
 		"/gh/acme/silent":          {"200", `{"disabled":false}`},
@@ -93,17 +96,21 @@ func TestPublisherLiveness(t *testing.T) {
 	}{
 		{"registry", "npm:live-pkg", publisherMaintained},
 		{"registry", "npm:@acme/old", publisherUnmaintained},
-		{"registry", "npm:gone", publisherUnmaintained},
+		{"registry", "npm:gone", publisherUnverifiable},
+		{"registry", "npm:flagged", publisherUnmaintained},
 		{"registry", "npm:garbled", publisherUnknown},
 		{"repository", "github.com/acme/live", publisherMaintained},
 		{"repository", "github.com/acme/archived", publisherUnmaintained},
-		{"repository", "github.com/acme/missing", publisherUnmaintained},
+		{"repository", "github.com/acme/missing", publisherUnverifiable},
 		{"repository", "github.com/acme/silent", publisherUnknown},
 		{"repository", "github.com/acme/down", publisherUnknown},
 		{"domain", "acme.example", publisherMaintained},
 		{"domain", "lapsed.example", publisherUnmaintained},
 		{"domain", "pending.example", publisherUnmaintained},
-		{"domain", "unregistered.example", publisherUnmaintained},
+		{"domain", "unregistered.example", publisherUnverifiable},
+		{"domain", "tickets.acme.example", publisherMaintained},
+		{"domain", "deep.tickets.lapsed.example", publisherUnmaintained},
+		{"domain", "redeemed.example", publisherUnmaintained},
 		{"domain", "other-name.example", publisherUnknown},
 	} {
 		if state, reason := c.check(context.Background(), &publisherDecl{k.kind, k.name}); state != k.state || reason == "" {
@@ -119,7 +126,8 @@ func TestPublisherLiveness(t *testing.T) {
 // publisher is flagged; under that integration's own publisher it is not.
 func TestNameLookalike(t *testing.T) {
 	stranger := &publisherDecl{"domain", "tools.stranger.example"}
-	for _, name := range []string{"databricks", "databrick", "databricsk", "Data-Bricks", "databricks-mcp", "n0tion", "n0t1on", "azure-dev0ps", "gmai1"} {
+	for _, name := range []string{"databricks", "databrick", "databricsk", "Data-Bricks", "databricks-mcp", "n0tion", "n0t1on", "azure-dev0ps", "gmai1",
+		"n\u043eti\u043en", "\uff4e\uff4f\uff54\uff49\uff4f\uff4e", "gm\u0430\u0456l", "d\u0430t\u0430br\u0456\u0441ks", "\u043ebsidi\u0430n", "p\u043estgr\u0435s", "\u039d\u039f\u03a4\u0399\u039f\u039d"} {
 		if got := lookalike([]string{name}, stranger); got == "" {
 			t.Errorf("%s was not flagged", name)
 		}
@@ -153,6 +161,20 @@ func TestCustomerRegistrationRecordsPublisherAndPolicyRefuses(t *testing.T) {
 	checker := publisherStandIn(t, answers)
 	binding := strings.Replace(customerBinding(target.URL, ""), `"bindingVersion":"2"`, `"bindingVersion":"2","customer":true,"publisher":{"kind":"repository","name":"github.com/acme/tickets-mcp"}`, 1)
 	f, req, check, adapt := customerFixture(t, bin, binding, false)
+	// The record takes the configuration's own mode and owner (M5).
+	if err := os.Chmod(f.config, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	// Where this user is in a group besides its own, the configuration is
+	// given that group, which a record made by this process would not have
+	// unless it keeps the configuration's owner.
+	if groups, err := os.Getgroups(); err == nil && runtime.GOOS != "windows" {
+		for _, g := range groups {
+			if g != os.Getgid() && os.Chown(f.config, -1, g) == nil {
+				break
+			}
+		}
+	}
 	out, err := connectPublisher(context.Background(), req, f.host, check, checker)
 	if err != nil {
 		t.Fatal(err)
@@ -165,9 +187,11 @@ func TestCustomerRegistrationRecordsPublisherAndPolicyRefuses(t *testing.T) {
 	if err != nil || record.Publishers[req.platform].State != publisherMaintained || !strings.HasPrefix(record.Publishers[req.platform].Binding, "tickets@sha256:") {
 		t.Fatalf("%+v %v", record, err)
 	}
-	// Windows has no Unix modes; the record is private there by its directory's ACL.
-	if info, err := os.Stat(path); err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
-		t.Fatalf("the record's mode: %v %v", info, err)
+	// Windows has no Unix modes or owners to keep.
+	info, err := os.Stat(path)
+	configInfo, _ := os.Stat(f.config)
+	if err != nil || runtime.GOOS != "windows" && (info.Mode().Perm() != 0o640 || ownerIDsOf(info) != ownerIDsOf(configInfo)) {
+		t.Fatalf("the record's mode and owner are not the configuration's: %v %v", info, err)
 	}
 
 	cfg, bindings, err := loadEngineConfig(f.config, stubAccounts(stubUsers))
@@ -237,7 +261,7 @@ func TestPublisherRefusalReadsTheRecord(t *testing.T) {
 		t.Fatalf("no record: %v", err)
 	}
 	f := publisherFile{Version: 1, Policy: publisherPolicyRefuse, Publishers: map[string]publisherRecord{"tickets": {Binding: "tickets@sha256:aa", State: publisherUnmaintained}}}
-	if err := writePublishers(path, f); err != nil {
+	if err := writeRecord(t, path, f); err != nil {
 		t.Fatal(err)
 	}
 	if err := publisherRefusal(path, "tickets", "tickets@sha256:aa"); err == nil {
@@ -247,13 +271,13 @@ func TestPublisherRefusalReadsTheRecord(t *testing.T) {
 		t.Fatalf("another binding's record: %v", err)
 	}
 	f.Publishers["tickets"] = publisherRecord{Binding: "tickets@sha256:aa", State: publisherUnknown}
-	writePublishers(path, f)
+	writeRecord(t, path, f)
 	if err := publisherRefusal(path, "tickets", "tickets@sha256:aa"); err != nil {
 		t.Fatalf("an unknown publisher: %v", err)
 	}
 	f.Policy = publisherPolicyReport
 	f.Publishers["tickets"] = publisherRecord{Binding: "tickets@sha256:aa", State: publisherUnmaintained}
-	writePublishers(path, f)
+	writeRecord(t, path, f)
 	if err := publisherRefusal(path, "tickets", "tickets@sha256:aa"); err != nil {
 		t.Fatalf("the report policy: %v", err)
 	}
@@ -276,7 +300,7 @@ func TestActionRefusedForUnmaintainedPublisher(t *testing.T) {
 	service.receiptVersion = receiptVersion3
 	path := filepath.Join(t.TempDir(), "engine.json"+publishersSuffix)
 	ref := "tickets@sha256:" + strings.Repeat("a", 64)
-	if err := writePublishers(path, publisherFile{Version: 1, Policy: publisherPolicyRefuse, Publishers: map[string]publisherRecord{"tickets": {Binding: ref, State: publisherUnmaintained}}}); err != nil {
+	if err := writeRecord(t, path, publisherFile{Version: 1, Policy: publisherPolicyRefuse, Publishers: map[string]publisherRecord{"tickets": {Binding: ref, State: publisherUnmaintained}}}); err != nil {
 		t.Fatal(err)
 	}
 	service.sources["tickets/write"] = sourceSpec{shape: "mcp", tools: []string{"update"}, binding: ref, publishers: path, argv: []string{"executor-that-is-not-there"}}
@@ -285,5 +309,86 @@ func TestActionRefusedForUnmaintainedPublisher(t *testing.T) {
 	refusal, ok := err.(actRefusal)
 	if !ok || refusal.step != "platform" || !strings.Contains(refusal.reason, "publisher-unmaintained") {
 		t.Fatalf("an action under the refuse policy: %v", err)
+	}
+}
+
+// writeRecord puts a publisher record in place as a test sets it.
+func writeRecord(t *testing.T, path string, f publisherFile) error {
+	t.Helper()
+	data, err := json.Marshal(f)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}
+
+// M3: under the refuse policy, a publisher the public source does not show
+// is reported, and refuses nothing; only evidence of a lapse refuses.
+func TestUnverifiablePublisherIsNeverRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "engine.json"+publishersSuffix)
+	ref := "tickets@sha256:" + strings.Repeat("a", 64)
+	writeRecord(t, path, publisherFile{Version: 1, Policy: publisherPolicyRefuse, Publishers: map[string]publisherRecord{"tickets": {Binding: ref, State: publisherUnverifiable, Reason: reasonRepoMissing}}})
+	if err := publisherRefusal(path, "tickets", ref); err != nil {
+		t.Fatalf("an unverifiable publisher under the refuse policy: %v", err)
+	}
+	if lines := publisherLines("tickets", publisherRecord{Kind: "repository", Name: "github.com/acme/private", State: publisherUnverifiable, Reason: reasonRepoMissing}); len(lines) != 2 || !strings.Contains(lines[1], "publisher-unverifiable") {
+		t.Fatalf("%q", lines)
+	}
+}
+
+// M4: a refusal answered to /acquire or /act names no path.
+func TestUnreadableRecordRefusalNamesNoPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "engine.json"+publishersSuffix)
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := publisherRefusal(path, "tickets", "tickets@sha256:aa")
+	if err == nil || strings.Contains(err.Error(), dir) || strings.Contains(err.Error(), "engine.json") || strings.Contains(err.Error(), string(filepath.Separator)) {
+		t.Fatalf("the refusal: %v", err)
+	}
+}
+
+// H3: a policy set while a scheduled re-check reads the publishers is not
+// lost when the re-check writes what it read.
+func TestPolicySetDuringRecheckIsKept(t *testing.T) {
+	bin, _ := buildMCPStandIns(t, t.TempDir())
+	target := newWriteStandIn(t, customerTools)
+	answers := map[string][2]string{"/gh/acme/tickets-mcp": {"200", `{"archived":false,"disabled":false}`}}
+	checker := publisherStandIn(t, answers)
+	binding := strings.Replace(customerBinding(target.URL, ""), `"bindingVersion":"2"`, `"bindingVersion":"2","customer":true,"publisher":{"kind":"repository","name":"github.com/acme/tickets-mcp"}`, 1)
+	f, req, check, _ := customerFixture(t, bin, binding, false)
+	if _, err := connectPublisher(context.Background(), req, f.host, check, checker); err != nil {
+		t.Fatal(err)
+	}
+	// The re-check's read is held until the policy has been set.
+	entered, release := make(chan struct{}), make(chan struct{})
+	slow := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+		w.Write([]byte(`{"archived":true,"disabled":false}`))
+	}))
+	defer slow.Close()
+	held := publisherChecker{client: slow.Client(), github: slow.URL + "/gh/", now: func() time.Time { return publisherT0 }}
+	done := make(chan int)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		done <- runPublishers(context.Background(), []string{"--config", f.config, "--check"}, &stdout, &stderr, held)
+	}()
+	<-entered
+	var stdout, stderr bytes.Buffer
+	if code := runPublishers(context.Background(), []string{"--config", f.config, "--policy", "refuse"}, &stdout, &stderr, checker); code != 0 {
+		t.Fatalf("the policy: %d %s", code, stderr.String())
+	}
+	close(release)
+	if code := <-done; code != 0 {
+		t.Fatal("the re-check failed")
+	}
+	record, err := readPublishers(publishersPath(f.config))
+	if err != nil || record.Policy != publisherPolicyRefuse || record.Publishers[req.platform].State != publisherUnmaintained {
+		t.Fatalf("the policy set during the re-check was lost: %+v %v", record, err)
+	}
+	if err := publisherRefusal(publishersPath(f.config), req.platform, record.Publishers[req.platform].Binding); err == nil {
+		t.Fatal("the unmaintained publisher was admitted")
 	}
 }
