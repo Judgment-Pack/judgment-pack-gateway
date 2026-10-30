@@ -277,7 +277,8 @@ func TestDerivedSourcesCarryTheirApproval(t *testing.T) {
 	}
 	image := `{"image":"registry.example/tickets@sha256:` + strings.Repeat("a", 64) + `","args":["--read-only","--tenant=one"]}`
 	remote := `{"url":"https://tickets.example/mcp","bearer":"token","headers":["X-Mode=read","X-Tenant=one"]}`
-	command := `{"command":["/opt/server/bin/tickets","serve"],"workspace":"` + workspace + `"}`
+	quoted, _ := json.Marshal(workspace) // a Windows path holds backslashes
+	command := `{"command":["/opt/server/bin/tickets","serve"],"workspace":` + string(quoted) + `}`
 	for name, text := range map[string]string{
 		"image":   `{"bindingVersion":"2","platform":"tickets","operations":{"live":` + operation(image, "read-external") + `,"write":` + operation(image, "act") + `}}`,
 		"remote":  `{"bindingVersion":"2","platform":"tickets","operations":{"live":` + operation(remote, "read-external") + `,"write":` + operation(remote, "act") + `}}`,
