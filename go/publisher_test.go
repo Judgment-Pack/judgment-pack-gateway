@@ -410,16 +410,22 @@ func TestPolicySetDuringRecheckIsKept(t *testing.T) {
 // N1: the registrable-domain refusal names what to declare.
 func TestDomainPublisherIsTheRegistrableDomain(t *testing.T) {
 	for name, want := range map[string]string{
-		"tickets.acme.example":   `declare "acme.example"`,
+		"tickets.acme.example":   "declare the server's repository or package",
 		"tickets.acme.co.uk":     `declare "acme.co.uk"`,
 		"tickets-mcp.vercel.app": "declare the server's repository or package",
 		"co.uk":                  "a public suffix",
+		"nhs.uk":                 "a public suffix",
+		// N8: an unlisted two-label suffix: no domain is named to declare.
+		"acme.com.zz": "cannot be verified here as a registrable domain",
 	} {
+		if err := registrableDomain(name); err != nil && strings.Contains(err.Error(), `declare "`) && !strings.HasSuffix(name, ".co.uk") {
+			t.Errorf("%s: the refusal names a domain to declare: %v", name, err)
+		}
 		if err := registrableDomain(name); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	for _, name := range []string{"acme.example", "acme.co.uk", "vercel-tools.example"} {
+	for _, name := range []string{"acme.example", "acme.co.uk", "vercel-tools.example", "leedsth.nhs.uk", "acme.on.ca", "acme.com.es"} {
 		if err := registrableDomain(name); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -479,5 +485,103 @@ func TestRecaptureDuringRecheckIsKept(t *testing.T) {
 	}
 	if err := publisherRefusal(publishersPath(f.config), req.platform, written.Publishers[req.platform].Binding); err == nil {
 		t.Fatal("the archived v2 publisher was admitted")
+	}
+}
+
+// N9: a reading that is inconclusive -- a failed read, or a publisher the
+// public source no longer shows -- never lifts a conclusive one. Under the
+// refuse policy, an unmaintained publisher stays refused until a
+// conclusive maintained reading; the re-check says so and exits 3.
+func TestInconclusiveReadingKeepsTheRefusal(t *testing.T) {
+	bin, _ := buildMCPStandIns(t, t.TempDir())
+	target := newWriteStandIn(t, customerTools)
+	answers := map[string][2]string{"/gh/acme/tickets-mcp": {"200", `{"archived":true,"disabled":false}`}}
+	checker := publisherStandIn(t, answers)
+	binding := strings.Replace(customerBinding(target.URL, ""), `"bindingVersion":"2"`, `"bindingVersion":"2","customer":true,"publisher":{"kind":"repository","name":"github.com/acme/tickets-mcp"}`, 1)
+	f, req, check, _ := customerFixture(t, bin, binding, false)
+	if _, err := connectPublisher(context.Background(), req, f.host, check, checker); err != nil {
+		t.Fatal(err)
+	}
+	path := publishersPath(f.config)
+	var stdout, stderr bytes.Buffer
+	if code := runPublishers(context.Background(), []string{"--config", f.config, "--policy", "refuse"}, &stdout, &stderr, checker); code != 0 {
+		t.Fatal(stderr.String())
+	}
+	refused := func() bool {
+		record, _ := readPublishers(path)
+		return publisherRefusal(path, req.platform, record.Publishers[req.platform].Binding) != nil
+	}
+	if !refused() {
+		t.Fatal("an archived publisher under the refuse policy was admitted")
+	}
+	before, _ := readPublishers(path)
+	for _, k := range []struct {
+		answer  [2]string
+		attempt string
+	}{
+		{[2]string{"503", ""}, publisherUnknown},
+		{[2]string{"200", `{"archived":"maybe"}`}, publisherUnknown},
+		{[2]string{"404", ""}, publisherUnverifiable},
+	} {
+		answers["/gh/acme/tickets-mcp"] = k.answer
+		stdout.Reset()
+		stderr.Reset()
+		if code := runPublishers(context.Background(), []string{"--config", f.config, "--check"}, &stdout, &stderr, checker); code != 3 || !strings.Contains(stderr.String(), "warning") {
+			t.Fatalf("%v: a re-check whose reading was inconclusive: %d %q", k.answer, code, stderr.String())
+		}
+		record, _ := readPublishers(path)
+		r := record.Publishers[req.platform]
+		if r.State != publisherUnmaintained || r.CheckedAt != before.Publishers[req.platform].CheckedAt || r.AttemptState != k.attempt || r.LastAttempt == "" || !strings.Contains(stdout.String(), "publisher-read-inconclusive") {
+			t.Fatalf("%v: the conclusive reading was not kept: %+v %s", k.answer, r, stdout.String())
+		}
+		if !refused() {
+			t.Fatalf("%v: an inconclusive reading lifted the refusal", k.answer)
+		}
+	}
+	// A recapture whose reading is inconclusive is refused too.
+	answers["/gh/acme/tickets-mcp"] = [2]string{"503", ""}
+	req.replace = true
+	if _, err := connectPublisher(context.Background(), req, f.host, check, checker); err == nil || !strings.Contains(err.Error(), "publisher-unmaintained") {
+		t.Fatalf("a recapture over an unmaintained publisher whose reading failed: %v", err)
+	}
+	// A conclusive maintained reading lifts it.
+	answers["/gh/acme/tickets-mcp"] = [2]string{"200", `{"archived":false,"disabled":false}`}
+	if code := runPublishers(context.Background(), []string{"--config", f.config, "--check"}, &stdout, &stderr, checker); code != 0 {
+		t.Fatalf("a conclusive re-check: %d", code)
+	}
+	if record, _ := readPublishers(path); refused() || record.Publishers[req.platform].LastAttempt != "" {
+		t.Fatalf("a conclusive maintained reading did not lift the refusal: %+v", record.Publishers[req.platform])
+	}
+}
+
+// N9: with no conclusive reading yet, an inconclusive one is the record's
+// state, and refuses nothing.
+func TestFirstInconclusiveReadingIsUnknown(t *testing.T) {
+	reading := publisherRecord{Binding: "b", Kind: "repository", Name: "github.com/acme/x", State: publisherUnknown, CheckedAt: "t1"}
+	if got := mergeReading(publisherRecord{}, false, reading); got != reading {
+		t.Fatalf("%+v", got)
+	}
+	prev := publisherRecord{Binding: "b", Kind: "repository", Name: "github.com/acme/other", State: publisherUnmaintained, CheckedAt: "t0"}
+	if got := mergeReading(prev, true, reading); got != reading {
+		t.Fatalf("a reading of another declared publisher kept the earlier one: %+v", got)
+	}
+}
+
+// N10: a bootstrap that is empty, or names no HTTPS service for the
+// top-level domain it lists, is inconclusive (unknown); only a top-level
+// domain absent from a bootstrap that lists others is unverifiable.
+func TestRDAPBootstrapWithoutAnHTTPSServiceIsUnknown(t *testing.T) {
+	for body, want := range map[string]string{
+		`{}`:              publisherUnknown,
+		`{"services":[]}`: publisherUnknown,
+		`{"services":[[["example"],["http://rdap.example/"]]]}`: publisherUnknown,
+		`{"services":[[["other"],["https://rdap.other/"]]]}`:    publisherUnverifiable,
+	} {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) }))
+		c := publisherChecker{client: server.Client(), bootstrap: server.URL + "/bootstrap.json", now: func() time.Time { return publisherT0 }}
+		if state, _ := c.check(context.Background(), &publisherDecl{"domain", "acme.example"}); state != want {
+			t.Errorf("%s: %s, not %s", body, state, want)
+		}
+		server.Close()
 	}
 }

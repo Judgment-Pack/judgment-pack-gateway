@@ -126,6 +126,10 @@ var sharedPlatforms = []string{
 // not name is refused (its third label is taken for a host), and is
 // declared by its repository or package instead.
 var multiLabelSuffixes = map[string]bool{
+	"nhs.uk": true, "police.uk": true, "sch.uk": true, "mod.uk": true,
+	"com.es": true, "org.es": true, "nom.es": true, "edu.es": true, "gob.es": true,
+	"ab.ca": true, "bc.ca": true, "mb.ca": true, "nb.ca": true, "nf.ca": true, "nl.ca": true, "ns.ca": true, "nt.ca": true,
+	"nu.ca": true, "on.ca": true, "pe.ca": true, "qc.ca": true, "sk.ca": true, "yk.ca": true,
 	"co.uk": true, "org.uk": true, "ac.uk": true, "gov.uk": true, "ltd.uk": true, "plc.uk": true, "me.uk": true, "net.uk": true,
 	"com.au": true, "net.au": true, "org.au": true, "edu.au": true, "gov.au": true, "co.nz": true, "org.nz": true, "net.nz": true,
 	"co.jp": true, "ne.jp": true, "or.jp": true, "ac.jp": true, "com.br": true, "net.br": true, "org.br": true,
@@ -151,8 +155,14 @@ func registrableDomain(name string) error {
 	switch {
 	case len(labels) < want:
 		return fmt.Errorf("publisher: %s is a public suffix, not a registrable domain", name)
+	case len(labels) > want && want == 3:
+		// The tail is a listed suffix: the registrable domain is known.
+		return fmt.Errorf("publisher: a domain publisher is the registrable domain, not a host under it: declare %q", strings.Join(labels[len(labels)-3:], "."))
 	case len(labels) > want:
-		return fmt.Errorf("publisher: a domain publisher is the registrable domain, not a host under it: declare %q", strings.Join(labels[len(labels)-want:], "."))
+		// The gateway cannot tell a host under a registrable domain from a
+		// registrable domain under a public suffix it does not list, and so
+		// names no domain to declare: either might be another's.
+		return fmt.Errorf("publisher: %s cannot be verified here as a registrable domain: it is a host, or it is under a public suffix the gateway does not list; declare the server's repository or package as its publisher, or none", name)
 	}
 	return nil
 }
@@ -168,6 +178,42 @@ type publisherRecord struct {
 	CheckedAt string `json:"checkedAt"`
 	Reason    string `json:"reason"`
 	Lookalike string `json:"lookalike,omitempty"`
+	// LastAttempt, AttemptState and AttemptReason are a later reading that
+	// was inconclusive (unknown, or unverifiable) and so did not replace
+	// the conclusive one above (mergeReading).
+	LastAttempt   string `json:"lastAttempt,omitempty"`
+	AttemptState  string `json:"attemptState,omitempty"`
+	AttemptReason string `json:"attemptReason,omitempty"`
+}
+
+// conclusive is whether a state is evidence: maintained, or unmaintained.
+func conclusive(state string) bool {
+	return state == publisherMaintained || state == publisherUnmaintained
+}
+
+// mergeReading is the record a reading leaves. An inconclusive reading --
+// a read that failed, timed out or was refused, an answer that could not
+// be read, or a publisher the public source no longer shows -- never lifts
+// a conclusive one of the same declared publisher: the last conclusive
+// state and its time are kept, and the failed read is recorded beside it,
+// under the reading's binding. A conclusive reading, a first reading, and
+// a reading of another declared publisher replace the record.
+func mergeReading(prev publisherRecord, had bool, reading publisherRecord) publisherRecord {
+	if conclusive(reading.State) || !had || !conclusive(prev.State) || reading.Kind == "" || prev.Kind != reading.Kind || prev.Name != reading.Name {
+		return reading
+	}
+	kept := prev
+	kept.Binding, kept.Lookalike = reading.Binding, reading.Lookalike
+	kept.LastAttempt, kept.AttemptState, kept.AttemptReason = reading.CheckedAt, reading.State, reading.Reason
+	return kept
+}
+
+// inconclusiveRead is whether a reading was inconclusive where it should
+// not be: a read that failed (unknown), or one that kept a conclusive
+// record (mergeReading). A publisher that was never shown (unverifiable,
+// with nothing conclusive before it) is its standing state, not a failure.
+func inconclusiveRead(reading, merged publisherRecord) bool {
+	return reading.State == publisherUnknown || merged.LastAttempt != "" && merged.LastAttempt == reading.CheckedAt
 }
 
 // publisherFile is the record of every customer platform's publisher, and
@@ -320,7 +366,7 @@ func (c publisherChecker) rdapService(ctx context.Context, tld string) (string, 
 	var boot struct {
 		Services [][][]string `json:"services"`
 	}
-	if json.Unmarshal(body, &boot) != nil {
+	if json.Unmarshal(body, &boot) != nil || len(boot.Services) == 0 {
 		return "", false, errors.New("the RDAP bootstrap could not be read")
 	}
 	for _, service := range boot.Services {
@@ -339,6 +385,9 @@ func (c publisherChecker) rdapService(ctx context.Context, tld string) (string, 
 					return u, true, nil
 				}
 			}
+			// The top-level domain is listed, and no service of it can be
+			// read over HTTPS: inconclusive, never unverifiable.
+			return "", false, errors.New("the RDAP bootstrap names no HTTPS service for the top-level domain")
 		}
 	}
 	return "", false, nil
@@ -692,6 +741,9 @@ func publisherLines(platform string, r publisherRecord) []string {
 		what = r.Kind + " " + r.Name
 	}
 	lines := []string{fmt.Sprintf("%s: publisher %s: %s at %s: %s", platform, what, r.State, r.CheckedAt, r.Reason)}
+	if r.LastAttempt != "" {
+		lines = append(lines, fmt.Sprintf("%s: publisher-read-inconclusive: %s at %s: %s; the last conclusive reading, %s at %s, is kept", platform, r.AttemptState, r.LastAttempt, r.AttemptReason, r.State, r.CheckedAt))
+	}
 	switch r.State {
 	case publisherUnmaintained:
 		lines = append(lines, fmt.Sprintf("%s: publisher-unmaintained: %s", platform, r.Reason))
@@ -765,7 +817,9 @@ func connectPublisher(ctx context.Context, req connectRequest, host engineHost, 
 	if err != nil {
 		return connectOutcome{}, err
 	}
-	record := checker.read(ctx, req.platform, ref, b)
+	reading := checker.read(ctx, req.platform, ref, b)
+	prev, had := f.Publishers[req.platform]
+	record := mergeReading(prev, had, reading)
 	lines := publisherLines(req.platform, record)
 	if f.Policy == publisherPolicyRefuse && record.State == publisherUnmaintained {
 		return connectOutcome{statements: lines}, errPublisherUnmaintained(req.platform)
@@ -778,7 +832,8 @@ func connectPublisher(ctx context.Context, req connectRequest, host engineHost, 
 		if err != nil {
 			return err
 		}
-		f.Publishers[req.platform] = record
+		prev, had := f.Publishers[req.platform]
+		f.Publishers[req.platform] = mergeReading(prev, had, reading)
 		if err := held.writePublishers(f); err != nil {
 			return fmt.Errorf("the configuration was written, and the publisher record was not: %v", err)
 		}
@@ -860,6 +915,7 @@ func runPublishers(ctx context.Context, args []string, stdout, stderr io.Writer,
 			checked[p.name] = checker.read(ctx, p.name, p.binding, b)
 		}
 	}
+	var inconclusive []string
 	if recheck || policy != "" {
 		err := withConfigLock(config, func(held *configFile) error {
 			current, err := readPublishers(path)
@@ -876,10 +932,13 @@ func runPublishers(ctx context.Context, args []string, stdout, stderr io.Writer,
 				// what stood before it.
 				before, had := f.Publishers[name]
 				now, has := current.Publishers[name]
-				if has && (!had || now.Binding != before.Binding || now.CheckedAt != before.CheckedAt || now.Binding != r.Binding) {
+				if has && (!had || now.Binding != before.Binding || now.CheckedAt != before.CheckedAt || now.LastAttempt != before.LastAttempt || now.Binding != r.Binding) {
 					continue
 				}
-				current.Publishers[name] = r
+				current.Publishers[name] = mergeReading(now, has, r)
+				if inconclusiveRead(r, current.Publishers[name]) {
+					inconclusive = append(inconclusive, name)
+				}
 			}
 			if err := held.writePublishers(current); err != nil {
 				return err
@@ -903,5 +962,15 @@ func runPublishers(ctx context.Context, args []string, stdout, stderr io.Writer,
 		}
 	}
 	fmt.Fprintf(stdout, "policy: %s\n", f.Policy)
+	// A re-check whose reading of a publisher was inconclusive says so, and
+	// exits 3: the record keeps the last conclusive reading, and the
+	// operator's schedule should run the re-check again.
+	sort.Strings(inconclusive)
+	for _, name := range inconclusive {
+		fmt.Fprintf(stderr, "publishers: warning: %s: the publisher's liveness could not be read conclusively; the last conclusive reading, if any, is kept\n", printable(name))
+	}
+	if len(inconclusive) > 0 {
+		return 3
+	}
 	return 0
 }

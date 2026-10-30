@@ -155,7 +155,8 @@ provider's custody for the principal, is then revoked or quarantined:
 - without either, the grant is revoked (open question 13).
 
 A quarantined grant keeps its credential, admits no call, and is refused as `grant-quarantined`
-before its credential is read. Its state is read again once a Google token is renewed or a Databricks
+before its credential is read. Its state is read again once a token is held after a renewal (a Google
+renewal of this call's, another process's renewal taken in its place, or Notion's) or a Databricks
 token is held, immediately before the call is sent. The gate holds the ledger to custody before it
 reads a grant's state, so a connection made again under its id after its grant was revoked is a
 new grant there, as in the report. It leaves quarantine only when the operator revokes it.
@@ -232,12 +233,17 @@ as `acme.example` or `acme.co.uk`, never a host under it. The core reads no publ
 the rule at parse is this:
 
 - the name has exactly two labels, or exactly three under a two-label public suffix of a fixed,
-  partial list (`co.uk`, `com.au`, `co.jp` and so on);
-- a host under a registrable domain is refused, and the message names the domain to declare
-  (`tickets.acme.example` → declare `acme.example`);
-- a public suffix itself (`co.uk`) is refused;
-- a registrable domain under a two-label suffix the list does not name has three labels, and is
-  refused as a host;
+  partial list (`co.uk`, `nhs.uk`, `com.au`, `co.jp`, `com.es`, `on.ca` and so on);
+- a host under a domain of that list's suffixes is refused, and the message names the domain to
+  declare (`tickets.acme.co.uk` → declare `acme.co.uk`);
+- any other name of three labels or more is refused without naming a domain: the gateway cannot
+  tell a host under a registrable domain (`tickets.acme.example`) from a registrable domain under a
+  public suffix it does not list (`acme.com.zz`), and the name it would suggest could be another's
+  domain or a suffix; such a server declares its repository or package, or no publisher;
+- a listed public suffix itself (`co.uk`, `nhs.uk`) is refused. The list is partial: a public
+  suffix it does not name, declared as a two-label domain, parses, and is read as that suffix's
+  registry object, which says nothing of a publisher. Such a declaration is meaningless, and
+  is the operator's to avoid;
 - a shared platform's domain, under which anyone may be given a host (`vercel.app`, `netlify.app`,
   `github.io`, `pages.dev`, `herokuapp.com`, `azurewebsites.net` and others), is refused, and so
   is any host on one.
@@ -260,12 +266,27 @@ The 404 cases are these, exactly:
 - **RDAP:** a 404 from the registry's own service for the registrable domain declared is
   `unmaintained`, with the reason "the registry's RDAP service answers that the domain is not
   registered". That is the window in which another can register the name.
-- **No service:** a top-level domain the bootstrap names no service for (for example `.io`) is
-  `unverifiable`.
+- **No service:** a top-level domain absent from the bootstrap (for example `.io`) is
+  `unverifiable`. A bootstrap that cannot be read, is empty, or lists the top-level domain with no
+  HTTPS service, is inconclusive (`unknown`).
 - **Never the name above:** the gateway asks for the declared name alone. It never reads the
   object of a name above it, such as a public suffix's own object.
 
-Any other answer leaves the state `unknown`. A customer binding that declares no publisher is
+Any other answer leaves the state `unknown`.
+
+**An inconclusive reading never lifts a conclusive one.** `maintained` and `unmaintained` are
+conclusive; `unknown` (a read that failed, timed out, was refused or rate-limited, or answered
+what cannot be read) and `unverifiable` are not. When a re-check or a recapture reads a publisher
+inconclusively, and its record holds a conclusive reading of the same declared publisher:
+
+- the record keeps that state and its time;
+- the failed read is recorded beside it (`lastAttempt`, `attemptState` and `attemptReason`) and
+  reported as `publisher-read-inconclusive`;
+- `gateway publishers --check` warns on stderr and exits 3, after writing the record.
+
+So under `refuse`, an unmaintained publisher stays refused until a conclusive `maintained`
+reading, and a recapture whose reading fails is refused as before. A platform with no conclusive
+reading yet takes the inconclusive state, and is not refused. A customer binding that declares no publisher is
 `undeclared`. The reads disclose to those public services which servers an operator uses, so their
 schedule is the operator's.
 

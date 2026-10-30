@@ -2139,6 +2139,9 @@ no credential, no token, no token digest, no provider account and no content.
    package or repository the public source does not show, or a top-level domain with no RDAP
    service), `unknown` or `undeclared`, with
    the time it was checked. An unmaintained publisher is reported as `publisher-unmaintained`, an
-   unverifiable one as `publisher-unverifiable`, which never refuses. Under the operator's `refuse` policy, it refuses the registration
+   unverifiable one as `publisher-unverifiable`, which never refuses. An inconclusive reading
+   (`unknown` or `unverifiable`) never replaces a conclusive one (`maintained` or `unmaintained`)
+   of the same declared publisher: the conclusive state is kept and the failed read recorded beside
+   it. Under the operator's `refuse` policy, an unmaintained publisher refuses the registration
    and each acquisition and action of that binding. A registration whose name closely matches an
    integration the gateway ships, under another publisher, is flagged `name-lookalike`.
