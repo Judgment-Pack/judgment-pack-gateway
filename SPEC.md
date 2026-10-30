@@ -2131,10 +2131,13 @@ no credential, no token, no token digest, no provider account and no content.
 7. Revoking or quarantining a grant deletes no record of a pending action. An action that the
    revoked grant would have read back stays `unknown`.
 8. A customer MCP binding may declare its publisher: `{"kind": "registry" | "repository" |
-   "domain", "name"}`. Its liveness is read at registration and on the operator's schedule, and
+   "domain", "name"}`, a domain being the registrable domain, never a host under it or on a shared
+   platform. Its liveness is read at registration and on the operator's schedule, and
    kept beside the engine configuration under its lock, with its mode and owner: `maintained`,
    `unmaintained` (evidence of a lapse: deprecated, archived, expired, in redemption or pending
-   deletion), `unverifiable` (the public source does not show it), `unknown` or `undeclared`, with
+   deletion, or a domain its registry's RDAP service answers is not registered), `unverifiable` (a
+   package or repository the public source does not show, or a top-level domain with no RDAP
+   service), `unknown` or `undeclared`, with
    the time it was checked. An unmaintained publisher is reported as `publisher-unmaintained`, an
    unverifiable one as `publisher-unverifiable`, which never refuses. Under the operator's `refuse` policy, it refuses the registration
    and each acquisition and action of that binding. A registration whose name closely matches an

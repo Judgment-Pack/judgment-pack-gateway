@@ -98,12 +98,63 @@ func parsePublisher(v value) (*publisherDecl, error) {
 		}
 	case "domain":
 		if len(name) > 253 || !domainName.MatchString(name) {
-			return nil, errors.New("publisher: a domain publisher is a lower-case host name")
+			return nil, errors.New("publisher: a domain publisher is a lower-case domain name")
+		}
+		if err := registrableDomain(name); err != nil {
+			return nil, err
 		}
 	default:
 		return nil, errors.New(`publisher: kind is "registry", "repository" or "domain"`)
 	}
 	return &publisherDecl{kind, name}, nil
+}
+
+// sharedPlatforms are domains under which many unrelated parties are given a
+// host. The platform's registration says nothing of who publishes a host
+// under it, so neither the platform's domain nor a host under it is a
+// domain publisher.
+var sharedPlatforms = []string{
+	"vercel.app", "now.sh", "netlify.app", "netlify.com", "github.io", "gitlab.io", "herokuapp.com", "pages.dev",
+	"workers.dev", "web.app", "firebaseapp.com", "appspot.com", "run.app", "azurewebsites.net", "azurestaticapps.net",
+	"cloudfront.net", "amazonaws.com", "onrender.com", "fly.dev", "railway.app", "glitch.me", "repl.co", "replit.app",
+	"ngrok.io", "ngrok-free.app", "ngrok.app", "deno.dev", "surge.sh", "modal.run", "hf.space", "streamlit.app",
+}
+
+// multiLabelSuffixes are public suffixes of two labels, under which the
+// registrable domain has three. The core reads no public-suffix list, so
+// this is a fixed, partial list: a domain under a two-label suffix it does
+// not name is refused (its third label is taken for a host), and is
+// declared by its repository or package instead.
+var multiLabelSuffixes = map[string]bool{
+	"co.uk": true, "org.uk": true, "ac.uk": true, "gov.uk": true, "ltd.uk": true, "plc.uk": true, "me.uk": true, "net.uk": true,
+	"com.au": true, "net.au": true, "org.au": true, "edu.au": true, "gov.au": true, "co.nz": true, "org.nz": true, "net.nz": true,
+	"co.jp": true, "ne.jp": true, "or.jp": true, "ac.jp": true, "com.br": true, "net.br": true, "org.br": true,
+	"com.cn": true, "net.cn": true, "org.cn": true, "com.mx": true, "org.mx": true, "co.in": true, "net.in": true, "org.in": true,
+	"co.za": true, "org.za": true, "com.sg": true, "com.hk": true, "com.tw": true, "co.kr": true, "or.kr": true,
+	"com.tr": true, "com.ar": true, "co.il": true, "com.my": true, "com.ph": true, "com.vn": true, "com.pl": true, "co.id": true,
+}
+
+// registrableDomain refuses a domain publisher that is not itself a
+// registrable domain: a host under one, a public suffix, or a shared
+// platform or a host on it.
+func registrableDomain(name string) error {
+	for _, platform := range sharedPlatforms {
+		if name == platform || strings.HasSuffix(name, "."+platform) {
+			return fmt.Errorf("publisher: %s is a shared platform's domain, under which anyone may be given a host; declare the server's repository or package as its publisher instead", platform)
+		}
+	}
+	labels := strings.Split(name, ".")
+	want := 2
+	if multiLabelSuffixes[strings.Join(labels[len(labels)-2:], ".")] {
+		want = 3
+	}
+	switch {
+	case len(labels) < want:
+		return fmt.Errorf("publisher: %s is a public suffix, not a registrable domain", name)
+	case len(labels) > want:
+		return fmt.Errorf("publisher: a domain publisher is the registrable domain, not a host under it: declare %q", strings.Join(labels[len(labels)-want:], "."))
+	}
+	return nil
 }
 
 // publisherRecord is what the gateway read of one platform's publisher.
@@ -221,9 +272,12 @@ func withConfigLock(config string, fn func(*configFile) error) error {
 // publisherChecker reads a publisher's liveness from the npm registry,
 // GitHub's repository API and RDAP; a test points it elsewhere.
 type publisherChecker struct {
-	client            *http.Client
-	npm, github, rdap string
-	now               func() time.Time
+	client      *http.Client
+	npm, github string
+	// bootstrap is the IANA RDAP bootstrap for DNS: which RDAP service
+	// answers for each top-level domain.
+	bootstrap string
+	now       func() time.Time
 }
 
 func defaultPublisherChecker() publisherChecker {
@@ -234,26 +288,61 @@ func defaultPublisherChecker() publisherChecker {
 	t.DialContext = (&net.Dialer{Timeout: publisherTimeout}).DialContext
 	return publisherChecker{
 		client: &http.Client{Transport: t, Timeout: publisherTimeout},
-		npm:    "https://registry.npmjs.org/", github: "https://api.github.com/repos/", rdap: "https://rdap.org/domain/",
+		npm:    "https://registry.npmjs.org/", github: "https://api.github.com/repos/", bootstrap: "https://data.iana.org/rdap/dns.json",
 		now: time.Now,
 	}
 }
 
 // The reasons, fixed sentences that name no path, account or token.
 const (
-	reasonPackageDeprecated = "the package's latest version is deprecated in its registry"
-	reasonPackageMissing    = "the registry shows no public package of that name: it may be private, or not published"
-	reasonPackageLive       = "the registry lists the package, and its latest version is not deprecated"
-	reasonRepoArchived      = "the repository is archived or disabled"
-	reasonRepoMissing       = "no public repository of that name was found: it may be private, or not there"
-	reasonRepoLive          = "the repository is neither archived nor disabled"
-	reasonDomainExpired     = "the domain's registration has expired"
-	reasonDomainPending     = "the domain is in its redemption period or pending deletion"
-	reasonDomainMissing     = "no RDAP service answered for the name or a domain above it"
-	reasonDomainLive        = "the domain's registration is current"
-	reasonUnreadable        = "the publisher's liveness could not be read"
-	reasonUndeclared        = "the binding declares no publisher"
+	reasonPackageDeprecated   = "the package's latest version is deprecated in its registry"
+	reasonPackageMissing      = "the registry shows no public package of that name: it may be private, or not published"
+	reasonPackageLive         = "the registry lists the package, and its latest version is not deprecated"
+	reasonRepoArchived        = "the repository is archived or disabled"
+	reasonRepoMissing         = "no public repository of that name was found: it may be private, or not there"
+	reasonRepoLive            = "the repository is neither archived nor disabled"
+	reasonDomainExpired       = "the domain's registration has expired"
+	reasonDomainPending       = "the domain is in its redemption period or pending deletion"
+	reasonDomainNoService     = "no RDAP service is published for the domain's top-level domain"
+	reasonDomainNotRegistered = "the registry's RDAP service answers that the domain is not registered: it lapsed and was deleted, or was never registered"
+	reasonDomainLive          = "the domain's registration is current"
+	reasonUnreadable          = "the publisher's liveness could not be read"
+	reasonUndeclared          = "the binding declares no publisher"
 )
+
+// rdapService is the HTTPS base of the RDAP service the IANA bootstrap
+// names for a top-level domain, and whether it names one.
+func (c publisherChecker) rdapService(ctx context.Context, tld string) (string, bool, error) {
+	status, body, err := c.get(ctx, c.bootstrap, "application/json")
+	if err != nil || status != 200 {
+		return "", false, errors.New("the RDAP bootstrap could not be read")
+	}
+	var boot struct {
+		Services [][][]string `json:"services"`
+	}
+	if json.Unmarshal(body, &boot) != nil {
+		return "", false, errors.New("the RDAP bootstrap could not be read")
+	}
+	for _, service := range boot.Services {
+		if len(service) != 2 {
+			continue
+		}
+		for _, entry := range service[0] {
+			if !strings.EqualFold(entry, tld) {
+				continue
+			}
+			for _, u := range service[1] {
+				if strings.HasPrefix(u, "https://") {
+					if !strings.HasSuffix(u, "/") {
+						u += "/"
+					}
+					return u, true, nil
+				}
+			}
+		}
+	}
+	return "", false, nil
+}
 
 // get is one bounded GET; the status, and the body of a 200.
 func (c publisherChecker) get(ctx context.Context, endpoint, accept string) (int, []byte, error) {
@@ -332,19 +421,24 @@ func (c publisherChecker) check(ctx context.Context, d *publisherDecl) (string, 
 			return publisherMaintained, reasonRepoLive
 		}
 	case "domain":
-		// A host name is not itself a registration: a registry's RDAP answers
-		// 404 for it. Each name above it is asked in turn, down to two
-		// labels, and the first registration answered is the one read.
+		// The registry's own RDAP service is asked, as the IANA bootstrap
+		// names it for the top-level domain. A top-level domain with no
+		// service is unverifiable; the registry's 404 for the registrable
+		// domain declared is evidence of a lapse: the name is free to be
+		// registered by another.
 		name := d.name
-		status, body, err := c.get(ctx, c.rdap+name, "application/rdap+json")
-		for err == nil && status == 404 && strings.Count(name, ".") > 1 {
-			_, name, _ = strings.Cut(name, ".")
-			status, body, err = c.get(ctx, c.rdap+name, "application/rdap+json")
+		service, known, err := c.rdapService(ctx, name[strings.LastIndex(name, ".")+1:])
+		if err != nil {
+			break
 		}
+		if !known {
+			return publisherUnverifiable, reasonDomainNoService
+		}
+		status, body, err := c.get(ctx, service+"domain/"+name, "application/rdap+json")
 		switch {
 		case err != nil:
 		case status == 404:
-			return publisherUnverifiable, reasonDomainMissing
+			return publisherUnmaintained, reasonDomainNotRegistered
 		case status == 200:
 			var reply struct {
 				Name   string   `json:"ldhName"`
@@ -436,6 +530,59 @@ var homoglyphs = map[rune]rune{
 	'ı': 'i', 'ł': 'l', 'ℓ': 'l', 'ß': 's', 'ɑ': 'a',
 }
 
+// A decomposed spelling (a letter, then a combining mark) needs no fold: the
+// mark is not a letter or digit, and confusable drops it.
+// accented is each Latin letter with a diacritic, from the Latin-1
+// Supplement and Latin Extended-A blocks, by its base letter: what a
+// Unicode decomposition would leave once its combining marks were dropped,
+// which the core's standard library cannot compute.
+var accented = map[rune]rune{}
+
+func init() {
+	for base, letters := range map[rune]string{
+		'a': "àáâãäåāăą", 'c': "çćĉċč", 'd': "ďđ", 'e': "èéêëēĕėęě", 'g': "ĝğġģ", 'h': "ĥħ",
+		'i': "ìíîïĩīĭįİ", 'j': "ĵ", 'k': "ķ", 'l': "ĺļľŀ", 'n': "ñńņňŉ", 'o': "òóôõöøōŏő",
+		'r': "ŕŗř", 's': "śŝşš", 't': "ţťŧ", 'u': "ùúûüũūŭůűų", 'w': "ŵ", 'y': "ýÿŷ", 'z': "źżž",
+	} {
+		for _, r := range letters {
+			accented[r] = base
+		}
+	}
+}
+
+// smallCapitals and armenian are letters drawn like a Latin letter.
+var smallCapitals = map[rune]rune{
+	'ᴀ': 'a', 'ʙ': 'b', 'ᴄ': 'c', 'ᴅ': 'd', 'ᴇ': 'e', 'ꜰ': 'f', 'ɢ': 'g', 'ʜ': 'h', 'ɪ': 'i', 'ᴊ': 'j', 'ᴋ': 'k',
+	'ʟ': 'l', 'ᴍ': 'm', 'ɴ': 'n', 'ᴏ': 'o', 'ᴘ': 'p', 'ǫ': 'q', 'ʀ': 'r', 'ꜱ': 's', 'ᴛ': 't', 'ᴜ': 'u', 'ᴠ': 'v',
+	'ᴡ': 'w', 'ʏ': 'y', 'ᴢ': 'z',
+	// Armenian
+	'օ': 'o', 'ս': 'u', 'հ': 'h', 'ո': 'n', 'ց': 'g', 'զ': 'q', 'ա': 'w',
+}
+
+// foldLetter is the Latin letter a letter with a diacritic, a small
+// capital, an Armenian look-alike or a mathematical alphanumeric symbol
+// (U+1D400 to U+1D7FF) is drawn as.
+func foldLetter(r rune) (rune, bool) {
+	if base, ok := accented[r]; ok {
+		return base, true
+	}
+	if latin, ok := smallCapitals[r]; ok {
+		return latin, true
+	}
+	switch {
+	case r >= 0x1D400 && r <= 0x1D6A3:
+		// Thirteen alphabets of 52 letters, capitals then small letters.
+		i := (r - 0x1D400) % 52
+		if i >= 26 {
+			i -= 26
+		}
+		return 'a' + i, true
+	case r >= 0x1D7CE && r <= 0x1D7FF:
+		return '0' + (r-0x1D7CE)%10, true
+	}
+	return 0, false
+}
+
 // capitalHomoglyphs are Cyrillic and Greek capitals drawn like a Latin
 // capital, with that letter.
 var capitalHomoglyphs = map[rune]rune{
@@ -468,6 +615,9 @@ func confusable(s string) string {
 			return r
 		}
 		if latin, ok := homoglyphs[r]; ok {
+			return latin
+		}
+		if latin, ok := foldLetter(r); ok {
 			return latin
 		}
 		return r
@@ -720,6 +870,15 @@ func runPublishers(ctx context.Context, args []string, stdout, stderr io.Writer,
 				current.Policy = policy
 			}
 			for name, r := range checked {
+				// A record written since this re-check read the record --
+				// by a connect or a recapture, of another binding or at
+				// another time -- is kept as written: this reading is of
+				// what stood before it.
+				before, had := f.Publishers[name]
+				now, has := current.Publishers[name]
+				if has && (!had || now.Binding != before.Binding || now.CheckedAt != before.CheckedAt || now.Binding != r.Binding) {
+					continue
+				}
 				current.Publishers[name] = r
 			}
 			if err := held.writePublishers(current); err != nil {

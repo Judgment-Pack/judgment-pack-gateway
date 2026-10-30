@@ -24,6 +24,11 @@ var publisherT0 = time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
 func publisherStandIn(t *testing.T, answers map[string][2]string) publisherChecker {
 	t.Helper()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bootstrap.json" {
+			// The IANA bootstrap: example and uk have a service, io none.
+			w.Write([]byte(`{"version":"1.0","services":[[["example","uk"],["http://plain.invalid/","https://` + r.Host + `/rdap"]]]}`))
+			return
+		}
 		a, ok := answers[r.URL.EscapedPath()]
 		if !ok {
 			http.NotFound(w, r)
@@ -39,13 +44,13 @@ func publisherStandIn(t *testing.T, answers map[string][2]string) publisherCheck
 		}
 	}))
 	t.Cleanup(server.Close)
-	return publisherChecker{client: server.Client(), npm: server.URL + "/npm/", github: server.URL + "/gh/", rdap: server.URL + "/rdap/", now: func() time.Time { return publisherT0 }}
+	return publisherChecker{client: server.Client(), npm: server.URL + "/npm/", github: server.URL + "/gh/", bootstrap: server.URL + "/bootstrap.json", now: func() time.Time { return publisherT0 }}
 }
 
 func TestPublisherDeclarationForm(t *testing.T) {
 	for _, ok := range []string{
 		`{"kind":"registry","name":"npm:@acme/tickets-mcp"}`, `{"kind":"registry","name":"npm:tickets"}`,
-		`{"kind":"repository","name":"github.com/acme/tickets-mcp"}`, `{"kind":"domain","name":"tickets.acme.example"}`,
+		`{"kind":"repository","name":"github.com/acme/tickets-mcp"}`, `{"kind":"domain","name":"acme.example"}`, `{"kind":"domain","name":"acme.co.uk"}`,
 	} {
 		v, _ := parseJSON([]byte(ok))
 		if _, err := parsePublisher(v); err != nil {
@@ -56,6 +61,10 @@ func TestPublisherDeclarationForm(t *testing.T) {
 		`{"kind":"registry","name":"pypi:tickets"}`, `{"kind":"registry","name":"npm:Tickets"}`,
 		`{"kind":"repository","name":"gitlab.com/acme/x"}`, `{"kind":"repository","name":"github.com/acme/.."}`,
 		`{"kind":"domain","name":"Acme.example"}`, `{"kind":"domain","name":"localhost"}`,
+		// A host under a registrable domain, a public suffix, a shared
+		// platform or a host on one (N1).
+		`{"kind":"domain","name":"tickets.acme.example"}`, `{"kind":"domain","name":"tickets.acme.co.uk"}`, `{"kind":"domain","name":"co.uk"}`,
+		`{"kind":"domain","name":"tickets-mcp.vercel.app"}`, `{"kind":"domain","name":"vercel.app"}`, `{"kind":"domain","name":"acme.github.io"}`,
 		`{"kind":"person","name":"x"}`, `{"kind":"domain"}`, `{"kind":"domain","name":"a.example","extra":1}`, `"acme"`,
 	} {
 		v, _ := parseJSON([]byte(bad))
@@ -77,19 +86,20 @@ func TestPublisherDeclarationForm(t *testing.T) {
 // one whose liveness cannot be read unknown.
 func TestPublisherLiveness(t *testing.T) {
 	c := publisherStandIn(t, map[string][2]string{
-		"/npm/live-pkg":            {"200", `{"dist-tags":{"latest":"2.0.0"},"versions":{"1.0.0":{"deprecated":"old"},"2.0.0":{}}}`},
-		"/npm/@acme%2fold":         {"200", `{"dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":{"deprecated":"no longer maintained"}}}`},
-		"/npm/garbled":             {"200", `{"dist-tags":{},"versions":{}}`},
-		"/npm/flagged":             {"200", `{"dist-tags":{"latest":"3.0.0"},"versions":{"3.0.0":{"deprecated":true}}}`},
-		"/rdap/redeemed.example":   {"200", `{"ldhName":"redeemed.example","status":["active","Redemption Period"],"events":[]}`},
-		"/gh/acme/live":            {"200", `{"archived":false,"disabled":false}`},
-		"/gh/acme/archived":        {"200", `{"archived":true,"disabled":false}`},
-		"/gh/acme/silent":          {"200", `{"disabled":false}`},
-		"/gh/acme/down":            {"503", ""},
-		"/rdap/acme.example":       {"200", `{"ldhName":"acme.example","status":["active"],"events":[{"eventAction":"expiration","eventDate":"2027-01-01T00:00:00Z"}]}`},
-		"/rdap/lapsed.example":     {"200", `{"ldhName":"lapsed.example","status":["active"],"events":[{"eventAction":"expiration","eventDate":"2026-10-30T12:00:00Z"}]}`},
-		"/rdap/pending.example":    {"200", `{"ldhName":"pending.example","status":["pending delete"],"events":[]}`},
-		"/rdap/other-name.example": {"200", `{"ldhName":"another.example","status":["active"],"events":[]}`},
+		"/npm/live-pkg":                   {"200", `{"dist-tags":{"latest":"2.0.0"},"versions":{"1.0.0":{"deprecated":"old"},"2.0.0":{}}}`},
+		"/npm/@acme%2fold":                {"200", `{"dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":{"deprecated":"no longer maintained"}}}`},
+		"/npm/garbled":                    {"200", `{"dist-tags":{},"versions":{}}`},
+		"/npm/flagged":                    {"200", `{"dist-tags":{"latest":"3.0.0"},"versions":{"3.0.0":{"deprecated":true}}}`},
+		"/rdap/domain/redeemed.example":   {"200", `{"ldhName":"redeemed.example","status":["active","Redemption Period"],"events":[]}`},
+		"/gh/acme/live":                   {"200", `{"archived":false,"disabled":false}`},
+		"/gh/acme/archived":               {"200", `{"archived":true,"disabled":false}`},
+		"/gh/acme/silent":                 {"200", `{"disabled":false}`},
+		"/gh/acme/down":                   {"503", ""},
+		"/rdap/domain/co.uk":              {"200", `{"ldhName":"co.uk","status":["active"],"events":[]}`},
+		"/rdap/domain/acme.example":       {"200", `{"ldhName":"acme.example","status":["active"],"events":[{"eventAction":"expiration","eventDate":"2027-01-01T00:00:00Z"}]}`},
+		"/rdap/domain/lapsed.example":     {"200", `{"ldhName":"lapsed.example","status":["active"],"events":[{"eventAction":"expiration","eventDate":"2026-10-30T12:00:00Z"}]}`},
+		"/rdap/domain/pending.example":    {"200", `{"ldhName":"pending.example","status":["pending delete"],"events":[]}`},
+		"/rdap/domain/other-name.example": {"200", `{"ldhName":"another.example","status":["active"],"events":[]}`},
 	})
 	for _, k := range []struct {
 		kind, name, state string
@@ -107,9 +117,12 @@ func TestPublisherLiveness(t *testing.T) {
 		{"domain", "acme.example", publisherMaintained},
 		{"domain", "lapsed.example", publisherUnmaintained},
 		{"domain", "pending.example", publisherUnmaintained},
-		{"domain", "unregistered.example", publisherUnverifiable},
-		{"domain", "tickets.acme.example", publisherMaintained},
-		{"domain", "deep.tickets.lapsed.example", publisherUnmaintained},
+		{"domain", "unregistered.example", publisherUnmaintained},
+		// A lapsed registration under a two-label suffix whose own object
+		// the registry answers for (N1, N2): not registered, never the
+		// suffix's object taken for it.
+		{"domain", "acme.co.uk", publisherUnmaintained},
+		{"domain", "tool.io", publisherUnverifiable},
 		{"domain", "redeemed.example", publisherUnmaintained},
 		{"domain", "other-name.example", publisherUnknown},
 	} {
@@ -127,7 +140,8 @@ func TestPublisherLiveness(t *testing.T) {
 func TestNameLookalike(t *testing.T) {
 	stranger := &publisherDecl{"domain", "tools.stranger.example"}
 	for _, name := range []string{"databricks", "databrick", "databricsk", "Data-Bricks", "databricks-mcp", "n0tion", "n0t1on", "azure-dev0ps", "gmai1",
-		"n\u043eti\u043en", "\uff4e\uff4f\uff54\uff49\uff4f\uff4e", "gm\u0430\u0456l", "d\u0430t\u0430br\u0456\u0441ks", "\u043ebsidi\u0430n", "p\u043estgr\u0435s", "\u039d\u039f\u03a4\u0399\u039f\u039d"} {
+		"n\u043eti\u043en", "\uff4e\uff4f\uff54\uff49\uff4f\uff4e", "gm\u0430\u0456l", "d\u0430t\u0430br\u0456\u0441ks", "\u043ebsidi\u0430n", "p\u043estgr\u0435s", "\u039d\u039f\u03a4\u0399\u039f\u039d",
+		"n\u00f6ti\u00f6n", "n\u00f3t\u00edon", "no\u0308tion", "\U0001d427\U0001d428\U0001d42d\U0001d422\U0001d428\U0001d427", "\u0274\u1d0f\u1d1b\u026a\u1d0f\u0274", "n\u0585ti\u0585n"} {
 		if got := lookalike([]string{name}, stranger); got == "" {
 			t.Errorf("%s was not flagged", name)
 		}
@@ -390,5 +404,80 @@ func TestPolicySetDuringRecheckIsKept(t *testing.T) {
 	}
 	if err := publisherRefusal(publishersPath(f.config), req.platform, record.Publishers[req.platform].Binding); err == nil {
 		t.Fatal("the unmaintained publisher was admitted")
+	}
+}
+
+// N1: the registrable-domain refusal names what to declare.
+func TestDomainPublisherIsTheRegistrableDomain(t *testing.T) {
+	for name, want := range map[string]string{
+		"tickets.acme.example":   `declare "acme.example"`,
+		"tickets.acme.co.uk":     `declare "acme.co.uk"`,
+		"tickets-mcp.vercel.app": "declare the server's repository or package",
+		"co.uk":                  "a public suffix",
+	} {
+		if err := registrableDomain(name); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for _, name := range []string{"acme.example", "acme.co.uk", "vercel-tools.example"} {
+		if err := registrableDomain(name); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// N3: a record a recapture wrote while a re-check read liveness is kept;
+// the re-check's reading of the earlier binding does not replace it.
+func TestRecaptureDuringRecheckIsKept(t *testing.T) {
+	bin, _ := buildMCPStandIns(t, t.TempDir())
+	target := newWriteStandIn(t, customerTools)
+	answers := map[string][2]string{
+		"/gh/acme/tickets-mcp":    {"200", `{"archived":false,"disabled":false}`},
+		"/gh/acme/tickets-mcp-v2": {"200", `{"archived":true,"disabled":false}`},
+	}
+	checker := publisherStandIn(t, answers)
+	v1 := strings.Replace(customerBinding(target.URL, ""), `"bindingVersion":"2"`, `"bindingVersion":"2","customer":true,"publisher":{"kind":"repository","name":"github.com/acme/tickets-mcp"}`, 1)
+	f, req, check, _ := customerFixture(t, bin, v1, false)
+	if _, err := connectPublisher(context.Background(), req, f.host, check, checker); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	slow := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+		w.Write([]byte(`{"archived":false,"disabled":false}`))
+	}))
+	defer slow.Close()
+	held := publisherChecker{client: slow.Client(), github: slow.URL + "/gh/", now: func() time.Time { return publisherT0.Add(time.Hour) }}
+	done := make(chan int)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		done <- runPublishers(context.Background(), []string{"--config", f.config, "--check"}, &stdout, &stderr, held)
+	}()
+	<-entered
+	// The recapture: the binding now names v2, whose repository is archived.
+	v2 := strings.Replace(v1, "github.com/acme/tickets-mcp", "github.com/acme/tickets-mcp-v2", 1)
+	if err := os.WriteFile(filepath.Join(f.catalog, "tickets.json"), []byte(v2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req.replace = true
+	if _, err := connectPublisher(context.Background(), req, f.host, check, checker); err != nil {
+		t.Fatal(err)
+	}
+	written, _ := readPublishers(publishersPath(f.config))
+	close(release)
+	if code := <-done; code != 0 {
+		t.Fatal("the re-check failed")
+	}
+	record, err := readPublishers(publishersPath(f.config))
+	if err != nil || record.Publishers[req.platform] != written.Publishers[req.platform] || record.Publishers[req.platform].State != publisherUnmaintained {
+		t.Fatalf("the recapture's record was replaced: %+v, written %+v, %v", record.Publishers[req.platform], written.Publishers[req.platform], err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runPublishers(context.Background(), []string{"--config", f.config, "--policy", "refuse"}, &stdout, &stderr, checker); code != 0 {
+		t.Fatal(stderr.String())
+	}
+	if err := publisherRefusal(publishersPath(f.config), req.platform, written.Publishers[req.platform].Binding); err == nil {
+		t.Fatal("the archived v2 publisher was admitted")
 	}
 }

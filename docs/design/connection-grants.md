@@ -222,10 +222,27 @@ member:
 ```json
 "publisher": {"kind": "registry", "name": "npm:@acme/tickets-mcp"}
 "publisher": {"kind": "repository", "name": "github.com/acme/tickets-mcp"}
-"publisher": {"kind": "domain", "name": "tickets.acme.example"}
+"publisher": {"kind": "domain", "name": "acme.example"}
 ```
 
-The member is refused on a binding that is not a customer's. The binding digest covers it, as it
+The member is refused on a binding that is not a customer's.
+
+**A domain publisher is a registrable domain:** the name a registrant holds at its registry, such
+as `acme.example` or `acme.co.uk`, never a host under it. The core reads no public-suffix list, so
+the rule at parse is this:
+
+- the name has exactly two labels, or exactly three under a two-label public suffix of a fixed,
+  partial list (`co.uk`, `com.au`, `co.jp` and so on);
+- a host under a registrable domain is refused, and the message names the domain to declare
+  (`tickets.acme.example` → declare `acme.example`);
+- a public suffix itself (`co.uk`) is refused;
+- a registrable domain under a two-label suffix the list does not name has three labels, and is
+  refused as a host;
+- a shared platform's domain, under which anyone may be given a host (`vercel.app`, `netlify.app`,
+  `github.io`, `pages.dev`, `herokuapp.com`, `azurewebsites.net` and others), is refused, and so
+  is any host on one.
+
+Such a server declares its repository or its package as its publisher instead. The binding digest covers it, as it
 covers every member.
 
 **Liveness.** The gateway reads it from public sources:
@@ -234,13 +251,21 @@ covers every member.
 | --- | --- | --- | --- | --- |
 | `registry` | the npm registry | the package's latest version is deprecated (a message, or `true`) | the registry shows no public package of that name (private, or never published) | the latest version is listed and not deprecated |
 | `repository` | GitHub's repository API | the repository is archived or disabled | no public repository of that name answers (private, or not there) | it is neither |
-| `domain` | RDAP | the registration has expired (equal is expired), or the domain is in its redemption period or pending deletion | no RDAP service answers for the name or any domain above it | the registration is current |
+| `domain` | the registry's own RDAP service, as the IANA RDAP bootstrap names it for the top-level domain | the registry answers that the domain is not registered (it lapsed and was deleted, or was never registered), the registration has expired (equal is expired), or the domain is in its redemption period or pending deletion | the bootstrap names no RDAP service for the top-level domain | the registration is current |
 
-A host name is not itself a registration, so a `domain` publisher such as `tickets.acme.example` is
-read at the first name above it that RDAP answers for (`acme.example`), down to two labels. A
-404 is never taken as a lapse: a private package or repository, a host name, or a top-level domain
-the RDAP bootstrap knows no service for all answer it. Any other answer leaves the state
-`unknown`. A customer binding that declares no publisher is
+The 404 cases are these, exactly:
+
+- **npm and GitHub:** a 404 is `unverifiable`. An unauthenticated read cannot tell a private
+  package or repository from one unpublished or deleted.
+- **RDAP:** a 404 from the registry's own service for the registrable domain declared is
+  `unmaintained`, with the reason "the registry's RDAP service answers that the domain is not
+  registered". That is the window in which another can register the name.
+- **No service:** a top-level domain the bootstrap names no service for (for example `.io`) is
+  `unverifiable`.
+- **Never the name above:** the gateway asks for the declared name alone. It never reads the
+  object of a name above it, such as a public suffix's own object.
+
+Any other answer leaves the state `unknown`. A customer binding that declares no publisher is
 `undeclared`. The reads disclose to those public services which servers an operator uses, so their
 schedule is the operator's.
 
@@ -255,8 +280,10 @@ account and no token.
 Every read-modify-write of the record is made under the configuration's own lock
 (`<engine.json>.lock`, the one `connect` holds). `connect` writes the record under its lock once
 the configuration is in place. `gateway publishers --check` makes its liveness reads without the
-lock, then merges what it read into the record as it stands under the lock, so a policy set or a
-record written meanwhile is kept. A `gateway publishers` that finds a `connect` holding the lock
+lock, then merges what it read into the record as it stands under the lock. A policy set
+meanwhile is kept. So is a platform's record written meanwhile, by a `connect` or a recapture: a
+record whose binding or reading time differs from the one the re-check started from is left as
+written, and is read again at the next re-check. A `gateway publishers` that finds a `connect` holding the lock
 waits up to ten seconds, then refuses. The record is given the configuration's own mode and
 owner, as a replaced configuration is: a root `connect` or a root-run `gateway publishers` over a
 configuration the signer owns leaves a record the signer can read.
@@ -278,10 +305,15 @@ refused, under either policy.
 **Name lookalike.** A registration is flagged `name-lookalike` when its platform name, or its
 binding's platform name, closely matches one of the integrations the gateway ships while its
 declared publisher is not that integration's. The integrations are `azure-devops`, `databricks`,
-`postgres`, `google-drive`, `gmail`, `notion`, `obsidian` and `aws-s3`. A close match is any of
-these, after folding case, punctuation and look-alike characters: fullwidth letters to their
+`postgres`, `google-drive`, `gmail`, `notion`, `obsidian` and `aws-s3`. Names are compared after
+folding case, punctuation and look-alike characters: fullwidth letters to their
 ASCII forms, Cyrillic and Greek letters drawn like a Latin letter to that letter (capitals and
-small letters, from a fixed table), and `0`→`o`, `1`→`l`, `3`→`e`, `5`→`s`, `rn`→`m`, `vv`→`w`:
+small letters, from a fixed table), Latin letters with a diacritic to their base letter (the
+Latin-1 Supplement and Latin Extended-A, and a decomposed spelling, whose combining mark is
+dropped), the mathematical alphanumeric symbols, small capitals and a few Armenian letters
+(`օ`, `ս`, `հ`, `ո`, `ց`), and `0`→`o`, `1`→`l`, `3`→`e`, `5`→`s`, `rn`→`m`, `vv`→`w`. The core
+has no Unicode normalization or confusables data, so letters outside these tables are known
+misses. A close match is any of these, after that folding:
 
 - the name equals the integration's;
 - the name is one edit away from it (two edits for a name of ten characters or more);
@@ -320,8 +352,13 @@ The flag is shown with the approval and recorded. It is a report, never a refusa
 - **No policy refuses a lookalike.** The RFC lets an operator policy make `name-lookalike` a
   refusal. This release reports it only; no policy refuses it.
 - **Unverifiable is its own state.** The RFC's states are `maintained`, `unmaintained` and
-  `unknown`. A publisher the public source does not show (a 404) is `unverifiable`: reported,
-  never refused.
+  `unknown`. A package or repository the public source does not show (a 404), and a top-level
+  domain with no RDAP service, are `unverifiable`: reported, never refused. A registry's own 404
+  for a declared domain is `unmaintained`.
+- **A domain publisher is a registrable domain, by a partial list.** Without a public-suffix
+  list, a domain under a two-label public suffix the gateway does not list cannot be declared as a
+  domain publisher. Hosts, including hosts on shared platforms, cannot be declared at all; such a
+  server declares its repository or package.
 - **Name lookalike against the gateway's own integrations.** The known integrations are the ones
   the gateway ships, a fixed list. The operator cannot extend it in this release.
 - **Owner removal at use.** An owner read that answers `removed` changes the grants in the custody
