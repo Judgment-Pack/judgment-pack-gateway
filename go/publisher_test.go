@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -164,7 +165,8 @@ func TestCustomerRegistrationRecordsPublisherAndPolicyRefuses(t *testing.T) {
 	if err != nil || record.Publishers[req.platform].State != publisherMaintained || !strings.HasPrefix(record.Publishers[req.platform].Binding, "tickets@sha256:") {
 		t.Fatalf("%+v %v", record, err)
 	}
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+	// Windows has no Unix modes; the record is private there by its directory's ACL.
+	if info, err := os.Stat(path); err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("the record's mode: %v %v", info, err)
 	}
 
