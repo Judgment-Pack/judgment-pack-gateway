@@ -79,7 +79,7 @@ func (p provider) read(ctx context.Context, s *Store, raw []byte) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	if err := s.grantUse(ctx, p, p.kind(), "read"); err != nil {
+	if ctx, err = s.grantUse(ctx, p, p.kind(), "read"); err != nil {
 		return nil, err
 	}
 	return p.readDriveDocument(ctx, s, req.FileID, client, credentialSnapshot, epoch, func() error {

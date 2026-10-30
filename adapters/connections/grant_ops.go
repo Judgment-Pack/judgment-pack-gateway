@@ -45,6 +45,7 @@ type GrantReport struct {
 	OwnerHost  *string           `json:"ownerHost"`
 	Scopes     GrantReportScopes `json:"scopes"`
 	Excess     []string          `json:"excess"`
+	Wider      []string          `json:"wider"`
 	CreatedAt  string            `json:"createdAt"`
 	LastUsedAt *string           `json:"lastUsedAt"`
 	IdleExpiry *int64            `json:"idleExpiry"`
@@ -68,6 +69,7 @@ const (
 var grantReasons = map[string]string{
 	"owner-missing":         "the grant has no owner record: it was made before grants recorded an owner, or none was set, and it is used as before, outside the owner-removal rule, until an owner is set",
 	"excess-scope":          "the provider granted scopes that no operation of the connection declares; calls through it are refused until it is narrowed",
+	"wider-than-needed":     "the provider granted a scope wider than any operation of the connection needs; it is admitted, and a narrower scope can be configured in its place",
 	"scopes-unreadable":     "the provider does not report the grant's scopes to the gateway, so neither excess nor unused scopes can be determined",
 	"unused-scopes":         "some granted scopes have not been exercised by any dispatched call and can be trimmed",
 	"idle":                  "the grant has no idle expiry and has not been used for 90 days or more",
@@ -82,7 +84,7 @@ func reportOf(r grantRecord, now time.Time) GrantReport {
 	out := GrantReport{
 		Provider: r.Provider, Connection: r.Connection, Owner: r.Owner, OwnerHost: r.OwnerHost,
 		Scopes: GrantReportScopes{Required: r.Scopes.Required, Granted: r.Scopes.Granted, Used: r.Scopes.Used},
-		Excess: r.Excess, CreatedAt: r.CreatedAt, LastUsedAt: r.LastUsedAt, IdleExpiry: r.IdleExpiry,
+		Excess: r.Excess, Wider: r.Wider, CreatedAt: r.CreatedAt, LastUsedAt: r.LastUsedAt, IdleExpiry: r.IdleExpiry,
 		State: r.State, Revocation: r.Revocation, Findings: []GrantFinding{},
 	}
 	if r.Scopes.Granted != nil {
@@ -122,6 +124,9 @@ func reportOf(r grantRecord, now time.Time) GrantReport {
 	}
 	if len(r.Excess) > 0 {
 		out.Findings = append(out.Findings, finding("excess-scope"))
+	}
+	if len(r.Wider) > 0 {
+		out.Findings = append(out.Findings, finding("wider-than-needed"))
 	}
 	if r.Scopes.Granted == nil {
 		out.Findings = append(out.Findings, finding("scopes-unreadable"))

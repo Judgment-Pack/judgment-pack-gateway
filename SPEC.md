@@ -2099,7 +2099,7 @@ commands and the departures from the RFC are in
 Azure DevOps, with the members `connection`, `provider`, `owner` (a principal reference
 `{"kind": "person" | "service", "issuer", "subject"}`, or `null`), `ownerHost` (a flat token, or
 `null`), `scopes` (`required` and `granted`, sorted strings, `granted` `null` where the provider
-does not report it; `used`, each `{"scope", "lastUsedAt"}`), `excess`, `createdAt`, `lastUsedAt`,
+does not report it; `used`, each `{"scope", "lastUsedAt"}`), `excess`, `wider`, `createdAt`, `lastUsedAt`,
 `idleExpiry` (integer milliseconds, or `null`), `state` (`active`, `quarantined` or `revoked`,
 the last terminal) and `revocation`. A time is UTC with exactly milliseconds. The record carries
 no credential, no token, no token digest, no provider account and no content.
@@ -2107,17 +2107,18 @@ no credential, no token, no token digest, no provider account and no content.
 **The rules.**
 
 1. A connection whose granted scopes include one that none of its operations declares is
-   refused, `excess-scope` followed by the extra scopes: at connect, at a renewal that states it,
-   and at each use.
+   refused, `excess-scope` followed by the extra scopes: at connect, at a Google renewal that
+   states it, and at each use. A scope admitted as wider than needed (Databricks' `all-apis`) is
+   recorded in `wider` and reported, not refused.
 2. A scope is used when a dispatched acquisition or action's operation declares it and it is
    granted. The report lists granted minus used.
-3. Before each acquisition or action through a grant with an owner, the gateway reads the owner's
-   standing from its issuing host. `removed` applies the operator's removal and refuses
+3. Before each use of the credential of a grant with an owner (an acquisition, an action, a
+   search, a connection test), the gateway reads the owner's standing from its issuing host. `removed` applies the operator's removal and refuses
    (`owner-removed`); any answer other than `current` or `removed`, and no answer, refuses
    (`owner-unknown`). A grant without an owner record is used as before and reported.
 4. A grant with an idle expiry whose last use, or creation where it was never used, is at least
-   that long before now is expired; equal is expired. It is revoked and refused
-   (`grant-idle-expired`).
+   that long before now is expired; equal is expired, and so is a time that cannot be read. It is
+   revoked and refused (`grant-idle-expired`) at its next use of any kind.
 5. Removing an owner revokes, or quarantines as the operator chooses, every grant it owns; revoke
    where neither is chosen. A quarantined grant keeps its credential and admits no call
    (`grant-quarantined`).

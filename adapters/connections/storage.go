@@ -317,7 +317,7 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 	}
 	token := ""
 	if b.provider.kind() == "google-drive" && method != "files-status" && method != "files-commit" {
-		if e = b.store.grantUse(ctx, b.provider, b.provider.kind(), "storage"); e != nil {
+		if ctx, e = b.store.grantUse(ctx, b.provider, b.provider.kind(), "storage"); e != nil {
 			return nil, e
 		}
 		token, e = b.provider.access(ctx, b.store, client, c, epoch)
@@ -492,7 +492,7 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 		}
 		// Status and settled replay are local, even when provider credentials expire.
 		if b.provider.kind() == "google-drive" {
-			if e = b.store.grantUse(ctx, b.provider, b.provider.kind(), "storage"); e != nil {
+			if ctx, e = b.store.grantUse(ctx, b.provider, b.provider.kind(), "storage"); e != nil {
 				return nil, e
 			}
 			token, e = b.provider.access(ctx, b.store, client, c, epoch)

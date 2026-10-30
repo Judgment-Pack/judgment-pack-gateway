@@ -180,7 +180,7 @@ func TestExcessScopeRefusedAtConnectAndUseAndUnusedListed(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := databricksProvider()
-	if err := s.grantUse(context.Background(), p, "lake", "statement"); err != nil {
+	if _, err := s.grantUse(context.Background(), p, "lake", "statement"); err != nil {
 		t.Fatal(err)
 	}
 	rows, raw := grantReport(t, dir, "test")
@@ -198,7 +198,7 @@ func TestExcessScopeRefusedAtConnectAndUseAndUnusedListed(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.grantUse(context.Background(), p, "lake", "statement"); err == nil || err.Error() != "excess-scope: jobs" {
+	if _, err := s.grantUse(context.Background(), p, "lake", "statement"); err == nil || err.Error() != "excess-scope: jobs" {
 		t.Fatalf("a connection holding jobs at use: %v", err)
 	}
 	rows, _ = grantReport(t, dir, "test")
@@ -212,7 +212,7 @@ func TestExcessScopeRefusedAtConnectAndUseAndUnusedListed(t *testing.T) {
 // lists no unused scope it cannot know.
 func TestUnreadableScopesAreReported(t *testing.T) {
 	s, _, _, dir := dbFixture(t, dbTokenFields())
-	if err := s.grantUse(context.Background(), databricksProvider(), "lake", "statement"); err != nil {
+	if _, err := s.grantUse(context.Background(), databricksProvider(), "lake", "statement"); err != nil {
 		t.Fatal(err)
 	}
 	rows, raw := grantReport(t, dir, "test")
@@ -326,7 +326,7 @@ func TestSweepRevokesIdleGrantAndReportsProviderGrantMayPersist(t *testing.T) {
 	if bytesContain(dbState(t, dir), dbPAT) {
 		t.Fatal("the credential was kept")
 	}
-	if err := s.grantUse(context.Background(), databricksProvider(), "lake", "statement"); err != ErrConnect {
+	if _, err := s.grantUse(context.Background(), databricksProvider(), "lake", "statement"); err != ErrConnect {
 		t.Fatalf("a revoked grant: %v", err)
 	}
 }

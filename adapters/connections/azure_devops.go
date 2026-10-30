@@ -1204,7 +1204,7 @@ func azureDevOpsAcquire(ctx context.Context, s *Store, q AzureDevOpsRequest, p p
 	if c.expired() {
 		return nil, azureDevOpsExpired
 	}
-	if err = s.grantUse(ctx, p, c.ID, q.Read); err != nil {
+	if ctx, err = s.grantUse(ctx, p, c.ID, q.Read); err != nil {
 		return nil, err
 	}
 	if q.Read == "mcp" {
@@ -1349,6 +1349,10 @@ const azureDevOpsTestQuery = "SELECT [System.Id] FROM WorkItems WHERE [System.Te
 func azureDevOpsTest(ctx context.Context, s *Store, id, revision string, p provider) (err error) {
 	c, secrets, err := azureDevOpsSnapshot(s, id, revision)
 	if err != nil {
+		return err
+	}
+	// A test uses the credential, and passes the grant's check.
+	if err := s.grantCredential(ctx, p, c.ID, c.ID); err != nil {
 		return err
 	}
 	defer func() {

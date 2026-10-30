@@ -154,6 +154,7 @@ type grantRecord struct {
 	OwnerHost  *string          `json:"ownerHost"`
 	Scopes     GrantScopes      `json:"scopes"`
 	Excess     []string         `json:"excess"`
+	Wider      []string         `json:"wider"`
 	CreatedAt  string           `json:"createdAt"`
 	LastUsedAt *string          `json:"lastUsedAt"`
 	IdleExpiry *int64           `json:"idleExpiry"`
@@ -304,29 +305,61 @@ func databricksServerOperation(server string) string {
 	return "mcp:" + kind
 }
 
-// grantDeclarations is, for each provider, the scopes each operation
-// declares it needs: any one of those listed is enough for it. They are the
-// gateway's declarations, not the provider's report of which scope a call
-// exercised (few providers report one): a Drive connection is of the whole
-// Drive (ADR-0010), Gmail is read-only, Notion's one scope is default;
-// Databricks' are those of its pages for each managed MCP server
-// (adapters/README.md) and, for a statement or a catalog listing, sql or
-// unity-catalog where a narrower scope serves and all-apis otherwise; Azure
-// DevOps' are the personal access token scopes of each area read.
+// grantDeclarations is, for each provider, the narrowest scope each
+// operation needs. They are the gateway's declarations, not the provider's
+// report of which scope a call exercised (few providers report one): a
+// Drive connection is of the whole Drive (ADR-0010), Gmail is read-only,
+// Notion's one scope is default; Databricks' are those its API scopes
+// reference names for Statement Execution (sql) and for Unity Catalog's
+// catalogs (unity-catalog), and those its pages name for each managed MCP
+// server (adapters/README.md); Azure DevOps' are the personal access token
+// scopes of each area read.
 var grantDeclarations = map[string]map[string][]string{
 	"google-drive": {"read": {driveScope}, "observe": {driveScope}, "storage": {driveScope}},
 	"gmail":        {"read": {gmailScope}},
 	"notion":       {"read": {"default"}},
 	"databricks": {
-		"statement": {"sql", "all-apis"}, "catalog": {"unity-catalog", "all-apis"},
-		"mcp:sql": {"sql", "all-apis"}, "mcp:genie": {"genie", "all-apis"}, "mcp:functions": {"unity-catalog", "all-apis"},
-		"mcp:ai-search": {"ai-search", "all-apis"}, "mcp:unity-gateway": {"ai-gateway"},
+		"statement": {"sql"}, "catalog": {"unity-catalog"},
+		"mcp:sql": {"sql"}, "mcp:genie": {"genie"}, "mcp:functions": {"unity-catalog"},
+		"mcp:ai-search": {"ai-search"}, "mcp:unity-gateway": {"ai-gateway"},
 	},
 	"azure-devops": {
 		"workitems.query": {"vso.work"}, "workitems.query-and-get": {"vso.work"}, "workitems.get": {"vso.work"},
 		"repos.list": {"vso.code"}, "repos.items": {"vso.code"}, "repos.commits": {"vso.code"}, "pullrequests.list": {"vso.code"},
 		"pipelines.list": {"vso.build"}, "pipelines.runs": {"vso.build"}, "pipelines.run": {"vso.build"},
 	},
+}
+
+// grantBroad is, for each provider, a scope wider than any operation needs
+// that the gateway still admits, with the operations it is documented to
+// cover. Databricks' all-apis reaches every REST API the principal may use,
+// a statement's and a catalog listing's among them; it is what a service
+// principal configured with no scope asks for, so it is admitted and
+// reported as wider than needed (wider-than-needed), never refused. Whether
+// it covers the managed MCP servers no page states, so it is never taken as
+// used by one.
+var grantBroad = map[string]map[string][]string{
+	"databricks": {"all-apis": {"statement", "catalog"}},
+}
+
+// widerOf is the granted scopes that are admitted though wider than needed.
+func widerOf(kind string, granted []string) []string {
+	out := []string{}
+	for _, scope := range granted {
+		if _, broad := grantBroad[kind][scope]; broad {
+			out = append(out, scope)
+		}
+	}
+	return out
+}
+
+// excessOfKind is the granted scopes no operation declares and that are not
+// admitted as wider than needed: these refuse.
+func excessOfKind(kind string, granted, required []string) []string {
+	return slices.DeleteFunc(excessOf(granted, required), func(scope string) bool {
+		_, broad := grantBroad[kind][scope]
+		return broad
+	})
 }
 
 // grantOperations is every operation a connection offers.
@@ -411,7 +444,7 @@ func reconcileGrants(kind string, s *Store, v *state, l *grantLedger, now time.T
 		if i < 0 {
 			l.Grants = append(l.Grants, grantRecord{
 				Connection: h.connection, Provider: kind, Generation: h.generation,
-				Scopes: GrantScopes{Required: []string{}, Used: []ScopeUse{}}, Excess: []string{},
+				Scopes: GrantScopes{Required: []string{}, Used: []ScopeUse{}}, Excess: []string{}, Wider: []string{},
 				CreatedAt: grantTime(now), State: grantActive,
 			})
 			i = len(l.Grants) - 1
@@ -426,12 +459,12 @@ func reconcileGrants(kind string, s *Store, v *state, l *grantLedger, now time.T
 		if h.kept && r.Scopes.Granted != nil {
 			granted = r.Scopes.Granted
 		}
-		excess := []string{}
+		excess, wider := []string{}, []string{}
 		if granted != nil {
-			excess = excessOf(granted, required)
+			excess, wider = excessOfKind(kind, granted, required), widerOf(kind, granted)
 		}
-		if !slices.Equal(r.Scopes.Required, required) || !slices.Equal(r.Scopes.Granted, granted) || (r.Scopes.Granted == nil) != (granted == nil) || !slices.Equal(r.Excess, excess) {
-			r.Scopes.Required, r.Scopes.Granted, r.Excess = required, granted, excess
+		if !slices.Equal(r.Scopes.Required, required) || !slices.Equal(r.Scopes.Granted, granted) || (r.Scopes.Granted == nil) != (granted == nil) || !slices.Equal(r.Excess, excess) || !slices.Equal(r.Wider, wider) || r.Wider == nil {
+			r.Scopes.Required, r.Scopes.Granted, r.Excess, r.Wider = required, granted, excess, wider
 			if granted == nil {
 				r.Scopes.Used = []ScopeUse{}
 			} else {
@@ -474,10 +507,42 @@ func (s *Store) grantGate(kind, connection, generation string) error {
 	if i < 0 || l.Grants[i].Generation != generation {
 		return nil
 	}
-	if l.Grants[i].State == grantQuarantined {
+	switch l.Grants[i].State {
+	case grantQuarantined:
 		return ErrGrantQuarantined
+	case grantRevoked:
+		return ErrGrantRevoked
 	}
 	return nil
+}
+
+// grantChecked marks a context whose call has passed the full check of a
+// grant (grantPass), so that the credential read the same call makes
+// re-checks the grant's state under the lock without a second owner read.
+type grantCheckedKey struct{}
+type grantChecked struct{ kind, generation string }
+
+func checkedContext(ctx context.Context, kind, generation string) context.Context {
+	return context.WithValue(ctx, grantCheckedKey{}, grantChecked{kind, generation})
+}
+
+// grantCredential is the check every use of a grant's credential passes,
+// whatever the call: a search, a selection's read, a connection test, an
+// acquisition or an action. A call that has passed the full check already
+// (grantUse, or a grantCheck of its own) has the grant's state re-read
+// under the lock, a quarantine or revocation since refusing it; any other
+// call passes the full check here (grantCheck): state, idle expiry, excess
+// and the owner read.
+func (s *Store) grantCredential(ctx context.Context, p provider, connection, generation string) error {
+	kind := p.kind()
+	if !grantProvider(kind) {
+		return nil
+	}
+	if c, ok := ctx.Value(grantCheckedKey{}).(grantChecked); ok && c.kind == kind && c.generation == generation {
+		return s.locked(func(*state) error { return s.grantGate(kind, connection, generation) })
+	}
+	_, err := s.grantPass(ctx, p, connection, generation, "", false)
+	return err
 }
 
 // idleExpired is whether a grant has been unused for its idle bound: from
@@ -599,21 +664,35 @@ func (r *pendingRevoke) finish(ctx context.Context, s *Store) bool {
 	}) == nil
 }
 
-// grantUse is the gate an acquisition or an action passes before it is
-// dispatched through the connection, and the record of its use. Under the
-// lock, a quarantined or revoked grant refuses, a grant idle for its bound
-// is revoked and refuses, and a grant holding a scope no operation declares
-// refuses (every provider with a record can narrow its grant). Then, for a
-// grant with an owner, the owner read is made to its issuing host, outside
-// the lock: an owner removed applies the operator's removal and refuses; an
-// owner whose standing is not answered refuses. Last, under the lock again,
-// the use is recorded: the grant's last use, and each granted scope the
-// operation declares. A grant whose record has no owner, as every grant
-// made before this record, is used as before.
-func (s *Store) grantUse(ctx context.Context, p provider, connection, operation string) error {
+// grantCheck is the full check of a grant before its credential is used,
+// without recording a use: under the lock, a quarantined or revoked grant
+// refuses, a grant idle for its bound is revoked and refuses, and a grant
+// holding a scope no operation declares refuses (every provider with a
+// record can narrow its grant). Then, for a grant with an owner, the owner
+// read is made to its issuing host, outside the lock: an owner removed
+// applies the operator's removal and refuses; an owner whose standing is
+// not answered refuses. A grant whose record has no owner, as every grant
+// made before this record, is used as before. The context it returns marks
+// the call as checked (grantCredential).
+func (s *Store) grantCheck(ctx context.Context, p provider, connection string) (context.Context, error) {
+	return s.grantPass(ctx, p, connection, "", "", false)
+}
+
+// grantUse is grantCheck for an acquisition or an action, and the record
+// of its use: the grant's last use, and each granted scope the operation
+// declares (or, where none is granted, a wider scope admitted for it).
+func (s *Store) grantUse(ctx context.Context, p provider, connection, operation string) (context.Context, error) {
+	return s.grantPass(ctx, p, connection, "", operation, true)
+}
+
+// grantPass is the check, and the record of a use where record is set. A
+// call that names the credential it holds (want, its custody identifier)
+// is refused as canceled where custody no longer holds that credential:
+// the connection changed under the call.
+func (s *Store) grantPass(ctx context.Context, p provider, connection, want, operation string, record bool) (context.Context, error) {
 	kind := p.kind()
 	if !grantProvider(kind) {
-		return nil
+		return ctx, nil
 	}
 	var owner PrincipalRef
 	var host, generation string
@@ -625,9 +704,12 @@ func (s *Store) grantUse(ctx context.Context, p provider, connection, operation 
 		}
 		changed := reconcileGrants(kind, s, v, &l, grantClock())
 		i := l.find(connection)
-		if i < 0 || l.Grants[i].State == grantRevoked {
+		if i < 0 || l.Grants[i].State == grantRevoked || want != "" && l.Grants[i].Generation != want {
 			if changed {
 				_ = s.saveGrants(l)
+			}
+			if want != "" {
+				return ErrCanceled
 			}
 			return ErrConnect
 		}
@@ -661,25 +743,25 @@ func (s *Store) grantUse(ctx context.Context, p provider, connection, operation 
 		pending.finish(ctx, s)
 	}
 	if err != nil {
-		return err
+		return ctx, err
 	}
 	if host != "" {
 		switch s.ownerStanding(ctx, host, owner) {
 		case ownerCurrent:
 		case ownerRemoved:
 			_, _ = s.applyOwnerRemoval(ctx, p, owner, host, "")
-			return ErrOwnerRemoved
+			return ctx, ErrOwnerRemoved
 		default:
-			return ErrOwnerUnknown
+			return ctx, ErrOwnerUnknown
 		}
 	}
-	return s.locked(func(v *state) error {
+	err = s.locked(func(v *state) error {
 		l, err := s.grants()
 		if err != nil {
 			return err
 		}
 		now := grantClock()
-		reconcileGrants(kind, s, v, &l, now)
+		changed := reconcileGrants(kind, s, v, &l, now)
 		i := l.find(connection)
 		if i < 0 || l.Grants[i].Generation != generation {
 			return ErrConnect
@@ -695,13 +777,29 @@ func (s *Store) grantUse(ctx context.Context, p provider, connection, operation 
 		if (r.Owner == nil) != (host == "") || r.Owner != nil && (*r.Owner != owner || *r.OwnerHost != host) {
 			return ErrOwnerUnknown
 		}
+		if !record {
+			if changed {
+				return s.saveGrants(l)
+			}
+			return nil
+		}
 		at := grantTime(now)
 		r.LastUsedAt = &at
 		if r.Scopes.Granted != nil {
+			used := []string{}
 			for _, scope := range grantDeclarations[kind][operation] {
-				if !slices.Contains(r.Scopes.Granted, scope) {
-					continue
+				if slices.Contains(r.Scopes.Granted, scope) {
+					used = append(used, scope)
 				}
+			}
+			if len(used) == 0 {
+				for scope, ops := range grantBroad[kind] {
+					if slices.Contains(ops, operation) && slices.Contains(r.Scopes.Granted, scope) {
+						used = append(used, scope)
+					}
+				}
+			}
+			for _, scope := range used {
 				if j := slices.IndexFunc(r.Scopes.Used, func(u ScopeUse) bool { return u.Scope == scope }); j >= 0 {
 					r.Scopes.Used[j].LastUsedAt = at
 				} else {
@@ -712,6 +810,10 @@ func (s *Store) grantUse(ctx context.Context, p provider, connection, operation 
 		}
 		return s.saveGrants(l)
 	})
+	if err != nil {
+		return ctx, err
+	}
+	return checkedContext(ctx, kind, generation), nil
 }
 
 // noteGranted records the scopes the provider reported it granted, at a
@@ -728,7 +830,7 @@ func (s *Store) noteGranted(kind, generation string, granted []string) {
 			r := &l.Grants[i]
 			if r.Generation == generation && r.State != grantRevoked {
 				r.Scopes.Granted = granted
-				r.Excess = excessOf(granted, r.Scopes.Required)
+				r.Excess, r.Wider = excessOfKind(kind, granted, r.Scopes.Required), widerOf(kind, granted)
 				r.Scopes.Used = slices.DeleteFunc(r.Scopes.Used, func(u ScopeUse) bool { return !slices.Contains(granted, u.Scope) })
 			}
 		}
