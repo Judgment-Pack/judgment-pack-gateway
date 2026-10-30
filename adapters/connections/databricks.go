@@ -669,7 +669,7 @@ func databricksSnapshot(s *Store, id, revision string) (DatabricksConnection, er
 				if !c.valid() {
 					return ErrSetup
 				}
-				if err := s.grantGate("databricks", c.ID, c.ID); err != nil {
+				if err := s.grantGate("databricks", v, c.ID, c.ID); err != nil {
 					return err
 				}
 				found = c
@@ -724,7 +724,7 @@ func (p provider) databricksBearer(ctx context.Context, s *Store, c DatabricksCo
 	if err != nil {
 		return "", err
 	}
-	if err := s.locked(func(*state) error { return s.grantGate("databricks", c.ID, c.ID) }); err != nil {
+	if err := s.locked(func(v *state) error { return s.grantGate("databricks", v, c.ID, c.ID) }); err != nil {
 		return "", err
 	}
 	return bearer, nil
