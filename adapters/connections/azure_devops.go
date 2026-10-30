@@ -624,6 +624,9 @@ func azureDevOpsSnapshot(s *Store, id, revision string) (AzureDevOpsConnection, 
 				if !c.valid() {
 					return ErrSetup
 				}
+				if err := s.grantGate("azure-devops", v, c.ID, c.ID); err != nil {
+					return err
+				}
 				found, active = c, joinSecrets(azureDevOpsActiveOf(v), c.secrets())
 				return nil
 			}
@@ -1201,6 +1204,9 @@ func azureDevOpsAcquire(ctx context.Context, s *Store, q AzureDevOpsRequest, p p
 	if c.expired() {
 		return nil, azureDevOpsExpired
 	}
+	if ctx, err = s.grantUse(ctx, p, c.ID, q.Read); err != nil {
+		return nil, err
+	}
 	if q.Read == "mcp" {
 		return p.azureDevOpsMCPAcquire(ctx, s, c, q, secrets)
 	}
@@ -1343,6 +1349,10 @@ const azureDevOpsTestQuery = "SELECT [System.Id] FROM WorkItems WHERE [System.Te
 func azureDevOpsTest(ctx context.Context, s *Store, id, revision string, p provider) (err error) {
 	c, secrets, err := azureDevOpsSnapshot(s, id, revision)
 	if err != nil {
+		return err
+	}
+	// A test uses the credential, and passes the grant's check.
+	if err := s.grantCredential(ctx, p, c.ID, c.ID); err != nil {
 		return err
 	}
 	defer func() {

@@ -252,6 +252,16 @@ receipt and is not available to autonomous jobs or model tool calls. See
 [storage file management](docs/design/storage-files.md) for scope, consent,
 conditional writes and recovery limits.
 
+The standing grant behind each Drive, Gmail, Notion, Databricks and Azure DevOps connection has a
+record in the custody: its owner, the scopes its operations declare, the scopes the provider
+granted and those used, its last use, an optional idle expiry, and whether it is active,
+quarantined or revoked. A grant holding a scope no operation declares is refused as
+`excess-scope`. A grant with an owner is used only after the owner's issuing host answers that the
+owner is current. Removing the owner revokes or quarantines the grant.
+`gateway-connections --grants report` lists the grants, with their unused scopes and findings,
+and names no path, no account and no token
+([connection grants](docs/design/connection-grants.md), SPEC.md §10).
+
 A source declared with `--source-shape NAME=airbyte|mcp|http` is an adapter
 ([ADR-0002](docs/adr/0002-adapters-report-in-the-envelope.md)): its stdout is an
 envelope, `{acquisition, result, page?}`, and the receipt records the acquisition as the

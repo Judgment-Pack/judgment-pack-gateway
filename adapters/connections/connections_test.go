@@ -430,11 +430,13 @@ func TestDisabledConnectionAndGenerationInvalidateGrants(t *testing.T) {
 // more.
 func TestTokenOfAnotherScopeIsRefused(t *testing.T) {
 	for scope, want := range map[string]error{
-		"https://www.googleapis.com/auth/drive":                                                nil,
-		"https://www.googleapis.com/auth/drive.file":                                           ErrProvider,
-		"https://www.googleapis.com/auth/drive.readonly":                                       ErrProvider,
-		"https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.readonly": ErrProvider,
-		"https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive":     ErrProvider,
+		"https://www.googleapis.com/auth/drive":          nil,
+		"https://www.googleapis.com/auth/drive.file":     ErrProvider,
+		"https://www.googleapis.com/auth/drive.readonly": ErrProvider,
+		// A token of more than the scope asked is refused by name, the extra
+		// scopes named (#357).
+		"https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.readonly": excessScope([]string{gmailScope}),
+		"https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive":     excessScope([]string{"https://www.googleapis.com/auth/drive.file"}),
 	} {
 		b, _, _ := testBroker(t)
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -258,6 +258,9 @@ func (p provider) readNotion(ctx context.Context, s *Store, raw []byte) ([]byte,
 	if err != nil {
 		return nil, err
 	}
+	if ctx, err = s.grantUse(ctx, p, p.kind(), "read"); err != nil {
+		return nil, err
+	}
 	m, token, err := p.notionClient(ctx, s, client, c, epoch)
 	if err != nil {
 		return nil, err

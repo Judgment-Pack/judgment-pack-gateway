@@ -214,9 +214,10 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 			return nil, ErrRequest
 		}
 		b.cancel()
-		var token string
+		var token, generation string
 		err := b.store.locked(func(v *state) error {
 			if v.Connection != nil {
+				generation = v.Connection.ID
 				token = v.Connection.Refresh
 				if token == "" {
 					token = v.Connection.Access
@@ -242,6 +243,11 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 			values := url.Values{"token": {token}}
 			_, _, err = b.provider.request(ctx, "POST", b.provider.revoke, "", values, 64<<10)
 			revoked = err == nil
+		}
+		// The grant record says the connection is revoked, and whether the
+		// provider confirmed it.
+		if generation != "" {
+			b.store.noteRevoked(b.provider.kind(), generation, revoked)
 		}
 		return map[string]bool{"disconnected": true, "revoked": revoked}, nil
 	default:
@@ -372,6 +378,7 @@ func (b *Broker) callback(ctx context.Context, f *flow, w http.ResponseWriter, r
 			resultErr = err
 		}
 	}
+	var connected string
 	if resultErr == nil {
 		resultErr = b.store.locked(func(v *state) error {
 			if v.Disabled {
@@ -392,6 +399,7 @@ func (b *Broker) callback(ctx context.Context, f *flow, w http.ResponseWriter, r
 				return ErrCanceled
 			}
 			c := &credential{ID: randomID(), Account: a, Access: t.Access, Refresh: t.Refresh, Expires: time.Now().Add(time.Duration(t.Expires) * time.Second).Unix()}
+			defer func() { connected = c.ID }()
 			if previous != nil {
 				c.ID = previous.ID
 				if c.Refresh == "" {
@@ -422,6 +430,16 @@ func (b *Broker) callback(ctx context.Context, f *flow, w http.ResponseWriter, r
 			}
 			return nil
 		})
+	}
+	// The grant record holds the scopes the provider granted at this
+	// consent: the scope the token was said to be of, or, where it said
+	// none, the scope asked for.
+	if resultErr == nil && connected != "" {
+		granted := scopeList(t.Scope)
+		if len(granted) == 0 {
+			granted = []string{b.provider.scope()}
+		}
+		b.store.noteGranted(b.provider.kind(), connected, granted)
 	}
 	f.URL = ""
 	f.State = "complete"

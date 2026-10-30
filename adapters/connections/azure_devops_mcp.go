@@ -327,6 +327,10 @@ func (p provider) azureDevOpsMCPTest(ctx context.Context, s *Store, id, revision
 	if err != nil || len(c.MCP) == 0 {
 		return nil, nil, err
 	}
+	// A test uses the credential, and passes the grant's check.
+	if err := s.grantCredential(ctx, p, c.ID, c.ID); err != nil {
+		return nil, nil, err
+	}
 	reports := []databricksMCPReport{}
 	held := secrets
 	for _, server := range c.MCP {
