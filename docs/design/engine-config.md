@@ -54,17 +54,18 @@ The file is read through the same strict parser the gateway uses for everything 
 duplicate member names refused, integers only, unknown members refused by name. A misspelled
 key is an error, never an intention silently dropped. `engineVersion`, `authority`, `seed`,
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
-`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness` and `witnessedBy` are optional; within a
+`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox` and `delegation` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
 `descriptors`, `operationDescriptors`, `descriptorStatements`, `decisionPolicy`
 and `parameters` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"12"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"15"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
-  `operationDescriptors`, and version 12 `descriptorStatements`. A file of
+  `operationDescriptors`, version 12 `descriptorStatements`, version 13 `sandbox`, version
+  14 a required `actionKey`, and version 15 `delegation`. A file of
   an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -1111,6 +1112,46 @@ mode now differ, or when the reported backend cannot be used: a bubblewrap that
 fails at launch does not fall back to Landlock. A changed policy therefore takes
 effect only after a restart measures it, and posture never reports a selection a
 launch does not use.
+
+## Delegated authority (engine version 15)
+
+Version 15 adds the optional `delegation` member (SPEC.md §11.2), which makes the gateway the
+enforcing host of spec RFC 0030 (a Draft) for delegated calls: an agent acting for a person or
+a service under a signed delegation from an issuing host, the Desk in the reference stack.
+
+```json
+"delegation": {
+  "hosts": [
+    {
+      "host": "desk",
+      "requester": "service:desk",
+      "keys": ["<the issuing host's Ed25519 public key, 64 lowercase hex characters>"],
+      "admission": {"url": "https://desk.example/delegation/admission", "credential": "/etc/engine/desk-admission-token"}
+    }
+  ],
+  "operators": ["operator:on-call"],
+  "bearerReadOnly": false
+}
+```
+
+It requires `identity`: the issuing host asks for a credential, and revokes one, with a token
+from that issuer whose subject is the host's `requester`. Each key is held to the key rule of
+SPEC.md §8.4 when the file is loaded. The admission read goes to `admission.url`, which must be
+`https://`, with the token in `admission.credential`, read once at start; a missing, late or
+unreadable answer refuses the call. `operators` are the subjects that may reach a delegated
+action's retained evidence or read-back as the gateway's operator. `bearerReadOnly` admits a
+bearer credential for a chain that only reads; posture reports it.
+
+What it changes for callers, all in SPEC.md §11:
+
+- `POST /delegation/credential` and `POST /delegation/revoke`, for the issuing host alone;
+- `/acquire` and `/act` take a credential (`Authorization: DPoP` with a proof, RFC 9449), admit
+  each call immediately before it is dispatched, and receipt it with the `delegation` member;
+- `/act` takes `reservation`, through which the subject, the issuing host or an operator reaches
+  a delegated action by its key, never a dispatch;
+- `/posture` adds `delegation-narrowing` and `delegation-sender-constraint`.
+
+A file without the member, and every call made under no delegation, behave as before.
 
 ## Keyed actions (engine version 14)
 

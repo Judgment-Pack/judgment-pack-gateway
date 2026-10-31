@@ -103,6 +103,10 @@ type sourceSpec struct {
 	// timeout is how long the source may run before its context is
 	// cancelled, from --source-timeout; zero is defaultSourceTimeout.
 	timeout time.Duration
+	// effects is the effect the owner's taxonomy declares for each tool of a
+	// live or write source, by tool (declaredEffects): what a delegation's
+	// scope is held to (SPEC.md §11.5). Nothing else reads it.
+	effects map[string]string
 }
 
 // adapterShapes are the shapes --source-shape may declare: every shape of
@@ -196,6 +200,10 @@ type gatewayService struct {
 	// identity is who may call (serveOptions.identity); nil when no
 	// issuer is configured, and every receipt then carries caller null.
 	identity *identityConfig
+	// delegation makes the gateway the enforcing host of delegated calls
+	// (SPEC.md §11); nil when the configuration names none, and the gateway
+	// is then as it was before.
+	delegation *delegationService
 	// receiptVersion is what acquire mints: "3" unless the operator asked
 	// for "2" to keep a consumer not yet updated working (SPEC.md §1.2a).
 	receiptVersion string
@@ -819,6 +827,29 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 	}
 	defer g.release(sessionID)
 
+	// A call under a delegation is admitted here, immediately before the
+	// source starts (SPEC.md §11.5); a read-back of a delegated action is not
+	// a call under the delegation, and records who sent it instead (§11.7).
+	var delegationMember, reconcilerMember *vObject
+	if who != nil && who.delegated != nil {
+		if g.receiptVersion != receiptVersion3 {
+			return nil, errors.New("a call under a delegation is receipted in version 3, and this gateway mints version " + g.receiptVersion)
+		}
+		if reconciliation != nil {
+			reconcilerMember = who.delegated.reconcilerMember()
+		} else {
+			tool := ""
+			if obj, isObject := arguments.(*vObject); isObject && spec.shape == "mcp" {
+				tool, _ = memberString(obj, "tool")
+			}
+			member, refusal := g.delegation.admitDelegated(who.delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true})
+			if refusal != nil {
+				return nil, refusal
+			}
+			delegationMember = member
+		}
+	}
+
 	result, adapterDigest, observedAt, err := g.runSource(source, spec, canonicalArgs)
 	if err != nil {
 		return nil, err
@@ -911,6 +942,7 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 		source: source, resultDigest: resultDigest, servedAt: servedAt, authority: g.authority,
 		arguments: canonicalArgs, argumentsSalt: argsSalt, argumentsSeed: g.store.seed,
 		who: who, witness: witness, kind: "acquisition", detail: acquisition,
+		delegation: delegationMember, reconciler: reconcilerMember,
 	})
 
 	if g.beforeStamp != nil {
@@ -1559,7 +1591,33 @@ func (g *gatewayService) handler() http.Handler {
 		w.WriteHeader(code)
 		_, _ = w.Write(payload)
 	}
+	// refused answers a delegation refusal (SPEC.md §11.5): 401 with a DPoP
+	// challenge for a credential that does not hold, 403 otherwise; nothing
+	// was dispatched, retained or minted.
+	refused := func(w http.ResponseWriter, r *delegationRefusal, refusedAt string) {
+		body := map[string]any{"error": r.Error(), "refusal": r.name}
+		if r.scopeReason != "" {
+			body["reason"] = r.scopeReason
+		}
+		if refusedAt != "" {
+			body["refusedAt"] = refusedAt
+			if strings.HasPrefix(r.name, "action-key") {
+				body["refusedAt"] = "action-key"
+			}
+		}
+		if r.name == refusalCredentialMismatch {
+			w.Header().Set("WWW-Authenticate", "DPoP")
+			writeJSON(w, http.StatusUnauthorized, body)
+			return
+		}
+		writeJSON(w, http.StatusForbidden, body)
+	}
 	fail := func(w http.ResponseWriter, err error) {
+		var delegationRefused *delegationRefusal
+		if errors.As(err, &delegationRefused) {
+			refused(w, delegationRefused, "")
+			return
+		}
 		var down unavailable
 		if errors.As(err, &down) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
@@ -1594,19 +1652,75 @@ func (g *gatewayService) handler() http.Handler {
 		return who, true
 	}
 
+	// authenticateCall is authenticate for /acquire and /act, the two
+	// endpoints a delegation credential is presented at (SPEC.md §11.4):
+	// step 0, or the token as before.
+	authenticateCall := func(w http.ResponseWriter, r *http.Request) (*caller, bool) {
+		if g.identity != nil && g.delegation != nil {
+			if token, scheme, isCredential := credentialOf(r); isCredential {
+				who, refusal := g.delegation.present(r, token, scheme)
+				if refusal != nil {
+					refused(w, refusal, "")
+					return nil, false
+				}
+				return who, true
+			}
+		}
+		return authenticate(w, r)
+	}
+	// members is what an endpoint's body may carry: a gateway with a
+	// delegation reads the members it adds, and one without reads them as any
+	// member it does not know.
+	members := func(base map[string]bool, delegated ...string) map[string]bool {
+		if g.delegation == nil {
+			return base
+		}
+		out := map[string]bool{}
+		for k, v := range base {
+			out[k] = v
+		}
+		for _, k := range delegated {
+			out[k] = true
+		}
+		return out
+	}
+	// presented holds a chain the caller sends beside its credential to the
+	// bound chain, byte for byte (step 0); a chain sent with anything but a
+	// delegation credential is refused the same way, since a statement's bytes
+	// grant nothing.
+	presented := func(w http.ResponseWriter, who *caller, raw json.RawMessage) bool {
+		if raw == nil {
+			return true
+		}
+		mismatch := refuse(refusalCredentialMismatch, "the chain presented is not the chain the credential is bound to")
+		if who == nil || who.delegated == nil || who.delegated.credential == nil {
+			refused(w, mismatch, "")
+			return false
+		}
+		v, err := parseJSONWithin(raw, maxArgumentValues)
+		if err != nil || string(canon(v)) != string(who.delegated.credential.chain.canonical) {
+			refused(w, mismatch, "")
+			return false
+		}
+		return true
+	}
+
 	mux.HandleFunc("/acquire", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 			return
 		}
-		who, ok := authenticate(w, r)
+		who, ok := authenticateCall(w, r)
 		if !ok {
 			return
 		}
 		limitBodyTo(w, r, g.maxRequest)
-		body, err := requestMembers(r.Body, acquireRequestMembers)
+		body, err := requestMembers(r.Body, members(acquireRequestMembers, "delegation"))
 		if err != nil {
 			fail(w, badRequest{err})
+			return
+		}
+		if !presented(w, who, body["delegation"]) {
 			return
 		}
 		session, err := memberText(body, "session")
@@ -1649,7 +1763,7 @@ func (g *gatewayService) handler() http.Handler {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 			return
 		}
-		who, ok := authenticate(w, r)
+		who, ok := authenticateCall(w, r)
 		if !ok {
 			return
 		}
@@ -1668,16 +1782,51 @@ func (g *gatewayService) handler() http.Handler {
 		// What the envelope may name at all is decided here, before the
 		// ladder: an action is a write, and a write taken from a member this
 		// engine does not read is one nobody asked for.
-		body, err := requestMembers(r.Body, actRequestMembers)
+		body, err := requestMembers(r.Body, members(actRequestMembers, "delegation", "reservation"))
 		if err != nil {
 			fail(w, badRequest{err})
 			return
+		}
+		if !presented(w, who, body["delegation"]) {
+			return
+		}
+		// A reservation member names the delegated scope a sender other than
+		// the run's actor reaches by key, and the actor's must be its own
+		// (SPEC.md §11.8).
+		if raw, present := body["reservation"]; present {
+			v, err := parseJSONWithin(raw, 64)
+			scope, ok := reservationScope{}, false
+			if err == nil {
+				scope, ok = parseReservationScope(v)
+			}
+			if !ok {
+				fail(w, badRequest{errors.New("reservation must be {sub, rootActor, host}: a principal reference, an opaque identifier and a flat token")})
+				return
+			}
+			if who.delegated != nil {
+				if scope != who.delegated.scope {
+					refused(w, refuse(refusalKeyUnauthenticated, ""), "action-key")
+					return
+				}
+			} else {
+				sender, refusal := g.delegation.senderFor(who, scope)
+				if refusal != nil {
+					refused(w, refusal, "action-key")
+					return
+				}
+				who = &caller{issuer: scope.sub.issuer, subject: scope.sub.subject, tokenDigest: who.tokenDigest, delegated: sender}
+			}
 		}
 		out, err := g.act(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, body["actionKey"])
 		if err != nil {
 			var uncertain *actionUncertain
 			if errors.As(err, &uncertain) {
 				writeJSON(w, http.StatusConflict, map[string]any{"error": uncertain.reason, "action": uncertain.action})
+				return
+			}
+			var delegationRefused *delegationRefusal
+			if errors.As(err, &delegationRefused) {
+				refused(w, delegationRefused, "delegation")
 				return
 			}
 			var refusal actRefusal
@@ -1698,6 +1847,43 @@ func (g *gatewayService) handler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, out)
 	})
+
+	// The issuing host's endpoints (SPEC.md §11.3, §11.6), only where the
+	// configuration names a delegation.
+	if g.delegation != nil {
+		hostEndpoint := func(allowed map[string]bool, do func(*delegationHost, map[string]json.RawMessage) (map[string]any, error)) http.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+					return
+				}
+				who, ok := authenticate(w, r)
+				if !ok {
+					return
+				}
+				host := g.delegation.hostOf(who)
+				if host == nil {
+					w.Header().Set("WWW-Authenticate", "Bearer")
+					writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "the token is not an issuing host's"})
+					return
+				}
+				limitBody(w, r)
+				body, err := requestMembers(r.Body, allowed)
+				if err != nil {
+					fail(w, badRequest{err})
+					return
+				}
+				out, err := do(host, body)
+				if err != nil {
+					fail(w, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, out)
+			}
+		}
+		mux.HandleFunc("/delegation/credential", hostEndpoint(map[string]bool{"chain": true, "software": true, "key": true}, g.delegation.bind))
+		mux.HandleFunc("/delegation/revoke", hostEndpoint(map[string]bool{"credential": true, "delegation": true, "agent": true}, g.delegation.revoke))
+	}
 
 	mux.HandleFunc("/seal", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1772,7 +1958,11 @@ func (g *gatewayService) handler() http.Handler {
 		if _, ok := authenticate(w, r); !ok {
 			return
 		}
-		report := hostPosture(postureInput{configured: true, seed: g.seedPath, sources: g.sources, public: true})
+		in := postureInput{configured: true, seed: g.seedPath, sources: g.sources, public: true}
+		if g.delegation != nil {
+			in.delegation = &delegationPosture{bearerReadOnly: g.delegation.bearerReadOnly}
+		}
+		report := hostPosture(in)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(report.canonical())
 	})

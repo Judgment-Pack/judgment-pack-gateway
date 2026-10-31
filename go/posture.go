@@ -35,6 +35,10 @@ const (
 	protectionContainerCustody = "container-custody"
 	protectionSeedFile         = "seed-file-protection"
 	protectionOperatorPrograms = "operator-program-confinement"
+	// The two lines a gateway configured with a delegation adds (SPEC.md
+	// §11.9); a gateway without one reports neither.
+	protectionDelegationNarrowing = "delegation-narrowing"
+	protectionDelegationSender    = "delegation-sender-constraint"
 )
 
 // envPostureProbe and the two probe arguments together select the probe
@@ -68,6 +72,31 @@ type postureInput struct {
 	seed       string
 	sources    map[string]sourceSpec
 	public     bool
+	// delegation is the configuration's delegation, which adds its two lines;
+	// nil adds none.
+	delegation *delegationPosture
+}
+
+// delegationPosture is what posture reads of a delegation: whether a bearer
+// credential is admitted for a read-only chain.
+type delegationPosture struct{ bearerReadOnly bool }
+
+// delegationLines are the lines of SPEC.md §11.9.
+func delegationLines(d *delegationPosture) []postureLine {
+	if d == nil {
+		return nil
+	}
+	sender := postureLine{protectionDelegationSender, postureEnforced,
+		"every delegation credential is bound to the run's proof-of-possession key (RFC 9449), and a call that does not prove it is refused"}
+	if d.bearerReadOnly {
+		sender = postureLine{protectionDelegationSender, postureNotEnforced,
+			"the operator admits a bearer delegation credential, living at most five minutes, for a chain that admits only pure, read and read-external calls"}
+	}
+	return []postureLine{
+		{protectionDelegationNarrowing, postureEnforced,
+			"the gateway enforces each delegation's scope before dispatch; no platform's standing credential is narrowed, so the narrowing is gateway-enforced, not platform-enforced"},
+		sender,
+	}
 }
 
 // operatorProgramsLine is the legacy/no-evidence statement. Version 13 sources
@@ -105,13 +134,13 @@ func hostPosture(in postureInput) postureReport {
 			programs[i].report.Protection.Reason = publicProgramReason(programs[i])
 		}
 	}
-	return postureReport{platform: runtime.GOOS, programs: programs, lines: []postureLine{
+	return postureReport{platform: runtime.GOOS, programs: programs, lines: append([]postureLine{
 		sourceUserPosture(in, requireUserSwitching, sourceUserIsRoot),
 		descendantPosture(),
 		custodyPosture(in.public),
 		seedPosture(in),
 		programConfinementPosture(programs),
-	}}
+	}, delegationLines(in.delegation)...)}
 }
 
 // sourceUserPosture is whether every source runs as a user of its own
@@ -276,7 +305,11 @@ func postureOfConfig(path string, account func(string) (int, string, error)) (po
 	if err != nil {
 		return postureInput{}, err
 	}
-	return postureInput{configured: true, seed: cfg.seed, sources: deriveSources(cfg, bindings)}, nil
+	in := postureInput{configured: true, seed: cfg.seed, sources: deriveSources(cfg, bindings)}
+	if cfg.delegation != nil {
+		in.delegation = &delegationPosture{bearerReadOnly: cfg.delegation.bearerReadOnly}
+	}
+	return in, nil
 }
 
 // seedNotNamed is the seed line where there is no seed to judge.

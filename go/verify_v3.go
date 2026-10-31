@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -113,7 +114,100 @@ func validateVersion3(obj *vObject, r *receipt) error {
 		}
 		r.witness = naming
 	}
+	// The members of a call made under a delegation (SPEC.md §11.7), and the
+	// comparisons within the one receipt that §11.7 makes an exception to
+	// order 1 being structural.
+	if v, present := obj.get("delegation"); present {
+		if err := validateDelegationMember(v, obj, kind); err != nil {
+			return err
+		}
+	}
+	if v, present := obj.get("reconciler"); present {
+		if err := validateReconciler(v, kind, acquisitionV); err != nil {
+			return err
+		}
+	}
 	r.kind = kind
+	return nil
+}
+
+// validateDelegationMember holds a receipt's delegation member to its form,
+// and its caller, and an action's requester, to its subject.
+func validateDelegationMember(v value, receipt *vObject, kind string) error {
+	malformed := errors.New("delegation is not of its stated form")
+	obj, ok := v.(*vObject)
+	if !ok {
+		return malformed
+	}
+	id, ok1 := memberString(obj, "id")
+	host, ok2 := memberString(obj, "host")
+	actor, ok3 := memberString(obj, "actor")
+	admitted, ok4 := memberString(obj, "admittedAt")
+	if !ok1 || !ok2 || !ok3 || !ok4 || !isOpaqueID(id) || !isFlatTokenString(host) || !isOpaqueID(actor) {
+		return malformed
+	}
+	if _, ok := parseDelegationTime(admitted); !ok {
+		return malformed
+	}
+	subjectV, _ := obj.get("subject")
+	subject, ok := parsePrincipalRef(subjectV)
+	if !ok {
+		return malformed
+	}
+	chainV, _ := obj.get("chain")
+	chain, ok := chainV.(vArray)
+	if !ok || len(chain) == 0 || len(chain) > maxDelegationDepth+1 {
+		return malformed
+	}
+	for _, d := range chain {
+		if s, ok := stringOf(d); !ok || !isDigest(s) {
+			return malformed
+		}
+	}
+	names := func(holder *vObject, member string) error {
+		iv, _ := holder.get(member)
+		identity, ok := iv.(*vObject)
+		if !ok {
+			return fmt.Errorf("delegation: %s is not the delegation's subject", member)
+		}
+		issuer, _ := memberString(identity, "issuer")
+		sub, _ := memberString(identity, "subject")
+		if issuer != subject.issuer || sub != subject.subject {
+			return fmt.Errorf("delegation: %s is not the delegation's subject", member)
+		}
+		return nil
+	}
+	if err := names(receipt, "caller"); err != nil {
+		return err
+	}
+	if kind == "action" {
+		av, _ := receipt.get("action")
+		return names(av.(*vObject), "requester")
+	}
+	return nil
+}
+
+// validateReconciler holds a read-back's reconciler member to its form, on an
+// acquisition carrying reconciliation alone.
+func validateReconciler(v value, kind string, acquisition value) error {
+	malformed := errors.New("reconciler is not of its stated form")
+	obj, ok := v.(*vObject)
+	if !ok {
+		return malformed
+	}
+	sender, ok1 := memberString(obj, "kind")
+	_, ok2 := memberString(obj, "issuer")
+	_, ok3 := memberString(obj, "subject")
+	if !ok1 || !ok2 || !ok3 || !slices.Contains([]string{"actor", "subject", "host", "operator"}, sender) {
+		return malformed
+	}
+	a, isObject := acquisition.(*vObject)
+	if kind != "acquisition" || !isObject {
+		return errors.New("reconciler is on a receipt that is not a read-back")
+	}
+	if _, present := a.get("reconciliation"); !present {
+		return errors.New("reconciler is on a receipt that is not a read-back")
+	}
 	return nil
 }
 

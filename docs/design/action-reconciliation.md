@@ -13,7 +13,8 @@ opt into the keyed path explicitly. An unkeyed legacy request makes no new repla
 claim. The key is not an authorization credential or a lease fencing check.
 
 The journal namespace binds the gateway authority, authenticated issuer and subject,
-and action key. It excludes the access-token digest and session identifier so a
+and action key; under a delegation, the authority, the delegation's subject, its
+root actor and the issuing host instead (SPEC.md §11.8). It excludes the access-token digest and session identifier so a
 renewed authentication token or fresh post-restart session cannot cause another
 dispatch. A retained fingerprint binds the approved identity: the platform, tool,
 canonical effective arguments, decision, citations, pinned binding, recovery
@@ -197,6 +198,21 @@ caller's authenticated issuer and subject, and the action key. An entry holds:
 No file is ever rewritten. An entry is at most 16 MiB and 33 KiB, and in
 practice about the size of its response. The gateway sets no bound on the number
 of entries: there is one for every key every caller has used.
+
+**Under a delegation** (SPEC.md §11.8) the namespace is the SHA-256 of
+`judgment-pack-gateway/delegated-action-key/1:` and the canonical JSON of
+`{"authority", "key", "scope"}`, the scope being `{"host", "rootActor", "sub"}`:
+the issuing host, the chain's root actor and its subject, never the transport
+token. Such an entry holds one file more, `scope.json`, that scope, written before
+`intent.json` and held to on every later open (a missing or other scope is
+`action-journal-invalid`), and its `dispatch-<n>.json` records the receipt's
+`delegation` member beside the attempt (16 KiB). A second kind of entry,
+named by `judgment-pack-gateway/delegated-action-subject/1:` and
+`{"authority", "host", "key", "sub"}`, holds only `scope.json`: the scope the
+subject first reserved the key in, so another root actor of the same subject is
+refused (`action-key-scope-conflict`). Compaction treats the two together: a
+subject entry is removed with the reservation it names, and never on its own
+while that reservation is kept.
 
 **The journal and the dispatch history.** The history of what was dispatched is
 the store's: every action receipt, with its delivery key and outcome, and every

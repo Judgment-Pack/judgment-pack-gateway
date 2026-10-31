@@ -1,0 +1,38 @@
+{
+ "name": "v3-reconciler-not-on-a-read-back",
+ "note": "An acquisition carrying reconciler and no reconciliation, validly signed: reconciler is on a read-back alone (§11.7), so malformed.",
+ "authority": "gateway:corpus",
+ "files": {
+  "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+  "artifacts/fcf7ab9c82b86347bd13b869134e61a6fce72c067dbac9476f39a85d93ffbe96": "{\"ticket\":\"T-1\",\"status\":\"approved\",\"updatedAt\":\"2026-09-12T00:00:02Z\"}",
+  "artifacts/118b511a7709b502df7539d4d79318cb6ca65ef2db286a3016c9db5a355e9998": "{\"observer\":\"gateway\",\"outcome\":\"uncertain\"}",
+  "artifacts/0ec2149abc882505d2da8dae37c9a7cf5cc1c2025c1f34bd2c5cc53836c58945": "{\"key\":\"abababababababababababababababababababababababababababababababab\",\"state\":\"done\"}",
+  "receipts/s6/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s6\",\"signature\":\"7fe68234909a7098c45bf7870a2f71ea305a3cd56e6f061980807b5f7e5cfd8fcd8d329a93a19cda1fac2cf4183224f1e6ef171692182ee42cbcc11edbeb3702\",\"source\":\"corpus\"}\n",
+  "receipts/s6/1.json": "{\"action\":{\"adapter\":{\"digest\":\"sha256:5555555555555555555555555555555555555555555555555555555555555555\",\"name\":\"judgment-pack-gateway/uncertainty\",\"version\":\"1\"},\"cites\":[{\"callIndex\":0,\"sessionId\":\"s6\",\"signature\":\"7fe68234909a7098c45bf7870a2f71ea305a3cd56e6f061980807b5f7e5cfd8fcd8d329a93a19cda1fac2cf4183224f1e6ef171692182ee42cbcc11edbeb3702\"}],\"decision\":{\"packDigest\":\"sha256:4e03c5e500d33132d9bda1452f82e2258acfa7ff8e45146796010a89f34cd081\",\"recordDigest\":\"sha256:c9dea9278f1c5eb9f89c3faf802219b4b41e1c1be4b6fbbe44eb4969647c141d\"},\"delivery\":{\"contract\":\"sha256:b2754d02a6fcf70c4c8e3197d17176a2f53256153e893193793662f53b489de0\",\"key\":\"abababababababababababababababababababababababababababababababab\",\"outcome\":\"uncertain\"},\"observedAt\":\"2026-09-12T00:00:02Z\",\"request\":\"sha256:b461db8d103fcf566d3cf666587eb1eae33ce4c7e471099a8777761378eaeb3a\",\"requester\":{\"issuer\":\"https://login.example.com/\",\"subject\":\"approver@example.com\",\"tokenDigest\":\"sha256:64a0412ff6e5c08ec8a5be685b9cb617d0138d270eaed1803082d9c41e8a97b2\"},\"tool\":{\"endpoint\":null,\"name\":\"update_ticket\",\"shape\":\"mcp\"}},\"argumentsCommitment\":\"sha256:710b94cc4ef897c021e70817373c64efe775a9193fbba3cbfcde0cb722635e91\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"caller\":{\"issuer\":\"https://login.example.com/\",\"subject\":\"approver@example.com\",\"tokenDigest\":\"sha256:64a0412ff6e5c08ec8a5be685b9cb617d0138d270eaed1803082d9c41e8a97b2\"},\"delegation\":{\"actor\":\"a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2\",\"admittedAt\":\"2026-09-12T00:00:01.250Z\",\"chain\":[\"sha256:e08bf1466e7d8690b423b48de56f90102719cf178f99541d62735c8c5155597a\",\"sha256:c842fa6cf4dcd5a91d84bafb059da2a5c67d660c189c4872eb2e2207d99664be\"],\"host\":\"desk\",\"id\":\"c0ffee00c0ffee00c0ffee00c0ffee00\",\"subject\":{\"issuer\":\"https://login.example.com/\",\"kind\":\"person\",\"subject\":\"approver@example.com\"}},\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"action\",\"prevSignature\":\"7fe68234909a7098c45bf7870a2f71ea305a3cd56e6f061980807b5f7e5cfd8fcd8d329a93a19cda1fac2cf4183224f1e6ef171692182ee42cbcc11edbeb3702\",\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:118b511a7709b502df7539d4d79318cb6ca65ef2db286a3016c9db5a355e9998\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s6\",\"signature\":\"6352d9e2c839dbe49f440fa3a34217a3157e4ba3cc8c8c75404d7ffec0001823e325f67bf74f31ff8430d59495a25cfdfa0314acc4b71395a3926f7bd7672e09\",\"source\":\"tickets/write\"}\n",
+  "receipts/s6/2.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:6666666666666666666666666666666666666666666666666666666666666666\",\"name\":\"adapter-mcp\",\"version\":\"1.0\"},\"endpoint\":null,\"observedAt\":\"2026-09-12T00:00:03Z\",\"peerIdentity\":null,\"schema\":null,\"shape\":\"mcp\",\"snapshot\":null,\"statement\":null,\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":2,\"caller\":{\"issuer\":\"https://login.example.com/\",\"subject\":\"approver@example.com\",\"tokenDigest\":\"sha256:90f0399350b13759cda71bbcbc1105a5ad78c06d69881eef7c6c8f83503ab3fb\"},\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":\"6352d9e2c839dbe49f440fa3a34217a3157e4ba3cc8c8c75404d7ffec0001823e325f67bf74f31ff8430d59495a25cfdfa0314acc4b71395a3926f7bd7672e09\",\"receiptVersion\":\"3\",\"reconciler\":{\"issuer\":\"https://login.example.com/\",\"kind\":\"host\",\"subject\":\"service:desk\"},\"resultDigest\":\"sha256:0ec2149abc882505d2da8dae37c9a7cf5cc1c2025c1f34bd2c5cc53836c58945\",\"servedAt\":\"2026-09-12T00:00:03Z\",\"sessionId\":\"s6\",\"signature\":\"eb819b0453f7cd9fbc57174fc07a6df56696d8f7e90b284b60382519b93347e01bcfcbb0acf5e9cf6cfe68627823aafc73dfb791cf222877d786adcbe56c8c07\",\"source\":\"tickets/live\"}\n"
+ },
+ "registry": "{\"finalCount\":3,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-12T00:00:04Z\",\"sessionId\":\"s6\",\"signature\":\"63ce708701d23e94d2837d76e3052a513e964d9c574101c19d5d0dd54b098b095ffa0df9621b6fae19305d5e90bc93a937338d49d0e3967de99221150dbebf0d\"}\n",
+ "decisionRecords": {
+  "audit/evaluations.jsonl": "{\"recordVersion\":\"1\",\"run\":\"run-1\",\"at\":\"2026-09-12T00:00:01Z\",\"kind\":\"evaluation\",\"disposition\":{\"kind\":\"outcome\",\"outcomeId\":\"approve\",\"reasons\":[],\"handoff\":{\"state\":\"none\"}}}\n"
+ },
+ "expected": {
+  "ok": false,
+  "findings": [
+   {
+    "callIndex": 0,
+    "sessionId": "s6",
+    "status": "ok"
+   },
+   {
+    "callIndex": 1,
+    "sessionId": "s6",
+    "status": "ok"
+   },
+   {
+    "file": "2.json",
+    "sessionId": "s6",
+    "status": "malformed"
+   }
+  ]
+ }
+}

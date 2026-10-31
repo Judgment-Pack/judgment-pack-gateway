@@ -105,6 +105,14 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	} else if g.requireActionKey {
 		return nil, actRefusal{"action-key", "actionKey is required by engineVersion 14"}
 	}
+	// A request on a delegated scope (SPEC.md §11.8): the run's actor, or a
+	// sender the table authenticated against the scope its reservation member
+	// names. A sender other than the actor reaches a delegated action only by
+	// its key, and never a dispatch.
+	delegated := who.delegated
+	if delegated != nil && delegated.kind != "actor" && key == "" {
+		return nil, refuse(refusalActorOnly, "a sender other than the run's actor reaches a delegated action only by its key")
+	}
 	recovery := spec.actionRecovery[tool]
 	if key != "" {
 		if err = recovery.applyKey(arguments.(*vObject), key); err != nil {
@@ -237,11 +245,32 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 			return nil, actRefusal{"action-key", openErr.Error()}
 		}
 		defer journal.close()
-		claim, err = journal.reserve(namespace, fingerprint)
+		var scope *vObject
+		if delegated != nil {
+			scope = delegated.scope.value()
+			// Only the actor makes a reservation: another sender finds one or
+			// is refused, and leaves nothing behind.
+			if delegated.kind != "actor" && !journal.has(namespace) {
+				return nil, refuse(refusalActorOnly, "no evidence is retained under this key that a sender other than the run's actor can reach")
+			}
+			if delegated.kind == "actor" {
+				if err := journal.holdSubjectKey(g.actionSubjectNamespace(delegated, key), scope); errors.Is(err, errActionScopeConflict) {
+					return nil, refuse("action-key-scope-conflict", "this subject reserved this key under another root actor")
+				} else if err != nil {
+					return nil, actRefusal{"action-key", err.Error()}
+				}
+			}
+		}
+		claim, err = journal.reserveScoped(namespace, fingerprint, scope)
 		if err != nil {
 			return nil, actRefusal{"action-key", err.Error()}
 		}
 		defer claim.close()
+		// The actor's credential reaches a request the key lookup answers only
+		// for a write its leaf admits by source and tool (spec #284 NC1).
+		if !claim.fresh && delegated != nil && delegated.kind == "actor" && delegated.credential.chain.sourceToolRefusal(g.authority, source, tool) {
+			return nil, refuse(refusalKeyUnauthenticated, "")
+		}
 		if !claim.fresh {
 			// Retained evidence answers before admission: a replay, a
 			// conflict or an invalid entry opens no session of its own.
@@ -264,6 +293,9 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		if err != nil {
 			return nil, actRefusal{"action-key", err.Error()}
 		}
+		if delegated != nil && delegated.kind != "actor" && !begun {
+			return nil, refuse(refusalActorOnly, "no evidence is retained under this key that a sender other than the run's actor can reach")
+		}
 	}
 
 	// The judgment is there. What follows is the acquisition path with an
@@ -281,9 +313,34 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	// A dispatch marker without its not-dispatched answer: the mutation may
 	// have been sent, so it is recorded as uncertain and never sent again.
 	uncertain := begun
+	// Under a delegation the dispatch is admitted here, immediately before it
+	// (SPEC.md §11.5), and the admission is recorded in the dispatch marker; a
+	// marker found without its answer carries the admission it was made under.
+	var delegationMember *vObject
+	if delegated != nil {
+		if uncertain {
+			if delegationMember, err = claim.dispatchDelegation(attempt); err != nil {
+				return nil, actRefusal{"action-key", err.Error()}
+			}
+		} else {
+			member, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true})
+			if refusal != nil {
+				g.abandonUnminted(sessionID)
+				return nil, refusal
+			}
+			delegationMember = member
+		}
+	}
 	if claim != nil && !uncertain {
-		if err = claim.claimDispatch(attempt); errors.Is(err, errActionDispatchClaimed) {
+		if err = claim.claimDispatchUnder(attempt, delegationMember); errors.Is(err, errActionDispatchClaimed) {
 			uncertain = true
+			// Another request claimed this attempt: the admission recorded is
+			// the one it dispatched under.
+			if delegated != nil {
+				if delegationMember, err = claim.dispatchDelegation(attempt); err != nil {
+					return nil, actRefusal{"action-key", err.Error()}
+				}
+			}
 		} else if err != nil {
 			return nil, actRefusal{"action-key", err.Error()}
 		}
@@ -413,7 +470,7 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 			version: receiptVersion3, sessionID: sessionID, callIndex: state.index, prevSignature: state.prev,
 			source: source, resultDigest: resultDigest, servedAt: servedAt, authority: g.authority,
 			arguments: canon(arguments), argumentsSalt: argsSalt,
-			who: who, witness: witness, kind: "action", detail: action,
+			who: who, witness: witness, kind: "action", detail: action, delegation: delegationMember,
 		})
 
 		stored, signature, err := g.store.stamp(core)

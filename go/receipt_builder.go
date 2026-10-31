@@ -20,6 +20,10 @@ type receiptInput struct {
 	witness                                   *vObject
 	kind                                      string
 	detail                                    *vObject
+	// delegation and reconciler are the members of SPEC.md §11.7: nil for a
+	// call made under no delegation, whose receipt is then the one it was
+	// before they existed.
+	delegation, reconciler *vObject
 }
 
 // buildReceipt assembles the unsigned core. keyId and signature remain the
@@ -49,6 +53,12 @@ func buildReceipt(in receiptInput) *vObject {
 		}
 		if in.witness != nil {
 			core.set("witness", in.witness)
+		}
+		if in.delegation != nil {
+			core.set("delegation", in.delegation)
+		}
+		if in.reconciler != nil {
+			core.set("reconciler", in.reconciler)
 		}
 		core.set(in.kind, in.detail)
 	} else {

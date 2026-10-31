@@ -181,6 +181,13 @@ func openActionDirectory(parent *os.Root, name string) (*os.Root, error) {
 // to the request's version 1 identity: it is the same approved content if
 // that matches (#355). A version this release does not read refuses.
 func (j *actionJournal) reserve(namespace string, identity actionIdentity) (*actionClaim, error) {
+	return j.reserveScoped(namespace, identity, nil)
+}
+
+// reserveScoped is reserve in a delegated scope (SPEC.md §11.8): the scope is
+// recorded as scope.json before the intent, and held to on every later open.
+// nil is a reservation made under no delegation, which records none.
+func (j *actionJournal) reserveScoped(namespace string, identity actionIdentity, scope *vObject) (*actionClaim, error) {
 	fingerprint := identity.fingerprint
 	if !isLowerHexOfLen(namespace, 64) || !isLowerHexOfLen(fingerprint, 64) {
 		return nil, errors.New("action-key-invalid: invalid journal identity")
@@ -200,11 +207,22 @@ func (j *actionJournal) reserve(namespace string, identity actionIdentity) (*act
 	claim := &actionClaim{root: root, fresh: fresh}
 	fail := func(err error) (*actionClaim, error) { root.Close(); return nil, err }
 	if fresh {
+		if scope != nil {
+			if err = claim.put("scope.json", canon(scope), actionScopeLimit); err != nil {
+				return fail(err)
+			}
+		}
 		raw, _ := json.Marshal(actionIntent{Version: actionJournalVersion, Identity: actionIdentityVersion, Fingerprint: fingerprint})
 		if err = claim.put("intent.json", raw, 1024); err != nil {
 			return fail(err)
 		}
 		return claim, nil
+	}
+	if scope != nil {
+		recorded, err := claim.read("scope.json", actionScopeLimit)
+		if err != nil || string(recorded) != string(canon(scope)) {
+			return fail(errors.New("action-journal-invalid: the reservation does not record the request's delegated scope; dispatch is forbidden"))
+		}
 	}
 	raw, err := claim.read("intent.json", 1024)
 	if err != nil {
@@ -239,8 +257,63 @@ func (j *actionJournal) reserve(namespace string, identity actionIdentity) (*act
 	return claim, nil
 }
 
+// errActionScopeConflict is a delegated key the same subject reserved under
+// another root actor (SPEC.md §11.8, RFC 0030 open question 9).
+var errActionScopeConflict = errors.New("action-key-scope-conflict: this subject reserved this key under another root actor")
+
+// holdSubjectKey records, under name, the delegated scope a subject first
+// reserved a key in, and refuses the key in any other scope of the same
+// subject: a takeover by another root actor finds the key taken rather than
+// a new reservation to send the write again under. Only the actor's request
+// calls it, before its reservation is made. A record that cannot be read
+// refuses.
+func (j *actionJournal) holdSubjectKey(name string, scope *vObject) error {
+	if !isLowerHexOfLen(name, 64) {
+		return errors.New("action-key-invalid: invalid journal identity")
+	}
+	err := j.root.Mkdir(name, 0700)
+	fresh := err == nil
+	if err != nil && !errors.Is(err, os.ErrExist) {
+		return errors.New("action-journal-unavailable: cannot reserve action")
+	}
+	if err = syncActionDirectory(j.root); err != nil {
+		return err
+	}
+	root, err := openActionDirectory(j.root, name)
+	if err != nil {
+		return err
+	}
+	claim := &actionClaim{root: root}
+	defer claim.close()
+	if fresh {
+		if err = claim.put("scope.json", canon(scope), actionScopeLimit); !errors.Is(err, errActionRecordExists) {
+			return err
+		}
+	}
+	recorded, err := claim.read("scope.json", actionScopeLimit)
+	if err != nil {
+		return errors.New("action-journal-invalid: the key's recorded scope cannot be read; dispatch is forbidden")
+	}
+	if string(recorded) != string(canon(scope)) {
+		return errActionScopeConflict
+	}
+	return nil
+}
+
+// has reports whether a reservation exists under the namespace, making none.
+func (j *actionJournal) has(namespace string) bool {
+	if !isLowerHexOfLen(namespace, 64) {
+		return false
+	}
+	_, err := j.root.Lstat(namespace)
+	return err == nil
+}
+
+// actionScopeLimit bounds a recorded scope and a delegated dispatch marker.
+const actionScopeLimit = 16 << 10
+
 func actionJournalName(name string) bool {
-	if name == "intent.json" || name == "action.json" || name == "response.json" {
+	if name == "intent.json" || name == "action.json" || name == "response.json" || name == "scope.json" {
 		return true
 	}
 	for n := 1; n <= actionDispatchAttempts; n++ {
@@ -282,12 +355,52 @@ func (c *actionClaim) attempt() (n int, begun bool, err error) {
 // already exists is errActionDispatchClaimed; any other failure sends nothing,
 // and a marker it may have left counts as begun on the next open.
 func (c *actionClaim) claimDispatch(n int) error {
+	return c.claimDispatchUnder(n, nil)
+}
+
+// claimDispatchUnder is claimDispatch for a dispatch admitted under a
+// delegation, whose marker records the receipt's delegation member (SPEC.md
+// §11.8); with nil it is claimDispatch, its marker as before.
+func (c *actionClaim) claimDispatchUnder(n int, delegation *vObject) error {
 	raw, _ := json.Marshal(map[string]int{"attempt": n})
-	err := c.put(actionDispatchName(n), raw, 1024)
+	limit := 1024
+	if delegation != nil {
+		marker := newObject()
+		marker.set("attempt", vInt(n))
+		marker.set("delegation", delegation)
+		raw, limit = canon(marker), actionScopeLimit
+	}
+	err := c.put(actionDispatchName(n), raw, limit)
 	if errors.Is(err, errActionRecordExists) {
 		return errActionDispatchClaimed
 	}
 	return err
+}
+
+// dispatchDelegation is the delegation member attempt n's marker recorded
+// when its dispatch was admitted. A marker that records none, or cannot be
+// read, refuses: a receipt of that dispatch cannot say what it was admitted
+// under.
+func (c *actionClaim) dispatchDelegation(n int) (*vObject, error) {
+	invalid := errors.New("action-journal-invalid: the dispatch marker does not record the delegation it was admitted under")
+	raw, err := c.read(actionDispatchName(n), actionScopeLimit)
+	if err != nil {
+		return nil, invalid
+	}
+	v, err := parseJSON(raw)
+	if err != nil {
+		return nil, invalid
+	}
+	marker, ok := v.(*vObject)
+	if !ok {
+		return nil, invalid
+	}
+	member, present := marker.get("delegation")
+	obj, isObject := member.(*vObject)
+	if !present || !isObject {
+		return nil, invalid
+	}
+	return obj, nil
 }
 
 // releaseDispatch answers attempt n's marker: the write program was never

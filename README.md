@@ -262,6 +262,18 @@ owner is current. Removing the owner revokes or quarantines the grant.
 and names no path, no account and no token
 ([connection grants](docs/design/connection-grants.md), SPEC.md §10).
 
+An agent can act through the gateway for a person or a service under a delegation from an issuing
+host (spec RFC 0030, a Draft; the Desk in the reference stack). The host binds a short-lived
+credential to the delegation's chain, at most five minutes and bound to the run's key (RFC 9449).
+The gateway admits each call under it immediately before dispatch: the chain's signatures and
+narrowing, its validity, its scope (source, tool and declared effect), and the host's own answer
+for registration, revocation and the subject's standing, read at every admission and refusing
+when unanswered. The receipt names the delegation, its actor and its subject, and `caller` names
+the subject, so a reader written before the member reads the same caller. Action keys under a
+delegation are scoped to the subject and the root actor, so a takeover under a new lease reads
+back instead of writing again. No platform credential is narrowed; the gateway enforces the
+scope, and posture says so (engine version 15, SPEC.md §11).
+
 A source declared with `--source-shape NAME=airbyte|mcp|http` is an adapter
 ([ADR-0002](docs/adr/0002-adapters-report-in-the-envelope.md)): its stdout is an
 envelope, `{acquisition, result, page?}`, and the receipt records the acquisition as the
