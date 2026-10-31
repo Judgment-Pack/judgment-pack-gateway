@@ -379,6 +379,11 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	delegation, err := loadDelegation(cfg.delegation)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
 	// A witness is opened before the store and the registry are made: its
 	// start-up checks refuse a start that a repair, a log copy or a new key
 	// must answer first, and such a start leaves nothing made.
@@ -407,6 +412,7 @@ func cmdServeEngine(args []string) int {
 	}
 	defer registryHold.Close()
 	service.witness = witness
+	service.attachDelegation(delegation)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	service.bindLifetime(ctx)

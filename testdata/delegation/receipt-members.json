@@ -1,0 +1,724 @@
+{
+ "note": "The forms of the delegation and reconciler members (SPEC.md \u00a711.7), shared by the Go and TypeScript readers: each row sets or removes the member at path in a copy of its base receipt, and says whether \u00a71.4 order 1 admits the result.",
+ "bases": {
+  "acquisition": {
+   "receiptVersion": "3",
+   "sessionId": "s1",
+   "callIndex": 1,
+   "prevSignature": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+   "source": "tickets/live",
+   "argumentsCommitment": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "resultDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+   "servedAt": "2026-09-12T00:00:01Z",
+   "authority": "gateway:test",
+   "keyId": "abababababababababababababababab",
+   "caller": {
+    "issuer": "https://login.example.com/",
+    "subject": "approver@example.com",
+    "tokenDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+   },
+   "signature": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+   "kind": "acquisition",
+   "acquisition": {
+    "adapter": {
+     "name": "adapter-mcp",
+     "version": "1.0",
+     "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    },
+    "shape": "mcp",
+    "endpoint": null,
+    "statement": null,
+    "snapshot": null,
+    "peerIdentity": null,
+    "schema": null,
+    "upstreamToken": null,
+    "observedAt": "2026-09-12T00:00:00Z"
+   },
+   "delegation": {
+    "id": "c0ffee00c0ffee00c0ffee00c0ffee00",
+    "host": "desk",
+    "actor": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
+    "subject": {
+     "kind": "person",
+     "issuer": "https://login.example.com/",
+     "subject": "approver@example.com"
+    },
+    "chain": [
+     "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+     "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "admittedAt": "2026-09-12T00:00:00.500Z"
+   }
+  },
+  "action": {
+   "receiptVersion": "3",
+   "sessionId": "s1",
+   "callIndex": 1,
+   "prevSignature": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+   "source": "tickets/write",
+   "argumentsCommitment": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "resultDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+   "servedAt": "2026-09-12T00:00:01Z",
+   "authority": "gateway:test",
+   "keyId": "abababababababababababababababab",
+   "caller": {
+    "issuer": "https://login.example.com/",
+    "subject": "approver@example.com",
+    "tokenDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+   },
+   "signature": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+   "kind": "action",
+   "delegation": {
+    "id": "c0ffee00c0ffee00c0ffee00c0ffee00",
+    "host": "desk",
+    "actor": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
+    "subject": {
+     "kind": "person",
+     "issuer": "https://login.example.com/",
+     "subject": "approver@example.com"
+    },
+    "chain": [
+     "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+     "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "admittedAt": "2026-09-12T00:00:00.500Z"
+   },
+   "action": {
+    "requester": {
+     "issuer": "https://login.example.com/",
+     "subject": "approver@example.com",
+     "tokenDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "decision": {
+     "recordDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+     "packDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "cites": [
+     {
+      "sessionId": "s0",
+      "callIndex": 0,
+      "signature": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+     }
+    ],
+    "tool": {
+     "shape": "mcp",
+     "endpoint": null,
+     "name": "update_ticket"
+    },
+    "request": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "adapter": {
+     "name": "executor",
+     "version": "1.0",
+     "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    "observedAt": "2026-09-12T00:00:01Z"
+   }
+  },
+  "readback": {
+   "receiptVersion": "3",
+   "sessionId": "s1",
+   "callIndex": 1,
+   "prevSignature": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+   "source": "tickets/live",
+   "argumentsCommitment": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "resultDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+   "servedAt": "2026-09-12T00:00:01Z",
+   "authority": "gateway:test",
+   "keyId": "abababababababababababababababab",
+   "caller": {
+    "issuer": "https://login.example.com/",
+    "subject": "approver@example.com",
+    "tokenDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+   },
+   "signature": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+   "kind": "acquisition",
+   "acquisition": {
+    "adapter": {
+     "name": "adapter-mcp",
+     "version": "1.0",
+     "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    },
+    "shape": "mcp",
+    "endpoint": null,
+    "statement": null,
+    "snapshot": null,
+    "peerIdentity": null,
+    "schema": null,
+    "upstreamToken": null,
+    "observedAt": "2026-09-12T00:00:00Z",
+    "reconciliation": {
+     "action": {
+      "sessionId": "act",
+      "callIndex": 0,
+      "signature": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+     },
+     "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "contract": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "outcome": "committed"
+    }
+   },
+   "reconciler": {
+    "kind": "host",
+    "issuer": "https://login.example.com/",
+    "subject": "service:desk"
+   }
+  }
+ },
+ "rows": [
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "note"
+   ],
+   "valid": true,
+   "value": "a member of a later version"
+  },
+  {
+   "base": "action",
+   "path": [
+    "delegation",
+    "note"
+   ],
+   "valid": true,
+   "value": "a member of a later version"
+  },
+  {
+   "base": "readback",
+   "path": [
+    "reconciler",
+    "note"
+   ],
+   "valid": true,
+   "value": "a member of a later version"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation"
+   ],
+   "valid": true,
+   "remove": true
+  },
+  {
+   "base": "readback",
+   "path": [
+    "reconciler"
+   ],
+   "valid": true,
+   "remove": true
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "id"
+   ],
+   "valid": false,
+   "value": "C0FFEE00C0FFEE00C0FFEE00C0FFEE00"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "id"
+   ],
+   "valid": false,
+   "value": "c0ffee"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "id"
+   ],
+   "valid": false,
+   "value": 1
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "host"
+   ],
+   "valid": false,
+   "value": "de/sk"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "host"
+   ],
+   "valid": false,
+   "value": ""
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "host"
+   ],
+   "valid": false,
+   "value": ".."
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "actor"
+   ],
+   "valid": false,
+   "value": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "actor"
+   ],
+   "valid": false,
+   "value": null
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "admittedAt"
+   ],
+   "valid": false,
+   "value": "2026-09-12T00:00:00Z"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "admittedAt"
+   ],
+   "valid": false,
+   "value": "2026-02-30T00:00:00.000Z"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "admittedAt"
+   ],
+   "valid": false,
+   "value": "2026-09-12T24:00:00.000Z"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "admittedAt"
+   ],
+   "valid": true,
+   "value": "0050-01-01T00:00:00.000Z"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "admittedAt"
+   ],
+   "valid": false,
+   "value": "2026-09-12T00:00:00.5Z"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "chain"
+   ],
+   "valid": false,
+   "value": []
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "chain"
+   ],
+   "valid": false,
+   "value": [
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+   ]
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "chain"
+   ],
+   "valid": true,
+   "value": [
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+   ]
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "chain"
+   ],
+   "valid": false,
+   "value": [
+    "sha256:bad"
+   ]
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "chain"
+   ],
+   "valid": false,
+   "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "id"
+   ],
+   "valid": false,
+   "remove": true
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "host"
+   ],
+   "valid": false,
+   "remove": true
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "actor"
+   ],
+   "valid": false,
+   "remove": true
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "subject"
+   ],
+   "valid": false,
+   "remove": true
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "chain"
+   ],
+   "valid": false,
+   "remove": true
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "admittedAt"
+   ],
+   "valid": false,
+   "remove": true
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation"
+   ],
+   "valid": false,
+   "value": null
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation"
+   ],
+   "valid": false,
+   "value": "c0ffee"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "subject",
+    "kind"
+   ],
+   "valid": false,
+   "value": "agent"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "subject",
+    "kind"
+   ],
+   "valid": true,
+   "value": "service"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "subject",
+    "label"
+   ],
+   "valid": false,
+   "value": "Approver"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "subject",
+    "issuer"
+   ],
+   "valid": false,
+   "value": ""
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "subject",
+    "subject"
+   ],
+   "valid": false,
+   "value": ""
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "subject",
+    "kind"
+   ],
+   "valid": false,
+   "remove": true
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "delegation",
+    "subject",
+    "subject"
+   ],
+   "valid": false,
+   "value": "someone-else@example.com"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "caller"
+   ],
+   "valid": false,
+   "value": null
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "caller",
+    "subject"
+   ],
+   "valid": false,
+   "value": "someone-else@example.com"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "caller",
+    "issuer"
+   ],
+   "valid": false,
+   "value": "https://other.example/"
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "caller",
+    "tokenDigest"
+   ],
+   "valid": true,
+   "value": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+  },
+  {
+   "base": "action",
+   "path": [
+    "action",
+    "requester",
+    "subject"
+   ],
+   "valid": false,
+   "value": "someone-else@example.com"
+  },
+  {
+   "base": "action",
+   "path": [
+    "action",
+    "requester",
+    "issuer"
+   ],
+   "valid": false,
+   "value": "https://other.example/"
+  },
+  {
+   "base": "action",
+   "path": [
+    "caller",
+    "subject"
+   ],
+   "valid": false,
+   "value": "someone-else@example.com"
+  },
+  {
+   "base": "readback",
+   "path": [
+    "reconciler",
+    "kind"
+   ],
+   "valid": true,
+   "value": "actor"
+  },
+  {
+   "base": "readback",
+   "path": [
+    "reconciler",
+    "kind"
+   ],
+   "valid": true,
+   "value": "subject"
+  },
+  {
+   "base": "readback",
+   "path": [
+    "reconciler",
+    "kind"
+   ],
+   "valid": true,
+   "value": "operator"
+  },
+  {
+   "base": "readback",
+   "path": [
+    "reconciler",
+    "kind"
+   ],
+   "valid": false,
+   "value": "witness"
+  },
+  {
+   "base": "readback",
+   "path": [
+    "reconciler",
+    "kind"
+   ],
+   "valid": false,
+   "value": null
+  },
+  {
+   "base": "readback",
+   "path": [
+    "reconciler",
+    "issuer"
+   ],
+   "valid": false,
+   "value": 1
+  },
+  {
+   "base": "readback",
+   "path": [
+    "reconciler",
+    "subject"
+   ],
+   "valid": false,
+   "value": null
+  },
+  {
+   "base": "readback",
+   "path": [
+    "reconciler",
+    "kind"
+   ],
+   "valid": false,
+   "remove": true
+  },
+  {
+   "base": "readback",
+   "path": [
+    "reconciler",
+    "issuer"
+   ],
+   "valid": false,
+   "remove": true
+  },
+  {
+   "base": "readback",
+   "path": [
+    "reconciler",
+    "subject"
+   ],
+   "valid": false,
+   "remove": true
+  },
+  {
+   "base": "readback",
+   "path": [
+    "reconciler"
+   ],
+   "valid": false,
+   "value": null
+  },
+  {
+   "base": "readback",
+   "path": [
+    "acquisition",
+    "reconciliation"
+   ],
+   "valid": false,
+   "remove": true
+  },
+  {
+   "base": "action",
+   "path": [
+    "reconciler"
+   ],
+   "valid": false,
+   "value": {
+    "kind": "host",
+    "issuer": "x",
+    "subject": "y"
+   }
+  },
+  {
+   "base": "acquisition",
+   "path": [
+    "reconciler"
+   ],
+   "valid": false,
+   "value": {
+    "kind": "host",
+    "issuer": "x",
+    "subject": "y"
+   }
+  }
+ ]
+}

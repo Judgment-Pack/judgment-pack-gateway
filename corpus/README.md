@@ -166,7 +166,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 68 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 80 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -245,6 +245,21 @@ held to nothing more, so a verifier that applies the form to every endpoint, or 
 transport from the endpoint's spelling, is caught as well as one that drops the rule. The
 earlier action vectors carry no `transport`, and their endpoint, `https://mcp.example.com/`,
 is held to nothing by it.
+
+Twelve hold what a call made under a delegation adds (`SPEC.md` §11.7; issue #356), each
+named `v3-delegation-*` or `v3-reconciler-*` and signed with its members by a signer that shares
+no code with the gateway: an acquisition and an action carrying the `delegation` member, `caller`
+and `requester` naming its subject, both `ok`; a member beside the six §11.7 names, tolerated,
+`ok`; `malformed` for a requester, and for a caller, naming another subject than the member's,
+for a `null` caller, for an empty `chain`, for an `admittedAt` without milliseconds, and for a
+`subject` carrying a label; `signature-mismatch` for the member's `actor` changed after signing;
+an uncertain delegated action and its read-back sent by the issuing host, whose `caller` is the
+subject's and whose `reconciler` names the host, all three `ok` and the action observed
+committed; and `malformed` for a `reconciler` of another kind and for one on an acquisition that
+carries no `reconciliation`. A verifier written before the members (v0.23.0, in Go and in
+TypeScript) answers `ok` for every one of them but the tampered member, and reads `caller` as
+naming the subject: that is the compatibility §11.7 states, and these vectors hold the readers
+that know the members to more.
 
 **`witnesses`.** A vector whose report names witnesses gives them in `expected`
 as `witnesses`, each `{"trail", "origin", "keyId"}`, and a runner compares them

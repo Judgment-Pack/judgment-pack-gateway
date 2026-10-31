@@ -46,6 +46,10 @@ type caller struct {
 	// witness's audience among them marks a submission token, which the
 	// engine's other endpoints refuse (witnessSpec.refusesToken, #214).
 	audiences []string
+	// delegated is the delegated scope a request is made in, as the sender
+	// table authenticated it (SPEC.md §11.8); nil for a request made under no
+	// delegation. issuer and subject above are then the delegation's subject.
+	delegated *delegatedSender
 }
 
 // errNotEngineAudience is the refusal of a token that names an audience

@@ -18,12 +18,34 @@ func actionHash(domain string, v value) string {
 	return hex.EncodeToString(sum[:])
 }
 func (g *gatewayService) actionNamespace(who *caller, key string) string {
+	// Under a delegation the key is scoped to the authority, the subject, the
+	// root actor and the issuing host, never the transport token (SPEC.md
+	// §11.8): a takeover by a new lease finds the same reservation.
+	if who.delegated != nil {
+		v := newObject()
+		v.set("authority", vString(g.authority))
+		v.set("scope", who.delegated.scope.value())
+		v.set("key", vString(key))
+		return actionHash("delegated-action-key", v)
+	}
 	v := newObject()
 	v.set("authority", vString(g.authority))
 	v.set("issuer", vString(who.issuer))
 	v.set("subject", vString(who.subject))
 	v.set("key", vString(key))
 	return actionHash("action-key", v)
+}
+
+// actionSubjectNamespace is where a delegated key's first scope is recorded
+// for its subject (holdSubjectKey): the authority, the subject, the issuing
+// host and the key, without the root actor.
+func (g *gatewayService) actionSubjectNamespace(s *delegatedSender, key string) string {
+	v := newObject()
+	v.set("authority", vString(g.authority))
+	v.set("sub", s.scope.sub.value())
+	v.set("host", vString(s.scope.host))
+	v.set("key", vString(key))
+	return actionHash("delegated-action-subject", v)
 }
 
 // actionInstallFlags are the adapter flags whose values say where something

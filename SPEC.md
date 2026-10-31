@@ -32,6 +32,12 @@ no receipt verifier reads one.
 keeps of the standing provider authorization behind each connection. It is not a receipt, it is
 not signed, nothing in §1 to §9 changes for it, and no verifier reads one.
 
+**It is normative too for delegated authority (§11):** the gateway as the enforcing host of
+spec RFC 0030 (a Draft), the credential it binds to a delegation, the admission of each call made
+under one, and the `delegation` and `reconciler` members a receipt then carries. A gateway
+configured without it, and every call made under no delegation, are as before, receipts byte for
+byte.
+
 **It is normative too for the continuity statement (§3b), version 1:** the pair of
 registry lines by which a gateway rotates its signing key, which a verifier follows from
 the key it pinned. A registry that holds none is read exactly as before.
@@ -156,6 +162,8 @@ Two forms recur and are named once:
 | `acquisition` | object (below); present exactly when `kind` is `"acquisition"` |
 | `action` | object (below); present exactly when `kind` is `"action"` |
 | `witness` | object (below) — **optional**, on either kind |
+| `delegation` | object (§11.7) — **optional**, on either kind: present exactly when the call was dispatched under a delegation |
+| `reconciler` | object (§11.7) — **optional**: present only on a read-back (§1.2b) of an action reserved under a delegation |
 
 `argumentsDigest` does not exist in version 3.
 
@@ -187,6 +195,11 @@ subject, and the digest of the token bytes as presented. The token itself is
 never stored and never signed into a receipt. A gateway configured with no
 issuer records `null`. What a verified token proves is who asked, at the
 gateway's boundary. It does not prove that they approved what was asked for.
+On a receipt that carries `delegation` (§11.7) `caller` and an action's
+`requester` mean something else: `issuer` and `subject` name the delegation's
+subject, on whose behalf the agent asked, and `tokenDigest` is the digest of
+the delegation credential the gateway issued, so the triple no longer
+describes one token.
 
 **`acquisition`** — present when `kind` is `"acquisition"`:
 
@@ -525,7 +538,9 @@ canonical form or meaning of receipts without them.
 For engine version 14, `/act` requires `actionKey` in the key form above. Older
 configurations may opt in by supplying it. The key is scoped to gateway
 authority, authenticated issuer and subject, independent of session and token
-renewal. A durable private reservation under `actions/` in the store precedes
+renewal; under a delegation it is scoped to the gateway authority, the
+delegation's subject and its root actor instead, and every request on it
+authenticates its sender against that scope (§11.8). A durable private reservation under `actions/` in the store precedes
 any dispatch, and a durable dispatch marker, created exclusively, immediately
 precedes starting the write program; only the marker's creator may send the
 mutation. A marker answered durably as not dispatched — the program was never
@@ -603,7 +618,7 @@ statuses of the ladder and do not replace it.)
 
 | Order | Status | Condition |
 |---|---|---|
-| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `decision.recordBytes` present and not `"exact"`, `witness` present and not an object whose `origin`, `keyId` and `trail` are each of their stated forms — and never a relational one |
+| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `decision.recordBytes` present and not `"exact"`, `witness` present and not an object whose `origin`, `keyId` and `trail` are each of their stated forms, `delegation` or `reconciler` present and not of its stated form (§11.7) — and never a relational one but the comparisons within one receipt that §11.7 states: `caller` `null` or naming another issuer or subject than `delegation.subject`, an action's `requester` likewise, and `reconciler` on a receipt that is not an acquisition carrying `reconciliation` |
 | 2 | `unsupported-version` | `receiptVersion` is neither `"2"` nor `"3"` |
 | 3 | `key-mismatch` | `keyId` is not the key id of a key the verifier reached (§3b): the key it pinned, or a key a rotation it followed rotated to |
 | 4 | `signature-mismatch` | the signature does not verify, under the key `keyId` names, over the input §1.2 or §1.2a defines for the receipt's version |
@@ -1309,6 +1324,8 @@ gateway reads the found record's `trail` too, from the bytes whose digest matche
 whatever the tool, and names that trail's witness on the receipt. The format was specified before the surface so that a verifier
 written then verifies what is minted now. `gateway verify` takes
 `--decision-records <dir>` for §4 steps 5 to 8.
+| POST   | `/delegation/credential` | from an issuing host: binds a credential to a delegation chain's leaf (§11.3). Answered only where the configuration has `delegation`. |
+| POST   | `/delegation/revoke` | from an issuing host: ends live delegation credentials (§11.6). Answered only where the configuration has `delegation`. |
 | GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`, and `observations` when §4 step 8 has any and `rotations` when the walk of §3b followed any, against the registry the gateway made when it started (§3): a registry that is not there is no verdict here, never the absent registry of §4.1 that loads no seals. The key it verifies from is the one its own reading of §3b starts at, taken from its registry — a reason more that this answer is not evidence (§5a.3). |
 | GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. A registry that cannot be read (§4.1), or that is not there — the gateway made it when it started (§3) — is answered `500`, never as the empty body a verifier reads as no seals. |
 | GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |
@@ -2145,3 +2162,327 @@ no credential, no token, no token digest, no provider account and no content.
    it. Under the operator's `refuse` policy, an unmaintained publisher refuses the registration
    and each acquisition and action of that binding. A registration whose name closely matches an
    integration the gateway ships, under another publisher, is flagged `name-lookalike`.
+
+## 11. Delegated authority
+
+Spec RFC 0030 (a Draft) proposes how an agent acts for a person or a service: a signed, bounded
+**delegation statement** from an *issuing host*, a credential bound to it, and an *enforcing host*
+that admits each call under it. For a gateway source the gateway is the enforcing host. This
+section states what the reference does as one, and every wire detail the RFC leaves open. The RFC
+is a Draft and this is its first implementation, so the text below is normative for this gateway
+and pre-commits nothing for the RFC. Where it departs from the RFC or defines what the RFC leaves
+open, it says so (§11.10).
+
+A gateway configured with no `delegation` (§11.2) behaves exactly as before: it answers no
+delegation endpoint, admits no delegation credential, and mints every receipt byte for byte as
+before. A call made under no delegation carries no `delegation` member and no `reconciler`
+member, whatever the configuration.
+
+### 11.1 The statement
+
+A delegation statement is the RFC's §2 object, version `"1"`, with the forms its §2 states: the
+canonical form is `canon` (§1.1); a digest is §1.2a's; a time is UTC with exactly milliseconds,
+`YYYY-MM-DDTHH:MM:SS.sssZ`, of a date that exists; an opaque identifier is 32 lowercase
+hexadecimal characters; a flat token is §3a's; a principal reference is
+`{"kind": "person" | "service", "issuer", "subject"}` with `issuer` and `subject` non-empty
+strings. Its signature is Ed25519 over `"judgment-pack/delegation/1:"` followed by `canon` of the
+statement with its top-level `signature` removed, under the issuing host's key, held to §8.4's key
+rule and equation; `keyId` is derived from the key as §1.2 derives one. Its digest is
+`"sha256:"` and the hexadecimal SHA-256 of `canon` of the whole statement, `signature` included.
+
+A **chain** is a JSON array of one to five statements, root first. The gateway verifies a chain
+by the RFC's steps 1 to 7, in order, stopping at the first failure; within a step the links are
+taken root first:
+
+| Step | Refusal | Condition, as this gateway reads it |
+| --- | --- | --- |
+| 1 | `malformed` | the chain is not an array of one to five objects, a value is outside the `canon` domain or a member name repeats anywhere in it, or a link lacks a string `delegationVersion` |
+| 2 | `unsupported-version` | a link's `delegationVersion` is a string other than `"1"` |
+| 3 | `malformed` | a link violates a structural constraint of version 1: a member missing or of another type or form; `scope.sources` empty or over 256 entries, out of order (by `audience.kind`, then `audience.name`, then `source`, each by code point) or repeating an `audience` and `source`; `tools` empty, over 256, out of code-point order or repeating; `effects` empty, outside the five effect classes, out of their strength order or repeating; `limits` over 16 names, a name other than `calls` or `x-` followed by a flat token, or a value that is not a non-negative integer; `expiresAt` not after `issuedAt`, or more than 24 hours after it; `parent` `null` with a `depth` other than `0`, or not `null` with a `depth` of `0`; or `canon` of the link over 65536 bytes |
+| 4 | `key-mismatch` | a link's `keyId` is not the `keyId` of a key the configuration pins for its `host` |
+| 5 | `signature-mismatch` | a link's signature does not verify under that key, by §8.4's equation |
+| 6 | `chain-broken` | the RFC's narrowing clauses 0 to 3 fail: the root's `parent` is not `null` or its `depth` not `0`; a child's `parent` does not name its parent's `id` and digest; a child's `depth` is not its parent's plus one, or is over 4; a child's `host` is not its parent's |
+| 7 | `widened` | the RFC's clauses 4 to 8 fail: a child's `sub` is not its parent's, member for member; its `issuedAt` is before its parent's or its `expiresAt` after its parent's; an entry of its scope has no entry of its parent's with the same `audience` and `source` whose `tools` and `effects` contain its own; such an entry lacks a limit name of the parent's entry or exceeds its value; or its parent's `mayDelegate` is not `true` |
+
+A member a link carries at its top level beside those of version 1 is not refused by steps 1 to
+3: it is signed with the rest, as a receipt's unknown member is, so a member appended after
+signing fails step 5. Every object within a link — `sub`, `act`, `act.software`, `scope`, an
+entry, its `audience`, `parent` — holds exactly the members version 1 names, or step 3 refuses it.
+Equality of two values is equality of their `canon` bytes.
+
+### 11.2 Configuration
+
+The engine configuration's `delegation` member (`engineVersion` 15) makes the gateway an
+enforcing host. It requires `identity`, since an issuing host authenticates to the gateway by a
+token from that issuer:
+
+```json
+"delegation": {
+  "hosts": [
+    {
+      "host": "desk",
+      "requester": "service:desk",
+      "keys": ["<64 lowercase hexadecimal characters: an Ed25519 public key>"],
+      "admission": {"url": "https://desk.example/delegation/admission", "credential": "/etc/engine/desk-admission-token"}
+    }
+  ],
+  "operators": ["operator:on-call"],
+  "bearerReadOnly": false
+}
+```
+
+- `hosts`: one entry per issuing host, at least one, `host` a flat token named once. `requester`
+  is the subject of the issuing host's own token from the configured issuer: a request to a
+  delegation endpoint (§11.3, §11.6) authenticates as that host only with a token the identity
+  verifies whose subject is `requester`. `keys` are the host's pinned signing keys, each held to
+  §8.4's key rule when the configuration is loaded. `admission` is where the gateway reads the
+  host's state (§11.5): `url` an `https://` URL, and `credential` an absolute path to a file
+  holding the bearer credential the gateway presents there, read once at start.
+- `operators`: optional, the subjects of the configured issuer that the gateway accepts as its
+  operators for §11.8's sender table, none of them a host's `requester`. Absent is none.
+- `bearerReadOnly`: optional, `false` when absent. `true` is the operator's acceptance of a
+  credential with no sender constraint for a chain whose every entry admits only `pure`, `read`
+  or `read-external` (RFC §2, open question 8). Posture reports it (§11.9).
+
+### 11.3 Binding a credential
+
+`POST /delegation/credential`, from the issuing host alone, binds a credential to a chain's leaf.
+The request carries the host's token (`Authorization: Bearer`) and the body
+`{"chain": [statement, ...], "software": <software>, "key": <JWK> | null}`, where `software` is
+the run's software in the form of a statement's `act.software`, and `key` is the public key of
+the run's proof-of-possession key pair as an RFC 7517 JSON Web Key: Ed25519
+(`{"kty": "OKP", "crv": "Ed25519", "x"}`) or P-256 (`{"kty": "EC", "crv": "P-256", "x", "y"}`),
+with no private member. The gateway, in order:
+
+1. refuses a token the identity does not verify, or one whose subject is no host's `requester`
+   (`401`);
+2. verifies the chain by §11.1, and refuses a chain whose root's `host` is not the host the token
+   authenticated (`host-unauthenticated`);
+3. judges the RFC's step 8 at its own time (`not-yet-valid`, `expired`), refuses a leaf whose
+   `act.software` is not `software` (`software-mismatch`), and makes an admission read naming no
+   call (§11.5), which answers steps 9 and 10;
+4. refuses a `null` key unless `bearerReadOnly` is set and every entry of every link admits only
+   `pure`, `read` or `read-external` (`sender-constraint-required`).
+
+It answers `200` with `{"credential", "tokenType", "expiresAt", "binding": {"id", "chain"}}`:
+`credential` is `"jpd1_"` followed by the unpadded base64url of 32 random bytes; `tokenType` is
+`"DPoP"`, or `"Bearer"` for a `null` key; `expiresAt` is the earlier of five minutes after the
+binding and the leaf's `expiresAt`; `binding.id` is the leaf's `id` and `binding.chain` the
+chain's digests. The gateway keeps the binding — the chain's bytes and digests, the software, the
+key's RFC 7638 thumbprint and the expiry — in memory only, so a restart ends every credential and
+the host binds another. A refusal is `403` with `{"error", "refusal"}`, `refusal` one of the names
+above or of §11.1.
+
+### 11.4 Presenting a credential
+
+A run presents its credential on `/acquire` and `/act` as `Authorization: DPoP <credential>`
+with an RFC 9449 proof in the `DPoP` header, or, for a credential bound with a `null` key, as
+`Authorization: Bearer <credential>`. The proof is a compact JWS whose header has `typ`
+`"dpop+jwt"`, `alg` `"EdDSA"` or `"ES256"` and the public `jwk`, and whose claims are `jti` (a
+string of 1 to 256 bytes, not seen before while a proof of its `iat` could still be accepted), `htm` (the request's
+method), `htu`, `iat` (within 60 seconds of the gateway's time either way) and `ath` (the unpadded
+base64url SHA-256 of the credential). `htu` is `"http://"` or `"https://"`, the request's `Host`,
+and the request's path, with no query and no fragment: the gateway serves plain HTTP on a
+loopback address and may be reached through a proxy that terminates TLS, so either scheme is
+read. A request may also carry the chain it believes it acts under as the body member
+`delegation`; the gateway never admits on it, and refuses the call when its `canon` bytes are not
+the bound chain's.
+
+Step 0 refuses (`credential-mismatch`, answered `401` with `WWW-Authenticate: DPoP`) a credential
+that is not bound at this gateway, has expired or was revoked (§11.6); a DPoP credential without a
+proof that verifies, whose key's thumbprint is the bound one, and whose claims hold as above; a
+bearer credential presented under `DPoP` or the reverse; and a request whose `delegation` member
+is not the bound chain. A request carrying a `delegation` member with a token that is not a
+delegation credential is refused the same way. The token's digest is the receipt's `tokenDigest`
+(§11.7).
+
+### 11.5 Admission
+
+Every call presented with a credential is admitted **immediately before it is dispatched**: for
+`/acquire`, after the session is admitted and before the source starts; for `/act`, after the
+action-key lookup (§11.8) and before the dispatch marker (§1.2b) is created. A request that the
+key lookup answers from retained evidence, sends to a read-back, or refuses, dispatches nothing
+and is not admitted. The gateway has no approval pause of its own; every dispatch is admitted at
+that point, after any wait for an action key's lock. Admission applies, in order, steps 0 to 7
+(§11.4, §11.1), then:
+
+| Step | Refusal | Condition |
+| --- | --- | --- |
+| 8 | `not-yet-valid`, then `expired` | at the gateway's time *t*, to the millisecond, some link has *t* before its `issuedAt` (the skew allowance is zero), or *t* at or after its `expiresAt` |
+| 9, 10 | as the admission read answers | the issuing host's answer for its inventory, its record of issuing each link and its revocations |
+| 11 | `out-of-scope` | the call is outside some link's scope, the first reason, in the order `source`, `tool`, `effect`, `limit-unknown`, `limit` |
+| 12 | as the admission read answers | the subject's standing for the call |
+
+**The call's scope.** The audience is `{"kind": "gateway", "name": <authority>}`. The source is
+the gateway's source name (`<platform>/live`, `<platform>/write`, …). The tool is, for an
+`/acquire` of an `mcp` source, the `tool` member of the request's arguments, and for `/act` the
+request's `tool`; an acquisition of another shape names no tool and is out of scope with reason
+`tool`. The effect is the effect the platform owner's taxonomy declares for that tool in the
+binding (`docs/adr/0021-owner-taxonomy-binds-current-tool-approval.md`); a tool with no declared
+effect is out of scope with reason `effect`, and the effect is never read from a request. This
+gateway declares no source limit, so a limit name beginning `x-` is `limit-unknown`; `calls` is
+the issuing host's, which answers it.
+
+**The admission read** is a `POST` to the host's `admission.url` with
+`Authorization: Bearer <admission credential>` and the `canon` body
+`{"readVersion": "1", "host", "audience", "chain": [digest, ...], "call", "at"}`, where `call` is
+`{"source", "tool", "effect", "count"}` or `null` for a binding (§11.3), and `at` is *t*. The read
+is HTTPS only, follows no redirect, has 5 seconds, and takes only a `200` answer of at most 4096
+bytes that the `canon` parser reads as exactly `{"admission": "admit"}`,
+`{"admission": "refuse", "refusal": R}` with *R* one of `expired`, `agent-unregistered`,
+`software-mismatch`, `not-issued`, `revoked`, `subject-mismatch` or `subject-unauthorized`, or
+`{"admission": "refuse", "refusal": "out-of-scope", "reason": X}` with *X* one of step 11's
+reasons, for a read that names a call. Anything else, no answer included, refuses the call as
+`admission-unknown` (fail closed). `count` is `true` only on the admission immediately before a
+dispatch whose steps 0 to 8 and the gateway's own part of step 11 hold, so the host counts each
+dispatch once and a call out of scope consumes no budget. When the gateway's own part of step 11
+fails, it still reads, with `count` `false`; a refusal of steps 8 to 10 the host answers, or a
+read that cannot be made, is reported before the gateway's own, and the gateway's own before the
+host's step 11 or 12. A lost answer to a counting read refuses
+the call, which the host may already have counted: that fails closed.
+
+**Refusals** are answered `403` with `{"error", "refusal"}` (and `reason` for `out-of-scope`);
+`/act` adds `"refusedAt": "delegation"`. Nothing is dispatched, retained or minted.
+
+### 11.6 Revocation
+
+`POST /delegation/revoke`, from an issuing host authenticated as in §11.3, with a body of exactly
+one of `{"credential": <digest of the credential>}`, `{"delegation": <id>}` or
+`{"agent": <id>}`, ends at once every live credential it names among those bound to chains that
+host issued: the one credential, every
+credential whose chain has a link of that `id`, or every credential whose chain has a link whose
+`act.agent` is that agent. It answers `{"revoked": n}`. It is the second barrier the RFC's §4
+rule 1 names: the first is the admission read, which every dispatch makes and which answers
+`revoked` from the instant the host recorded the revocation. Neither changes the subject's own
+access, and neither touches the action journal: a pending action key follows reconciliation
+(§11.8).
+
+### 11.7 Receipts
+
+A receipt for a call dispatched under a delegation carries the signed top-level member
+`delegation`:
+
+| Member | Form | Meaning |
+| --- | --- | --- |
+| `id` | opaque identifier | the leaf's `id` |
+| `host` | flat token | the issuing host |
+| `actor` | opaque identifier | the leaf's `act.agent` |
+| `subject` | principal reference | the chain's `sub` |
+| `chain` | array of one to five digests | the chain's digests, root first |
+| `admittedAt` | time, with milliseconds | *t* at the admission immediately before dispatch (§11.5) |
+
+On such a receipt `caller.issuer` and `caller.subject` are `delegation.subject.issuer` and
+`delegation.subject.subject`, and so are an action's `requester.issuer` and `requester.subject`;
+`tokenDigest` is the digest of the delegation credential that dispatched the call, which the
+gateway issued and not `caller.issuer`. `caller` is never `null` beside `delegation`.
+`receiptVersion` stays `"3"` and the signing input is §1.2a's. A receipt of an action whose
+dispatch marker was found without its answer (§1.2b) is the receipt of that dispatch: it carries
+the `delegation` member, and the `tokenDigest` of the credential, that the marker recorded when
+the dispatch was admitted, whoever's request found the marker. The finder dispatched nothing and
+is not named on it; the read-back that follows names it in `reconciler`, and where no read-back
+can run (`action-reconciliation-unavailable`), no receipt names it.
+
+A read-back (§1.2b) of an action reserved under a delegation carries the signed top-level member
+`reconciler`, `{"kind": "actor" | "subject" | "host" | "operator", "issuer", "subject"}`, the
+sender as §11.8 authenticated it, and no `delegation` member: a read-back is not a call under the
+delegation, and nothing counts it. Its `caller` is the reservation's subject pair, with the
+`tokenDigest` of the token the sender presented. For the actor, `reconciler.issuer` is the
+issuing host and `reconciler.subject` the agent's identifier.
+
+**What a verifier checks.** At §1.4 order 1 a verifier that reads the members holds them to the
+forms above (`subject` exactly a principal reference), and, as a stated exception to order 1
+being structural, requires within the one
+receipt that `caller` is not `null` and names `delegation.subject`'s issuer and subject, and that
+an action's `requester` does too. It holds `reconciler` to its form, and requires that a receipt
+carrying it be an acquisition that carries `acquisition.reconciliation`. A member of either object
+beside those named is tolerated. §1.2b's resolution of a read-back already compares `caller` with
+the action's `requester` by `issuer` and `subject` alone, which a read-back carrying `reconciler`
+satisfies. A verifier written before these members tolerates both, as any signed member it does
+not know, returns the status it returned before, and reads `caller` as naming the subject. It
+does not see the actor, and it takes every read-back for the subject's own.
+
+### 11.8 Action keys under a delegation
+
+An action reserved under a delegation is scoped to the gateway's authority, the chain's `sub` —
+`kind`, `issuer` and `subject` — the chain's **root actor** (the root's `act.agent`) and the
+issuing host, whose identifiers an agent's are, and records that scope beside its intent
+(`scope.json`). Neither the transport token, the delegation's `id`, the lease nor the worker is
+in it, so a takeover under a new lease or a re-issued delegation for the same subject and root
+actor finds the same reservation, and is answered from retained evidence, a freed attempt or the
+read-back, never a new mutation. The first scope a subject reserves a key in is recorded for the
+subject as well, and the actor of another root actor presenting the same key for the same subject
+is refused as `action-key-scope-conflict` before anything is reserved (RFC 0030 open question 9):
+a takeover that changes the root actor finds the key taken, never a new reservation to send the
+write again under. Under another subject the scopes are independent. A reservation made under no
+delegation keeps §1.2b's scope and rules, unchanged.
+
+The key grants nothing on its own. Every request on a delegated key authenticates its sender
+against the reservation's scope before the journal is read:
+
+| Sender | Authenticated by | Before revocation | After revocation |
+| --- | --- | --- | --- |
+| the run's actor | its credential (§11.4), steps 0 to 7, of a chain whose `sub` and root actor are the scope's; for a request the key lookup answers, the write's source and tool in the leaf's scope (spec #284 NC1) | evidence, read-back, freed attempt, first dispatch (each dispatch admitted, §11.5) | none: its credentials are ended, and a dispatch's admission answers `revoked` |
+| the subject | a token the identity verifies whose issuer and subject are the scope's `sub`, and a standing read (below) answering `current` | evidence, read-back | evidence, read-back, unless removed |
+| the issuing host | a token whose subject is the `requester` of the scope's host | evidence, read-back | evidence, read-back |
+| an operator | a token whose subject is among `operators` | evidence, read-back | evidence, read-back |
+
+A sender other than the actor names the scope it reaches in the `/act` body member
+`reservation`, `{"sub": <principal reference>, "rootActor": <id>, "host": <flat token>}`; the
+actor's scope is its chain's, and a `reservation` member it sends must equal it. Any other sender,
+a credential bound to another scope, or a `reservation` naming a scope the sender does not
+authenticate as, is refused as `action-key-unauthenticated` (`403`), which says nothing about the
+reservation. A sender other than the actor never creates a reservation and never reaches a
+dispatch: a key that names no reservation in the scope it authenticated against, or one under
+which nothing was dispatched, is refused as `action-key-actor-only`. The **standing read** (spec #284 NC5) is a `POST` to the host's
+`admission.url`, as an admission read is, with the body
+`{"readVersion": "1", "host", "audience", "standing": <principal reference>}`, answered `200` with
+exactly `{"standing": "current"}` or `{"standing": "removed"}`; `removed` refuses as
+`action-key-unauthenticated`, and anything else as `standing-unknown`.
+
+A first dispatch, or a freed attempt, under a delegated key is the actor's alone and is admitted
+by §11.5 with counting; the dispatch marker of attempt *n* (§1.2b) records the receipt's
+`delegation` member and the digest of the dispatching credential as
+`{"attempt": n, "delegation": …, "tokenDigest": …}`, so a receipt minted for a marker found
+without its answer names the admission and the credential that dispatch was made under (§11.7),
+and a marker that records either not refuses as `action-journal-invalid`.
+
+### 11.9 Posture
+
+A gateway with `delegation` adds two lines to its posture (`gateway posture`, `/posture`):
+`delegation-narrowing`, `enforced`, saying that a delegation's scope is enforced by the gateway
+before dispatch and that no platform's standing credential is narrowed — the gateway enforces the
+narrowing, the platform does not; and `delegation-sender-constraint`, `enforced` when every
+credential is bound to a proof-of-possession key, `not-enforced` when `bearerReadOnly` admits a
+bearer credential for a read-only chain. A gateway without `delegation` reports neither line, and
+its posture is the one it was.
+
+### 11.10 Definitions and departures
+
+What this section defines where the RFC leaves it open, and where it departs from the RFC:
+
+- **Credential.** The gateway mints an opaque credential of its own, kept in memory, rather than
+  narrowing a platform's credential, which none of its platforms can do: the narrowing is
+  gateway-enforced, and posture says so. The RFC permits this (RFC 8693 issuance is not required).
+- **Sender constraint.** RFC 9449 (DPoP) only. RFC 8705 needs a TLS client certificate, and this
+  gateway serves plain HTTP on a loopback address. `htu` is read with either scheme (§11.4).
+- **Wire forms.** The credential, revocation and admission-read endpoints, their bodies and
+  answers, the `delegation` and `reservation` request members, the `jpd1_` credential form, the
+  `scope.json` journal record and the dispatch marker's `delegation` member are this gateway's.
+- **Statement.** Unknown members are left to the signature (§11.1); a lifetime over 24 hours and
+  more than five links are refused at steps 3 and 1, enforcing the RFC's open-question bounds.
+- **Scope.** Only `mcp` sources name a tool; the effect is the owner taxonomy's; no `x-` limit is
+  declared.
+- **Admission read.** It carries no grant owner (spec #284 NC2): the connection custody's owner
+  read (§10 rule 3) is made at every use of an owned grant, delegated or not. Its answer names the
+  first refusal of steps 8 to 12 the host finds; the gateway orders it with its own.
+- **The actor row** also requires the write's source and tool in the leaf's scope for a request
+  the key lookup answers (spec #284 NC1), and the subject row reads the subject's standing
+  (spec #284 NC5).
+- **Action-key scope.** The issuing host is part of a delegated key's scope beside the RFC's
+  authority, subject and root actor, since an agent's identifier is its host's; and a key is
+  recorded per subject so that another root actor of the same subject is refused
+  (`action-key-scope-conflict`, open question 9) rather than given a reservation of its own.
+- **Undelegated takeovers** are not changed here (#352).
+- **Not built.** `delegation-unresolved` (the RFC's offline resolution of a receipt's chain
+  against given statements), key rotation for an issuing host (open question 1), and revocation
+  statements (open question 20).

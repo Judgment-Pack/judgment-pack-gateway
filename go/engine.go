@@ -39,14 +39,16 @@ import (
 // (docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md),
 // version 10 a decision policy's optional `shape`, version 11 per-operation
 // owner descriptor approvals, version 12 signed `descriptorStatements`, and
-// version 13 the source sandbox wrapper and optional `sandbox` configuration:
+// version 13 the source sandbox wrapper and optional `sandbox` configuration,
+// version 14 a required action key, and version 15 the optional `delegation`
+// (SPEC.md §11.2):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "14"
+const engineVersion = "15"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -91,6 +93,9 @@ type engineConfig struct {
 	// witnessedBy names the witness each trail is registered with, which a
 	// receipt minted for the trail names (ADR-0014); nil when none is.
 	witnessedBy map[string]namedWitness
+	// delegation makes the gateway an enforcing host of delegated calls
+	// (SPEC.md §11.2); nil when the configuration has none.
+	delegation *delegationSpec
 }
 
 // mcpConfig is the `mcp` member (docs/design/mcp-server.md): where the MCP
@@ -264,7 +269,7 @@ var engineMembers = map[string]bool{
 	"engineVersion": true, "authority": true, "seed": true, "store": true, "registry": true,
 	"decisionRecords": true, "listen": true, "catalog": true, "platforms": true,
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
-	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false,
+	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
 }
 
 var platformMembers = map[string]bool{
@@ -365,6 +370,13 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 		}
 		cfg.witness = w
+	}
+	if delegationValue, present := obj.get("delegation"); present {
+		spec, err := parseDelegationConfig(delegationValue, version, cfg.identity)
+		if err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
+		}
+		cfg.delegation = spec
 	}
 	if witnessedByValue, present := obj.get("witnessedBy"); present {
 		named, err := parseWitnessedBy(witnessedByValue, version)
@@ -1197,7 +1209,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if len(b.live.command) > 0 {
 				argv = append(append(argv, "--"), b.live.command...)
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", binding: p.binding, tools: b.live.tools, check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live"), approval: approvalOf(p, b.live), publishers: customerPublishers(cfg, b)}
+			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", binding: p.binding, tools: b.live.tools, check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live"), approval: approvalOf(p, b.live), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.live)}
 		}
 		// The write operation, for a platform that allows writes: the
 		// executor is adapter-mcp on the binding's write server with the
@@ -1223,7 +1235,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.write.url != "" {
 				endpoint, transport = b.write.url, "http"
 			}
-			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b)}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.write)}
 		}
 	}
 	if cfg.sandbox != nil {
@@ -1267,6 +1279,23 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 		}
 	}
 	return sources
+}
+
+// declaredEffects is the effect the owner's taxonomy declares for each tool of
+// an operation (ADR-0021), which a delegation's scope admits calls by
+// (SPEC.md §11.5); a tool with none declared, or an invalid declaration, has
+// no entry.
+func declaredEffects(op *operation) map[string]string {
+	var out map[string]string
+	for tool, t := range op.taxonomies {
+		if t.Valid() && contains(op.tools, tool) {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[tool] = t.Effect
+		}
+	}
+	return out
 }
 
 // approvalOf is what the platform's configuration and pinned binding approve

@@ -391,6 +391,118 @@ function isWitness(v: Value | undefined): boolean {
   );
 }
 
+// isPrincipal is a principal reference (§11.1): exactly kind, issuer and
+// subject, the kind person or service, issuer and subject non-empty.
+function isPrincipal(v: Value | undefined): v is ObjectValue {
+  if (v?.type !== "object" || v.members.length !== 3) {
+    return false;
+  }
+  const kind = member(v, "kind");
+  const issuer = member(v, "issuer");
+  const subject = member(v, "subject");
+  return (
+    isString(kind) &&
+    (kind.value === "person" || kind.value === "service") &&
+    isString(issuer) &&
+    issuer.value !== "" &&
+    isString(subject) &&
+    subject.value !== ""
+  );
+}
+
+// isDelegationTime is the RFC 0030 time: UTC with exactly milliseconds, of a
+// date that exists.
+function isDelegationTime(s: string): boolean {
+  const m = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})\.[0-9]{3}Z$/.exec(s);
+  if (m === null) {
+    return false;
+  }
+  const [y, mo, d, h, mi, se] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number];
+  // setUTCFullYear, not Date.UTC, which reads a year below 100 as 19xx
+  const t = new Date(0);
+  t.setUTCFullYear(y, mo - 1, d);
+  t.setUTCHours(h, mi, se, 0);
+  return (
+    t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d &&
+    t.getUTCHours() === h && t.getUTCMinutes() === mi && t.getUTCSeconds() === se
+  );
+}
+
+// namesSubject is an identity whose issuer and subject are the principal's.
+function namesSubject(identity: Value | undefined, subject: ObjectValue): boolean {
+  if (identity?.type !== "object") {
+    return false;
+  }
+  const a = member(identity, "issuer");
+  const b = member(identity, "subject");
+  const x = member(subject, "issuer");
+  const y = member(subject, "subject");
+  return isString(a) && isString(b) && isString(x) && isString(y) && a.value === x.value && b.value === y.value;
+}
+
+// delegationHolds is the delegation member of a call made under a
+// delegation (§11.7), held to its form, with the caller -- and an action's
+// requester -- naming its subject; true when the receipt carries none. A
+// member it does not name is tolerated; subject is exactly a principal
+// reference.
+function delegationHolds(r: ObjectValue, kind: string): boolean {
+  const d = member(r, "delegation");
+  if (d === undefined) {
+    return true;
+  }
+  if (d.type !== "object") {
+    return false;
+  }
+  const id = member(d, "id");
+  const host = member(d, "host");
+  const actor = member(d, "actor");
+  const admittedAt = member(d, "admittedAt");
+  const subject = member(d, "subject");
+  const chain = member(d, "chain");
+  if (
+    !isString(id) || !/^[0-9a-f]{32}$/.test(id.value) ||
+    !isString(host) || !isFlatToken(host.value) ||
+    !isString(actor) || !/^[0-9a-f]{32}$/.test(actor.value) ||
+    !isString(admittedAt) || !isDelegationTime(admittedAt.value) ||
+    !isPrincipal(subject) ||
+    chain?.type !== "array" || chain.items.length < 1 || chain.items.length > 5 || !chain.items.every(isDigest)
+  ) {
+    return false;
+  }
+  if (!namesSubject(member(r, "caller"), subject)) {
+    return false;
+  }
+  if (kind === "action") {
+    const action = member(r, "action");
+    return action?.type === "object" && namesSubject(member(action, "requester"), subject);
+  }
+  return true;
+}
+
+// reconcilerHolds is a read-back's reconciler (§11.7), held to its form, on
+// an acquisition carrying reconciliation alone; true when the receipt
+// carries none.
+function reconcilerHolds(r: ObjectValue, kind: string): boolean {
+  const rec = member(r, "reconciler");
+  if (rec === undefined) {
+    return true;
+  }
+  if (rec.type !== "object") {
+    return false;
+  }
+  const sender = member(rec, "kind");
+  const acquisition = member(r, "acquisition");
+  return (
+    isString(sender) &&
+    ["actor", "subject", "host", "operator"].includes(sender.value) &&
+    isString(member(rec, "issuer")) &&
+    isString(member(rec, "subject")) &&
+    kind === "acquisition" &&
+    acquisition?.type === "object" &&
+    member(acquisition, "reconciliation") !== undefined
+  );
+}
+
 // structureV3 is order 1 for a version 3 receipt (§1.2a): every structural
 // constraint it states. A member it does not name is tolerated at any
 // depth, a signed one being the signer's own -- but for argumentsDigest,
@@ -423,7 +535,10 @@ export function structureV3(r: ObjectValue): boolean {
     member(r, "argumentsDigest") !== undefined ||
     // the witness the receipt names: optional, of its form when present
     (witness !== undefined && !isWitness(witness)) ||
-    !isString(kind)
+    !isString(kind) ||
+    // the members of a call made under a delegation (§11.7)
+    !delegationHolds(r, kind.value) ||
+    !reconcilerHolds(r, kind.value)
   ) {
     return false;
   }
