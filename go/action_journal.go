@@ -355,19 +355,21 @@ func (c *actionClaim) attempt() (n int, begun bool, err error) {
 // already exists is errActionDispatchClaimed; any other failure sends nothing,
 // and a marker it may have left counts as begun on the next open.
 func (c *actionClaim) claimDispatch(n int) error {
-	return c.claimDispatchUnder(n, nil)
+	return c.claimDispatchUnder(n, nil, "")
 }
 
 // claimDispatchUnder is claimDispatch for a dispatch admitted under a
-// delegation, whose marker records the receipt's delegation member (SPEC.md
-// §11.8); with nil it is claimDispatch, its marker as before.
-func (c *actionClaim) claimDispatchUnder(n int, delegation *vObject) error {
+// delegation, whose marker records the receipt's delegation member and the
+// digest of the credential that dispatched (SPEC.md §11.7, §11.8); with nil
+// it is claimDispatch, its marker as before.
+func (c *actionClaim) claimDispatchUnder(n int, delegation *vObject, tokenDigest string) error {
 	raw, _ := json.Marshal(map[string]int{"attempt": n})
 	limit := 1024
 	if delegation != nil {
 		marker := newObject()
 		marker.set("attempt", vInt(n))
 		marker.set("delegation", delegation)
+		marker.set("tokenDigest", vString(tokenDigest))
 		raw, limit = canon(marker), actionScopeLimit
 	}
 	err := c.put(actionDispatchName(n), raw, limit)
@@ -378,29 +380,31 @@ func (c *actionClaim) claimDispatchUnder(n int, delegation *vObject) error {
 }
 
 // dispatchDelegation is the delegation member attempt n's marker recorded
-// when its dispatch was admitted. A marker that records none, or cannot be
-// read, refuses: a receipt of that dispatch cannot say what it was admitted
-// under.
-func (c *actionClaim) dispatchDelegation(n int) (*vObject, error) {
+// when its dispatch was admitted, and the digest of the credential that
+// dispatched. A marker that records either not, or cannot be read, refuses: a
+// receipt of that dispatch cannot say what it was admitted under, or by whose
+// credential.
+func (c *actionClaim) dispatchDelegation(n int) (*vObject, string, error) {
 	invalid := errors.New("action-journal-invalid: the dispatch marker does not record the delegation it was admitted under")
 	raw, err := c.read(actionDispatchName(n), actionScopeLimit)
 	if err != nil {
-		return nil, invalid
+		return nil, "", invalid
 	}
 	v, err := parseJSON(raw)
 	if err != nil {
-		return nil, invalid
+		return nil, "", invalid
 	}
 	marker, ok := v.(*vObject)
 	if !ok {
-		return nil, invalid
+		return nil, "", invalid
 	}
 	member, present := marker.get("delegation")
 	obj, isObject := member.(*vObject)
-	if !present || !isObject {
-		return nil, invalid
+	digest, _ := memberString(marker, "tokenDigest")
+	if !present || !isObject || !isDigest(digest) {
+		return nil, "", invalid
 	}
-	return obj, nil
+	return obj, digest, nil
 }
 
 // releaseDispatch answers attempt n's marker: the write program was never

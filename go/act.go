@@ -316,10 +316,26 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	// Under a delegation the dispatch is admitted here, immediately before it
 	// (SPEC.md §11.5), and the admission is recorded in the dispatch marker; a
 	// marker found without its answer carries the admission it was made under.
+	//
+	// The receipt is the dispatch's: a receipt minted for a marker found
+	// without its answer names, as the requester's tokenDigest, the credential
+	// that dispatched, which the marker records, never the token of the
+	// request that found it. That request is named by the read-back's
+	// reconciler (SPEC.md §11.7).
 	var delegationMember *vObject
+	minted := who
+	fromMarker := func() error {
+		member, digest, err := claim.dispatchDelegation(attempt)
+		if err != nil {
+			return err
+		}
+		delegationMember = member
+		minted = &caller{issuer: who.issuer, subject: who.subject, tokenDigest: digest, delegated: who.delegated}
+		return nil
+	}
 	if delegated != nil {
 		if uncertain {
-			if delegationMember, err = claim.dispatchDelegation(attempt); err != nil {
+			if err = fromMarker(); err != nil {
 				return nil, actRefusal{"action-key", err.Error()}
 			}
 		} else {
@@ -332,12 +348,16 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		}
 	}
 	if claim != nil && !uncertain {
-		if err = claim.claimDispatchUnder(attempt, delegationMember); errors.Is(err, errActionDispatchClaimed) {
+		credential := ""
+		if delegated != nil {
+			credential = delegated.credential.digest
+		}
+		if err = claim.claimDispatchUnder(attempt, delegationMember, credential); errors.Is(err, errActionDispatchClaimed) {
 			uncertain = true
-			// Another request claimed this attempt: the admission recorded is
-			// the one it dispatched under.
+			// Another request claimed this attempt: the admission and the
+			// credential recorded are the ones it dispatched under.
 			if delegated != nil {
-				if delegationMember, err = claim.dispatchDelegation(attempt); err != nil {
+				if err = fromMarker(); err != nil {
 					return nil, actRefusal{"action-key", err.Error()}
 				}
 			}
@@ -400,7 +420,7 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		}
 
 		action := newObject()
-		action.set("requester", identityObject(who))
+		action.set("requester", identityObject(minted))
 		if claim != nil {
 			delivery := newObject()
 			delivery.set("key", vString(key))
@@ -470,7 +490,7 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 			version: receiptVersion3, sessionID: sessionID, callIndex: state.index, prevSignature: state.prev,
 			source: source, resultDigest: resultDigest, servedAt: servedAt, authority: g.authority,
 			arguments: canon(arguments), argumentsSalt: argsSalt,
-			who: who, witness: witness, kind: "action", detail: action, delegation: delegationMember,
+			who: minted, witness: witness, kind: "action", detail: action, delegation: delegationMember,
 		})
 
 		stored, signature, err := g.store.stamp(core)
