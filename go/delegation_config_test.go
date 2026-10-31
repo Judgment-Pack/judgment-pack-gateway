@@ -19,7 +19,9 @@ func delegationConfigText(key, url, credential string, extra string) string {
 func TestDelegationConfigRefusals(t *testing.T) {
 	pub := hex.EncodeToString(ed25519.NewKeyFromSeed(delegationHostSeed).Public().(ed25519.PublicKey))
 	identity := &identitySpec{issuer: testIssuerURL, audience: "gateway:acme", keys: "/k"}
-	good := delegationConfigText(pub, "https://desk.example/admission", "/etc/engine/desk-token", `,"operators":["operator:on-call"],"bearerReadOnly":true`)
+	// An absolute path on every platform, escaped for JSON.
+	tokenPath := abs(t, t.TempDir(), "desk-token")
+	good := delegationConfigText(pub, "https://desk.example/admission", tokenPath, `,"operators":["operator:on-call"],"bearerReadOnly":true`)
 	parse := func(text, version string, id *identitySpec) (*delegationSpec, error) {
 		v, err := parseJSON([]byte(text))
 		if err != nil {
@@ -41,16 +43,16 @@ func TestDelegationConfigRefusals(t *testing.T) {
 		{"no identity", good, "15", nil, "delegation needs identity"},
 		{"no hosts", `{"hosts":[]}`, "15", identity, "at least one issuing host"},
 		{"an unknown member", strings.Replace(good, `"bearerReadOnly"`, `"bearer"`, 1), "15", identity, `unknown member "bearer"`},
-		{"a host twice", `{"hosts":[` + strings.TrimSuffix(strings.TrimPrefix(delegationConfigText(pub, "https://d.example/a", "/c", ""), `{"hosts":[`), `]}`) + `,` + strings.TrimSuffix(strings.TrimPrefix(delegationConfigText(pub, "https://d.example/a", "/c", ""), `{"hosts":[`), `]}`) + `]}`, "15", identity, "named twice"},
+		{"a host twice", `{"hosts":[` + strings.TrimSuffix(strings.TrimPrefix(delegationConfigText(pub, "https://d.example/a", tokenPath, ""), `{"hosts":[`), `]}`) + `,` + strings.TrimSuffix(strings.TrimPrefix(delegationConfigText(pub, "https://d.example/a", tokenPath, ""), `{"hosts":[`), `]}`) + `]}`, "15", identity, "named twice"},
 		{"a host not a flat token", strings.Replace(good, `"host":"desk"`, `"host":"de/sk"`, 1), "15", identity, "host must be a flat token"},
 		{"an empty requester", strings.Replace(good, `"requester":"service:desk"`, `"requester":""`, 1), "15", identity, "requester must be"},
-		{"a key of small order", delegationConfigText(smallOrder, "https://d.example/a", "/c", ""), "15", identity, "small order"},
-		{"a key in upper case", delegationConfigText(strings.ToUpper(pub), "https://d.example/a", "/c", ""), "15", identity, "64 lowercase hexadecimal"},
-		{"an http admission read", delegationConfigText(pub, "http://desk.example/admission", "/c", ""), "15", identity, "must be an https URL"},
-		{"an admission read with a user", delegationConfigText(pub, "https://u@desk.example/admission", "/c", ""), "15", identity, "must be an https URL"},
+		{"a key of small order", delegationConfigText(smallOrder, "https://d.example/a", tokenPath, ""), "15", identity, "small order"},
+		{"a key in upper case", delegationConfigText(strings.ToUpper(pub), "https://d.example/a", tokenPath, ""), "15", identity, "64 lowercase hexadecimal"},
+		{"an http admission read", delegationConfigText(pub, "http://desk.example/admission", tokenPath, ""), "15", identity, "must be an https URL"},
+		{"an admission read with a user", delegationConfigText(pub, "https://u@desk.example/admission", tokenPath, ""), "15", identity, "must be an https URL"},
 		{"a relative credential", delegationConfigText(pub, "https://desk.example/admission", "token", ""), "15", identity, "must be an absolute path"},
-		{"an operator who is a host", delegationConfigText(pub, "https://desk.example/admission", "/c", `,"operators":["service:desk"]`), "15", identity, "is an issuing host's requester"},
-		{"bearerReadOnly not a boolean", delegationConfigText(pub, "https://desk.example/admission", "/c", `,"bearerReadOnly":"yes"`), "15", identity, "must be a boolean"},
+		{"an operator who is a host", delegationConfigText(pub, "https://desk.example/admission", tokenPath, `,"operators":["service:desk"]`), "15", identity, "is an issuing host's requester"},
+		{"bearerReadOnly not a boolean", delegationConfigText(pub, "https://desk.example/admission", tokenPath, `,"bearerReadOnly":"yes"`), "15", identity, "must be a boolean"},
 	} {
 		if _, err := parse(c.text, c.version, c.id); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Fatalf("%s: want %q, got %v", c.name, c.want, err)
