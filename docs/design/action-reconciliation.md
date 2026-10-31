@@ -206,7 +206,7 @@ the issuing host, the chain's root actor and its subject, never the transport
 token. Such an entry holds one file more, `scope.json`, that scope, written before
 `intent.json` and held to on every later open (a missing or other scope is
 `action-journal-invalid`), and its `dispatch-<n>.json` records the receipt's
-`delegation` member beside the attempt (16 KiB). A second kind of entry,
+`delegation` member and the dispatching credential's digest beside the attempt (16 KiB). A second kind of entry,
 named by `judgment-pack-gateway/delegated-action-subject/1:` and
 `{"authority", "host", "key", "sub"}`, holds only `scope.json`: the scope the
 subject first reserved the key in, so another root actor of the same subject is

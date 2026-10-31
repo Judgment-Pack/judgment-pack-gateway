@@ -2279,7 +2279,7 @@ A run presents its credential on `/acquire` and `/act` as `Authorization: DPoP <
 with an RFC 9449 proof in the `DPoP` header, or, for a credential bound with a `null` key, as
 `Authorization: Bearer <credential>`. The proof is a compact JWS whose header has `typ`
 `"dpop+jwt"`, `alg` `"EdDSA"` or `"ES256"` and the public `jwk`, and whose claims are `jti` (a
-string of 1 to 256 characters, not seen before within the proof window), `htm` (the request's
+string of 1 to 256 bytes, not seen before while a proof of its `iat` could still be accepted), `htm` (the request's
 method), `htu`, `iat` (within 60 seconds of the gateway's time either way) and `ath` (the unpadded
 base64url SHA-256 of the credential). `htu` is `"http://"` or `"https://"`, the request's `Host`,
 and the request's path, with no query and no fragment: the gateway serves plain HTTP on a
@@ -2373,10 +2373,14 @@ A receipt for a call dispatched under a delegation carries the signed top-level 
 
 On such a receipt `caller.issuer` and `caller.subject` are `delegation.subject.issuer` and
 `delegation.subject.subject`, and so are an action's `requester.issuer` and `requester.subject`;
-`tokenDigest` is the digest of the delegation credential presented, which the gateway issued and
-not `caller.issuer`. `caller` is never `null` beside `delegation`. `receiptVersion` stays `"3"`
-and the signing input is §1.2a's. A receipt of an action whose dispatch marker was found without
-its answer (§1.2b) carries the `delegation` member recorded when that dispatch was admitted.
+`tokenDigest` is the digest of the delegation credential that dispatched the call, which the
+gateway issued and not `caller.issuer`. `caller` is never `null` beside `delegation`.
+`receiptVersion` stays `"3"` and the signing input is §1.2a's. A receipt of an action whose
+dispatch marker was found without its answer (§1.2b) is the receipt of that dispatch: it carries
+the `delegation` member, and the `tokenDigest` of the credential, that the marker recorded when
+the dispatch was admitted, whoever's request found the marker. The finder dispatched nothing and
+is not named on it; the read-back that follows names it in `reconciler`, and where no read-back
+can run (`action-reconciliation-unavailable`), no receipt names it.
 
 A read-back (§1.2b) of an action reserved under a delegation carries the signed top-level member
 `reconciler`, `{"kind": "actor" | "subject" | "host" | "operator", "issuer", "subject"}`, the
@@ -2437,9 +2441,10 @@ exactly `{"standing": "current"}` or `{"standing": "removed"}`; `removed` refuse
 
 A first dispatch, or a freed attempt, under a delegated key is the actor's alone and is admitted
 by §11.5 with counting; the dispatch marker of attempt *n* (§1.2b) records the receipt's
-`delegation` member as `{"attempt": n, "delegation": …}`, so a receipt minted for a marker found
-without its answer names the admission that dispatch was made under, and a marker that records
-none refuses as `action-journal-invalid`.
+`delegation` member and the digest of the dispatching credential as
+`{"attempt": n, "delegation": …, "tokenDigest": …}`, so a receipt minted for a marker found
+without its answer names the admission and the credential that dispatch was made under (§11.7),
+and a marker that records either not refuses as `action-journal-invalid`.
 
 ### 11.9 Posture
 
