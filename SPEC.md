@@ -577,6 +577,67 @@ mutation retry is introduced. A platform without the required directory and file
 durability refuses the keyed path. Store export omits private action journals;
 operator backups must preserve them to preserve dispatch history.
 
+**Authority-scoped keys.** A request may hold its key across a change of the
+worker behind it, without presenting any owner, subject or lease, by sending
+`keyScope` on `/act`. `keyScope` is the string `"authority"`; any other value is
+refused at the `action-key` step, as is either member of this paragraph without
+`actionKey`. Before reserving, such a request exclusively creates a durable record
+of the key's **first scope** under `actions/` in the store: the gateway's authority,
+the key, and the authenticated issuer and subject (under a delegation, its scope,
+§11.8). The record is published whole or not at all and is never compacted. From
+then on, a request on that key under any other scope, sending `keyScope` or not, is
+refused as `action-key-scope-conflict` before anything is reserved or sent. A request
+in the first scope reaches the same reservation it would without the member. A key
+no such record names keeps the rules above, unchanged: a request that sends neither
+member creates no record and behaves as it did.
+
+A first scope proves the same subject, not the same owner: the gateway holds no
+lease, so two workers authenticated as one subject are one scope, and a takeover by
+another subject finds the key taken, and its outcome stays unknown to that subject.
+It is held only from the first request that sends the member: a reservation another
+subject already made without it is not in the record's scope and is not found.
+`action-key-scope-conflict` tells its sender a key exists, and so reaches only a
+holder of the key.
+
+**Reconciling.** `reconcile` is the JSON value `true`; any other value is refused at
+the `action-key` step. It is accepted with `keyScope`, or under a delegation (§11.8),
+whose scope is its own and which sends no `keyScope`; `keyScope` under a delegation,
+and `reconcile` from an undelegated request without `keyScope`, are refused at the
+`action-key` step. A reconciling request passes every check of the action ladder and
+is held to the key's approved content, and it never dispatches, a freed attempt
+included. It is answered, in order:
+
+1. `action-key-scope-conflict` (`403`) if the first scope is another's.
+2. `action-key-outcome-unknown` (`409`) if a first scope is recorded and this scope
+   holds no reservation: that record alone cannot say whether anything was sent.
+3. `action-key-not-dispatched` (`409`) again if the key is closed. A close is read before
+   any retained record, because every attempt before it was answered as not dispatched.
+4. If the scope holds a retained `action.json`, its evidence or read-back, as any
+   request on the key; `action-key-conflict` for other content.
+5. If a dispatch marker has no answer, the uncertain record and the read-back, as
+   any request on the key.
+6. `action-journal-exhausted` if every attempt the key may record was answered as not
+   dispatched, there being none left to close.
+7. Otherwise nothing was dispatched, and it **closes the key before it answers**: a
+   marker of the key's next attempt, recording `closed`, created exclusively and
+   made durable, with the first-scope record, likewise durable, naming this scope, or
+   `action-key-scope-conflict` if another scope took it first. For a key not seen
+   before, the reservation is created with that marker in place. Only then does it
+   answer `action-key-not-dispatched` (`409`).
+
+A closed key never dispatches: a later request in its scope is refused as
+`action-key-closed` (`409`), and in any other scope as `action-key-scope-conflict`.
+Because the close and a dispatch create the same name exclusively, exactly one
+succeeds across processes: a close never follows a marker that may have begun, and
+no dispatch follows a close. `action-key-not-dispatched` is thereby a stable fact, in
+the absence of a restored store: a store restored without `actions/`, like a
+journal entry removed by hand, holds no record of what was sent, and no gateway can
+tell. These refusals have the body `{"error", "refusal", "refusedAt": "action-key"}`,
+and nothing is minted for them: a close opens no session and leaves no receipt.
+An older gateway refuses a body with either member before reading it, and sends
+nothing under a closed marker: it reads one as a dispatch that may have begun, or
+refuses the newer intent beside it.
+
 Binding version 3 retains version 2 owner declarations and adds required
 `actionRecovery` when it names a write operation. It maps exactly every write
 tool to null (unsupported) or an object with optional `idempotencyArgument` and
@@ -2416,6 +2477,17 @@ a takeover that changes the root actor finds the key taken, never a new reservat
 write again under. Under another subject the scopes are independent. A reservation made under no
 delegation keeps §1.2b's scope and rules, unchanged.
 
+A delegated request sends no `keyScope` (§1.2b): its scope is its chain's. It sends `reconcile` as
+§1.2b describes. It is held to a first-scope record where one names the key, comparing this
+section's scope, and it creates one only by a closing reconcile, which is the actor's alone: a
+sender other than the actor never closes a key and never creates a record, and where nothing was
+dispatched it is refused as `action-key-actor-only`, unless its reconciling request finds a key the
+actor has closed and a first scope recorded for it.
+Before closing a key it has not reserved, the actor is held to the same subject record and the
+same source and tool in its leaf as a request the key lookup answers. A key under this section has
+a first-scope record only if a closing reconcile made one, so an undelegated request sending
+`keyScope` does not find a delegated reservation that has none.
+
 The key grants nothing on its own. Every request on a delegated key authenticates its sender
 against the reservation's scope before the journal is read:
 
@@ -2466,8 +2538,9 @@ What this section defines where the RFC leaves it open, and where it departs fro
 - **Sender constraint.** RFC 9449 (DPoP) only. RFC 8705 needs a TLS client certificate, and this
   gateway serves plain HTTP on a loopback address. `htu` is read with either scheme (§11.4).
 - **Wire forms.** The credential, revocation and admission-read endpoints, their bodies and
-  answers, the `delegation` and `reservation` request members, the `jpd1_` credential form, the
-  `scope.json` journal record and the dispatch marker's `delegation` member are this gateway's.
+  answers, the `delegation`, `reservation`, `keyScope` and `reconcile` request members, the `jpd1_`
+  credential form, the `scope.json` journal record, the first-scope record, and the dispatch
+  marker's `delegation` and `closed` members are this gateway's.
 - **Statement.** Unknown members are left to the signature (§11.1); a lifetime over 24 hours and
   more than five links are refused at steps 3 and 1, enforcing the RFC's open-question bounds.
 - **Scope.** Only `mcp` sources name a tool; the effect is the owner taxonomy's; no `x-` limit is
