@@ -166,9 +166,21 @@ func TestDelegationFailsClosedOnRecordsAndStatuses(t *testing.T) {
 	if err := os.Remove(record); err != nil {
 		t.Fatal(err)
 	}
-	// K3: another root actor of the subject, with the record unreadable.
+	// K3: another root actor of the subject, with the record unreadable. The key's first
+	// scope refuses it first, so it gets no reservation of its own and nothing is sent.
 	other := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("66", 16), "act": map[string]any{"agent": otherAgent, "software": testSoftware}}))
 	status, out := h.present(t, "/act", h.actBody("s2", key, ""), other)
+	if status != http.StatusForbidden || refusalOf(out) != refusalKeyScopeConflict || h.sent(key) != 1 {
+		t.Fatalf("another root actor, its first scope recorded: %d %v, sent %d", status, out, h.sent(key))
+	}
+	// With the first-scope record lost as well, the unreadable subject record is what
+	// refuses: it still fails closed, rather than reading as a key never seen.
+	scope := &caller{delegated: sender}
+	first := h.g.actionFirstScope(scope, key, h.g.actionNamespace(scope, key))
+	if err := os.Remove(filepath.Join(h.g.storeRoot, "actions", actionIndexDirectory, first.file)); err != nil {
+		t.Fatal(err)
+	}
+	status, out = h.present(t, "/act", h.actBody("s2b", key, ""), other)
 	if status != http.StatusBadRequest || !strings.Contains(out["error"].(string), "action-journal-invalid") || h.sent(key) != 1 {
 		t.Fatalf("an unreadable subject record: %d %v, sent %d", status, out, h.sent(key))
 	}

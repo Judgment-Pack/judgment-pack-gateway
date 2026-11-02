@@ -260,14 +260,24 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		}
 		defer journal.close()
 		// A recorded first scope is held to by every request on the key, sending
-		// the members or not, before anything is reserved or sent (SPEC.md §1.2b).
+		// the members or not, before anything new is reserved or sent (SPEC.md §1.2b).
+		// It takes nothing a scope already holds: what this scope reserved before it
+		// stays its own to read, so such a request is answered from that reservation,
+		// and never dispatches or closes under it.
 		first := g.actionFirstScope(who, key, namespace)
 		indexed, err := journal.keyIndexed(first)
-		if errors.Is(err, errActionKeyFirstScope) {
-			return nil, refuse(refusalKeyScopeConflict, "this key's first scope is another's; nothing was reserved or sent")
-		} else if err != nil {
+		foreign := errors.Is(err, errActionKeyFirstScope)
+		taken := func() error {
+			return refuse(refusalKeyScopeConflict, "this key's first scope is another's; nothing was reserved or sent")
+		}
+		if foreign && !journal.has(namespace) {
+			return nil, taken()
+		} else if err != nil && !foreign {
 			return nil, actRefusal{"action-key", err.Error()}
 		}
+		// Who makes a first scope: a request that sends keyScope, and a delegated run's
+		// actor, whose leaf names the write. A sender other than the actor never does.
+		mayHold := keyScoped
 		var scope *vObject
 		if delegated != nil {
 			scope = delegated.scope.value()
@@ -277,42 +287,51 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 				return nil, refuse(refusalActorOnly, "no evidence is retained under this key that a sender other than the run's actor can reach")
 			}
 			if delegated.kind == "actor" {
-				// A close is a request the key lookup answers: its leaf names the
-				// write, or it plants nothing, not even a subject record.
-				if reconcile && delegated.credential.chain.sourceToolRefusal(g.authority, source, tool) {
+				// A close is a request the key lookup answers: its leaf names the write,
+				// or it plants nothing, not even a subject record. A dispatch by such a
+				// leaf is refused at its admission, and takes nothing on the way there.
+				namesWrite := !delegated.credential.chain.sourceToolRefusal(g.authority, source, tool)
+				if reconcile && !namesWrite {
 					return nil, refuse(refusalKeyUnauthenticated, "")
 				}
-				if err := journal.holdSubjectKey(g.actionSubjectNamespace(delegated, key), scope); errors.Is(err, errActionScopeConflict) {
-					return nil, refuse(refusalKeyScopeConflict, "this subject reserved this key under another root actor")
-				} else if err != nil {
-					return nil, actRefusal{"action-key", err.Error()}
+				mayHold = namesWrite
+				if namesWrite && !foreign {
+					if err := journal.holdSubjectKey(g.actionSubjectNamespace(delegated, key), scope); errors.Is(err, errActionScopeConflict) {
+						return nil, refuse(refusalKeyScopeConflict, "this subject reserved this key under another root actor")
+					} else if err != nil {
+						return nil, actRefusal{"action-key", err.Error()}
+					}
 				}
 			}
 		}
-		if reconcile {
-			// Never a reservation to dispatch under. No reservation in this scope
-			// with a first scope recorded says nothing: the entry may have been
-			// removed, or a first request may be on its way. With neither, the key
-			// has never been seen: it closes, intent and close together.
-			if !journal.has(namespace) {
-				if indexed {
-					return nil, refuse(refusalKeyOutcomeUnknown, "a first scope is recorded and no reservation: that cannot say whether anything was sent")
-				}
-				if err := journal.reserveClosed(namespace, fingerprint, scope); err != nil && !errors.Is(err, errActionRecordExists) {
-					return nil, actRefusal{"action-key", err.Error()}
-				}
-				g.actionStepped("closed-entry")
+		if reconcile && !journal.has(namespace) {
+			// Never a reservation to dispatch under. No reservation in this scope with a
+			// first scope recorded says nothing: the entry may have been removed, or a
+			// first request may be on its way. With neither, the key has never been seen:
+			// it closes, intent and close together.
+			if indexed {
+				return nil, refuse(refusalKeyOutcomeUnknown, "a first scope is recorded and no reservation: that cannot say whether anything was sent")
 			}
+			if err := journal.reserveClosed(namespace, fingerprint, scope); err != nil && !errors.Is(err, errActionRecordExists) {
+				return nil, actRefusal{"action-key", err.Error()}
+			}
+			g.actionStepped("closed-entry")
+		}
+		if mayHold && !reconcile && !foreign {
+			if err := journal.holdKeyIndex(first); errors.Is(err, errActionKeyFirstScope) {
+				// Another scope took it just now. What this one holds stays its own.
+				if !journal.has(namespace) {
+					return nil, taken()
+				}
+				foreign = true
+			} else if err != nil {
+				return nil, actRefusal{"action-key", err.Error()}
+			}
+			g.actionStepped("index-durable")
+		}
+		if reconcile || foreign {
 			claim, err = journal.openReservation(namespace, fingerprint, scope)
 		} else {
-			if keyScoped {
-				if err := journal.holdKeyIndex(first); errors.Is(err, errActionKeyFirstScope) {
-					return nil, refuse(refusalKeyScopeConflict, "this key's first scope is another's; nothing was reserved or sent")
-				} else if err != nil {
-					return nil, actRefusal{"action-key", err.Error()}
-				}
-				g.actionStepped("index-durable")
-			}
 			claim, err = journal.reserveScoped(namespace, fingerprint, scope)
 		}
 		if err != nil {
@@ -329,16 +348,36 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		// have recorded since: a reconciling request answers as it did.
 		closedKey = func() error {
 			switch {
+			case foreign:
+				return taken()
 			case reconcile:
 				return g.closedAnswer(journal, claim, first, indexed, delegated)
 			case delegated != nil && delegated.kind != "actor":
 				return refuse(refusalActorOnly, "no evidence is retained under this key that a sender other than the run's actor can reach")
+			}
+			// Its maker may have died before syncing it, and this says it is so.
+			if err := syncActionDirectory(claim.root); err != nil {
+				return actRefusal{"action-key", err.Error()}
 			}
 			return refuse(refusalKeyClosed, "a reconciling request closed this key, and nothing under it was or will be dispatched")
 		}
 		if !claim.fresh {
 			if claim.closed() {
 				return nil, closedKey()
+			}
+			// A reconciling request that may hold the first scope holds it before it is
+			// answered from anything, so a first scope is held from the first request
+			// sending the member. If another took it first, what this scope holds is
+			// read, and nothing closes.
+			if reconcile && mayHold && !foreign {
+				g.actionStepped("before-hold")
+				if err := journal.holdKeyIndex(first); errors.Is(err, errActionKeyFirstScope) {
+					foreign = true
+				} else if err != nil {
+					return nil, actRefusal{"action-key", err.Error()}
+				} else {
+					indexed = true
+				}
 			}
 			// Retained evidence answers before admission: a replay, a
 			// conflict or an invalid entry opens no session of its own.
@@ -363,6 +402,10 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		}
 		if err != nil {
 			return nil, actRefusal{"action-key", err.Error()}
+		}
+		// Under another's first scope nothing new happens: no dispatch, no close.
+		if foreign && !begun {
+			return nil, taken()
 		}
 		if delegated != nil && delegated.kind != "actor" && !begun {
 			return nil, refuse(refusalActorOnly, "no evidence is retained under this key that a sender other than the run's actor can reach")

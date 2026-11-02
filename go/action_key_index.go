@@ -6,17 +6,19 @@ import (
 	"os"
 )
 
-// The first scope of an authority-scoped key (SPEC.md §1.2b): one private file
-// per key under actions/index/, published whole or not at all, never rewritten
-// and never compacted. It is what refuses every other scope, flagged or not,
-// before anything is reserved or sent. It says who first held the key, nothing
-// more: a closure lives in the reservation's dispatch marker, the one name a
-// dispatch also needs. A first scope proves the same subject, not the same
-// owner: the gateway holds no lease.
+// The first scope of a key (SPEC.md §1.2b): one private file per key under
+// actions/index/, published whole or not at all, never rewritten, and kept by
+// compaction. A request sending keyScope and a delegated run's actor create it. It is
+// what refuses every other scope, flagged or not, before anything new is reserved or
+// sent; it takes nothing a scope already holds. It says who first held the key,
+// nothing more: a closure lives in the reservation's dispatch marker, the one name a
+// dispatch also needs. A first scope proves the same subject, not the same owner: the
+// gateway holds no lease.
 //
-// The file's name hashes the key alone, and the record names the authority, so
-// that a changed authority string finds the record and answers a conflict, rather
-// than finding nothing and answering that nothing was sent.
+// The record is one store's. The file's name hashes the key alone, and the record names
+// the authority, so that a changed authority string finds the record and answers a
+// conflict, rather than finding nothing and answering that nothing was sent. A second
+// store under the same authority finds nothing: see the Known limits.
 
 const (
 	actionIndexDirectory = "index"
@@ -73,15 +75,17 @@ type actionKeyFirstScope struct {
 	record []byte
 }
 
-// actionFirstScope is the record this request's scope would make. The reservation
-// it names lets an operator tell an indexed entry from the journal alone, since an
-// entry does not hold its key.
+// actionFirstScope is the record this request's scope would make. The entries it names
+// let an operator tell, from the journal alone, which entries are this key's: an entry
+// does not hold its key, and neither does a subject record.
 func (g *gatewayService) actionFirstScope(who *caller, key, namespace string) actionKeyFirstScope {
 	name := newObject()
 	name.set("key", vString(key))
 	var scope *vObject
+	var subjectRecord string
 	if who.delegated != nil {
 		scope = who.delegated.scope.value()
+		subjectRecord = g.actionSubjectNamespace(who.delegated, key)
 	} else {
 		scope = newObject()
 		scope.set("issuer", vString(who.issuer))
@@ -93,6 +97,9 @@ func (g *gatewayService) actionFirstScope(who *caller, key, namespace string) ac
 	record.set("key", vString(key))
 	record.set("reservation", vString(namespace))
 	record.set("scope", scope)
+	if subjectRecord != "" {
+		record.set("subjectRecord", vString(subjectRecord))
+	}
 	return actionKeyFirstScope{file: actionHash("action-key-index", name) + ".json", key: key, record: canon(record)}
 }
 
@@ -134,7 +141,7 @@ func readKeyIndex(index *os.Root, first actionKeyFirstScope) (bool, error) {
 	if err != nil {
 		return false, invalid
 	}
-	if err = exactlyMembers(object, map[string]bool{"indexVersion": true, "authority": true, "key": true, "reservation": true, "scope": true}, "action key index"); err != nil {
+	if err = exactlyMembers(object, map[string]bool{"indexVersion": true, "authority": true, "key": true, "reservation": true, "scope": true, "subjectRecord": false}, "action key index"); err != nil {
 		return false, invalid
 	}
 	version, _ := memberString(object, "indexVersion")

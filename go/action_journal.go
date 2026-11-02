@@ -590,13 +590,10 @@ func (c *actionClaim) closedAt(n int) bool {
 	return closed == vBool(true) && attempt == vInt(n)
 }
 
-// closed reports whether any attempt of this reservation is a close. Attempts are
-// consecutive, so it stops at the first with no marker.
+// closed reports whether any attempt of this reservation is a close. It looks at
+// every attempt: a lower marker lost to damage does not reopen a key.
 func (c *actionClaim) closed() bool {
 	for n := 1; n <= actionDispatchAttempts; n++ {
-		if _, err := c.root.Lstat(actionDispatchName(n)); err != nil {
-			return false
-		}
 		if c.closedAt(n) {
 			return true
 		}
@@ -610,6 +607,13 @@ func (c *actionClaim) closed() bool {
 // errActionKeyClosed for a close already there, both of which mean closed; or
 // errActionDispatchClaimed for a marker that may have begun, which is not closed.
 func (c *actionClaim) closeDispatch(n int) error {
+	// Each marker is durable before the next can exist, so one above a free attempt is
+	// damage, and it says a dispatch may have begun. Nothing closes over it.
+	for later := n + 1; later <= actionDispatchAttempts; later++ {
+		if _, err := c.root.Lstat(actionDispatchName(later)); !errors.Is(err, os.ErrNotExist) {
+			return errActionDispatchClaimed
+		}
+	}
 	err := publishActionRecord(c.root, actionRecord{actionDispatchName(n), closedMarker(n), 1024})
 	if errors.Is(err, errActionRecordExists) {
 		if c.closedAt(n) {

@@ -71,11 +71,20 @@ func TestDelegatedKeyTakeoverSendsOnce(t *testing.T) {
 	if status != http.StatusForbidden || refusalOf(out) != "action-key-scope-conflict" || h.sent(key) != 1 {
 		t.Fatalf("another root actor: %d %v, sent %d", status, out, h.sent(key))
 	}
-	// Another subject's key of the same value is its own.
+	// Another subject holding the same key finds it taken, the key's first scope being
+	// this run's (SPEC.md §1.2b, §11.8): one mutation at the target, nothing reserved in
+	// that subject's scope, and the run's own actor keeps its read-back afterwards.
 	elsewhere := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("77", 16), "sub": map[string]any{"kind": "person", "issuer": testIssuerURL, "subject": "someone-else"}}))
 	actionKeysMode(t, h.root, "write", "respond")
-	if status, out := h.present(t, "/act", h.actBody("s4", key, ""), elsewhere); status != http.StatusOK || h.sent(key) != 2 {
-		t.Fatalf("another subject's key: %d %v, sent %d", status, out, h.sent(key))
+	status, out = h.present(t, "/act", h.actBody("s4", key, ""), elsewhere)
+	if status != http.StatusForbidden || refusalOf(out) != "action-key-scope-conflict" || h.sent(key) != 1 {
+		t.Fatalf("another subject: %d %v, sent %d", status, out, h.sent(key))
+	}
+	journalAbsent(t, h.g, h.g.actionNamespace(&caller{delegated: &delegatedSender{scope: reservationScope{sub: principalRef{"person", testIssuerURL, "someone-else"}, rootActor: rootAgent, host: "desk"}}}, key))
+	if status, out := h.present(t, "/act", h.actBody("s5", key, ""), second); status != http.StatusOK || h.sent(key) != 1 {
+		t.Fatalf("the run's actor after another subject's request: %d %v, sent %d", status, out, h.sent(key))
+	} else if _, rec := reconciledBy(t, out); rec["kind"] != "actor" {
+		t.Fatalf("the run's actor's reconciler: %v", rec)
 	}
 }
 
@@ -92,8 +101,11 @@ func TestDelegatedKeySenderTable(t *testing.T) {
 		t.Fatalf("dispatch: %d %v", status, out)
 	}
 	reservation := h.reservationOf(testSub(), rootAgent)
+	asTokenOn := func(subject, session, onKey, extra string) (int, map[string]any) {
+		return h.post(t, "/act", h.actBody(session, onKey, extra), map[string]string{"Authorization": "Bearer " + h.token(t, subject)})
+	}
 	asToken := func(subject, session, extra string) (int, map[string]any) {
-		return h.post(t, "/act", h.actBody(session, key, extra), map[string]string{"Authorization": "Bearer " + h.token(t, subject)})
+		return asTokenOn(subject, session, key, extra)
 	}
 	for _, c := range []struct {
 		subject, kind string
@@ -125,10 +137,17 @@ func TestDelegatedKeySenderTable(t *testing.T) {
 			t.Fatalf("%s: %d %v", name, status, out)
 		}
 	}
-	// The subject naming another root actor's scope of its own finds nothing
-	// there: it is authenticated, and that scope reserved nothing.
-	if status, out := asToken(testSubjectSub, "s-x", h.reservationOf(testSub(), otherAgent)); status != http.StatusForbidden || refusalOf(out) != refusalActorOnly {
-		t.Fatalf("another root actor's scope: %d %v", status, out)
+	// The subject naming another root actor's scope of its own is authenticated, and
+	// that scope reserved nothing. The key's first scope is compared before that is asked
+	// (ADR-0025 L7), so it finds the key taken: it learns a key exists, which it held,
+	// nothing of whose, and it makes nothing. On a key with no first scope, the same
+	// sender naming the same scope is still told only actor-only, as the rows below hold.
+	if status, out := asToken(testSubjectSub, "s-x", h.reservationOf(testSub(), otherAgent)); status != http.StatusForbidden || refusalOf(out) != refusalKeyScopeConflict || h.sent(key) != 1 {
+		t.Fatalf("another root actor's scope: %d %v, sent %d", status, out, h.sent(key))
+	}
+	journalAbsent(t, h.g, h.g.actionNamespace(&caller{delegated: &delegatedSender{scope: reservationScope{sub: principalRef{"person", testIssuerURL, testSubjectSub}, rootActor: otherAgent, host: "desk"}}}, key))
+	if status, out := asTokenOn(testSubjectSub, "s-x2", delegationKey(11), h.reservationOf(testSub(), otherAgent)); status != http.StatusForbidden || refusalOf(out) != refusalActorOnly {
+		t.Fatalf("another root actor's scope, a key with no first scope: %d %v", status, out)
 	}
 	// A credential bound to another scope cannot name this one, and an actor
 	// whose leaf does not admit the write reaches nothing by its key (#284 NC1).

@@ -105,6 +105,22 @@ func TestActionKeyScopeWireForms(t *testing.T) {
 	if h.sent(key) != 0 {
 		t.Fatalf("sent %d", h.sent(key))
 	}
+	// A first scope with no reservation: the third refusal of the key's state.
+	unknown := delegationKey(6)
+	holder := &caller{issuer: testIssuerURL, subject: "alice"}
+	j, err := openActionJournal(h.g.storeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.close()
+	if err := j.holdKeyIndex(h.g.actionFirstScope(holder, unknown, h.g.actionNamespace(holder, unknown))); err != nil {
+		t.Fatal(err)
+	}
+	status, out = h.post(t, "/act", h.actBody("w-unknown", unknown, withKeyScope+withReconcile), bearer("alice"))
+	if status != http.StatusConflict {
+		t.Fatalf("a first scope with no reservation: %d %v", status, out)
+	}
+	exactly("a first scope with no reservation", out, "action-key-outcome-unknown")
 
 	sent := delegationKey(2)
 	if status, out = h.post(t, "/act", h.actBody("w4", sent, withKeyScope), bearer("alice")); status != http.StatusOK || h.sent(sent) != 1 {
@@ -810,6 +826,15 @@ func TestActionKeyDurabilityOrder(t *testing.T) {
 	if a, b, m, r := at(sentFirst.file), at("intent.json"), at("dispatch-1.json"), at("action.json"); a < 0 || b < a || m < b || r < m {
 		t.Fatalf("the order of a dispatch: %v", log)
 	}
+	// A reservation's name is durable before its marker: lost, a power cut after the write
+	// forgets the key, and a retry sends again.
+	named := false
+	for _, name := range log[at("intent.json"):at("dispatch-1.json")] {
+		named = named || name == "actions"
+	}
+	if !named {
+		t.Fatalf("the reservation's name was not synced before its dispatch marker: %v", log)
+	}
 	// An action record's name is synced after it is linked.
 	if end := last(g.actionNamespace(actionKeysWho, sent)); end < at("action.json") {
 		t.Fatalf("the action record's name was not synced after its bytes: %v", log)
@@ -968,6 +993,813 @@ func closeForTest(t *testing.T, g *gatewayService, c actionKeysCall, key string)
 	t.Helper()
 	_, err := scopedAct(g, c, "closing", key, actionKeysWho, true, true)
 	wantKeyRefusal(t, "the close", err, refusalKeyNotDispatched)
+}
+
+// delegatedScopeOf is the caller naming the harness's run's scope under a root actor.
+func delegatedScopeOf(subject, rootActor string) *caller {
+	return &caller{delegated: &delegatedSender{scope: reservationScope{sub: principalRef{"person", testIssuerURL, subject}, rootActor: rootActor, host: "desk"}}}
+}
+
+// H1(a), the false answer. A delegated reservation has a first scope, so an entry removed
+// by hand reads as what it is: a key seen and no longer held. It is never called not
+// dispatched, for a write that answered or one that did not.
+func TestDelegatedEntryRemovedAnswersUnknown(t *testing.T) {
+	for _, write := range []string{"respond", "drop"} {
+		t.Run(write, func(t *testing.T) {
+			h := newDelegationHarness(t, false)
+			actor := h.credential(t, statement(t, nil))
+			key := delegationKey(1)
+			actionKeysMode(t, h.root, "write", write)
+			if status, out := h.present(t, "/act", h.actBody("first", key, ""), actor); status != http.StatusOK || h.sent(key) != 1 {
+				t.Fatalf("first: %d %v, sent %d", status, out, h.sent(key))
+			}
+			actionKeysMode(t, h.root, "write", "respond")
+			namespace := h.g.actionNamespace(delegatedScopeOf(testSubjectSub, rootAgent), key)
+			if err := os.Rename(filepath.Join(h.g.storeRoot, "actions", namespace), filepath.Join(h.root, "archived")); err != nil {
+				t.Fatal(err)
+			}
+			for i := range 2 {
+				status, out := h.present(t, "/act", h.actBody(fmt.Sprintf("after-%d", i), key, withReconcile), actor)
+				if status != http.StatusConflict || refusalOf(out) != refusalKeyOutcomeUnknown {
+					t.Fatalf("a delegated reconcile with its entry gone: %d %v", status, out)
+				}
+			}
+			journalAbsent(t, h.g, namespace)
+			if h.sent(key) != 1 {
+				t.Fatalf("sent %d", h.sent(key))
+			}
+		})
+	}
+}
+
+// H1(b), the second mutation. A first scope stops another root actor whether or not the
+// subject entry is there, plain or reconciling.
+func TestRemovingASubjectEntryAllowsNoSecondMutation(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	actor := h.credential(t, statement(t, nil))
+	other := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("66", 16), "act": map[string]any{"agent": otherAgent, "software": testSoftware}}))
+	key := delegationKey(2)
+	if status, out := h.present(t, "/act", h.actBody("first", key, ""), actor); status != http.StatusOK {
+		t.Fatalf("first: %d %v", status, out)
+	}
+	subjectEntry := h.g.actionSubjectNamespace(delegatedScopeOf(testSubjectSub, rootAgent).delegated, key)
+	if err := os.Rename(filepath.Join(h.g.storeRoot, "actions", subjectEntry), filepath.Join(h.root, "archived")); err != nil {
+		t.Fatal(err)
+	}
+	for i, extra := range []string{"", withReconcile} {
+		status, out := h.present(t, "/act", h.actBody(fmt.Sprintf("other-%d", i), key, extra), other)
+		if status != http.StatusForbidden || refusalOf(out) != refusalKeyScopeConflict {
+			t.Fatalf("another root actor, its subject entry gone: %d %v", status, out)
+		}
+	}
+	journalAbsent(t, h.g, h.g.actionNamespace(delegatedScopeOf(testSubjectSub, otherAgent), key))
+	if h.sent(key) != 1 {
+		t.Fatalf("sent %d", h.sent(key))
+	}
+}
+
+// The other way round: with the first-scope record lost (a partial restore), the subject
+// record still holds the key against another root actor of that subject, so nothing
+// closes over a reservation that exists. It is why the subject entry stays.
+func TestSubjectRecordHoldsWhenTheFirstScopeIsLost(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	actor := h.credential(t, statement(t, nil))
+	other := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("66", 16), "act": map[string]any{"agent": otherAgent, "software": testSoftware}}))
+	key := delegationKey(3)
+	if status, out := h.present(t, "/act", h.actBody("first", key, ""), actor); status != http.StatusOK {
+		t.Fatalf("first: %d %v", status, out)
+	}
+	scope := delegatedScopeOf(testSubjectSub, rootAgent)
+	record := h.g.actionFirstScope(scope, key, h.g.actionNamespace(scope, key))
+	if err := os.Remove(filepath.Join(h.g.storeRoot, "actions", actionIndexDirectory, record.file)); err != nil {
+		t.Fatal(err)
+	}
+	for i, extra := range []string{withReconcile, ""} {
+		status, out := h.present(t, "/act", h.actBody(fmt.Sprintf("other-%d", i), key, extra), other)
+		if status != http.StatusForbidden || refusalOf(out) != refusalKeyScopeConflict {
+			t.Fatalf("another root actor, the first scope lost: %d %v", status, out)
+		}
+	}
+	if h.sent(key) != 1 {
+		t.Fatalf("sent %d", h.sent(key))
+	}
+}
+
+// H1(c), the key taken from the run's own actor. Another subject holding the key is
+// refused plain and reconciling, reserves nothing, and every sender of §11.8's table
+// keeps its answer afterwards. An undelegated request is another scope likewise.
+func TestAnotherSubjectCannotTakeADelegatedKey(t *testing.T) {
+	for _, write := range []string{"respond", "drop"} {
+		t.Run(write, func(t *testing.T) {
+			h := newDelegationHarness(t, false)
+			actor := h.credential(t, statement(t, nil))
+			key := delegationKey(4)
+			actionKeysMode(t, h.root, "write", write)
+			if status, out := h.present(t, "/act", h.actBody("first", key, ""), actor); status != http.StatusOK || h.sent(key) != 1 {
+				t.Fatalf("first: %d %v, sent %d", status, out, h.sent(key))
+			}
+			actionKeysMode(t, h.root, "write", "respond")
+			bearer := func(subject string) map[string]string {
+				return map[string]string{"Authorization": "Bearer " + h.token(t, subject)}
+			}
+			elsewhere := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("77", 16), "sub": map[string]any{"kind": "person", "issuer": testIssuerURL, "subject": "another-person"}}))
+			for i, extra := range []string{withReconcile, ""} {
+				status, out := h.present(t, "/act", h.actBody(fmt.Sprintf("elsewhere-%d", i), key, extra), elsewhere)
+				if status != http.StatusForbidden || refusalOf(out) != refusalKeyScopeConflict {
+					t.Fatalf("another subject %q: %d %v", extra, status, out)
+				}
+			}
+			for i, extra := range []string{withKeyScope + withReconcile, withKeyScope, ""} {
+				status, out := h.post(t, "/act", h.actBody(fmt.Sprintf("token-%d", i), key, extra), bearer("alice"))
+				if status != http.StatusForbidden || refusalOf(out) != refusalKeyScopeConflict {
+					t.Fatalf("an undelegated request %q: %d %v", extra, status, out)
+				}
+			}
+			journalAbsent(t, h.g, h.g.actionNamespace(delegatedScopeOf("another-person", rootAgent), key))
+			journalAbsent(t, h.g, h.g.actionNamespace(&caller{issuer: testIssuerURL, subject: "alice"}, key))
+			answered := func(step string, status int, out map[string]any) {
+				t.Helper()
+				if status != http.StatusOK || (out["receipt"] == nil && out["reconciliation"] == nil) {
+					t.Fatalf("%s: %d %v", step, status, out)
+				}
+			}
+			status, out := h.present(t, "/act", h.actBody("actor-again", key, withReconcile), actor)
+			answered("the run's actor", status, out)
+			reservation := h.reservationOf(testSub(), rootAgent)
+			for i, subject := range []string{testSubjectSub, hostRequester, testOperator} {
+				status, out := h.post(t, "/act", h.actBody(fmt.Sprintf("table-%d", i), key, reservation+withReconcile), bearer(subject))
+				answered(subject, status, out)
+			}
+			if h.sent(key) != 1 {
+				t.Fatalf("sent %d", h.sent(key))
+			}
+		})
+	}
+}
+
+// A leaf that does not name the write takes nothing on its way to a refused admission:
+// no first scope and no subject record, so it cannot deny the key to anyone.
+func TestALeafNotNamingTheWriteTakesNoFirstScope(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	root := statement(t, nil)
+	narrow := h.credential(t, root, childOf(t, root, map[string]any{"act": map[string]any{"agent": rootAgent, "software": testSoftware}}))
+	key := delegationKey(5)
+	if status, out := h.present(t, "/act", h.actBody("narrow", key, ""), narrow); status == http.StatusOK || refusalOf(out) == refusalKeyScopeConflict {
+		t.Fatalf("a leaf not naming the write: %d %v", status, out)
+	}
+	scope := delegatedScopeOf(testSubjectSub, rootAgent)
+	record := h.g.actionFirstScope(scope, key, h.g.actionNamespace(scope, key))
+	journalAbsent(t, h.g, filepath.Join(actionIndexDirectory, record.file))
+	journalAbsent(t, h.g, h.g.actionSubjectNamespace(scope.delegated, key))
+	other := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("66", 16), "act": map[string]any{"agent": otherAgent, "software": testSoftware}}))
+	if status, out := h.present(t, "/act", h.actBody("other", key, ""), other); status != http.StatusOK || h.sent(key) != 1 {
+		t.Fatalf("another root actor after it: %d %v, sent %d", status, out, h.sent(key))
+	}
+}
+
+// H2, over real HTTP. Subject A sends neither member. Subject B, holding the key, sends
+// both. B's first scope takes nothing A holds: A keeps its retained answer, its salts and
+// its read-back, however A asks, for a write that answered and one that did not.
+func TestAFirstScopeTakesNothingAScopeHoldsOverHTTP(t *testing.T) {
+	for _, tc := range []struct{ name, write string }{{"answered", "respond"}, {"dropped", "drop"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newDelegationHarness(t, false)
+			key := delegationKey(6)
+			bearer := func(subject string) map[string]string {
+				return map[string]string{"Authorization": "Bearer " + h.token(t, subject)}
+			}
+			actionKeysMode(t, h.root, "write", tc.write)
+			status, first := h.post(t, "/act", h.actBody("a1", key, ""), bearer("alice"))
+			if status != http.StatusOK || h.sent(key) != 1 {
+				t.Fatalf("A first: %d %v, sent %d", status, first, h.sent(key))
+			}
+			actionKeysMode(t, h.root, "write", "respond")
+			status, before := h.post(t, "/act", h.actBody("a2", key, ""), bearer("alice"))
+			if status != http.StatusOK {
+				t.Fatalf("A before the plant: %d %v", status, before)
+			}
+			// B has reserved nothing and holds the key: it takes the first scope. Its own answer
+			// speaks for what it can see, which is the Known limit, and it sends nothing.
+			status, planted := h.post(t, "/act", h.actBody("b1", key, withKeyScope+withReconcile), bearer("bob"))
+			if status != http.StatusConflict || refusalOf(planted) != refusalKeyNotDispatched || h.sent(key) != 1 {
+				t.Fatalf("B: %d %v, sent %d", status, planted, h.sent(key))
+			}
+			for i, extra := range []string{"", withKeyScope, withKeyScope + withReconcile} {
+				status, after := h.post(t, "/act", h.actBody(fmt.Sprintf("a-after-%d", i), key, extra), bearer("alice"))
+				if status != http.StatusOK {
+					t.Fatalf("A after the plant, %q: %d %v", extra, status, after)
+				}
+				if tc.write == "respond" {
+					if keyTestJSON(t, after) != keyTestJSON(t, first) {
+						t.Fatalf("A after the plant, %q: not its retained answer", extra)
+					}
+				} else if after["reconciliation"] == nil || after["action"] == nil {
+					t.Fatalf("A after the plant, %q: no read-back: %v", extra, after)
+				}
+			}
+			if h.sent(key) != 1 {
+				t.Fatalf("sent %d", h.sent(key))
+			}
+		})
+	}
+}
+
+// The other half of H2: under another's first scope a scope's request that would dispatch
+// or close is refused, its journal left as it was. A marker with no answer still reads back:
+// that is what the scope already holds, and it sends nothing.
+func TestAScopeUnderAnothersFirstScopeNeverDispatchesOrCloses(t *testing.T) {
+	filesOf := func(t *testing.T, entry string) string {
+		t.Helper()
+		list, err := os.ReadDir(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, f := range list {
+			names = append(names, f.Name())
+		}
+		return strings.Join(names, " ")
+	}
+	type setup func(t *testing.T, root, key string, c actionKeysCall)
+	nothingBegun := func(t *testing.T, root, key string, c actionKeysCall) {
+		t.Helper()
+		var out bytes.Buffer
+		cmd := actionScopeChild(root, "seed", key, "ACTION_SCOPE_KILL=before-admit")
+		cmd.Stdout, cmd.Stderr = &out, &out
+		cmd.Run()
+		if _, lived := childOutcome(out.String()); lived {
+			t.Fatalf("the seed did not die:\n%s", out.String())
+		}
+	}
+	freed := func(t *testing.T, root, key string, c actionKeysCall) {
+		t.Helper()
+		missing := actionKeysService(t, root, actionKeysSources(t, root, filepath.Join(root, "not-installed", "adapter-mcp")))
+		if _, err := actionKeysAct(missing, c, "seed", key); !strings.Contains(keyRefusal(err), "action-not-dispatched") {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	for name, seed := range map[string]setup{"nothing begun": nothingBegun, "a freed attempt": freed} {
+		t.Run(name, func(t *testing.T) {
+			root, g, c := actionKeysSetup(t)
+			key := strings.Repeat("a", 64)
+			seed(t, root, key, c)
+			entry := filepath.Join(g.storeRoot, "actions", g.actionNamespace(actionKeysWho, key))
+			before := filesOf(t, entry)
+			_, err := scopedAct(g, c, "b", key, anotherSubject, true, false)
+			if err != nil {
+				t.Fatalf("B's first request: %v", err)
+			}
+			wantSent(t, root, key, 1)
+			for i, req := range []struct{ scoped, reconcile bool }{{false, false}, {true, false}, {true, true}} {
+				_, err := scopedAct(g, c, fmt.Sprintf("a-%d", i), key, actionKeysWho, req.scoped, req.reconcile)
+				wantKeyRefusal(t, fmt.Sprintf("A %+v", req), err, refusalKeyScopeConflict)
+				if got := filesOf(t, entry); got != before {
+					t.Fatalf("A %+v changed its entry: %q, was %q", req, got, before)
+				}
+			}
+			wantSent(t, root, key, 1)
+		})
+	}
+	t.Run("a marker with no answer", func(t *testing.T) {
+		root, g, c := actionKeysSetup(t)
+		key := strings.Repeat("a", 64)
+		nothingBegun(t, root, key, c)
+		entry := filepath.Join(g.storeRoot, "actions", g.actionNamespace(actionKeysWho, key))
+		if err := os.WriteFile(filepath.Join(entry, "dispatch-1.json"), []byte(`{"attempt":1}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := scopedAct(g, c, "b", key, anotherSubject, true, true); keyRefusal(err) != refusalKeyNotDispatched {
+			t.Fatalf("B: %v", err)
+		}
+		out, err := actionKeysAct(g, c, "a", key)
+		if err != nil || out["reconciliation"] == nil {
+			t.Fatalf("A's read-back: %v %v", out, err)
+		}
+		wantSent(t, root, key, 0)
+	})
+}
+
+// M2. A reconcile that sends the member and is answered from evidence holds the first
+// scope first: a first scope is held from the first request sending the member. So the
+// second subject finds the key taken, where it would have sent again.
+func TestAReconcileAnsweredFromEvidenceHoldsTheFirstScope(t *testing.T) {
+	for _, write := range []string{"respond", "drop"} {
+		t.Run(write, func(t *testing.T) {
+			root, g, c := actionKeysSetup(t)
+			key := strings.Repeat("b", 64)
+			actionKeysMode(t, root, "write", write)
+			if _, err := actionKeysAct(g, c, "first", key); err != nil {
+				t.Fatal(err)
+			}
+			actionKeysMode(t, root, "write", "respond")
+			journalAbsent(t, g, actionIndexDirectory)
+			out, err := scopedAct(g, c, "reconcile", key, actionKeysWho, true, true)
+			if err != nil || (out["receipt"] == nil && out["reconciliation"] == nil) {
+				t.Fatalf("the reconcile: %v %v", out, err)
+			}
+			first := g.actionFirstScope(actionKeysWho, key, g.actionNamespace(actionKeysWho, key))
+			if _, err := os.Stat(filepath.Join(g.storeRoot, "actions", actionIndexDirectory, first.file)); err != nil {
+				t.Fatalf("no first scope after the reconcile: %v", err)
+			}
+			_, err = scopedAct(g, c, "other", key, anotherSubject, true, false)
+			wantKeyRefusal(t, "another subject", err, refusalKeyScopeConflict)
+			wantSent(t, root, key, 1)
+		})
+	}
+}
+
+// awaitPoint waits for a request to reach a named point of itself, and fails, rather than
+// hanging, if it answers without ever getting there.
+func awaitPoint(t *testing.T, what string, reached <-chan struct{}, answer <-chan string) {
+	t.Helper()
+	select {
+	case <-reached:
+	case got := <-answer:
+		t.Fatalf("%s: the request answered %q without reaching that point", what, got)
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s: never reached", what)
+	}
+}
+
+// A reconcile that goes to hold the first scope and finds another took it just now reads
+// what its scope holds, and closes nothing: to close, it would say nothing was dispatched
+// under a key another scope is sending.
+func TestAReconcileThatLosesTheFirstScopeDoesNotClose(t *testing.T) {
+	root, g, c := actionKeysSetup(t)
+	key := strings.Repeat("c", 64)
+	var seed bytes.Buffer
+	seedCmd := actionScopeChild(root, "seed", key, "ACTION_SCOPE_KILL=before-admit")
+	seedCmd.Stdout, seedCmd.Stderr = &seed, &seed
+	seedCmd.Run()
+	reached, proceed := make(chan struct{}), make(chan struct{})
+	g.actionStep = func(point string) {
+		if point == "before-hold" {
+			close(reached)
+			<-proceed
+		}
+	}
+	answer := make(chan string, 1)
+	go func() {
+		_, err := scopedAct(g, c, "a-reconcile", key, actionKeysWho, true, true)
+		answer <- keyRefusal(err)
+	}()
+	awaitPoint(t, "A going to hold its first scope", reached, answer)
+	other := actionKeysService(t, root, actionKeysSources(t, root, os.Args[0]))
+	if _, err := scopedAct(other, c, "b-first", key, anotherSubject, true, false); err != nil {
+		t.Fatal(err)
+	}
+	close(proceed)
+	if got := <-answer; got != refusalKeyScopeConflict {
+		t.Fatalf("A answered %q", got)
+	}
+	wantSent(t, root, key, 1)
+	entry := filepath.Join(g.storeRoot, "actions", g.actionNamespace(actionKeysWho, key))
+	if _, err := os.Lstat(filepath.Join(entry, "dispatch-1.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("A marked its entry: %v", err)
+	}
+}
+
+// M4's R2. A close that finds another's first scope as it goes to record its own answers
+// the conflict, not that nothing was dispatched: this is the branch that stops a false
+// answer in the race. B has closed its own entry; A takes the first scope and dispatches.
+func TestACloseThatLosesTheFirstScopeAnswersConflict(t *testing.T) {
+	root, g, c := actionKeysSetup(t)
+	key := strings.Repeat("d", 64)
+	reached, proceed := make(chan struct{}), make(chan struct{})
+	g.actionStep = func(point string) {
+		if point == "close-durable" {
+			close(reached)
+			<-proceed
+		}
+	}
+	answer := make(chan string, 1)
+	go func() {
+		_, err := scopedAct(g, c, "b-close", key, anotherSubject, true, true)
+		answer <- keyRefusal(err)
+	}()
+	awaitPoint(t, "B's close going to record its first scope", reached, answer)
+	other := actionKeysService(t, root, actionKeysSources(t, root, os.Args[0]))
+	if _, err := scopedAct(other, c, "a-first", key, actionKeysWho, true, false); err != nil {
+		t.Fatal(err)
+	}
+	close(proceed)
+	if got := <-answer; got != refusalKeyScopeConflict {
+		t.Fatalf("B answered %q with the write at the target", got)
+	}
+	wantSent(t, root, key, 1)
+}
+
+// M4's R24, at the journal alone: another scope's record found by one going to hold it is a
+// refusal, whether it is found before publishing or by losing the link.
+func TestHoldKeyIndexRefusesAnothersRecord(t *testing.T) {
+	_, g, _ := actionKeysSetup(t)
+	key := strings.Repeat("e", 64)
+	j, err := openActionJournal(g.storeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.close()
+	a := g.actionFirstScope(actionKeysWho, key, g.actionNamespace(actionKeysWho, key))
+	b := g.actionFirstScope(anotherSubject, key, g.actionNamespace(anotherSubject, key))
+	if err := j.holdKeyIndex(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.holdKeyIndex(b); !errors.Is(err, errActionKeyFirstScope) {
+		t.Fatalf("another scope held the key: %v", err)
+	}
+	if err := j.holdKeyIndex(a); err != nil {
+		t.Fatalf("its own record: %v", err)
+	}
+}
+
+// M4's R14. A delegated reconcile whose close loses to a dispatch's marker is answered as
+// any request finding that marker is: it is not admitted, and no call is counted for it.
+func TestADelegatedCloseThatLosesIsNotCounted(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	actor := h.credential(t, statement(t, nil))
+	// A real dispatch's marker, to lay in another key's slot as if another process claimed it.
+	donor := delegationKey(7)
+	if status, out := h.present(t, "/act", h.actBody("donor", donor, ""), actor); status != http.StatusOK {
+		t.Fatalf("donor: %d %v", status, out)
+	}
+	scope := delegatedScopeOf(testSubjectSub, rootAgent)
+	marker, err := os.ReadFile(filepath.Join(h.g.storeRoot, "actions", h.g.actionNamespace(scope, donor), "dispatch-1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := delegationKey(8)
+	entry := filepath.Join(h.g.storeRoot, "actions", h.g.actionNamespace(scope, key))
+	// The reservation, with nothing begun: an admission refused it.
+	h.host.setAnswer(func(b map[string]any) (int, string) {
+		if c, ok := b["call"].(map[string]any); ok && c["source"] == "tickets/write" {
+			return http.StatusOK, `{"admission":"refuse","refusal":"subject-unauthorized"}`
+		}
+		return http.StatusOK, `{"admission":"admit"}`
+	})
+	if status, out := h.present(t, "/act", h.actBody("refused", key, ""), actor); status != http.StatusForbidden {
+		t.Fatalf("the refused dispatch: %d %v", status, out)
+	}
+	h.host.setAnswer(nil)
+	h.g.actionStep = func(point string) {
+		if point == "before-close" {
+			if err := os.WriteFile(filepath.Join(entry, "dispatch-1.json"), marker, 0600); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	counted := h.host.counted()
+	status, out := h.present(t, "/act", h.actBody("reconciling", key, withReconcile), actor)
+	h.g.actionStep = nil
+	if refusalOf(out) == refusalKeyNotDispatched {
+		t.Fatalf("a close that lost said nothing was dispatched: %d %v", status, out)
+	}
+	if h.host.counted() != counted {
+		t.Fatalf("a reconcile that lost its close was counted: %d, was %d", h.host.counted(), counted)
+	}
+	if h.sent(key) != 0 {
+		t.Fatalf("sent %d", h.sent(key))
+	}
+}
+
+// M1's documented way out. The gateway never closes at a first scope with no reservation.
+// An operator who has checked the target may archive the record, and the next reconcile is
+// then the first this key has seen: it closes. The record stays, for one who cannot tell.
+func TestOutcomeUnknownOperatorPath(t *testing.T) {
+	root, g, c := actionKeysSetup(t)
+	key := strings.Repeat("f", 64)
+	namespace := g.actionNamespace(actionKeysWho, key)
+	first := g.actionFirstScope(actionKeysWho, key, namespace)
+	saved := syncActionFile
+	syncActionFile = func(f *os.File) error {
+		if filepath.Base(f.Name()) == "intent.json" {
+			return errors.New("injected: no space left on device")
+		}
+		return f.Sync()
+	}
+	_, err := scopedAct(g, c, "refused", key, actionKeysWho, true, false)
+	syncActionFile = saved
+	if err == nil {
+		t.Fatal("a first request through a failed journal write")
+	}
+	wantSent(t, root, key, 0)
+	restarted := actionKeysService(t, root, actionKeysSources(t, root, os.Args[0]))
+	for i := range 2 {
+		_, err = scopedAct(restarted, c, fmt.Sprintf("unknown-%d", i), key, actionKeysWho, true, true)
+		wantKeyRefusal(t, "a reconcile", err, refusalKeyOutcomeUnknown)
+	}
+	journalAbsent(t, restarted, namespace)
+	// The record names the key and the entry that is not there, so the operator can find both.
+	record := filepath.Join(g.storeRoot, "actions", actionIndexDirectory, first.file)
+	raw, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named map[string]any
+	if err := json.Unmarshal(raw, &named); err != nil || named["key"] != key || named["reservation"] != namespace {
+		t.Fatalf("the record: %s %v", raw, err)
+	}
+	// The target was checked, nothing is in flight: the record goes to the archive.
+	if err := os.Rename(record, filepath.Join(root, "archived-record.json")); err != nil {
+		t.Fatal(err)
+	}
+	after := actionKeysService(t, root, actionKeysSources(t, root, os.Args[0]))
+	_, err = scopedAct(after, c, "closing", key, actionKeysWho, true, true)
+	wantKeyRefusal(t, "the close", err, refusalKeyNotDispatched)
+	_, err = scopedAct(after, c, "plain", key, actionKeysWho, true, false)
+	wantKeyRefusal(t, "a plain request", err, refusalKeyClosed)
+	wantSent(t, root, key, 0)
+}
+
+// L5. A marker above a free attempt is damage: no crash leaves it, and it says a dispatch
+// may have begun. A reconcile does not close under it or say nothing was dispatched. And a
+// close whose lower marker was lost stays a close.
+func TestALostLowerMarkerIsNotAbsence(t *testing.T) {
+	root, g, c := actionKeysSetup(t)
+	seedEntry := func(key string) string {
+		t.Helper()
+		var out bytes.Buffer
+		cmd := actionScopeChild(root, "seed", key, childFlagged, "ACTION_SCOPE_KILL=before-admit")
+		cmd.Stdout, cmd.Stderr = &out, &out
+		cmd.Run()
+		return filepath.Join(g.storeRoot, "actions", g.actionNamespace(actionKeysWho, key))
+	}
+	key := strings.Repeat("a", 64)
+	entry := seedEntry(key)
+	if err := os.WriteFile(filepath.Join(entry, "dispatch-2.json"), []byte(`{"attempt":2}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := scopedAct(g, c, "reconciling", key, actionKeysWho, true, true)
+	if keyRefusal(err) == refusalKeyNotDispatched {
+		t.Fatal("a reconcile closed under a higher marker")
+	}
+	if _, err := os.Lstat(filepath.Join(entry, "dispatch-1.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a marker was made at attempt 1: %v", err)
+	}
+	wantSent(t, root, key, 0)
+	closedAbove := strings.Repeat("b", 64)
+	entry = seedEntry(closedAbove)
+	if err := os.WriteFile(filepath.Join(entry, "dispatch-3.json"), []byte(`{"attempt":3,"closed":true,"closedAt":"2026-11-02T00:00:00Z"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = scopedAct(g, c, "plain", closedAbove, actionKeysWho, true, false)
+	wantKeyRefusal(t, "a plain request", err, refusalKeyClosed)
+	_, err = scopedAct(g, c, "reconcile", closedAbove, actionKeysWho, true, true)
+	wantKeyRefusal(t, "a reconcile", err, refusalKeyNotDispatched)
+	wantSent(t, root, closedAbove, 0)
+}
+
+// L6. action-key-closed says the close stands, so the close is synced before it is said:
+// its maker may have died first. A failure of that sync is not the answer.
+func TestActionKeyClosedFollowsItsDurability(t *testing.T) {
+	root, g, c := actionKeysSetup(t)
+	key := strings.Repeat("c", 64)
+	closeForTest(t, g, c, key)
+	entry := filepath.Join(g.storeRoot, "actions", g.actionNamespace(actionKeysWho, key))
+	var log actionSyncLog
+	log.install(t)
+	_, err := scopedAct(g, c, "plain", key, actionKeysWho, true, false)
+	wantKeyRefusal(t, "a plain request", err, refusalKeyClosed)
+	if log.position(t, entry, 0) < 0 {
+		t.Fatal("the close was not synced before action-key-closed")
+	}
+	log.fail = entry
+	_, err = scopedAct(g, c, "failing", key, actionKeysWho, true, false)
+	if keyRefusal(err) == refusalKeyClosed {
+		t.Fatal("action-key-closed through a failed sync")
+	}
+	wantSent(t, root, key, 0)
+}
+
+// The compaction procedure, followed to the letter by an operator holding only the journal
+// (docs/design/action-reconciliation.md), with the retention period taken as passed and the
+// target as checked, then a restart. Afterwards nothing is called not dispatched that was
+// sent, no key with a first scope sends again, and every entry a record names is there.
+func TestCompactionFollowedLiterally(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	actor := h.credential(t, statement(t, nil))
+	other := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("66", 16), "act": map[string]any{"agent": otherAgent, "software": testSoftware}}))
+	root := statement(t, nil)
+	narrow := h.credential(t, root, childOf(t, root, map[string]any{"act": map[string]any{"agent": rootAgent, "software": testSoftware}}))
+	bearer := func() map[string]string {
+		return map[string]string{"Authorization": "Bearer " + h.token(t, "alice")}
+	}
+	session := 0
+	next := func() string { session++; return fmt.Sprintf("walk-%d", session) }
+	asAlice := func(key, extra string) (int, map[string]any) {
+		return h.post(t, "/act", h.actBody(next(), key, extra), bearer())
+	}
+	asActor := func(key, extra string) (int, map[string]any) {
+		return h.present(t, "/act", h.actBody(next(), key, extra), actor)
+	}
+	k := func(n int) string { return fmt.Sprintf("%064x", 0xe000+n) }
+	drop := func(do func()) {
+		actionKeysMode(t, h.root, "write", "drop")
+		do()
+		actionKeysMode(t, h.root, "write", "respond")
+	}
+	flaggedAnswered, flaggedDropped, flaggedClosed := k(1), k(2), k(3)
+	asAlice(flaggedAnswered, withKeyScope)
+	drop(func() { asAlice(flaggedDropped, withKeyScope) })
+	asAlice(flaggedClosed, withKeyScope+withReconcile)
+	unflaggedAnswered, unflaggedDropped := k(4), k(5)
+	asAlice(unflaggedAnswered, "")
+	drop(func() { asAlice(unflaggedDropped, "") })
+	delegatedAnswered, delegatedDropped, delegatedClosed, delegatedNarrow := k(6), k(7), k(8), k(9)
+	asActor(delegatedAnswered, "")
+	drop(func() { asActor(delegatedDropped, "") })
+	asActor(delegatedClosed, withReconcile)
+	h.present(t, "/act", h.actBody(next(), delegatedNarrow, ""), narrow)
+	sentKeys := map[string]int{flaggedAnswered: 1, flaggedDropped: 1, flaggedClosed: 0, delegatedAnswered: 1, delegatedDropped: 1, delegatedClosed: 0, delegatedNarrow: 0}
+	for key, want := range sentKeys {
+		if h.sent(key) != want {
+			t.Fatalf("before: key %s sent %d", key[60:], h.sent(key))
+		}
+	}
+
+	// The operator. Step 3 of the procedure, in its order; nothing but the journal is read.
+	actions := filepath.Join(h.g.storeRoot, "actions")
+	archive := filepath.Join(h.root, "archive")
+	if err := os.MkdirAll(archive, 0700); err != nil {
+		t.Fatal(err)
+	}
+	walk := func() map[string]int {
+		reservations, subjects := map[string]bool{}, map[string]bool{}
+		records, err := filepath.Glob(filepath.Join(actions, actionIndexDirectory, "*.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range records {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var record struct {
+				Reservation   string `json:"reservation"`
+				SubjectRecord string `json:"subjectRecord"`
+			}
+			if err := json.Unmarshal(raw, &record); err != nil {
+				t.Fatal(err)
+			}
+			reservations[record.Reservation] = true
+			if record.SubjectRecord != "" {
+				subjects[record.SubjectRecord] = true
+			}
+		}
+		classes := map[string]int{}
+		entries, err := os.ReadDir(actions)
+		if err != nil {
+			t.Fatal(err)
+		}
+		classify := func(dir, name string) string {
+			for n := 1; n <= actionDispatchAttempts; n++ {
+				raw, err := os.ReadFile(filepath.Join(dir, actionDispatchName(n)))
+				if err == nil && strings.Contains(string(raw), `"closed":true`) {
+					return "closed"
+				}
+			}
+			held, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, scopeErr := os.Stat(filepath.Join(dir, "scope.json"))
+			if subjects[name] || (scopeErr == nil && len(held) == 1) {
+				return "subject"
+			}
+			if reservations[name] || scopeErr == nil {
+				return "indexed"
+			}
+			intent, err := os.ReadFile(filepath.Join(dir, "intent.json"))
+			if err != nil || !json.Valid(intent) {
+				return "does-not-read"
+			}
+			record, recordErr := os.ReadFile(filepath.Join(dir, "action.json"))
+			if recordErr == nil {
+				if !json.Valid(record) {
+					return "does-not-read"
+				}
+				if strings.Contains(string(record), `"outcome":"response"`) {
+					return "answered"
+				}
+				return "uncertain"
+			}
+			for n := 1; n <= actionDispatchAttempts; n++ {
+				if _, err := os.Stat(filepath.Join(dir, actionDispatchName(n))); err != nil {
+					continue
+				}
+				if _, err := os.Stat(filepath.Join(dir, actionNotDispatchedName(n))); err != nil {
+					return "begun"
+				}
+			}
+			return "never-sent"
+		}
+		for _, e := range entries {
+			if !e.IsDir() || e.Name() == actionIndexDirectory || strings.HasPrefix(e.Name(), ".staging-") {
+				continue
+			}
+			class := classify(filepath.Join(actions, e.Name()), e.Name())
+			classes[class]++
+			switch class {
+			case "indexed":
+				record := filepath.Join(actions, e.Name(), "action.json")
+				if _, err := os.Stat(record); err == nil {
+					if err := os.Rename(record, filepath.Join(archive, fmt.Sprintf("%s-%d-action.json", e.Name(), classes[class]))); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "never-sent", "answered", "uncertain":
+				if err := os.Rename(filepath.Join(actions, e.Name()), filepath.Join(archive, e.Name())); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return classes
+	}
+	classes := walk()
+	if classes["closed"] != 2 || classes["subject"] != 3 || classes["indexed"] != 5 || classes["answered"] != 1 || classes["uncertain"] != 1 {
+		t.Fatalf("the journal's classes: %v", classes)
+	}
+	// Every entry a record names is still there: they pair, from the journal alone.
+	records, err := filepath.Glob(filepath.Join(actions, actionIndexDirectory, "*.json"))
+	if err != nil || len(records) != 6 {
+		t.Fatalf("records: %v %v", records, err)
+	}
+	pairedSubjects := 0
+	for _, path := range records {
+		raw, _ := os.ReadFile(path)
+		var record map[string]any
+		if err := json.Unmarshal(raw, &record); err != nil {
+			t.Fatal(err)
+		}
+		for _, member := range []string{"reservation", "subjectRecord"} {
+			if name, present := record[member].(string); present {
+				if _, err := os.Stat(filepath.Join(actions, name)); err != nil {
+					t.Fatalf("%s %s is gone: %v", member, name[:8], err)
+				}
+			}
+		}
+		// A delegated key's record names its subject entry, which an entry alone cannot
+		// say; an undelegated key has none to name.
+		_, delegatedScope := record["scope"].(map[string]any)["rootActor"]
+		name, names := record["subjectRecord"].(string)
+		if names != delegatedScope {
+			t.Fatalf("a record's subject entry: delegated %v, names %v: %s", delegatedScope, names, raw)
+		}
+		if names {
+			want := h.g.actionSubjectNamespace(delegatedScopeOf(testSubjectSub, rootAgent).delegated, record["key"].(string))
+			if name != want {
+				t.Fatalf("the record names %s, the key's subject entry is %s", name[:8], want[:8])
+			}
+			pairedSubjects++
+		}
+	}
+	if pairedSubjects != classes["subject"] {
+		t.Fatalf("%d subject entries pair with a record, of %d", pairedSubjects, classes["subject"])
+	}
+
+	check := func(round string) {
+		t.Helper()
+		for _, tc := range []struct {
+			name, key string
+			ask       func(key, extra string) (int, map[string]any)
+			reconcile string
+			closed    bool
+		}{
+			{"flagged answered", flaggedAnswered, asAlice, withKeyScope + withReconcile, false},
+			{"flagged dropped", flaggedDropped, asAlice, withKeyScope + withReconcile, false},
+			{"flagged closed", flaggedClosed, asAlice, withKeyScope + withReconcile, true},
+			{"delegated answered", delegatedAnswered, asActor, withReconcile, false},
+			{"delegated dropped", delegatedDropped, asActor, withReconcile, false},
+			{"delegated closed", delegatedClosed, asActor, withReconcile, true},
+		} {
+			status, out := tc.ask(tc.key, tc.reconcile)
+			if tc.closed {
+				if status != http.StatusConflict || refusalOf(out) != refusalKeyNotDispatched {
+					t.Fatalf("%s %s, reconcile: %d %v", round, tc.name, status, out)
+				}
+			} else if status != http.StatusOK || out["reconciliation"] == nil {
+				t.Fatalf("%s %s, reconcile: %d %v", round, tc.name, status, out)
+			}
+			if h.sent(tc.key) != sentKeys[tc.key] {
+				t.Fatalf("%s %s: sent %d", round, tc.name, h.sent(tc.key))
+			}
+		}
+		// Another root actor stays refused on every key that has a first scope.
+		if status, out := h.present(t, "/act", h.actBody(next(), delegatedAnswered, ""), other); status != http.StatusForbidden || refusalOf(out) != refusalKeyScopeConflict {
+			t.Fatalf("%s another root actor: %d %v", round, status, out)
+		}
+		if h.sent(delegatedAnswered) != 1 {
+			t.Fatalf("%s: sent %d", round, h.sent(delegatedAnswered))
+		}
+	}
+	check("after one pass")
+	// Followed again, it holds: what the first requests recorded goes the same way.
+	walk()
+	check("after a second pass")
+	// Keys with no first scope and past retention send again: the text says so, and that is
+	// what the retention period is for.
+	if status, out := asAlice(unflaggedAnswered, ""); status != http.StatusOK || h.sent(unflaggedAnswered) != 2 {
+		t.Fatalf("an unflagged key past retention: %d %v, sent %d", status, out, h.sent(unflaggedAnswered))
+	}
 }
 
 // Requests that send neither member behave as they did, and this pins it with
