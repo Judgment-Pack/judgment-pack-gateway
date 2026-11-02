@@ -36,6 +36,15 @@ func (r actRefusal) Error() string { return r.step + ": " + r.reason }
 
 // act performs one write for an authenticated requester, or refuses it.
 func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, decisionRaw, citesRaw json.RawMessage, who *caller, actionKeyRaw ...json.RawMessage) (map[string]any, error) {
+	var members actionKeyMembers
+	if len(actionKeyRaw) > 0 {
+		members.key = actionKeyRaw[0]
+	}
+	return g.actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw, decisionRaw, citesRaw, who, members)
+}
+
+// actKeyed is act with everything a request may ask of its key.
+func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw, decisionRaw, citesRaw json.RawMessage, who *caller, keyMembers actionKeyMembers) (map[string]any, error) {
 	if who == nil {
 		return nil, actRefusal{"requester", errNoRequester.Error() + "; this engine has no identity configured"}
 	}
@@ -97,8 +106,8 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		return nil, actRefusal{"arguments", "arguments must be a JSON object: the executor sends the request as an object, and the commitment is over what is sent"}
 	}
 	var key string
-	if len(actionKeyRaw) > 0 && len(actionKeyRaw[0]) > 0 {
-		key, err = parseString("actionKey", actionKeyRaw[0])
+	if len(keyMembers.key) > 0 {
+		key, err = parseString("actionKey", keyMembers.key)
 		if err != nil || !isLowerHexOfLen(key, 64) {
 			return nil, actRefusal{"action-key", "actionKey must be 64 lowercase hexadecimal characters"}
 		}
@@ -112,6 +121,10 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	delegated := who.delegated
 	if delegated != nil && delegated.kind != "actor" && key == "" {
 		return nil, refuse(refusalActorOnly, "a sender other than the run's actor reaches a delegated action only by its key")
+	}
+	keyScoped, reconcile, err := parseActionKeyScope(keyMembers, key, delegated)
+	if err != nil {
+		return nil, err
 	}
 	recovery := spec.actionRecovery[tool]
 	if key != "" {
@@ -229,6 +242,7 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	request.set("arguments", arguments)
 	canonicalRequest := canon(request)
 	var claim *actionClaim
+	var closedKey func() error
 	attempt, begun := 0, false
 	if key != "" {
 		// One request per key at a time in this process; other keys proceed
@@ -245,6 +259,15 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 			return nil, actRefusal{"action-key", openErr.Error()}
 		}
 		defer journal.close()
+		// A recorded first scope is held to by every request on the key, sending
+		// the members or not, before anything is reserved or sent (SPEC.md §1.2b).
+		first := g.actionFirstScope(who, key, namespace)
+		indexed, err := journal.keyIndexed(first)
+		if errors.Is(err, errActionKeyFirstScope) {
+			return nil, refuse(refusalKeyScopeConflict, "this key's first scope is another's; nothing was reserved or sent")
+		} else if err != nil {
+			return nil, actRefusal{"action-key", err.Error()}
+		}
 		var scope *vObject
 		if delegated != nil {
 			scope = delegated.scope.value()
@@ -254,14 +277,44 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 				return nil, refuse(refusalActorOnly, "no evidence is retained under this key that a sender other than the run's actor can reach")
 			}
 			if delegated.kind == "actor" {
+				// A close is a request the key lookup answers: its leaf names the
+				// write, or it plants nothing, not even a subject record.
+				if reconcile && delegated.credential.chain.sourceToolRefusal(g.authority, source, tool) {
+					return nil, refuse(refusalKeyUnauthenticated, "")
+				}
 				if err := journal.holdSubjectKey(g.actionSubjectNamespace(delegated, key), scope); errors.Is(err, errActionScopeConflict) {
-					return nil, refuse("action-key-scope-conflict", "this subject reserved this key under another root actor")
+					return nil, refuse(refusalKeyScopeConflict, "this subject reserved this key under another root actor")
 				} else if err != nil {
 					return nil, actRefusal{"action-key", err.Error()}
 				}
 			}
 		}
-		claim, err = journal.reserveScoped(namespace, fingerprint, scope)
+		if reconcile {
+			// Never a reservation to dispatch under. No reservation in this scope
+			// with a first scope recorded says nothing: the entry may have been
+			// removed, or a first request may be on its way. With neither, the key
+			// has never been seen: it closes, intent and close together.
+			if !journal.has(namespace) {
+				if indexed {
+					return nil, refuse(refusalKeyOutcomeUnknown, "a first scope is recorded and no reservation: that cannot say whether anything was sent")
+				}
+				if err := journal.reserveClosed(namespace, fingerprint, scope); err != nil && !errors.Is(err, errActionRecordExists) {
+					return nil, actRefusal{"action-key", err.Error()}
+				}
+				g.actionStepped("closed-entry")
+			}
+			claim, err = journal.openReservation(namespace, fingerprint, scope)
+		} else {
+			if keyScoped {
+				if err := journal.holdKeyIndex(first); errors.Is(err, errActionKeyFirstScope) {
+					return nil, refuse(refusalKeyScopeConflict, "this key's first scope is another's; nothing was reserved or sent")
+				} else if err != nil {
+					return nil, actRefusal{"action-key", err.Error()}
+				}
+				g.actionStepped("index-durable")
+			}
+			claim, err = journal.reserveScoped(namespace, fingerprint, scope)
+		}
 		if err != nil {
 			return nil, actRefusal{"action-key", err.Error()}
 		}
@@ -271,7 +324,22 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		if !claim.fresh && delegated != nil && delegated.kind == "actor" && delegated.credential.chain.sourceToolRefusal(g.authority, source, tool) {
 			return nil, refuse(refusalKeyUnauthenticated, "")
 		}
+		// What a closed key answers. A close means every earlier attempt was answered
+		// as not dispatched, so it outranks what a request that lost a race to it may
+		// have recorded since: a reconciling request answers as it did.
+		closedKey = func() error {
+			switch {
+			case reconcile:
+				return g.closedAnswer(journal, claim, first, indexed, delegated)
+			case delegated != nil && delegated.kind != "actor":
+				return refuse(refusalActorOnly, "no evidence is retained under this key that a sender other than the run's actor can reach")
+			}
+			return refuse(refusalKeyClosed, "a reconciling request closed this key, and nothing under it was or will be dispatched")
+		}
 		if !claim.fresh {
+			if claim.closed() {
+				return nil, closedKey()
+			}
 			// Retained evidence answers before admission: a replay, a
 			// conflict or an invalid entry opens no session of its own.
 			saved, readErr := claim.read("action.json", actionJournalResponseLimit)
@@ -290,11 +358,32 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 			}
 		}
 		attempt, begun, err = claim.attempt()
+		if errors.Is(err, errActionKeyClosed) {
+			return nil, closedKey()
+		}
 		if err != nil {
 			return nil, actRefusal{"action-key", err.Error()}
 		}
 		if delegated != nil && delegated.kind != "actor" && !begun {
 			return nil, refuse(refusalActorOnly, "no evidence is retained under this key that a sender other than the run's actor can reach")
+		}
+		// A reconciling request never reaches a dispatch. Nothing has begun, so it
+		// closes the key, on the name a dispatch of this attempt would create: this
+		// close or that dispatch, across processes. A marker that beat it may have
+		// begun, and the key is then answered as any request finding one is.
+		if reconcile && !begun {
+			g.actionStepped("before-close")
+			switch err := claim.closeDispatch(attempt); {
+			case err == nil:
+				g.actionStepped("close-marker")
+				return nil, closedKey()
+			case errors.Is(err, errActionKeyClosed):
+				return nil, closedKey()
+			case errors.Is(err, errActionDispatchClaimed):
+				begun = true
+			default:
+				return nil, actRefusal{"action-key", err.Error()}
+			}
 		}
 	}
 
@@ -352,7 +441,12 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		if delegated != nil {
 			credential = delegated.credential.digest
 		}
-		if err = claim.claimDispatchUnder(attempt, delegationMember, credential); errors.Is(err, errActionDispatchClaimed) {
+		if err = claim.claimDispatchUnder(attempt, delegationMember, credential); errors.Is(err, errActionKeyClosed) {
+			// A reconciling request closed the key after this one read it: nothing
+			// was sent, and nothing will be under this key.
+			g.abandonUnminted(sessionID)
+			return nil, closedKey()
+		} else if errors.Is(err, errActionDispatchClaimed) {
 			uncertain = true
 			// Another request claimed this attempt: the admission and the
 			// credential recorded are the ones it dispatched under.
@@ -364,6 +458,13 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		} else if err != nil {
 			return nil, actRefusal{"action-key", err.Error()}
 		}
+	}
+	// About to record uncertainty for a marker found: that marker may have been
+	// answered since, and the key closed after it. Then nothing was sent, and this
+	// request has nothing to record.
+	if uncertain && claim != nil && claim.closed() {
+		g.abandonUnminted(sessionID)
+		return nil, closedKey()
 	}
 	if !uncertain {
 		result, _, _, err = g.runSource(source, spec, canonicalRequest)
@@ -526,7 +627,10 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		if err != nil {
 			return nil, err
 		}
-		if err = claim.put("action.json", raw, actionJournalResponseLimit); err != nil {
+		// Whole or not at all: a partial record would refuse the key for good, and
+		// a record that is not there leaves the dispatch marker unanswered, which
+		// reads back and never sends again (#352 L4).
+		if err = claim.publish("action.json", raw, actionJournalResponseLimit); err != nil {
 			return nil, err
 		}
 		if uncertain {
