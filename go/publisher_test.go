@@ -352,12 +352,13 @@ func publisherRecordFor(t *testing.T, g *gatewayService, f publisherFile) string
 // The gateway v0.24.0 pre-release review's M1 (#361 with #358 and #365). The publisher
 // policy guards what would be sent now. A key that already has state answers from it
 // under refuse, and with a record that cannot be read: a completed key replays, an
-// uncertain one reads back, plain, flagged and reconciling, and the target is not
-// called. What would dispatch is refused: a key never used, a freed attempt, and an
+// uncertain one reads back, and so does one whose dispatch began and whose record was
+// lost (the write may have committed), plain, flagged and reconciling, and the target
+// is not called. What would dispatch is refused: a key never used, a freed attempt, and an
 // action with no key. An ordinary acquisition stays refused.
 func TestPublisherRefusalGuardsOnlyWhatWouldBeSent(t *testing.T) {
 	root, g, c := actionKeysSetup(t)
-	completed, uncertain, freed := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
+	completed, uncertain, freed, begun := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64), strings.Repeat("e", 64)
 	if _, err := actionKeysAct(g, c, "completed", completed); err != nil {
 		t.Fatal(err)
 	}
@@ -366,6 +367,13 @@ func TestPublisherRefusalGuardsOnlyWhatWouldBeSent(t *testing.T) {
 		t.Fatal(err)
 	}
 	actionKeysMode(t, root, "write", "respond")
+	// A dispatch that committed and whose record a crash lost: its marker has no answer.
+	if _, err := actionKeysAct(g, c, "begun", begun); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(g.storeRoot, "actions", g.actionNamespace(actionKeysWho, begun), "action.json")); err != nil {
+		t.Fatal(err)
+	}
 	missing := actionKeysService(t, root, actionKeysSources(t, root, filepath.Join(root, "not-installed", "adapter-mcp")))
 	if _, err := actionKeysAct(missing, c, "freed", freed); err == nil || !strings.Contains(err.Error(), "action-not-dispatched") {
 		t.Fatalf("seed a freed attempt: %v", err)
@@ -375,7 +383,7 @@ func TestPublisherRefusalGuardsOnlyWhatWouldBeSent(t *testing.T) {
 		t.Fatal(err)
 	}
 	want, _ := json.Marshal(first)
-	sentBefore := map[string]int{completed: actionKeysSent(root, completed), uncertain: actionKeysSent(root, uncertain), freed: 0}
+	sentBefore := map[string]int{completed: actionKeysSent(root, completed), uncertain: actionKeysSent(root, uncertain), begun: actionKeysSent(root, begun), freed: 0}
 	path := publisherRecordFor(t, g, publisherFile{Version: 1, Policy: publisherPolicyRefuse, Publishers: map[string]publisherRecord{"tickets": {Binding: g.sources["tickets/write"].binding, State: publisherUnmaintained}}})
 	for _, state := range []struct{ name, refusal string }{
 		{"an unmaintained publisher", "publisher-unmaintained"},
@@ -399,6 +407,22 @@ func TestPublisherRefusalGuardsOnlyWhatWouldBeSent(t *testing.T) {
 			out, err = ask(uncertain, req.scoped, req.reconcile)
 			if err != nil || out["reconciliation"] == nil {
 				t.Fatalf("%s, an uncertain key %+v: no read-back: %v %v", state.name, req, out, err)
+			}
+		}
+		// The key whose record was lost answers once with its read-back; that request
+		// records its uncertainty, so later ones are the uncertain key's case above.
+		if out, err := ask(begun, false, false); err != nil || out["reconciliation"] == nil {
+			t.Fatalf("%s, a dispatch whose record was lost: no read-back: %v %v", state.name, out, err)
+		}
+		if err := os.Remove(filepath.Join(g.storeRoot, "actions", g.actionNamespace(actionKeysWho, begun), "action.json")); err != nil {
+			t.Fatal(err)
+		}
+		for _, req := range []struct{ scoped, reconcile bool }{{true, false}, {true, true}} {
+			if out, err := ask(begun, req.scoped, req.reconcile); err != nil || out["reconciliation"] == nil {
+				t.Fatalf("%s, a dispatch whose record was lost %+v: no read-back: %v %v", state.name, req, out, err)
+			}
+			if err := os.Remove(filepath.Join(g.storeRoot, "actions", g.actionNamespace(actionKeysWho, begun), "action.json")); err != nil {
+				t.Fatal(err)
 			}
 		}
 		for key, n := range sentBefore {
