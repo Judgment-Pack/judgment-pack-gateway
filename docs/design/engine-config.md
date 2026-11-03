@@ -1153,11 +1153,13 @@ What it changes for callers, all in SPEC.md §11:
 
 A file without the member, and every call made under no delegation, behave as before.
 
-## Keyed actions (engine version 14)
+## Keyed actions (engine version 14 and later)
 
-Version 14 requires a caller-chosen `actionKey` on `/act`: 64 lowercase hex
+Version 14 and every later version require a caller-chosen `actionKey` on `/act`: 64 lowercase hex
 characters, retained and reused for the same approved intent across retries.
-Older configurations may opt in per request. A changed payload or approval under
+Older configurations may opt in per request. On Windows, where keyed dispatch is
+unsupported, every `/act` under version 14 or 15 refuses, a delegation configuration
+(version 15) included. A changed payload or approval under
 the same key is refused as `action-key-conflict`; install paths, the adapter
 command line a release derives, the platform environment and the OS user are not
 part of the key's identity, so an upgrade into another directory, or to a release

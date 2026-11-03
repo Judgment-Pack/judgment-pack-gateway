@@ -80,9 +80,6 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	if !contains(spec.tools, tool) {
 		return nil, actRefusal{"tool", fmt.Sprintf("tool %q is not one the platform's write binding names", requestText(tool))}
 	}
-	if err := publisherRefusal(spec.publishers, platform, spec.binding); err != nil {
-		return nil, actRefusal{"platform", err.Error()}
-	}
 	// The executor is started for this tool alone (executor.md): a binding
 	// naming several write tools offers each request one of them.
 	spec = narrowTools(spec, tool)
@@ -437,6 +434,16 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		}
 	}
 
+	// The operator's publisher policy guards what would be sent now: a first
+	// dispatch, a freed attempt, or an action with no key. A keyed request on a
+	// key that already has state was answered from it above, or goes on to
+	// record its uncertainty and read back, and sends nothing, so the policy,
+	// or a record that cannot be read, never hides what a key holds.
+	if !begun {
+		if err := publisherRefusal(spec.publishers, platform, spec.binding); err != nil {
+			return nil, actRefusal{"platform", err.Error()}
+		}
+	}
 	// The judgment is there. What follows is the acquisition path with an
 	// action's claims: admission, the executor as a source, one receipt in
 	// the session chain.

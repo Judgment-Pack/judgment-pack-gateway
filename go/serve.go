@@ -783,7 +783,10 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 	if spec.shape != "" && g.receiptVersion != receiptVersion3 {
 		return nil, fmt.Errorf("source %s is an adapter and needs receipt version 3", source)
 	}
-	if platform, _, _ := strings.Cut(source, "/"); spec.publishers != "" {
+	// A read-back of a keyed action is that key's own question about what may
+	// already have been sent: it is answered under the publisher policy as the
+	// key's other answers are. Every other acquisition is held to it.
+	if platform, _, _ := strings.Cut(source, "/"); spec.publishers != "" && reconciliation == nil {
 		if err := publisherRefusal(spec.publishers, platform, spec.binding); err != nil {
 			return nil, err
 		}
