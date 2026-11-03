@@ -39,7 +39,7 @@ the same way in either tool.
 | Operation | Calls | Sends | Yields |
 |---|---|---|---|
 | Acquire | `POST /acquire` | `session`, `source`, `arguments` (any value of the canonical JSON domain; left out when empty, for the engine's default `{}`) | `{result, receipt, salts}` |
-| Act | `POST /act` | `session`, `platform`, `tool`, `arguments`, `decision` (`recordDigest`, `packDigest`), `cites` (an array of `{sessionId, callIndex, signature}`) | `{result, receipt, salts}` |
+| Act | `POST /act` | `session`, `platform`, `tool`, `arguments`, `decision` (`recordDigest`, `packDigest`), `cites` (an array of `{sessionId, callIndex, signature}`), `actionKey` (sent since v0.23.0, unless set to *None*) | `{result, receipt, salts}` |
 | Seal | `POST /seal` | `session` | the seal record |
 
 The credential is the engine's URL and, when the engine is configured with an `identity`, a

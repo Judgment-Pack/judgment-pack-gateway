@@ -535,11 +535,11 @@ read tool; `unknown` never establishes absence of a commit. Neither permits
 another dispatch of the mutation. These optional members do not change the
 canonical form or meaning of receipts without them.
 
-For engine version 14, `/act` requires `actionKey` in the key form above. Older
+For engine version 14 and later, `/act` requires `actionKey` in the key form above. Older
 configurations may opt in by supplying it. The key is scoped to gateway
 authority, authenticated issuer and subject, independent of session and token
 renewal; under a delegation it is scoped to the gateway authority, the
-delegation's subject and its root actor instead, and every request on it
+delegation's subject, its root actor and the issuing host instead, and every request on it
 authenticates its sender against that scope (§11.8). A durable private reservation under `actions/` in the store precedes
 any dispatch, and a durable dispatch marker, created exclusively, immediately
 precedes starting the write program; only the marker's creator may send the
@@ -612,6 +612,15 @@ actor's first request whose leaf names the write. A reservation another subject 
 before that is not in the record's scope and is not found: its holder keeps it as above,
 and a first request of the record's scope, finding nothing of its own, proceeds under
 it. `action-key-scope-conflict` tells its sender a key exists, and nothing of whose.
+In the concrete: every key a gateway before v0.24.0 reserved, and every key whose first
+request sent no `keyScope`, has no first-scope record, so another subject sending
+`keyScope` on it takes it and dispatches, as it could before. That is a pending agent
+job across the upgrade. Settle pending keys before upgrading, and before a client starts
+sending `keyScope`.
+
+The journal's retention period and its growth limits are defined in
+`docs/design/action-reconciliation.md` and are not enforced: the gateway counts neither,
+and compaction is an operator's offline procedure.
 
 The record is one store's. A second store under the same authority, a standby or a move
 to a fresh store, does not see the first's keys: a reconciling request there finds a key
@@ -2232,6 +2241,11 @@ no credential, no token, no token digest, no provider account and no content.
    search, a connection test), the gateway reads the owner's standing from its issuing host. `removed` applies the operator's removal and refuses
    (`owner-removed`); any answer other than `current` or `removed`, and no answer, refuses
    (`owner-unknown`). A grant without an owner record is used as before and reported.
+   A grant covers the connection custody's own credentials only. An engine platform's
+   operations, `<platform>/live` and `<platform>/write`, take their tokens from the
+   credentials files the configuration names and use no grant, so no rule of this section
+   applies to them: an action through `/act`, delegated or not, gets no owner read, idle
+   expiry, quarantine or `excess-scope` check (gateway #368).
 4. A grant with an idle expiry whose last use, or creation where it was never used, is at least
    that long before now is expired; equal is expired, and so is a time that cannot be read. It is
    revoked and refused (`grant-idle-expired`) at its next use of any kind.
@@ -2255,8 +2269,16 @@ no credential, no token, no token digest, no provider account and no content.
    unverifiable one as `publisher-unverifiable`, which never refuses. An inconclusive reading
    (`unknown` or `unverifiable`) never replaces a conclusive one (`maintained` or `unmaintained`)
    of the same declared publisher: the conclusive state is kept and the failed read recorded beside
-   it. Under the operator's `refuse` policy, an unmaintained publisher refuses the registration
-   and each acquisition and action of that binding. A registration whose name closely matches an
+   it. Under the operator's `refuse` policy, an unmaintained publisher refuses the registration,
+   each acquisition, and each action that would dispatch now (a first dispatch, a freed
+   attempt, or an action with no key) of that binding, as does a record that cannot be read.
+   A keyed request on a key that already has state is answered from what it holds: a completed
+   key replays its retained answer, under either policy and whatever the record says. A read-back
+   is an acquisition of the platform, run with its credential, so it is refused like any other:
+   an uncertain key answers `action-reconciliation-unavailable`, naming the refusal, with its
+   uncertain record, and no program runs. A first request the policy refuses has already reserved
+   its key, and recorded its first scope if it sent `keyScope` (§1.2b): nothing was begun, and the
+   key is its scope's once the policy allows. A registration whose name closely matches an
    integration the gateway ships, under another publisher, is flagged `name-lookalike`.
 
 ## 11. Delegated authority
@@ -2556,9 +2578,10 @@ reservation. A sender other than the actor never creates a reservation and never
 dispatch: a key that names no reservation in the scope it authenticated against, or one under
 which nothing was dispatched, is refused as `action-key-actor-only`. The exception is a key whose
 first scope is another's, the first scope being compared first (§1.2b): if nothing was dispatched
-in the scope the sender names, whether that scope holds no reservation or, a state only a lost
-first-scope record reaches, one under which nothing was dispatched, it is refused as
-`action-key-scope-conflict`. That tells it a first scope exists and nothing of whose, and leaves
+in the scope the sender names, whether that scope holds no reservation or one under which nothing
+was dispatched (a state a lost first-scope record leaves, as does a close that lost its first-scope
+race), it is refused as `action-key-scope-conflict`; an entry there whose attempts are exhausted
+answers `action-journal-exhausted`. That tells it a first scope exists and nothing of whose, and leaves
 the journal as it was. The **standing read** (spec #284 NC5) is a `POST` to the host's
 `admission.url`, as an admission read is, with the body
 `{"readVersion": "1", "host", "audience", "standing": <principal reference>}`, answered `200` with
@@ -2599,9 +2622,12 @@ What this section defines where the RFC leaves it open, and where it departs fro
   more than five links are refused at steps 3 and 1, enforcing the RFC's open-question bounds.
 - **Scope.** Only `mcp` sources name a tool; the effect is the owner taxonomy's; no `x-` limit is
   declared.
-- **Admission read.** It carries no grant owner (spec #284 NC2): the connection custody's owner
-  read (§10 rule 3) is made at every use of an owned grant, delegated or not. Its answer names the
-  first refusal of steps 8 to 12 the host finds; the gateway orders it with its own.
+- **Admission read.** It carries no grant owner (spec #284 NC2). The connection custody's owner
+  read (§10 rule 3) is made at every use of an owned grant, delegated or not, but a delegated
+  `/act` uses no grant: the engine's write takes its token from the operator's credentials file
+  (§10 rule 3), so it gets no owner read, idle expiry, quarantine or `excess-scope` check. NC2
+  stays open for it (gateway #368). Its answer names the first refusal of steps 8 to 12 the host
+  finds; the gateway orders it with its own.
 - **The actor row** also requires the write's source and tool in the leaf's scope for a request
   the key lookup answers (spec #284 NC1), and the subject row reads the subject's standing
   (spec #284 NC5).
@@ -2610,7 +2636,8 @@ What this section defines where the RFC leaves it open, and where it departs fro
   scope is recorded, for the key and for its subject, so that another root actor or another subject
   is refused (`action-key-scope-conflict`, open question 9) rather than given a reservation of its
   own. The RFC keeps scopes independent under another subject: a key is one write, so here they are not.
-- **Undelegated takeovers** are not changed here (#352).
+- **Undelegated takeovers** are held by §1.2b's first scope (#352), from the first request that
+  sends `keyScope`.
 - **Not built.** `delegation-unresolved` (the RFC's offline resolution of a receipt's chain
   against given statements), key rotation for an issuing host (open question 1), and revocation
   statements (open question 20).

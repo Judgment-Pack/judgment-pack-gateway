@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -308,21 +310,150 @@ func TestPublisherRefusalReadsTheRecord(t *testing.T) {
 }
 
 // An action through a customer platform whose publisher the record says is
-// unmaintained is refused under the refuse policy before an executor runs.
+// unmaintained is refused under the refuse policy before an executor runs. The
+// check guards what would be sent, so the request passes the rest of the ladder
+// first, and is refused at the point of dispatch, still at the platform step.
 func TestActionRefusedForUnmaintainedPublisher(t *testing.T) {
-	service, _ := testService(t)
-	service.receiptVersion = receiptVersion3
-	path := filepath.Join(t.TempDir(), "engine.json"+publishersSuffix)
-	ref := "tickets@sha256:" + strings.Repeat("a", 64)
-	if err := writeRecord(t, path, publisherFile{Version: 1, Policy: publisherPolicyRefuse, Publishers: map[string]publisherRecord{"tickets": {Binding: ref, State: publisherUnmaintained}}}); err != nil {
-		t.Fatal(err)
-	}
-	service.sources["tickets/write"] = sourceSpec{shape: "mcp", tools: []string{"update"}, binding: ref, publishers: path, argv: []string{"executor-that-is-not-there"}}
-	who := &caller{issuer: "https://issuer.example", subject: "operator"}
-	_, err := service.act([]byte(`"publisher-session"`), []byte(`"tickets"`), []byte(`"update"`), nil, nil, nil, who)
+	root, g, c := actionKeysSetup(t)
+	g.requireActionKey = false
+	publisherRecordFor(t, g, publisherFile{Version: 1, Policy: publisherPolicyRefuse, Publishers: map[string]publisherRecord{"tickets": {Binding: g.sources["tickets/write"].binding, State: publisherUnmaintained}}})
+	started := g.started.Load()
+	_, err := g.act([]byte(`"publisher-session"`), []byte(`"tickets"`), []byte(`"query"`), []byte(`{"ticket":"T-1"}`), c.Decision, c.Cites, actionKeysWho)
 	refusal, ok := err.(actRefusal)
 	if !ok || refusal.step != "platform" || !strings.Contains(refusal.reason, "publisher-unmaintained") {
 		t.Fatalf("an action under the refuse policy: %v", err)
+	}
+	if g.started.Load() != started {
+		t.Fatal("an executor ran under the refuse policy")
+	}
+	if written, _ := os.ReadFile(filepath.Join(root, "target-state")); len(written) != 0 {
+		t.Fatalf("the target was written: %q", written)
+	}
+	if _, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", "publisher-session")); !os.IsNotExist(err) {
+		t.Fatalf("a refused action left a session: %v", err)
+	}
+}
+
+// publisherRecordFor puts a publisher record beside a test service's write and live
+// sources, so that both are held to it, and answers its path.
+func publisherRecordFor(t *testing.T, g *gatewayService, f publisherFile) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "engine.json"+publishersSuffix)
+	if err := writeRecord(t, path, f); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"tickets/write", "tickets/live"} {
+		spec := g.sources[name]
+		spec.publishers = path
+		g.sources[name] = spec
+	}
+	return path
+}
+
+// The gateway v0.24.0 pre-release review's M1 (#361 with #358 and #365), and its
+// re-read's R-H1. The publisher policy guards what would be sent now. A key that already
+// has state answers from it under refuse, and with a record that cannot be read: a
+// completed key replays. An uncertain key, and one whose dispatch began and whose record
+// was lost (the write may have committed), answer as uncertain with their record and the
+// refusal named, plain, flagged and reconciling: the read-back would run the refused
+// publisher's program with the platform's credential, so no program starts. What would
+// dispatch is refused: a key never used, a freed attempt, and an action with no key. An
+// ordinary acquisition stays refused.
+func TestPublisherRefusalGuardsOnlyWhatWouldBeSent(t *testing.T) {
+	root, g, c := actionKeysSetup(t)
+	completed, uncertain, freed, begun := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64), strings.Repeat("e", 64)
+	if _, err := actionKeysAct(g, c, "completed", completed); err != nil {
+		t.Fatal(err)
+	}
+	actionKeysMode(t, root, "write", "drop")
+	if _, err := actionKeysAct(g, c, "uncertain", uncertain); err != nil {
+		t.Fatal(err)
+	}
+	actionKeysMode(t, root, "write", "respond")
+	// A dispatch that committed and whose record a crash lost: its marker has no answer.
+	if _, err := actionKeysAct(g, c, "begun", begun); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(g.storeRoot, "actions", g.actionNamespace(actionKeysWho, begun), "action.json")); err != nil {
+		t.Fatal(err)
+	}
+	missing := actionKeysService(t, root, actionKeysSources(t, root, filepath.Join(root, "not-installed", "adapter-mcp")))
+	if _, err := actionKeysAct(missing, c, "freed", freed); err == nil || !strings.Contains(err.Error(), "action-not-dispatched") {
+		t.Fatalf("seed a freed attempt: %v", err)
+	}
+	first, err := actionKeysAct(g, c, "completed-again", completed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := json.Marshal(first)
+	sentBefore := map[string]int{completed: actionKeysSent(root, completed), uncertain: actionKeysSent(root, uncertain), begun: actionKeysSent(root, begun), freed: 0}
+	path := publisherRecordFor(t, g, publisherFile{Version: 1, Policy: publisherPolicyRefuse, Publishers: map[string]publisherRecord{"tickets": {Binding: g.sources["tickets/write"].binding, State: publisherUnmaintained}}})
+	started := g.started.Load()
+	uncertainAnswer := func(step, refusal string, out map[string]any, err error) {
+		t.Helper()
+		var answer *actionUncertain
+		if !errors.As(err, &answer) || !strings.HasPrefix(answer.reason, "action-reconciliation-unavailable") || !strings.Contains(answer.reason, refusal) || answer.action == nil || out != nil {
+			t.Fatalf("%s: not the uncertain answer naming %s: %v %v", step, refusal, out, err)
+		}
+		if g.started.Load() != started {
+			t.Fatalf("%s: a program started under the policy: %d, was %d", step, g.started.Load(), started)
+		}
+	}
+	for _, state := range []struct{ name, refusal string }{
+		{"an unmaintained publisher", "publisher-unmaintained"},
+		{"a record that cannot be read", "publisher-record-unreadable"},
+	} {
+		if state.refusal == "publisher-record-unreadable" {
+			if err := os.WriteFile(path, []byte(`{"version":`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		session := 0
+		ask := func(key string, scoped, reconcile bool) (map[string]any, error) {
+			session++
+			return scopedAct(g, c, fmt.Sprintf("%s-%d", state.refusal, session), key, actionKeysWho, scoped, reconcile)
+		}
+		for _, req := range []struct{ scoped, reconcile bool }{{false, false}, {true, false}, {true, true}} {
+			out, err := ask(completed, req.scoped, req.reconcile)
+			if got, _ := json.Marshal(out); err != nil || string(got) != string(want) {
+				t.Fatalf("%s, a completed key %+v: not its retained answer: %v", state.name, req, err)
+			}
+			out, err = ask(uncertain, req.scoped, req.reconcile)
+			uncertainAnswer(fmt.Sprintf("%s, an uncertain key %+v", state.name, req), state.refusal, out, err)
+		}
+		// The key whose record was lost records its uncertainty and answers so; each ask
+		// removes that record again, so each meets the lost-record state.
+		for _, req := range []struct{ scoped, reconcile bool }{{false, false}, {true, false}, {true, true}} {
+			out, err := ask(begun, req.scoped, req.reconcile)
+			uncertainAnswer(fmt.Sprintf("%s, a dispatch whose record was lost %+v", state.name, req), state.refusal, out, err)
+			if err := os.Remove(filepath.Join(g.storeRoot, "actions", g.actionNamespace(actionKeysWho, begun), "action.json")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for key, n := range sentBefore {
+			if actionKeysSent(root, key) != n {
+				t.Fatalf("%s: the target was called under key %s", state.name, key[:4])
+			}
+		}
+		for name, key := range map[string]string{"a key never used": strings.Repeat("d", 64), "a freed attempt": freed} {
+			_, err := ask(key, false, false)
+			refusal, ok := err.(actRefusal)
+			if !ok || refusal.step != "platform" || !strings.Contains(refusal.reason, state.refusal) {
+				t.Fatalf("%s, %s: %v", state.name, name, err)
+			}
+			if actionKeysSent(root, key) != 0 {
+				t.Fatalf("%s, %s: dispatched", state.name, name)
+			}
+		}
+		g.requireActionKey = false
+		_, err := g.act([]byte(fmt.Sprintf(`"%s-nokey"`, state.refusal)), []byte(`"tickets"`), []byte(`"query"`), []byte(`{"ticket":"T-1"}`), c.Decision, c.Cites, actionKeysWho)
+		g.requireActionKey = true
+		if refusal, ok := err.(actRefusal); !ok || refusal.step != "platform" || !strings.Contains(refusal.reason, state.refusal) {
+			t.Fatalf("%s, an action with no key: %v", state.name, err)
+		}
+		if _, err := g.acquire(state.refusal+"-read", "tickets/live", newObject(), actionKeysWho); err == nil || !strings.Contains(err.Error(), state.refusal) {
+			t.Fatalf("%s, an ordinary acquisition: %v", state.name, err)
+		}
 	}
 }
 

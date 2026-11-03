@@ -761,6 +761,12 @@ func (g *gatewayService) acquireForTrail(sessionID, source, trail string, argume
 	return g.acquireWithReconciliation(sessionID, source, trail, arguments, who, nil)
 }
 
+// readBackRefused is a read-back the publisher policy refused before any
+// program started: its key's answer names it.
+type readBackRefused struct{ err error }
+
+func (r *readBackRefused) Error() string { return r.err.Error() }
+
 func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail string, arguments value, who *caller, reconciliation *actionReconciliationRequest) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err} // refuse before running anything
@@ -783,8 +789,15 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 	if spec.shape != "" && g.receiptVersion != receiptVersion3 {
 		return nil, fmt.Errorf("source %s is an adapter and needs receipt version 3", source)
 	}
+	// Every acquisition is held to the publisher policy, a keyed action's
+	// read-back included: it runs the platform's program with its credential,
+	// which is what the policy refuses. A read-back refused here leaves its key
+	// answering as uncertain, with the refusal named (reconcileAction).
 	if platform, _, _ := strings.Cut(source, "/"); spec.publishers != "" {
 		if err := publisherRefusal(spec.publishers, platform, spec.binding); err != nil {
+			if reconciliation != nil {
+				return nil, &readBackRefused{err}
+			}
 			return nil, err
 		}
 	}

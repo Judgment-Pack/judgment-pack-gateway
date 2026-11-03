@@ -19,6 +19,9 @@ by its `id`.
 
 These have no record in this release:
 
+- an engine platform's credentials files, from which its `<platform>/live` and `<platform>/write`
+  operations take their tokens: an action through `/act`, delegated or not, uses no grant, so no
+  owner read, idle expiry, quarantine or `excess-scope` check applies to it (gateway #368);
 - an Obsidian folder, which is local;
 - an object store's access keys;
 - a search service's or a processing service's API key.
@@ -317,10 +320,16 @@ a record of the platform's own binding that says `unmaintained` (evidence of a l
 
 - its registration;
 - each acquisition, before the source starts;
-- each action, before an executor runs.
+- each action that would dispatch now (a first dispatch, a freed attempt, or an action with no
+  key), before an executor runs.
 
-A record that cannot be read refuses as `publisher-record-unreadable`; the reason answered to
-`/acquire` and `/act` names no path. An `unverifiable`, `unknown` or `undeclared` publisher is not
+A record that cannot be read refuses the same as `publisher-record-unreadable`; the reason
+answered to `/acquire` and `/act` names no path. Neither hides what a key already holds: a
+completed key replays its retained answer. A read-back runs the platform's program with its
+credential, so it is refused like any other acquisition, and an uncertain key answers
+`action-reconciliation-unavailable`, naming the refusal, with its uncertain record: the client
+learns the write may have been sent, and no program runs. A first request refused here has
+already reserved its key, and recorded its first scope if it sent `keyScope`. An `unverifiable`, `unknown` or `undeclared` publisher is not
 refused, under either policy.
 
 **Name lookalike.** A registration is flagged `name-lookalike` when its platform name, or its
@@ -362,8 +371,9 @@ The flag is shown with the approval and recorded. It is a report, never a refusa
   per call: an acquisition's credential read re-checks the grant's state, not the owner.
 - **The owner read's wire.** The RFC names the read but not its wire. The address and credential
   are the operator's configuration, held in custody.
-- **Not built.** Delegated calls and the admission read carrying the owner (spec #284 NC2) belong
-  to #356. Reassignment out of quarantine, and acceptance, are not built.
+- **Not built.** A delegated `/act` uses no grant, as above: the admission read carries no owner
+  (spec #284 NC2), and a delegated write reads none (gateway #368). Reassignment out of
+  quarantine, and acceptance, are not built.
 - **Where the publisher record lives.** It is kept beside the engine configuration and not in the
   connection grant record. A customer MCP server is registered by the core (`gateway connect`), not
   by a connection custody. A customer binding without a declared publisher is `undeclared`. The

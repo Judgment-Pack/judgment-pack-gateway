@@ -257,7 +257,9 @@ record in the custody: its owner, the scopes its operations declare, the scopes 
 granted and those used, its last use, an optional idle expiry, and whether it is active,
 quarantined or revoked. A grant holding a scope no operation declares is refused as
 `excess-scope`. A grant with an owner is used only after the owner's issuing host answers that the
-owner is current. Removing the owner revokes or quarantines the grant.
+owner is current. Removing the owner revokes or quarantines the grant. Grants cover the connection
+custody only: an engine platform takes its tokens from the operator's credentials files and uses no
+grant, so an action through `/act`, delegated or not, gets none of these checks (gateway #368).
 `gateway-connections --grants report` lists the grants, with their unused scopes and findings,
 and names no path, no account and no token
 ([connection grants](docs/design/connection-grants.md), SPEC.md §10).
