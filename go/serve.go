@@ -146,6 +146,9 @@ type gatewayService struct {
 	requireActionKey bool
 	// actionLocks holds one keyed action at a time per key (act).
 	actionLocks actionKeyLocks
+	// actionStep, when set, is told each named point of a keyed request (a test's
+	// way of dying there).
+	actionStep func(point string)
 	// provenanceKeyList is the registry walk's reached keys, taken once
 	// (provenanceKeys): they cannot change while the gateway runs, since
 	// rotate-key requires it stopped.
@@ -633,7 +636,7 @@ func limitBodyTo(w http.ResponseWriter, r *http.Request, limit int64) {
 // about, and what is signed or sealed is decided by the disagreement.
 var (
 	acquireRequestMembers = map[string]bool{"session": true, "source": true, "arguments": true, "trail": true}
-	actRequestMembers     = map[string]bool{"session": true, "platform": true, "tool": true, "arguments": true, "decision": true, "cites": true, "actionKey": true}
+	actRequestMembers     = map[string]bool{"session": true, "platform": true, "tool": true, "arguments": true, "decision": true, "cites": true, "actionKey": true, "keyScope": true, "reconcile": true}
 	sealRequestMembers    = map[string]bool{"session": true}
 )
 
@@ -1610,6 +1613,12 @@ func (g *gatewayService) handler() http.Handler {
 			writeJSON(w, http.StatusUnauthorized, body)
 			return
 		}
+		// What the key's state answers, not who is asking (SPEC.md §1.2b).
+		switch r.name {
+		case refusalKeyNotDispatched, refusalKeyClosed, refusalKeyOutcomeUnknown:
+			writeJSON(w, http.StatusConflict, body)
+			return
+		}
 		writeJSON(w, http.StatusForbidden, body)
 	}
 	fail := func(w http.ResponseWriter, err error) {
@@ -1817,7 +1826,7 @@ func (g *gatewayService) handler() http.Handler {
 				who = &caller{issuer: scope.sub.issuer, subject: scope.sub.subject, tokenDigest: who.tokenDigest, delegated: sender}
 			}
 		}
-		out, err := g.act(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, body["actionKey"])
+		out, err := g.actKeyed(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, actionKeyMembers{key: body["actionKey"], keyScope: body["keyScope"], reconcile: body["reconcile"]})
 		if err != nil {
 			var uncertain *actionUncertain
 			if errors.As(err, &uncertain) {

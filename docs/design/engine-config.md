@@ -1166,7 +1166,11 @@ version 2. A key v0.23.0 reserved keeps v0.23.0's identity, which binds the
 derived command line: under a release that derives other adapter flags it answers
 `action-key-conflict`, settled or not, and nothing is sent. Never send a conflicting key's write
 again under a new key. A write program that was never started answers
-`action-not-dispatched` and frees the key for the same request. The key does not replace authorization, decision policy or a
+`action-not-dispatched` and frees the key for the same request. A request may also send
+`keyScope: "authority"`, which holds the key to its first subject across a change of worker,
+and `reconcile: true`, which asks and never dispatches (SPEC.md §1.2b; they need no version
+and no configuration). A request that sends neither behaves as before on a key no record names;
+SPEC.md §1.2b states exactly where it differs on one that another scope holds. The key does not replace authorization, decision policy or a
 lease fence. Clients must retain the key and approved content before submitting
 a write; changing the key after a timeout creates a distinct action.
 
