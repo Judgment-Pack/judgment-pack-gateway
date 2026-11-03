@@ -259,19 +259,24 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			return nil, actRefusal{"action-key", openErr.Error()}
 		}
 		defer journal.close()
-		// A leaf that does not name the write's source and tool reaches nothing by its key
-		// (SPEC.md §11.8, spec #284 NC1), and takes nothing: before any first scope is read,
-		// and before anything could be reserved. It is told only whether its own scope
-		// reserved the key: a reservation there or a reconcile is unauthenticated, and
-		// otherwise it is refused as its admission would, leaving nothing behind.
-		if delegated != nil && delegated.kind == "actor" && delegated.credential.chain.sourceToolRefusal(g.authority, source, tool) {
-			if reconcile || journal.has(namespace) {
+		// What a leaf of the actor's chain may do, before any first scope is read and before
+		// anything could be reserved (SPEC.md §11.8, spec #284 NC1). One that does not name the
+		// write's source and tool reaches nothing by its key: a reservation in its scope or a
+		// reconcile is unauthenticated. One that names them is not held to the effect for what
+		// the key lookup answers. A plain request that nothing in its scope answers, and that its
+		// own leaf would refuse, is refused as its admission would be, leaving nothing behind: it
+		// could never dispatch, so it must not bind the key to its content.
+		if delegated != nil && delegated.kind == "actor" {
+			chain, held := delegated.credential.chain, journal.has(namespace)
+			if chain.sourceToolRefusal(g.authority, source, tool) && (reconcile || held) {
 				return nil, refuse(refusalKeyUnauthenticated, "")
 			}
-			if _, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true}); refusal != nil {
-				return nil, refusal
+			if !reconcile && !held && chain.scopeRefusal(g.authority, source, tool, spec.effects[tool]) != nil {
+				if _, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true}); refusal != nil {
+					return nil, refusal
+				}
+				return nil, refuse(refusalKeyUnauthenticated, "")
 			}
-			return nil, refuse(refusalKeyUnauthenticated, "")
 		}
 		// A recorded first scope is held to by every request on the key, sending
 		// the members or not, before anything new is reserved or sent (SPEC.md §1.2b).

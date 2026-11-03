@@ -1680,6 +1680,138 @@ func TestALeafNotNamingTheWriteLearnsNothingByItsKey(t *testing.T) {
 	}
 }
 
+// effectlessChild is a root admitting both effects on the write, and a child of it that names
+// the write's source and tool and not its effect: the run's own scope, and one write it may not
+// dispatch.
+func effectlessChild(t *testing.T, h *delegationHarness, id, agent string) (root, child map[string]any) {
+	t.Helper()
+	root = statement(t, map[string]any{"id": strings.Repeat(id, 16), "act": map[string]any{"agent": agent, "software": testSoftware}, "scope": map[string]any{"sources": []any{
+		scopeOf("tickets/live", []any{"query"}, []any{"read-external"}, map[string]any{"calls": 10}),
+		scopeOf("tickets/write", []any{"query"}, []any{"read-external", "act"}, map[string]any{}),
+	}}})
+	child = childOf(t, root, map[string]any{"act": map[string]any{"agent": agent, "software": testSoftware}, "scope": map[string]any{"sources": []any{
+		scopeOf("tickets/live", []any{"query"}, []any{"read-external"}, map[string]any{"calls": 5}),
+		scopeOf("tickets/write", []any{"query"}, []any{"read-external"}, map[string]any{}),
+	}}})
+	return root, child
+}
+
+// #366. A leaf naming the write's source and tool and not its effect could never dispatch, so
+// its plain request with nothing in its scope is refused as its admission would be, and leaves
+// nothing: not the reservation bound to its own content that used to answer the run's actor
+// action-key-conflict for good. Nor does it take the key from anyone in another scope.
+func TestALeafNotNamingTheEffectCannotDenyTheRunsKey(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	root, child := effectlessChild(t, h, "44", rootAgent)
+	actor, leaf := h.credential(t, root), h.credential(t, root, child)
+	key := delegationKey(1)
+	counted := h.host.counted()
+	body := strings.Replace(h.actBody("leaf", key, ""), `{"ticket":"T-1"}`, `{"ticket":"OTHER"}`, 1)
+	status, out := h.present(t, "/act", body, leaf)
+	if status != http.StatusForbidden || refusalOf(out) != refusalOutOfScope || out["reason"] != "effect" || out["refusedAt"] != "delegation" {
+		t.Fatalf("the leaf, other content: %d %v", status, out)
+	}
+	if h.host.counted() != counted {
+		t.Fatal("a refused leaf was counted as a call")
+	}
+	scope := delegatedScopeOf(testSubjectSub, rootAgent)
+	journalAbsent(t, h.g, h.g.actionNamespace(scope, key))
+	journalAbsent(t, h.g, h.g.actionSubjectNamespace(scope.delegated, key))
+	journalAbsent(t, h.g, filepath.Join(actionIndexDirectory, h.g.actionFirstScope(scope, key, h.g.actionNamespace(scope, key)).file))
+	if _, err := os.Lstat(filepath.Join(h.g.storeRoot, "receipts", "leaf")); !os.IsNotExist(err) {
+		t.Fatalf("a refused leaf left a session: %v", err)
+	}
+	if status, out := h.present(t, "/act", h.actBody("actor", key, ""), actor); status != http.StatusOK || out["receipt"] == nil || h.sent(key) != 1 {
+		t.Fatalf("the run's actor after it: %d %v, sent %d", status, out, h.sent(key))
+	}
+	if status, out := h.present(t, "/act", h.actBody("actor-again", key, withReconcile), actor); status != http.StatusOK || out["receipt"] == nil || h.sent(key) != 1 {
+		t.Fatalf("its reconcile: %d %v, sent %d", status, out, h.sent(key))
+	}
+	// As its admission would, in the admission's order: the host's refusal comes first.
+	h.host.setAnswer(func(b map[string]any) (int, string) {
+		return http.StatusOK, `{"admission":"refuse","refusal":"revoked"}`
+	})
+	status, out = h.present(t, "/act", h.actBody("leaf-revoked", delegationKey(2), ""), leaf)
+	h.host.setAnswer(nil)
+	if status != http.StatusForbidden || refusalOf(out) != "revoked" {
+		t.Fatalf("a leaf the host answers revoked: %d %v", status, out)
+	}
+	journalAbsent(t, h.g, h.g.actionNamespace(scope, delegationKey(2)))
+	// Another root actor's such leaf: nothing is taken, and it hears less, not more.
+	otherRoot, otherChild := effectlessChild(t, h, "99", otherAgent)
+	stranger := h.credential(t, otherRoot, otherChild)
+	unused := delegationKey(3)
+	for i, onKey := range []string{key, unused} {
+		status, out := h.present(t, "/act", h.actBody(fmt.Sprintf("stranger-%d", i), onKey, ""), stranger)
+		if status != http.StatusForbidden || refusalOf(out) != refusalOutOfScope || out["reason"] != "effect" {
+			t.Fatalf("another root actor's leaf: %d %v", status, out)
+		}
+	}
+	journalAbsent(t, h.g, h.g.actionNamespace(delegatedScopeOf(testSubjectSub, otherAgent), unused))
+	if status, out := h.present(t, "/act", h.actBody("actor-unused", unused, ""), actor); status != http.StatusOK || h.sent(unused) != 1 {
+		t.Fatalf("the run's actor on a key that leaf asked about: %d %v, sent %d", status, out, h.sent(unused))
+	}
+}
+
+// #366, the line the gate draws. What the key lookup answers is not held to effects (spec #284
+// NC1): a leaf naming the write's source and tool and not its effect reads what its scope
+// holds, plain and reconciling, and a reconcile closes as the actor's may. Only a leaf not
+// naming the source and tool reaches nothing. Its dispatch stays refused at its admission.
+func TestALeafNamingTheSourceAndToolIsNotHeldToItsEffectByItsKey(t *testing.T) {
+	for _, write := range []string{"respond", "drop"} {
+		t.Run(write, func(t *testing.T) {
+			h := newDelegationHarness(t, false)
+			root, child := effectlessChild(t, h, "44", rootAgent)
+			actor, leaf := h.credential(t, root), h.credential(t, root, child)
+			key := delegationKey(1)
+			actionKeysMode(t, h.root, "write", write)
+			if status, out := h.present(t, "/act", h.actBody("first", key, ""), actor); status != http.StatusOK || h.sent(key) != 1 {
+				t.Fatalf("first: %d %v, sent %d", status, out, h.sent(key))
+			}
+			actionKeysMode(t, h.root, "write", "respond")
+			for i, extra := range []string{withReconcile, ""} {
+				status, out := h.present(t, "/act", h.actBody(fmt.Sprintf("leaf-%d", i), key, extra), leaf)
+				if status != http.StatusOK || (out["receipt"] == nil && out["reconciliation"] == nil) {
+					t.Fatalf("the leaf, %q, on what its scope holds: %d %v", extra, status, out)
+				}
+			}
+			if h.sent(key) != 1 {
+				t.Fatalf("sent %d", h.sent(key))
+			}
+		})
+	}
+	h := newDelegationHarness(t, false)
+	root, child := effectlessChild(t, h, "44", rootAgent)
+	actor, leaf := h.credential(t, root), h.credential(t, root, child)
+	// A reconcile on a key never seen: the key lookup, not a dispatch, so it closes.
+	closing := delegationKey(2)
+	if status, out := h.present(t, "/act", h.actBody("closing", closing, withReconcile), leaf); status != http.StatusConflict || refusalOf(out) != refusalKeyNotDispatched {
+		t.Fatalf("the leaf closing a key never seen: %d %v", status, out)
+	}
+	if status, out := h.present(t, "/act", h.actBody("closed", closing, ""), actor); status != http.StatusConflict || refusalOf(out) != refusalKeyClosed || h.sent(closing) != 0 {
+		t.Fatalf("the actor on that close: %d %v, sent %d", status, out, h.sent(closing))
+	}
+	// A reservation with nothing begun: the key lookup finds it, and a dispatch is refused at
+	// admission, where it always was. The actor's dispatch then goes, once.
+	unsent := delegationKey(3)
+	h.host.setAnswer(func(b map[string]any) (int, string) {
+		if c, ok := b["call"].(map[string]any); ok && c["source"] == "tickets/write" {
+			return http.StatusOK, `{"admission":"refuse","refusal":"subject-unauthorized"}`
+		}
+		return http.StatusOK, `{"admission":"admit"}`
+	})
+	if status, out := h.present(t, "/act", h.actBody("refused", unsent, ""), actor); status != http.StatusForbidden {
+		t.Fatalf("the refused dispatch: %d %v", status, out)
+	}
+	h.host.setAnswer(nil)
+	if status, out := h.present(t, "/act", h.actBody("leaf-on-it", unsent, ""), leaf); status != http.StatusForbidden || refusalOf(out) != refusalOutOfScope || out["reason"] != "effect" || h.sent(unsent) != 0 {
+		t.Fatalf("the leaf's dispatch: %d %v, sent %d", status, out, h.sent(unsent))
+	}
+	if status, out := h.present(t, "/act", h.actBody("actor-on-it", unsent, ""), actor); status != http.StatusOK || h.sent(unsent) != 1 {
+		t.Fatalf("the actor's dispatch: %d %v, sent %d", status, out, h.sent(unsent))
+	}
+}
+
 // The re-read's N13. A sender other than the actor makes no first scope, on the path that can
 // reach it now: a reservation whose record was lost. It is answered from the reservation, and
 // the record stays absent until the actor asks.
