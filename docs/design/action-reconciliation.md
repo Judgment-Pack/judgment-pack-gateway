@@ -168,12 +168,12 @@ the next attempt, and every attempt before a close was answered, so nothing was 
 | A reconciling request finds | It answers |
 | --- | --- |
 | A first scope another's, no reservation of its own | `action-key-scope-conflict` |
-| A first scope and no reservation | `action-key-outcome-unknown`: a first request may be on its way, the first was refused or died before its reservation, or the entry was removed or not restored. It never closes here: see [a key answering unknown](#a-key-answering-action-key-outcome-unknown) |
+| A first scope and no reservation | `action-key-outcome-unknown`: a first request may be on its way, the first was refused or died before its reservation, or the entry was removed or not restored. It never closes here: see [a key answering unknown](#a-key-answering-action-key-outcome-unknown). A sender other than the actor is told `action-key-actor-only` |
 | No first scope, no reservation | Closes; `action-key-not-dispatched` (`action-key-actor-only` to a sender other than the actor) |
 | Its reservation is for other content | `action-key-conflict` |
 | A close | `action-key-not-dispatched`, again (`action-key-scope-conflict` if the first scope is another's) |
 | `action.json` | First holds the first scope, if it may. Its evidence, or the read-back |
-| A marker with no answer, or one above a free attempt | First holds the first scope, if it may. Uncertainty, then the read-back |
+| A marker with no answer, or one above a free attempt | First holds the first scope, if it may. Uncertainty, then the read-back. Above a free attempt under a delegation, no marker can mint a receipt: `action-journal-invalid`, or `action-key-actor-only` to another sender |
 | All 16 attempts answered | `action-journal-exhausted` |
 | Nothing begun, a freed attempt included | First holds the first scope, if it may. Closes; `action-key-not-dispatched` (`action-key-actor-only` to a sender other than the actor; `action-key-scope-conflict` if the first scope is another's) |
 
@@ -196,7 +196,11 @@ that dies in any of this leaves one of these states, each of them answered truth
 actor's first reservation creates the first-scope record, and so does its closing reconcile,
 when its leaf names the write. It takes the subject record too, which holds against another
 root actor of that subject if the first-scope record is ever lost. A leaf that does not
-name the write takes neither, on its way to a refused admission. A sender other than the
+name the write's source and tool reaches nothing by its key and takes nothing: before any
+first scope is read it is refused, as `action-key-unauthenticated` if it is reconciling or its
+scope holds a reservation, and otherwise as its admission would be, leaving no reservation
+bound to its content. A leaf that names them and not the effect, and a request the issuing host
+refuses at admission, do take both records and the reservation first. A sender other than the
 actor is compared with the record, and never closes and never creates.
 
 ## Target support belongs to a pinned binding
@@ -465,6 +469,16 @@ refused until `chmod`. A first scope is never rewritten, so any backup holding i
 it was. With no backup, write nothing: the key stays refused, and the client treats its write
 as unknown. Removing the record lets another scope take the key and send, so an operator who
 does that has first checked the target as above, and records it the same way.
+
+**A damaged subject record.** A `scope.json` in a subject record that does not read refuses
+the run's own actor, and a re-issued delegation, as `action-journal-invalid`, plain and reconciling,
+though the first scope and the reservation are fine; the subject, the issuing host and an operator
+are still answered. Find it by the `subjectRecord` of the key's first-scope record. Stop the gateway
+processes serving the store, and copy it out. Restore that one file from a backup, at mode
+`0600`. With no backup, if the key's first-scope record reads and names this scope, move the
+subject record to the archive whole: the actor's next request writes it again, and the first scope
+goes on refusing every other scope. If the first-scope record is gone too, keep it: it is then
+all that holds the key against another root actor of that subject. Record it as above.
 
 **A closed or indexed entry that does not read** follows the same steps. An indexed entry is
 removed only if the write provably did not take effect; `action-key-outcome-unknown` then

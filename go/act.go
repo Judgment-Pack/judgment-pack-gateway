@@ -259,6 +259,20 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			return nil, actRefusal{"action-key", openErr.Error()}
 		}
 		defer journal.close()
+		// A leaf that does not name the write's source and tool reaches nothing by its key
+		// (SPEC.md §11.8, spec #284 NC1), and takes nothing: before any first scope is read,
+		// and before anything could be reserved. It is told only whether its own scope
+		// reserved the key: a reservation there or a reconcile is unauthenticated, and
+		// otherwise it is refused as its admission would, leaving nothing behind.
+		if delegated != nil && delegated.kind == "actor" && delegated.credential.chain.sourceToolRefusal(g.authority, source, tool) {
+			if reconcile || journal.has(namespace) {
+				return nil, refuse(refusalKeyUnauthenticated, "")
+			}
+			if _, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true}); refusal != nil {
+				return nil, refusal
+			}
+			return nil, refuse(refusalKeyUnauthenticated, "")
+		}
 		// A recorded first scope is held to by every request on the key, sending
 		// the members or not, before anything new is reserved or sent (SPEC.md §1.2b).
 		// It takes nothing a scope already holds: what this scope reserved before it
@@ -276,7 +290,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			return nil, actRefusal{"action-key", err.Error()}
 		}
 		// Who makes a first scope: a request that sends keyScope, and a delegated run's
-		// actor, whose leaf names the write. A sender other than the actor never does.
+		// actor, whose leaf by now names the write. A sender other than the actor never does.
 		mayHold := keyScoped
 		var scope *vObject
 		if delegated != nil {
@@ -287,15 +301,8 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 				return nil, refuse(refusalActorOnly, "no evidence is retained under this key that a sender other than the run's actor can reach")
 			}
 			if delegated.kind == "actor" {
-				// A close is a request the key lookup answers: its leaf names the write,
-				// or it plants nothing, not even a subject record. A dispatch by such a
-				// leaf is refused at its admission, and takes nothing on the way there.
-				namesWrite := !delegated.credential.chain.sourceToolRefusal(g.authority, source, tool)
-				if reconcile && !namesWrite {
-					return nil, refuse(refusalKeyUnauthenticated, "")
-				}
-				mayHold = namesWrite
-				if namesWrite && !foreign {
+				mayHold = true
+				if !foreign {
 					if err := journal.holdSubjectKey(g.actionSubjectNamespace(delegated, key), scope); errors.Is(err, errActionScopeConflict) {
 						return nil, refuse(refusalKeyScopeConflict, "this subject reserved this key under another root actor")
 					} else if err != nil {
@@ -338,11 +345,6 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			return nil, actRefusal{"action-key", err.Error()}
 		}
 		defer claim.close()
-		// The actor's credential reaches a request the key lookup answers only
-		// for a write its leaf admits by source and tool (spec #284 NC1).
-		if !claim.fresh && delegated != nil && delegated.kind == "actor" && delegated.credential.chain.sourceToolRefusal(g.authority, source, tool) {
-			return nil, refuse(refusalKeyUnauthenticated, "")
-		}
 		// What a closed key answers. A close means every earlier attempt was answered
 		// as not dispatched, so it outranks what a request that lost a race to it may
 		// have recorded since: a reconciling request answers as it did.

@@ -1536,6 +1536,17 @@ func TestALostLowerMarkerIsNotAbsence(t *testing.T) {
 		t.Fatalf("a marker was made at attempt 1: %v", err)
 	}
 	wantSent(t, root, key, 0)
+	// The re-read's N6: not only the next attempt up. One further still is the same damage.
+	further := strings.Repeat("d", 64)
+	entry = seedEntry(further)
+	if err := os.WriteFile(filepath.Join(entry, "dispatch-4.json"), []byte(`{"attempt":4}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = scopedAct(g, c, "reconciling-further", further, actionKeysWho, true, true)
+	if keyRefusal(err) == refusalKeyNotDispatched {
+		t.Fatal("a reconcile closed under a marker further up")
+	}
+	wantSent(t, root, further, 0)
 	closedAbove := strings.Repeat("b", 64)
 	entry = seedEntry(closedAbove)
 	if err := os.WriteFile(filepath.Join(entry, "dispatch-3.json"), []byte(`{"attempt":3,"closed":true,"closedAt":"2026-11-02T00:00:00Z"}`), 0600); err != nil {
@@ -1568,6 +1579,141 @@ func TestActionKeyClosedFollowsItsDurability(t *testing.T) {
 		t.Fatal("action-key-closed through a failed sync")
 	}
 	wantSent(t, root, key, 0)
+}
+
+// The re-read's R-M1. A leaf that does not name the write's source and tool, first on a
+// key and with other content, is refused as its admission would and leaves nothing: no
+// reservation bound to its content, no record, no session, and no call counted. So the run's
+// actor and a re-issued delegation still have their key.
+func TestALeafNotNamingTheWriteCannotDenyTheRunsKey(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	root := statement(t, nil)
+	actor := h.credential(t, root)
+	narrow := h.credential(t, root, childOf(t, root, map[string]any{"act": map[string]any{"agent": rootAgent, "software": testSoftware}}))
+	key := delegationKey(10)
+	counted := h.host.counted()
+	body := strings.Replace(h.actBody("narrow", key, ""), `{"ticket":"T-1"}`, `{"ticket":"OTHER"}`, 1)
+	status, out := h.present(t, "/act", body, narrow)
+	if status != http.StatusForbidden || refusalOf(out) != refusalOutOfScope || out["reason"] != "source" || out["refusedAt"] != "delegation" {
+		t.Fatalf("a leaf not naming the write, other content: %d %v", status, out)
+	}
+	if h.host.counted() != counted {
+		t.Fatal("a refused leaf was counted as a call")
+	}
+	scope := delegatedScopeOf(testSubjectSub, rootAgent)
+	record := h.g.actionFirstScope(scope, key, h.g.actionNamespace(scope, key))
+	journalAbsent(t, h.g, h.g.actionNamespace(scope, key))
+	journalAbsent(t, h.g, h.g.actionSubjectNamespace(scope.delegated, key))
+	journalAbsent(t, h.g, filepath.Join(actionIndexDirectory, record.file))
+	if _, err := os.Lstat(filepath.Join(h.g.storeRoot, "receipts", "narrow")); !os.IsNotExist(err) {
+		t.Fatalf("a refused leaf left a session: %v", err)
+	}
+	if status, out := h.present(t, "/act", h.actBody("actor", key, ""), actor); status != http.StatusOK || out["receipt"] == nil || h.sent(key) != 1 {
+		t.Fatalf("the run's actor after it: %d %v, sent %d", status, out, h.sent(key))
+	}
+	reissued := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("55", 16), "issuedAt": "2026-10-30T00:30:00.000Z"}))
+	if status, out := h.present(t, "/act", h.actBody("reissued", key, withReconcile), reissued); status != http.StatusOK || out["receipt"] == nil || h.sent(key) != 1 {
+		t.Fatalf("a re-issued delegation after it: %d %v, sent %d", status, out, h.sent(key))
+	}
+	// As its admission would, in the admission's order: the host's refusal comes first.
+	h.host.setAnswer(func(b map[string]any) (int, string) {
+		return http.StatusOK, `{"admission":"refuse","refusal":"revoked"}`
+	})
+	status, out = h.present(t, "/act", h.actBody("narrow-revoked", delegationKey(11), ""), narrow)
+	h.host.setAnswer(nil)
+	if status != http.StatusForbidden || refusalOf(out) != "revoked" {
+		t.Fatalf("a leaf the host answers revoked: %d %v", status, out)
+	}
+}
+
+// The re-read's R-L1. Such a leaf reaches nothing by its key: outside its own scope, the
+// journal says nothing to it, whether another holds the key, nobody does, or the record does
+// not read. In its own scope it can tell one thing, the exact exception SPEC.md §11.8 states:
+// whether its scope reserved the key, plain. A reconcile cannot tell even that.
+func TestALeafNotNamingTheWriteLearnsNothingByItsKey(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	root := statement(t, nil)
+	actor := h.credential(t, root)
+	rootOther := statement(t, map[string]any{"id": strings.Repeat("88", 16), "act": map[string]any{"agent": otherAgent, "software": testSoftware}})
+	stranger := h.credential(t, rootOther, childOf(t, rootOther, map[string]any{"act": map[string]any{"agent": otherAgent, "software": testSoftware}}))
+	held, damaged, unused := delegationKey(1), delegationKey(2), delegationKey(3)
+	for i, key := range []string{held, damaged} {
+		if status, out := h.present(t, "/act", h.actBody(fmt.Sprintf("seed-%d", i), key, ""), actor); status != http.StatusOK {
+			t.Fatalf("seed: %d %v", status, out)
+		}
+	}
+	scope := delegatedScopeOf(testSubjectSub, rootAgent)
+	record := h.g.actionFirstScope(scope, damaged, h.g.actionNamespace(scope, damaged))
+	writeIndexFile(t, filepath.Join(h.g.storeRoot, "actions", actionIndexDirectory, record.file), `{"indexVersion"`, 0600)
+	session := 0
+	ask := func(credential, key, extra string) (int, string, any) {
+		t.Helper()
+		session++
+		status, out := h.present(t, "/act", h.actBody(fmt.Sprintf("ask-%d", session), key, extra), credential)
+		return status, refusalOf(out), out["reason"]
+	}
+	for _, key := range []string{held, damaged, unused} {
+		if status, refusal, reason := ask(stranger, key, ""); status != http.StatusForbidden || refusal != refusalOutOfScope || reason != "source" {
+			t.Fatalf("another root actor's leaf, plain, key %s: %d %s %v", key[:4], status, refusal, reason)
+		}
+		if status, refusal, _ := ask(stranger, key, withReconcile); status != http.StatusForbidden || refusal != refusalKeyUnauthenticated {
+			t.Fatalf("another root actor's leaf, reconciling, key %s: %d %s", key[:4], status, refusal)
+		}
+	}
+	journalAbsent(t, h.g, h.g.actionNamespace(delegatedScopeOf(testSubjectSub, otherAgent), unused))
+	journalAbsent(t, h.g, h.g.actionSubjectNamespace(scope.delegated, unused))
+	// The stated exception, in its own scope.
+	own := h.credential(t, root, childOf(t, root, map[string]any{"act": map[string]any{"agent": rootAgent, "software": testSoftware}}))
+	if status, refusal, _ := ask(own, held, ""); status != http.StatusForbidden || refusal != refusalKeyUnauthenticated {
+		t.Fatalf("its own scope, a reservation there, plain: %d %s", status, refusal)
+	}
+	if status, refusal, reason := ask(own, unused, ""); status != http.StatusForbidden || refusal != refusalOutOfScope || reason != "source" {
+		t.Fatalf("its own scope, none there, plain: %d %s %v", status, refusal, reason)
+	}
+	for _, key := range []string{held, unused} {
+		if status, refusal, _ := ask(own, key, withReconcile); status != http.StatusForbidden || refusal != refusalKeyUnauthenticated {
+			t.Fatalf("its own scope, reconciling, key %s: %d %s", key[:4], status, refusal)
+		}
+	}
+	if h.sent(held) != 1 || h.sent(unused) != 0 {
+		t.Fatalf("sent %d and %d", h.sent(held), h.sent(unused))
+	}
+}
+
+// The re-read's N13. A sender other than the actor makes no first scope, on the path that can
+// reach it now: a reservation whose record was lost. It is answered from the reservation, and
+// the record stays absent until the actor asks.
+func TestASenderOtherThanTheActorMakesNoFirstScope(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	actor := h.credential(t, statement(t, nil))
+	key := delegationKey(12)
+	if status, out := h.present(t, "/act", h.actBody("first", key, ""), actor); status != http.StatusOK {
+		t.Fatalf("first: %d %v", status, out)
+	}
+	scope := delegatedScopeOf(testSubjectSub, rootAgent)
+	record := filepath.Join(h.g.storeRoot, "actions", actionIndexDirectory, h.g.actionFirstScope(scope, key, h.g.actionNamespace(scope, key)).file)
+	if err := os.Remove(record); err != nil {
+		t.Fatal(err)
+	}
+	reservation := h.reservationOf(testSub(), rootAgent)
+	for i, subject := range []string{testSubjectSub, hostRequester, testOperator} {
+		status, out := h.post(t, "/act", h.actBody(fmt.Sprintf("sender-%d", i), key, reservation+withReconcile), map[string]string{"Authorization": "Bearer " + h.token(t, subject)})
+		if status != http.StatusOK || out["receipt"] == nil {
+			t.Fatalf("%s: %d %v", subject, status, out)
+		}
+		if _, err := os.Lstat(record); !os.IsNotExist(err) {
+			t.Fatalf("%s made a first scope: %v", subject, err)
+		}
+	}
+	if status, out := h.present(t, "/act", h.actBody("actor", key, withReconcile), actor); status != http.StatusOK || out["receipt"] == nil {
+		t.Fatalf("the actor: %d %v", status, out)
+	}
+	if _, err := os.Stat(record); err != nil {
+		t.Fatalf("the actor's reconcile holds the first scope: %v", err)
+	}
+	if h.sent(key) != 1 {
+		t.Fatalf("sent %d", h.sent(key))
+	}
 }
 
 // The compaction procedure, followed to the letter by an operator holding only the journal
@@ -1715,7 +1861,7 @@ func TestCompactionFollowedLiterally(t *testing.T) {
 		return classes
 	}
 	classes := walk()
-	if classes["closed"] != 2 || classes["subject"] != 3 || classes["indexed"] != 5 || classes["answered"] != 1 || classes["uncertain"] != 1 {
+	if classes["closed"] != 2 || classes["subject"] != 3 || classes["indexed"] != 4 || classes["answered"] != 1 || classes["uncertain"] != 1 {
 		t.Fatalf("the journal's classes: %v", classes)
 	}
 	// Every entry a record names is still there: they pair, from the journal alone.
