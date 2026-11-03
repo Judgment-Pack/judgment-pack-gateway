@@ -286,6 +286,10 @@ func (g *gatewayService) reconcileAction(session, platform string, args value, w
 	}
 	r := &actionReconciliationRequest{action: cited, key: key, contract: recovery.digest(), read: recovery.readBack}
 	read, err := g.acquireWithReconciliation(session, platform+"/live", "", request, who, r)
+	var refused *readBackRefused
+	if errors.As(err, &refused) {
+		return nil, &actionUncertain{"action-reconciliation-unavailable: the read-back was refused, and no program ran: " + refused.Error(), prior}
+	}
 	if err != nil {
 		return nil, &actionUncertain{"action-reconciliation-unavailable: read-back did not produce evidence", prior}
 	}

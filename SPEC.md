@@ -2272,8 +2272,13 @@ no credential, no token, no token digest, no provider account and no content.
    it. Under the operator's `refuse` policy, an unmaintained publisher refuses the registration,
    each acquisition, and each action that would dispatch now (a first dispatch, a freed
    attempt, or an action with no key) of that binding, as does a record that cannot be read.
-   A keyed request on a key that already has state is answered from it (§1.2b), its read-back
-   included, under either policy and whatever the record says. A registration whose name closely matches an
+   A keyed request on a key that already has state is answered from what it holds: a completed
+   key replays its retained answer, under either policy and whatever the record says. A read-back
+   is an acquisition of the platform, run with its credential, so it is refused like any other:
+   an uncertain key answers `action-reconciliation-unavailable`, naming the refusal, with its
+   uncertain record, and no program runs. A first request the policy refuses has already reserved
+   its key, and recorded its first scope if it sent `keyScope` (§1.2b): nothing was begun, and the
+   key is its scope's once the policy allows. A registration whose name closely matches an
    integration the gateway ships, under another publisher, is flagged `name-lookalike`.
 
 ## 11. Delegated authority

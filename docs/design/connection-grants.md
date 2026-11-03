@@ -324,10 +324,12 @@ a record of the platform's own binding that says `unmaintained` (evidence of a l
   key), before an executor runs.
 
 A record that cannot be read refuses the same as `publisher-record-unreadable`; the reason
-answered to `/acquire` and `/act` names no path. Neither refuses what a key already holds: a
-keyed request on a key that has state is answered from it, a completed key with its retained
-answer and an uncertain one with its read-back, so the policy never hides whether a write was
-sent. An `unverifiable`, `unknown` or `undeclared` publisher is not
+answered to `/acquire` and `/act` names no path. Neither hides what a key already holds: a
+completed key replays its retained answer. A read-back runs the platform's program with its
+credential, so it is refused like any other acquisition, and an uncertain key answers
+`action-reconciliation-unavailable`, naming the refusal, with its uncertain record: the client
+learns the write may have been sent, and no program runs. A first request refused here has
+already reserved its key, and recorded its first scope if it sent `keyScope`. An `unverifiable`, `unknown` or `undeclared` publisher is not
 refused, under either policy.
 
 **Name lookalike.** A registration is flagged `name-lookalike` when its platform name, or its

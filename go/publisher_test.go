@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -349,13 +350,15 @@ func publisherRecordFor(t *testing.T, g *gatewayService, f publisherFile) string
 	return path
 }
 
-// The gateway v0.24.0 pre-release review's M1 (#361 with #358 and #365). The publisher
-// policy guards what would be sent now. A key that already has state answers from it
-// under refuse, and with a record that cannot be read: a completed key replays, an
-// uncertain one reads back, and so does one whose dispatch began and whose record was
-// lost (the write may have committed), plain, flagged and reconciling, and the target
-// is not called. What would dispatch is refused: a key never used, a freed attempt, and an
-// action with no key. An ordinary acquisition stays refused.
+// The gateway v0.24.0 pre-release review's M1 (#361 with #358 and #365), and its
+// re-read's R-H1. The publisher policy guards what would be sent now. A key that already
+// has state answers from it under refuse, and with a record that cannot be read: a
+// completed key replays. An uncertain key, and one whose dispatch began and whose record
+// was lost (the write may have committed), answer as uncertain with their record and the
+// refusal named, plain, flagged and reconciling: the read-back would run the refused
+// publisher's program with the platform's credential, so no program starts. What would
+// dispatch is refused: a key never used, a freed attempt, and an action with no key. An
+// ordinary acquisition stays refused.
 func TestPublisherRefusalGuardsOnlyWhatWouldBeSent(t *testing.T) {
 	root, g, c := actionKeysSetup(t)
 	completed, uncertain, freed, begun := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64), strings.Repeat("e", 64)
@@ -385,6 +388,17 @@ func TestPublisherRefusalGuardsOnlyWhatWouldBeSent(t *testing.T) {
 	want, _ := json.Marshal(first)
 	sentBefore := map[string]int{completed: actionKeysSent(root, completed), uncertain: actionKeysSent(root, uncertain), begun: actionKeysSent(root, begun), freed: 0}
 	path := publisherRecordFor(t, g, publisherFile{Version: 1, Policy: publisherPolicyRefuse, Publishers: map[string]publisherRecord{"tickets": {Binding: g.sources["tickets/write"].binding, State: publisherUnmaintained}}})
+	started := g.started.Load()
+	uncertainAnswer := func(step, refusal string, out map[string]any, err error) {
+		t.Helper()
+		var answer *actionUncertain
+		if !errors.As(err, &answer) || !strings.HasPrefix(answer.reason, "action-reconciliation-unavailable") || !strings.Contains(answer.reason, refusal) || answer.action == nil || out != nil {
+			t.Fatalf("%s: not the uncertain answer naming %s: %v %v", step, refusal, out, err)
+		}
+		if g.started.Load() != started {
+			t.Fatalf("%s: a program started under the policy: %d, was %d", step, g.started.Load(), started)
+		}
+	}
 	for _, state := range []struct{ name, refusal string }{
 		{"an unmaintained publisher", "publisher-unmaintained"},
 		{"a record that cannot be read", "publisher-record-unreadable"},
@@ -405,22 +419,13 @@ func TestPublisherRefusalGuardsOnlyWhatWouldBeSent(t *testing.T) {
 				t.Fatalf("%s, a completed key %+v: not its retained answer: %v", state.name, req, err)
 			}
 			out, err = ask(uncertain, req.scoped, req.reconcile)
-			if err != nil || out["reconciliation"] == nil {
-				t.Fatalf("%s, an uncertain key %+v: no read-back: %v %v", state.name, req, out, err)
-			}
+			uncertainAnswer(fmt.Sprintf("%s, an uncertain key %+v", state.name, req), state.refusal, out, err)
 		}
-		// The key whose record was lost answers once with its read-back; that request
-		// records its uncertainty, so later ones are the uncertain key's case above.
-		if out, err := ask(begun, false, false); err != nil || out["reconciliation"] == nil {
-			t.Fatalf("%s, a dispatch whose record was lost: no read-back: %v %v", state.name, out, err)
-		}
-		if err := os.Remove(filepath.Join(g.storeRoot, "actions", g.actionNamespace(actionKeysWho, begun), "action.json")); err != nil {
-			t.Fatal(err)
-		}
-		for _, req := range []struct{ scoped, reconcile bool }{{true, false}, {true, true}} {
-			if out, err := ask(begun, req.scoped, req.reconcile); err != nil || out["reconciliation"] == nil {
-				t.Fatalf("%s, a dispatch whose record was lost %+v: no read-back: %v %v", state.name, req, out, err)
-			}
+		// The key whose record was lost records its uncertainty and answers so; each ask
+		// removes that record again, so each meets the lost-record state.
+		for _, req := range []struct{ scoped, reconcile bool }{{false, false}, {true, false}, {true, true}} {
+			out, err := ask(begun, req.scoped, req.reconcile)
+			uncertainAnswer(fmt.Sprintf("%s, a dispatch whose record was lost %+v", state.name, req), state.refusal, out, err)
 			if err := os.Remove(filepath.Join(g.storeRoot, "actions", g.actionNamespace(actionKeysWho, begun), "action.json")); err != nil {
 				t.Fatal(err)
 			}
