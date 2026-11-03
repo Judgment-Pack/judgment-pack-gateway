@@ -630,7 +630,8 @@ it never dispatches, a freed attempt included. It is answered, in order:
 2. `action-key-outcome-unknown` (`409`) if a first scope is recorded and this scope
    holds no reservation: that record alone cannot say whether anything was sent. It never
    closes there: the reservation may have been removed or lost. That answer stands until
-   an operator acts on it.
+   an operator acts on it. A sender other than the actor is told `action-key-actor-only`
+   instead (§11.8).
 3. `action-key-conflict` if the scope's reservation is for other approved content.
 4. If the first scope is another's: anything below that would close or answer
    `action-key-not-dispatched` is `action-key-scope-conflict` instead.
@@ -641,7 +642,9 @@ it never dispatches, a freed attempt included. It is answered, in order:
 7. If the scope holds a retained `action.json`, its evidence or read-back, as any
    request on the key.
 8. If a dispatch marker has no answer, the uncertain record and the read-back, as
-   any request on the key. A marker above an attempt with none is damage, and counts.
+   any request on the key. A marker above an attempt with none is damage, and counts: it
+   does not close. Under a delegation there is then no marker to mint a receipt from, so
+   the actor is told `action-journal-invalid` and another sender `action-key-actor-only`.
 9. `action-journal-exhausted` if every attempt the key may record was answered as not
    dispatched, there being none left to close.
 10. Otherwise nothing was dispatched, and it **closes the key before it answers**: a
@@ -2515,8 +2518,17 @@ A delegated request sends no `keyScope` (§1.2b): its scope is its chain's. It s
 §1.2b describes. A sender other than the actor is compared with the first scope and never creates
 a record or closes a key: where nothing was dispatched it is refused as `action-key-actor-only`,
 unless its reconciling request finds a key the actor has closed and a first scope recorded for it.
-Before closing a key it has not reserved, the actor is held to the same subject record and the
-same source and tool in its leaf as a request the key lookup answers.
+Before closing a key it has not reserved, the actor is held to the same subject record.
+
+A leaf that does not name the write's source and tool reaches nothing by its key and takes
+nothing, whatever the journal holds and before any first scope is read: a reconciling request, or
+one whose scope holds a reservation, is refused as `action-key-unauthenticated`, and any other as
+its admission would be (§11.5), leaving no reservation, no record and no session, with no call
+counted. The one exception to "reaches nothing": on a plain request it can tell whether its own
+scope reserved a key it holds, by which of those two it is told. A leaf that names the source and
+tool and not the effect, and a request the issuing host refuses at admission, do take the first
+scope and the reservation before they are refused, so they can deny a key: holding a key needs no
+right to send under it, and a first scope is no authorization (§1.2b).
 
 The key grants nothing on its own. Every request on a delegated key authenticates its sender
 against the reservation's scope before the journal is read:
@@ -2535,7 +2547,10 @@ a credential bound to another scope, or a `reservation` naming a scope the sende
 authenticate as, is refused as `action-key-unauthenticated` (`403`), which says nothing about the
 reservation. A sender other than the actor never creates a reservation and never reaches a
 dispatch: a key that names no reservation in the scope it authenticated against, or one under
-which nothing was dispatched, is refused as `action-key-actor-only`. The **standing read** (spec #284 NC5) is a `POST` to the host's
+which nothing was dispatched, is refused as `action-key-actor-only`, except that where the key's
+first scope is another's and that scope holds no reservation it is refused as
+`action-key-scope-conflict`, the first scope being compared first (§1.2b). That tells it a first
+scope exists and nothing of whose, and leaves the journal as it was. The **standing read** (spec #284 NC5) is a `POST` to the host's
 `admission.url`, as an admission read is, with the body
 `{"readVersion": "1", "host", "audience", "standing": <principal reference>}`, answered `200` with
 exactly `{"standing": "current"}` or `{"standing": "removed"}`; `removed` refuses as
