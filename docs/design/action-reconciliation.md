@@ -199,9 +199,13 @@ root actor of that subject if the first-scope record is ever lost. A leaf that d
 name the write's source and tool reaches nothing by its key and takes nothing: before any
 first scope is read it is refused, as `action-key-unauthenticated` if it is reconciling or its
 scope holds a reservation, and otherwise as its admission would be, leaving no reservation
-bound to its content. A leaf that names them and not the effect, and a request the issuing host
-refuses at admission, do take both records and the reservation first. A sender other than the
-actor is compared with the record, and never closes and never creates.
+bound to its content. A leaf that names them and that its own scope check would still refuse
+(the effect, or a limit this gateway does not know) could never dispatch, so its plain request with
+no reservation in its scope is refused the same way, and leaves nothing. For what the key lookup
+answers it is not held to the effect (spec #284 NC1): it reads what its scope holds, and its
+reconcile closes as the actor's does. A request the issuing host refuses at admission does take
+both records and the reservation first, so it can deny a key. A sender other than the actor is
+compared with the record, and never closes and never creates.
 
 ## Target support belongs to a pinned binding
 
