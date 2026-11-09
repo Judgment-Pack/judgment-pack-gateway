@@ -589,6 +589,9 @@ func TestJournalCompactRefusesAJournalItCannotRead(t *testing.T) {
 		}, false},
 		{"a journal that cannot be listed", func(t *testing.T, store, entry string) string {
 			chmod(t, filepath.Join(store, "actions"), 0o300)
+			// registered after the store's TempDir, so it runs before the
+			// removal even when the test fails before its own restore
+			t.Cleanup(func() { os.Chmod(filepath.Join(store, "actions"), 0o700) })
 			return store
 		}, func(store string) string {
 			return "action-journal-unavailable: the journal " + filepath.Join(store, "actions") + " cannot be read: nothing was compacted"
