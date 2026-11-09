@@ -443,6 +443,14 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		if err := publisherRefusal(spec.publishers, platform, spec.binding); err != nil {
 			return nil, actRefusal{"platform", err.Error()}
 		}
+		// A delegated write is admitted only under the connection grant its
+		// platform names (SPEC.md §10, rule 3): with none named it is refused
+		// here, before a session is admitted, the custody asked or the
+		// issuing host read. An undelegated write is the operator's own, and
+		// its platform's credentials file is all it is held to.
+		if delegated != nil && spec.grant == nil {
+			return nil, grantRefused(refusalGrantUnknown, fmt.Sprintf("platform %s names no connection grant, and a delegated write is admitted only under one", requestText(platform)))
+		}
 	}
 	// The judgment is there. What follows is the acquisition path with an
 	// action's claims: admission, the executor as a source, one receipt in
@@ -485,8 +493,24 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 				return nil, actRefusal{"action-key", err.Error()}
 			}
 		} else {
+			// The platform's connection grant (SPEC.md §10, rule 3), in two
+			// parts around the counting admission. Its state first: a grant
+			// that is not live is refused before the issuing host is read,
+			// so it consumes none of the delegation's budget.
+			if refusal := g.askCustody(spec.grant, grantCheck); refusal != nil {
+				g.abandonUnminted(sessionID)
+				return nil, refusal
+			}
 			member, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true})
 			if refusal != nil {
+				g.abandonUnminted(sessionID)
+				return nil, refusal
+			}
+			// Its use, the owner read included, once the admission answers
+			// admit (RFC 0030 §2): a call steps 0 to 12 refuse reports that
+			// refusal, and a call refused here is not dispatched and leaves
+			// its counted budget used, which fails closed.
+			if refusal := g.askCustody(spec.grant, grantAdmit); refusal != nil {
 				g.abandonUnminted(sessionID)
 				return nil, refusal
 			}

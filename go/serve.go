@@ -107,6 +107,10 @@ type sourceSpec struct {
 	// live or write source, by tool (declaredEffects): what a delegation's
 	// scope is held to (SPEC.md §11.5). Nothing else reads it.
 	effects map[string]string
+	// grant is the connection grant a write source's delegated dispatch is
+	// admitted under (SPEC.md §10, rule 3; grant_gate.go); nil where the
+	// platform names none, which refuses every delegated write.
+	grant *grantGate
 }
 
 // adapterShapes are the shapes --source-shape may declare: every shape of
@@ -1619,6 +1623,9 @@ func (g *gatewayService) handler() http.Handler {
 			body["refusedAt"] = refusedAt
 			if strings.HasPrefix(r.name, "action-key") {
 				body["refusedAt"] = "action-key"
+			}
+			if r.at != "" {
+				body["refusedAt"] = r.at
 			}
 		}
 		if r.name == refusalCredentialMismatch {

@@ -144,6 +144,9 @@ func newDelegationHarness(t *testing.T, bearerReadOnly bool) *delegationHarness 
 	live, write := sources["tickets/live"], sources["tickets/write"]
 	live.effects = map[string]string{"query": "read-external"}
 	write.effects = map[string]string{"query": "act"}
+	// A delegated write is admitted only under a connection grant (SPEC.md
+	// §10, rule 3): the stand-in custody admits until a test says otherwise.
+	write.grant = grantStandIn(t, root)
 	sources["tickets/live"], sources["tickets/write"] = live, write
 	g := actionKeysService(t, root, sources)
 	issuer := newIssuer(t)

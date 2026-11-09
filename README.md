@@ -257,9 +257,11 @@ record in the custody: its owner, the scopes its operations declare, the scopes 
 granted and those used, its last use, an optional idle expiry, and whether it is active,
 quarantined or revoked. A grant holding a scope no operation declares is refused as
 `excess-scope`. A grant with an owner is used only after the owner's issuing host answers that the
-owner is current. Removing the owner revokes or quarantines the grant. Grants cover the connection
-custody only: an engine platform takes its tokens from the operator's credentials files and uses no
-grant, so an action through `/act`, delegated or not, gets none of these checks (gateway #368).
+owner is current. Removing the owner revokes or quarantines the grant. An engine platform takes its
+tokens from the operator's credentials files; a delegated action through `/act` is admitted only
+under the connection grant its platform names (`grant`, engine version 16), which the custody
+holds to the same checks: the grant's state before the issuing host is read, the owner read after
+the delegation's admission. A platform that names none refuses it. The operator's own actions, and acquisitions, use no grant.
 `gateway-connections --grants report` lists the grants, with their unused scopes and findings,
 and names no path, no account and no token
 ([connection grants](docs/design/connection-grants.md), SPEC.md §10).

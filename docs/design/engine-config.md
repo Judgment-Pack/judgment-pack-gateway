@@ -56,16 +56,16 @@ key is an error, never an intention silently dropped. `engineVersion`, `authorit
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
 `runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox` and `delegation` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
-`descriptors`, `operationDescriptors`, `descriptorStatements`, `decisionPolicy`
-and `parameters` optional. Every path is absolute.
+`descriptors`, `operationDescriptors`, `descriptorStatements`, `decisionPolicy`,
+`parameters` and `grant` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"15"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"16"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
   `operationDescriptors`, version 12 `descriptorStatements`, version 13 `sandbox`, version
-  14 a required `actionKey`, and version 15 `delegation`. A file of
+  14 a required `actionKey`, version 15 `delegation`, and version 16 a platform's `grant`. A file of
   an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -1152,6 +1152,39 @@ What it changes for callers, all in SPEC.md §11:
 - `/posture` adds `delegation-narrowing` and `delegation-sender-constraint`.
 
 A file without the member, and every call made under no delegation, behave as before.
+
+## A delegated write's grant (engine version 16)
+
+Version 16 adds a platform's optional `grant` member (SPEC.md §10 rule 3, gateway #368): the
+connection grant the platform's delegated writes are admitted under, which the connection custody
+holds ([connection-grants.md](connection-grants.md#delegated-writes)).
+
+```json
+"boards": {
+  "binding": "azure-devops@sha256:…",
+  "credentials": {"write": "/run/secrets/boards-write"},
+  "user": "engine-boards",
+  "write": true,
+  "grant": {"provider": "azure-devops", "connection": "boards", "stateDir": "/var/lib/connections", "principal": "operator", "user": "engine-custody"}
+}
+```
+
+`provider` is one of `google-drive`, `gmail`, `notion`, `databricks` and `azure-devops`;
+`connection` is the connection's name in custody, a flat token; `stateDir` is the custody's root,
+absolute; `principal` is the custody's principal; `user` is the OS user the custody belongs to,
+which `gateway-connections --grants admit` runs as. The platform must set `write: true`. Every
+member is required, and a member it does not name is refused by name.
+
+At start the engine holds `gateway-connections` as it holds every adapter (in `adapters`, or on
+the engine's PATH where `adapters` is not set), and refuses a `grant.user` the host does not have,
+root, the signer's own user, the MCP server's, or a platform's. The platform's `write` operation is then admitted through the custody for each
+delegated dispatch; its `history` and `live` operations, and every undelegated call, are not.
+A delegated write on a platform with no `grant` is refused as `grant-unknown`. The engine image
+ships no `gateway-connections` and no custody user, so a file that names a grant is refused at
+start there.
+
+`connect --replace` keeps a platform's `decisionPolicy` and drops its `grant`: the replaced entry's
+delegated writes are refused until the member is written again.
 
 ## Keyed actions (engine version 14 and later)
 
