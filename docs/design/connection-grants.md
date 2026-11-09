@@ -206,6 +206,8 @@ does not know, exits 2.
 | `remove-owner` | `{"owner", "ownerHost", "removal"?}` | revokes or quarantines the owner's grants |
 | `revoke` | `{"provider", "connection"}` | revokes one grant |
 | `sweep` | `{}` | revokes idle grants and makes the owner read for every live owned grant; each result is `idle-expired`, `owner-removed`, `owner-unknown` or `current` |
+| `check` | `{"provider", "connection"}` | the engine's check of a delegated write's grant before its admission read: the grant's state alone, no owner read and no record; answers `{"check": "pass", "connection", "provider", "version": 1}` |
+| `admit` | `{"provider", "connection"}` | the engine's admission of a delegated write after its admission read answers `admit`: the check of a use, owner read included, and its record; answers `{"admission": "admit", "connection", "provider", "version": 1}` |
 
 The report gives each grant the record's members except the custody identifier, together with:
 

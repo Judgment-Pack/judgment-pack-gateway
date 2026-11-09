@@ -702,51 +702,7 @@ func (s *Store) grantPass(ctx context.Context, p provider, connection, want, ope
 	if !grantProvider(kind) {
 		return ctx, nil
 	}
-	var owner PrincipalRef
-	var host, generation string
-	var pending *pendingRevoke
-	err := s.locked(func(v *state) error {
-		l, err := s.grants()
-		if err != nil {
-			return err
-		}
-		changed := reconcileGrants(kind, s, v, &l, grantClock())
-		i := l.find(connection)
-		if i < 0 || l.Grants[i].State == grantRevoked || want != "" && l.Grants[i].Generation != want {
-			if changed {
-				_ = s.saveGrants(l)
-			}
-			if want != "" {
-				return ErrCanceled
-			}
-			return ErrConnect
-		}
-		r := l.Grants[i]
-		switch {
-		case r.State == grantQuarantined:
-			err = ErrGrantQuarantined
-		case idleExpired(r, grantClock()):
-			if pending, err = s.revokeLocked(p, v, &l, i, revokedIdle, grantClock()); err != nil {
-				return err
-			}
-			changed, err = true, ErrGrantIdle
-		case len(r.Excess) > 0:
-			err = excessScope(r.Excess)
-		}
-		if changed {
-			if e := s.saveGrants(l); e != nil {
-				return e
-			}
-		}
-		if err != nil {
-			return err
-		}
-		generation = r.Generation
-		if r.Owner != nil && r.OwnerHost != nil {
-			owner, host = *r.Owner, *r.OwnerHost
-		}
-		return nil
-	})
+	owner, host, generation, pending, err := s.grantState(p, connection, want)
 	if pending != nil {
 		pending.finish(ctx, s)
 	}
@@ -822,6 +778,72 @@ func (s *Store) grantPass(ctx context.Context, p provider, connection, want, ope
 		return ctx, err
 	}
 	return checkedContext(ctx, kind, generation), nil
+}
+
+// grantState is the first half of a check, under the lock: the record
+// reconciled with custody (a scope granted since is found), and a grant
+// with no live record (connect-required), quarantined, idle for its bound
+// (revoked here) or holding a scope no operation declares refused. It
+// answers the generation checked, the owner to read if the record names
+// one, and a provider revocation to finish outside the lock.
+func (s *Store) grantState(p provider, connection, want string) (owner PrincipalRef, host, generation string, pending *pendingRevoke, err error) {
+	kind := p.kind()
+	err = s.locked(func(v *state) error {
+		l, err := s.grants()
+		if err != nil {
+			return err
+		}
+		changed := reconcileGrants(kind, s, v, &l, grantClock())
+		i := l.find(connection)
+		if i < 0 || l.Grants[i].State == grantRevoked || want != "" && l.Grants[i].Generation != want {
+			if changed {
+				_ = s.saveGrants(l)
+			}
+			if want != "" {
+				return ErrCanceled
+			}
+			return ErrConnect
+		}
+		r := l.Grants[i]
+		switch {
+		case r.State == grantQuarantined:
+			err = ErrGrantQuarantined
+		case idleExpired(r, grantClock()):
+			if pending, err = s.revokeLocked(p, v, &l, i, revokedIdle, grantClock()); err != nil {
+				return err
+			}
+			changed, err = true, ErrGrantIdle
+		case len(r.Excess) > 0:
+			err = excessScope(r.Excess)
+		}
+		if changed {
+			if e := s.saveGrants(l); e != nil {
+				return e
+			}
+		}
+		if err != nil {
+			return err
+		}
+		generation = r.Generation
+		if r.Owner != nil && r.OwnerHost != nil {
+			owner, host = *r.Owner, *r.OwnerHost
+		}
+		return nil
+	})
+	return owner, host, generation, pending, err
+}
+
+// grantStateCheck is grantCheck without the owner read and without a
+// record: the grant's state alone, which the engine reads before a
+// delegated write's counting admission (SPEC.md §10 rule 3, §11.5). The
+// owner read is made after that admission answers admit, in the use
+// (grantUse), as RFC 0030 §2 orders it.
+func (s *Store) grantStateCheck(ctx context.Context, p provider, connection string) error {
+	_, _, _, pending, err := s.grantState(p, connection, "")
+	if pending != nil {
+		pending.finish(ctx, s)
+	}
+	return err
 }
 
 // noteGranted records the scopes the provider reported it granted, at a

@@ -3,7 +3,8 @@ package connections
 // The operator's side of connection grants: the connections report, and
 // the operations that set an owner, an idle expiry and the owner read,
 // remove an owner, revoke a grant and sweep the grants for idle expiry and
-// owner standing (gateway-connections --grants OPERATION).
+// owner standing (gateway-connections --grants OPERATION); and the engine's
+// admission of a delegated write under a grant (check, then admit).
 
 import (
 	"context"
@@ -17,7 +18,7 @@ import (
 )
 
 // GrantOperations are the operations GrantOperation takes.
-var GrantOperations = []string{"report", "set-owner", "set-idle-expiry", "owner-reads", "remove-owner", "revoke", "sweep"}
+var GrantOperations = []string{"report", "set-owner", "set-idle-expiry", "owner-reads", "remove-owner", "revoke", "sweep", "check", "admit"}
 
 // GrantFinding is one thing the report says of a grant: a code, and a
 // sentence that names no path, no account and no token.
@@ -371,6 +372,50 @@ func GrantOperation(ctx context.Context, dir, principal, provider, operation str
 			}
 		}
 		return map[string]any{"version": 1, "connections": out}, nil
+	case "check", "admit":
+		// The engine's admission of a delegated write under the grant its
+		// platform names (SPEC.md §10, rule 3), in two parts around the
+		// delegation's counting admission (SPEC.md §11.5). check, before
+		// it: the grant's state alone (grantStateCheck), so a grant that
+		// is not live, quarantined, idle or holding an excess scope is
+		// refused before the issuing host is read. admit, after it answers
+		// admit: the check every use of the custody's own credential
+		// passes (grantUse), the state again, the owner read, and the
+		// record of the use, so an owner refusal follows the delegation's
+		// own (RFC 0030 §2). The write takes its token from the platform's
+		// credentials file, not from custody, so no declared scope of the
+		// connection is used by it.
+		var q struct {
+			Provider   string `json:"provider"`
+			Connection string `json:"connection"`
+		}
+		if decode(raw, &q) != nil || !grantProvider(q.Provider) || !flatToken(q.Connection) || provider != "" && q.Provider != provider {
+			return nil, ErrRequest
+		}
+		s, err := openGrantStore(q.Provider, dir, principal, false)
+		if err != nil {
+			return nil, err
+		}
+		if s == nil {
+			return nil, ErrGrantUnknown
+		}
+		defer s.Close()
+		p := grantProviderFor(q.Provider)
+		if operation == "check" {
+			err = s.grantStateCheck(ctx, p, q.Connection)
+		} else {
+			_, err = s.grantUse(ctx, p, q.Connection, "")
+		}
+		if err == ErrConnect {
+			return nil, s.grantGone(q.Provider, q.Connection)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if operation == "check" {
+			return map[string]any{"version": 1, "provider": q.Provider, "connection": q.Connection, "check": "pass"}, nil
+		}
+		return map[string]any{"version": 1, "provider": q.Provider, "connection": q.Connection, "admission": "admit"}, nil
 	case "sweep":
 		var q struct{}
 		if decode(raw, &q) != nil {
@@ -402,6 +447,33 @@ func GrantOperation(ctx context.Context, dir, principal, provider, operation str
 		return map[string]any{"version": 1, "results": out}, nil
 	}
 	return nil, ErrRequest
+}
+
+// grantGone is why a use found no live grant of the connection: no record
+// of it (grant-unknown), or its latest record revoked (grant-revoked). A
+// grant made again under the use, which the use was not checked against,
+// stays connect-required. A ledger that cannot be read is that.
+func (s *Store) grantGone(kind, connection string) error {
+	gone := ErrConnect
+	err := s.locked(func(v *state) error {
+		l, err := s.grants()
+		if err != nil {
+			return err
+		}
+		// What the use read, reconciled as it was; nothing is written.
+		reconcileGrants(kind, s, v, &l, grantClock())
+		switch i := l.find(connection); {
+		case i < 0:
+			gone = ErrGrantUnknown
+		case l.Grants[i].State == grantRevoked:
+			gone = ErrGrantRevoked
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return gone
 }
 
 // sweep is the operator's periodic pass over one custody's grants: a grant

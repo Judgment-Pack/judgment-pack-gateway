@@ -49,6 +49,20 @@ func TestGrantsRunAlone(t *testing.T) {
 	if out, stderr, code := run(`{"provider":"databricks","connection":"absent","owner":{"kind":"person","issuer":"i","subject":"s"},"ownerHost":"desk"}`, "--grants", "set-owner", "--state-dir", dir, "--principal", "owner"); code != 1 || out != "" || stderr != "grants: grant-unknown\n" {
 		t.Fatalf("an owner for an absent connection: exit %d, %q, %q", code, out, stderr)
 	}
+	// The engine's admission (SPEC.md §10, rule 3): a connection custody
+	// holds no record of is refused as grant-unknown, and so is a provider
+	// with no custody, which admit does not make.
+	if out, stderr, code := run(`{"provider":"databricks","connection":"absent"}`, "--grants", "admit", "--state-dir", dir, "--principal", "owner", "--provider", "databricks"); code != 1 || out != "" || stderr != "grants: grant-unknown\n" {
+		t.Fatalf("an admission for an absent connection: exit %d, %q, %q", code, out, stderr)
+	}
+	for _, operation := range []string{"check", "admit"} {
+		if out, stderr, code := run(`{"provider":"notion","connection":"notion"}`, "--grants", operation, "--state-dir", dir, "--principal", "owner", "--provider", "notion"); code != 1 || out != "" || stderr != "grants: grant-unknown\n" {
+			t.Fatalf("%s for a provider with no custody: exit %d, %q, %q", operation, code, out, stderr)
+		}
+	}
+	if _, err := os.Lstat(dir + "/notion"); !os.IsNotExist(err) {
+		t.Fatalf("check or admit made a custody: %v", err)
+	}
 	if out, _, code := run(`{}`, "--grants", "sweep", "--state-dir", dir, "--principal", "owner", "--provider", "databricks"); code != 0 || out != `{"results":[],"version":1}`+"\n" {
 		t.Fatalf("a sweep: exit %d, %q", code, out)
 	}
