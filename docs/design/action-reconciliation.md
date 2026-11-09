@@ -376,12 +376,19 @@ has not been measured.
 
 ### Compaction
 
-The gateway does not compact the journal itself. An operator compacts it
-offline, without losing dispatch history:
+The journal is compacted offline, without losing dispatch history, by this procedure.
+`gateway journal compact --store <dir> --archive <dir> --retention <duration>` does its
+steps 3 and 4 (below, "The command"); stopping the gateway processes, the backup and the
+restart stay the operator's.
 
 1. Stop every gateway process that serves the store. The per-key lock holds one
    process only, and the journal's exclusive creation does not guard against a
-   removal while a request is in flight.
+   removal while a request is in flight. A gateway holds a shared lock (`flock(2)`) on the
+   store's directory from before it listens until it stops, under either serve command, and
+   the command takes it exclusive: the command is refused as `action-journal-held` while any
+   gateway holds it, and a gateway is refused its start as `action-journal-held` while a
+   compaction holds it. The lock is advisory, and as good as the filesystem's `flock(2)`: a
+   gateway of v0.24.0 or earlier takes none.
 2. Back up the store with `actions/`.
 3. Keep `actions/index/` whole: nothing below removes a file from it. List what its records
    name: every `reservation` and every `subjectRecord`. A directory named `.staging-*` is no
@@ -423,6 +430,53 @@ offline, without losing dispatch history:
    again; the retention period is what makes that safe. A client that retries an
    indexed key whose `action.json` went sends nothing again, and is no longer served
    the response: its uncertain record and read-back are all it gets.
+
+**The command.** `gateway journal compact` reads only the journal, as step 3 does, and
+refuses (exit 1, `journal compact: ` and the refusal) where it cannot follow it as written:
+
+- **It never takes a journal it cannot read as empty.** A store that is not a directory or
+  holds no `actions/` is `action-journal-unavailable`; an `actions/` or `actions/index/` that
+  is not a private directory is `action-journal-invalid`, and one that cannot be listed is
+  `action-journal-unavailable`. Anything in `actions/index/` but a `.staging-*` directory that is
+  not a first-scope record reading as the gateway writes one, under the name of its own key, is
+  `action-journal-invalid`: an entry it names would be read as no key's. Each of these refuses
+  before anything moves.
+- **It reads each entry more strictly than the gateway.** An entry that is not a private
+  directory, holds a file the gateway does not write (a `.staging-*` directory aside), has no
+  `intent.json` or one that does not read as this journal version and an identity version this
+  release reads, holds a `not-dispatched-<n>.json` without its marker or a marker above a
+  missing one, or holds an `action.json` that is not an action receipt with a delivery whose
+  key, authority and requester (for a delegated entry, its `scope.json`) hash to the entry's
+  name, does not read, and is kept.
+- **It keeps every uncertain entry,** indexed or not, and every begun one: the check at the
+  target is the operator's, and an uncertain entry the operator has checked is moved by hand,
+  as in step 4.
+- **It moves** an entry that never sent; an answered one whose receipt's `servedAt` is longer
+  ago than the retention period when it runs (a receipt served exactly the period ago stays);
+  and an indexed entry's `action.json` by the same rule. The retention period is a duration of
+  whole seconds, at least one (`720h`). It removes nothing from `actions/index/`, no
+  `.staging-*` directory and no receipt, and deletes nothing.
+- **The archive** is a private directory outside the store, on the journal's filesystem, so
+  that a move is a rename and never a copy and a removal; it is made at `0700` when it is not
+  there, and another compaction holding it refuses (`action-journal-archive`). Each retirement
+  is `<archive>/<namespace>.<n>`, `n` the first number from 1 that no retirement of the
+  namespace holds: a private directory holding `entry`, the entry whole, or `action.json`, an
+  indexed entry's, and `retirement.json`.
+- **`retirement.json`** is step 4's line, as canonical JSON: `recordVersion` (`"1"`), `store`,
+  `namespace`, `class` (`never-sent`, `answered` or `indexed`), `moved` (`entry` or
+  `action.json`), `receipt` (`sessionId` and `callIndex`; null for an entry that never sent),
+  `outcome`, `servedAt`, `retentionSeconds` and `archivedAt`. The receipt is not verified
+  against the store: it stays under `receipts/`, and its copy moves with the entry.
+- It prints a line for each name in `actions/` but the index, `retired` or `kept` and why, a
+  `finished` line for each retirement it finishes (below), and a last line of counts.
+
+**A compaction that stops**, killed or refused part way, is run again. Each retirement is made
+durable in an order no crash breaks: a staging directory `.staging-*` in the archive, then
+the record in it, then the move, each durable before the next, and only then its final name.
+A rerun first names every staging directory of the archive that holds what was moved beside
+its record, and leaves one that moved nothing as it is, inert. A gateway that serves between
+the two is answered as the journal then stands. What is moved is what was read: an entry
+replaced since stops the compaction, and is read again on the rerun.
 
 ### A damaged entry
 
@@ -586,6 +640,11 @@ acts, and a client that only reconciles, as an agent's host does, never moves it
   `--bearer=`; version 2 has no member for it. This admits nothing unapproved:
   the member's name comes only from the pinned binding, whose digest version 2
   binds, so another bearer member is another binding pin and another identity.
-- **The gateway does not compact the journal.** Compaction is the offline
-  procedure above; the gateway bounds each entry, not their number, and enforces neither
-  the retention period nor the growth limits it states.
+- **The gateway does not compact the journal while it serves.** Compaction is the offline
+  procedure above, by `gateway journal compact` with every gateway process stopped; the
+  gateway bounds each entry, not their number, and enforces neither the retention period
+  nor the growth limits it states.
+- **The store lock keeps out the gateways that take it.** A gateway of v0.24.0 or earlier
+  serving the store does not hold it, and a compaction beside one is not refused; a network
+  filesystem's `flock(2)` may not exclude across hosts. Stopping every gateway process stays
+  step 1 of the procedure.

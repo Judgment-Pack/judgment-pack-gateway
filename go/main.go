@@ -17,6 +17,7 @@ package main
 //	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--source-shape NAME=SHAPE] [--receipt-version 2|3] [--port N]
 //	gateway keygen [seedfile]
 //	gateway rotate-key --seed <file> --registry <file>
+//	gateway journal compact --store <dir> --archive <dir> --retention <duration>
 //	gateway posture [--json] [--config <engine.json> | [serve] <store> <seedfile> <authority> <registry> [serve options]]
 //	gateway publishers --config <engine.json> [--check] [--policy report|refuse]
 //	gateway version
@@ -43,7 +44,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | mcp | posture | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | journal | mcp | posture | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -69,6 +70,8 @@ func main() {
 		os.Exit(cmdKeygen(os.Args[2:]))
 	case "rotate-key":
 		os.Exit(cmdRotateKey(os.Args[2:], os.Stdout, os.Stderr))
+	case "journal":
+		os.Exit(cmdJournal(os.Args[2:], os.Stdout, os.Stderr))
 	case "mcp":
 		os.Exit(cmdMCP(os.Args[2:]))
 	case "posture":
@@ -411,6 +414,14 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	defer registryHold.Close()
+	// held while the engine serves, so gateway journal compact refuses; a
+	// compaction under way refuses the start (#359)
+	storeHold, err := holdServedStore(service.storeRoot)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	defer storeHold.Close()
 	service.witness = witness
 	service.attachDelegation(delegation)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -826,6 +837,14 @@ func cmdServe(args []string) int {
 		return 1
 	}
 	defer registryHold.Close()
+	// held while the gateway serves, so gateway journal compact refuses; a
+	// compaction under way refuses the start (#359)
+	storeHold, err := holdServedStore(service.storeRoot)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	defer storeHold.Close()
 	// Sources run in their own process groups, so the terminal's interrupt
 	// no longer reaches them; the gateway's does, and it is carried to every
 	// source in flight through the service's context.
