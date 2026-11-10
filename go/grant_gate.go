@@ -29,9 +29,8 @@ import (
 // no admission read and counts nothing, so it is held to `admit` alone
 // before it runs: a grant that is not live, or whose owner is refused,
 // serves no read-back, and the key stays uncertain (RFC 0030 §5, rule 5).
-// A delegated
-// call on a platform that names no grant is refused before anything is
-// admitted.
+// A delegated call on a platform that names no grant is refused before
+// anything is admitted.
 
 // platformGrant is a platform's `grant` member (engineVersion 16): the
 // custody connection its delegated calls are admitted under, where that
