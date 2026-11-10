@@ -2468,11 +2468,15 @@ made after the session is admitted and before step 0, so a grant not live is ref
 issuing host is read and consumes nothing of the delegation's limits; and the custody's
 admission, with its owner read, is made after the admission read answers `admit` (RFC 0030 §2): a
 call steps 0 to 12 refuse reports that refusal, and one the owner read refuses is not dispatched
-and leaves its count used, which fails closed. The exceptions are a first keyed request whose leaf excludes the write (§11.8),
-and any other `/acquire` or `/act` that the gateway's own part of step 11 refuses (for `/act`, one
-with no `actionKey`, or one whose key holds a reservation in its scope): each is refused as its admission
+and leaves its count used, which fails closed. On a platform that names a grant, a call the
+gateway's own part of step 11 refuses is not checked against the grant: a first keyed request
+whose leaf excludes the write (§11.8), and any other `/acquire` or `/act` (for `/act`, one with no
+`actionKey`, or one whose key holds a reservation in its scope). Each is refused as its admission
 refuses it, which reads the issuing host, `out-of-scope` unless the host refuses it first, and
-since it never dispatches, it uses no grant and the grant is not checked. Admission applies, in order, steps 0 to 7
+since it never dispatches, it uses no grant. On a platform that names no grant, every delegated
+call is refused `grant-unknown` with no host read, these included, except the first keyed request
+whose leaf excludes the write, which is refused as its admission refuses it. Admission applies, in
+order, steps 0 to 7
 (§11.4, §11.1), then:
 
 | Step | Refusal | Condition |
@@ -2648,8 +2652,8 @@ and tool: every link of its chain must pass step 11's `source` and `tool` condit
 for the write's. A link that excludes either is refused as `action-key-unauthenticated`, and no
 read-back runs. A key is found uncertain also where the lookup finds a dispatch marker without its
 answer, or where another request claims the attempt before this request's marker is created: such a
-request records the key's uncertain record, as any request finding the marker does, and is then
-refused. A request whose own dispatch left the key uncertain, and only that one, is not refused,
+request still mints the uncertain receipt into its own session and records it as the key's, as any
+request finding the marker does, but is refused `action-key-unauthenticated` and is not given it. A request whose own dispatch left the key uncertain, and only that one, is not refused,
 since the write
 may have been sent: where a link excludes either, no read-back runs, and the request answers `409`
 `action-reconciliation-unavailable` with its uncertain record. A request answered from retained

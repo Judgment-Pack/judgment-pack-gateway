@@ -341,3 +341,35 @@ func TestOutOfScopeUnkeyedWriteIsNotToldTheGrantsState(t *testing.T) {
 		t.Fatalf("an unkeyed write its link's scope holds: %d %s", status, raw)
 	}
 }
+
+// A keyed write whose key holds a reservation in its scope, from a link that
+// names the write's source and tool but not its effect, is not asked about
+// the grant: the key lookup does not refuse it, since the reservation is its
+// scope's, and its admission refuses it out-of-scope (effect), counting
+// nothing (SPEC.md §11.5). A broader link reserved the key under a
+// quarantined grant first, and dispatches once the grant is live.
+func TestOutOfScopeWriteOnAReservedKeyIsNotToldTheGrantsState(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	h.setGrant(grantStandIn(t, h.root))
+	grantAnswer(t, h.root, grantCheck, &grantStandInAnswer{Exit: 1, Stderr: "grants: grant-quarantined\n"})
+	key := delegationKey(3)
+	cred := h.credential(t, statement(t, nil))
+	status, raw := h.presentRaw(t, "/act", h.actBody("p-0", key, ""), cred)
+	if status != http.StatusForbidden || raw != `{"error":"grant-quarantined: the platform's connection grant is quarantined","refusal":"grant-quarantined","refusedAt":"grant"}` || len(grantCalls(t, h.root)) != 1 || h.sent(key) != 0 {
+		t.Fatalf("the reserving request: %d %s", status, raw)
+	}
+	noEffect := scopeOf("tickets/write", []any{"query"}, []any{"read-external"}, map[string]any{})
+	narrow := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("88", 16), "scope": map[string]any{"sources": []any{noEffect}}}))
+	hostReads := h.host.readCount()
+	status, raw = h.presentRaw(t, "/act", h.actBody("p-1", key, ""), narrow)
+	if status != http.StatusForbidden || raw != `{"error":"out-of-scope: link 0 does not admit the call (effect)","reason":"effect","refusal":"out-of-scope","refusedAt":"delegation"}` {
+		t.Fatalf("a link without the write's effect: %d %s", status, raw)
+	}
+	if len(grantCalls(t, h.root)) != 1 || h.host.readCount() != hostReads+1 || h.host.counted() != 0 || h.sent(key) != 0 {
+		t.Fatalf("custody %d, host reads %d->%d, counted %d, sent %d", len(grantCalls(t, h.root)), hostReads, h.host.readCount(), h.host.counted(), h.sent(key))
+	}
+	grantAnswer(t, h.root, grantCheck, nil)
+	if status, out := h.present(t, "/act", h.actBody("p-2", key, ""), cred); status != http.StatusOK || h.sent(key) != 1 || h.host.counted() != 1 || len(grantCalls(t, h.root)) != 3 {
+		t.Fatalf("the broader link once the grant is live: %d %v, sent %d, counted %d", status, out, h.sent(key), h.host.counted())
+	}
+}

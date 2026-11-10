@@ -265,7 +265,9 @@ The signer never reads the custody, so for each delegated write or acquisition i
 A call the chain's own part of step 11 refuses runs neither: a delegated acquisition or write
 outside some link's scope, a write with no key and a first keyed write whose leaf excludes it
 included. It is refused as its admission refuses it, `out-of-scope` unless the issuing host
-refuses it first, and is told nothing of the grant's state.
+refuses it first, and is told nothing of the grant's state. On a platform that names no grant,
+each of these is refused `grant-unknown` before the issuing host is read, except the first keyed
+write whose leaf excludes it, which its admission refuses.
 
 The read-back of a delegated key's uncertain action makes no admission read and counts nothing,
 so it runs `--grants admit` alone, before its program starts: a grant that is not live, or whose
