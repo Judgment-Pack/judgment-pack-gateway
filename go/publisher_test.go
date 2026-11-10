@@ -41,6 +41,8 @@ func publisherStandIn(t *testing.T, answers map[string][2]string) publisherCheck
 			w.Write([]byte(a[1]))
 		case "404":
 			http.NotFound(w, r)
+		case "302":
+			http.Redirect(w, r, a[1], http.StatusFound)
 		default:
 			http.Error(w, "unavailable", 503)
 		}
@@ -561,6 +563,57 @@ func TestDomainPublisherIsTheRegistrableDomain(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// #362 N11: under sch.uk every name one label down is a public suffix
+	// too (*.sch.uk). The gateway declares no domain there, and never names
+	// one to declare.
+	for name, want := range map[string]string{
+		"sch.uk":                   "publisher: sch.uk is a public suffix, not a registrable domain",
+		"kent.sch.uk":              "publisher: kent.sch.uk is a public suffix, not a registrable domain",
+		"myschool.kent.sch.uk":     "publisher: myschool.kent.sch.uk is under sch.uk, where every name one label under it is a public suffix too, and the gateway verifies no domain there; declare the server's repository or package as its publisher, or none",
+		"www.myschool.kent.sch.uk": "publisher: www.myschool.kent.sch.uk is under sch.uk, where every name one label under it is a public suffix too, and the gateway verifies no domain there; declare the server's repository or package as its publisher, or none",
+	} {
+		if err := registrableDomain(name); err == nil || err.Error() != want {
+			t.Errorf("%s: %v", name, err)
+		}
+		v, _ := parseJSON([]byte(`{"kind":"domain","name":"` + name + `"}`))
+		if _, err := parsePublisher(v); err == nil || err.Error() != want {
+			t.Errorf("%s at parse: %v", name, err)
+		}
+	}
+}
+
+// #362 L5: a liveness read never follows a redirect off HTTPS, and the npm
+// and GitHub reads follow none, since their answers name nothing to check
+// against the declared name: each such read failed (unknown). An RDAP
+// answer names its domain, and follows an HTTPS redirect.
+func TestPublisherReadsFollowNoRedirectTheyCannotCheck(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ldhName":"plain.example","status":["active"],"events":[]}`))
+	}))
+	defer plain.Close()
+	c := publisherStandIn(t, map[string][2]string{
+		"/gh/acme/live":                 {"200", `{"archived":false,"disabled":false}`},
+		"/gh/acme/renamed":              {"302", "/gh/acme/live"},
+		"/npm/live-pkg":                 {"200", `{"dist-tags":{"latest":"2.0.0"},"versions":{"2.0.0":{}}}`},
+		"/npm/moved":                    {"302", "/npm/live-pkg"},
+		"/rdap/domain/moved.example":    {"302", "/rdap/v2/domain/moved.example"},
+		"/rdap/v2/domain/moved.example": {"200", `{"ldhName":"moved.example","status":["active"],"events":[]}`},
+		"/rdap/domain/plain.example":    {"302", plain.URL + "/rdap/domain/plain.example"},
+	})
+	for _, k := range []struct {
+		kind, name, state string
+	}{
+		{"repository", "github.com/acme/live", publisherMaintained},
+		{"repository", "github.com/acme/renamed", publisherUnknown},
+		{"registry", "npm:live-pkg", publisherMaintained},
+		{"registry", "npm:moved", publisherUnknown},
+		{"domain", "moved.example", publisherMaintained},
+		{"domain", "plain.example", publisherUnknown},
+	} {
+		if state, reason := c.check(context.Background(), &publisherDecl{k.kind, k.name}); state != k.state || reason == "" {
+			t.Errorf("%s %s: %s (%s), not %s", k.kind, k.name, state, reason, k.state)
+		}
+	}
 }
 
 // N3: a record a recapture wrote while a re-check read liveness is kept;
@@ -675,6 +728,19 @@ func TestInconclusiveReadingKeepsTheRefusal(t *testing.T) {
 	if _, err := connectPublisher(context.Background(), req, f.host, check, checker); err == nil || !strings.Contains(err.Error(), "publisher-unmaintained") {
 		t.Fatalf("a recapture over an unmaintained publisher whose reading failed: %v", err)
 	}
+	// #362 N12: so is a recapture that changes only the case of the
+	// repository's name, which GitHub does not tell apart.
+	recased := strings.Replace(binding, "github.com/acme/tickets-mcp", "github.com/Acme/Tickets-MCP", 1)
+	if err := os.WriteFile(filepath.Join(f.catalog, "tickets.json"), []byte(recased), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	answers["/gh/Acme/Tickets-MCP"] = [2]string{"503", ""}
+	if _, err := connectPublisher(context.Background(), req, f.host, check, checker); err == nil || !strings.Contains(err.Error(), "publisher-unmaintained") {
+		t.Fatalf("a recapture changing only the case of an unmaintained repository whose reading failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(f.catalog, "tickets.json"), []byte(binding), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	// A conclusive maintained reading lifts it.
 	answers["/gh/acme/tickets-mcp"] = [2]string{"200", `{"archived":false,"disabled":false}`}
 	if code := runPublishers(context.Background(), []string{"--config", f.config, "--check"}, &stdout, &stderr, checker); code != 0 {
@@ -695,6 +761,19 @@ func TestFirstInconclusiveReadingIsUnknown(t *testing.T) {
 	prev := publisherRecord{Binding: "b", Kind: "repository", Name: "github.com/acme/other", State: publisherUnmaintained, CheckedAt: "t0"}
 	if got := mergeReading(prev, true, reading); got != reading {
 		t.Fatalf("a reading of another declared publisher kept the earlier one: %+v", got)
+	}
+	// #362 N12: a repository name differing only in case is the same
+	// declared publisher; a package's or a domain's is another.
+	prev.Name = "github.com/Acme/X"
+	if got := mergeReading(prev, true, reading); got.State != publisherUnmaintained || got.Name != prev.Name || got.AttemptState != publisherUnknown || got.LastAttempt != "t1" {
+		t.Fatalf("a case-only change of the repository lifted the conclusive reading: %+v", got)
+	}
+	for _, kind := range []string{"registry", "domain"} {
+		prev, reading := prev, reading
+		prev.Kind, reading.Kind = kind, kind
+		if got := mergeReading(prev, true, reading); got != reading {
+			t.Fatalf("%s: a name differing in case kept the earlier reading: %+v", kind, got)
+		}
 	}
 }
 

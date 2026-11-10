@@ -2277,13 +2277,16 @@ no credential, no token, no token digest, no provider account and no content.
    deletion, or a domain its registry's RDAP service answers is not registered), `unverifiable` (a
    package or repository the public source does not show, or a top-level domain with no RDAP
    service), `unknown` or `undeclared`, with
-   the time it was checked. An unmaintained publisher is reported as `publisher-unmaintained`, an
-   unverifiable one as `publisher-unverifiable`, which never refuses. An inconclusive reading
-   (`unknown` or `unverifiable`) never replaces a conclusive one (`maintained` or `unmaintained`)
-   of the same declared publisher: the conclusive state is kept and the failed read recorded beside
-   it. Under the operator's `refuse` policy, an unmaintained publisher refuses the registration,
-   each acquisition, and each action that would dispatch now (a first dispatch, a freed
-   attempt, or an action with no key) of that binding, as does a record that cannot be read.
+   the time it was checked. No read follows a redirect that leaves HTTPS, and the npm and GitHub
+   reads follow none; such a read is `unknown`. An unmaintained publisher is reported as
+   `publisher-unmaintained`, an unverifiable one as `publisher-unverifiable`, which never
+   refuses. An inconclusive reading (`unknown` or `unverifiable`) never replaces a conclusive one
+   (`maintained` or `unmaintained`) of the same declared publisher (its kind and name, a
+   repository's name compared without case): the conclusive state is kept and the failed read
+   recorded beside it. Under the operator's `refuse` policy, an unmaintained publisher refuses
+   the registration, each acquisition, and each action that would dispatch now (a first
+   dispatch, a freed attempt, or an action with no key) of that binding, as does a record that
+   cannot be read.
    A keyed request on a key that already has state is answered from what it holds: a completed
    key replays its retained answer, under either policy and whatever the record says. A read-back
    is an acquisition of the platform, run with its credential, so it is refused like any other:

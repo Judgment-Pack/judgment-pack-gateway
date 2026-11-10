@@ -311,6 +311,9 @@ the rule at parse is this:
   tell a host under a registrable domain (`tickets.acme.example`) from a registrable domain under a
   public suffix it does not list (`acme.com.zz`), and the name it would suggest could be another's
   domain or a suffix; such a server declares its repository or package, or no publisher;
+- under `sch.uk`, every name one label down is itself a public suffix (`kent.sch.uk`), so no
+  domain there can be declared: `sch.uk` and a name one label under it are refused as public
+  suffixes, and a longer name (`myschool.kent.sch.uk`) is refused without naming a domain;
 - a listed public suffix itself (`co.uk`, `nhs.uk`) is refused. The list is partial: a public
   suffix it does not name, declared as a two-label domain, parses, and is read as that suffix's
   registry object, which says nothing of a publisher. Such a declaration is meaningless, and
@@ -342,13 +345,20 @@ The 404 cases are these, exactly:
   HTTPS service, is inconclusive (`unknown`).
 - **Never the name above:** the gateway asks for the declared name alone. It never reads the
   object of a name above it, such as a public suffix's own object.
+- **Redirects:** no read follows a redirect that leaves HTTPS. The npm and GitHub reads follow
+  none: their answers are not checked against the declared name, so a redirect (a renamed or
+  transferred repository) would read another name's liveness for it. Such a read failed, and is
+  `unknown`. The RDAP bootstrap and the registry's RDAP service follow an HTTPS redirect: the
+  RDAP answer must name the declared domain (#362 L5).
 
 Any other answer leaves the state `unknown`.
 
 **An inconclusive reading never lifts a conclusive one.** `maintained` and `unmaintained` are
 conclusive; `unknown` (a read that failed, timed out, was refused or rate-limited, or answered
 what cannot be read) and `unverifiable` are not. When a re-check or a recapture reads a publisher
-inconclusively, and its record holds a conclusive reading of the same declared publisher:
+inconclusively, and its record holds a conclusive reading of the same declared publisher (the
+same kind and name; a repository's name is compared without case, as GitHub compares it, #362
+N12):
 
 - the record keeps that state and its time;
 - the failed read is recorded beside it (`lastAttempt`, `attemptState` and `attemptReason`) and
@@ -458,8 +468,8 @@ The flag is shown with the approval and recorded. It is a report, never a refusa
   for a declared domain is `unmaintained`.
 - **A domain publisher is a registrable domain, by a partial list.** Without a public-suffix
   list, a domain under a two-label public suffix the gateway does not list cannot be declared as a
-  domain publisher. Hosts, including hosts on shared platforms, cannot be declared at all; such a
-  server declares its repository or package.
+  domain publisher, nor can any domain under `sch.uk`. Hosts, including hosts on shared platforms,
+  cannot be declared at all; such a server declares its repository or package.
 - **Name lookalike against the gateway's own integrations.** The known integrations are the ones
   the gateway ships, a fixed list. The operator cannot extend it in this release.
 - **Owner removal at use.** An owner read that answers `removed` changes the grants in the custody
