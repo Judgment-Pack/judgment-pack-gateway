@@ -2644,7 +2644,11 @@ key is found uncertain, and before anything else of the read-back is asked -- th
 its owner read, the publisher policy (§10, rules 3 and 8) -- the run's actor is held to that source
 and tool: every link of its chain must pass step 11's `source` and `tool` conditions for them, as
 for the write's. A link that excludes either is refused as `action-key-unauthenticated`, and no
-read-back runs. A request whose own dispatch left the key uncertain is not refused, since the write
+read-back runs. A key is found uncertain also where the lookup finds a dispatch marker without its
+answer, or where another request claims the attempt before this request's marker is created: such a
+request records the key's uncertain record, as any request finding the marker does, and is then
+refused. A request whose own dispatch left the key uncertain, and only that one, is not refused,
+since the write
 may have been sent: where a link excludes either, no read-back runs, and the request answers `409`
 `action-reconciliation-unavailable` with its uncertain record. A request answered from retained
 evidence is not held to the read-back's source and tool. For every sender, the read-back is then a

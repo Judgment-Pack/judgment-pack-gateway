@@ -226,3 +226,59 @@ func TestUncertainFirstDispatchOutsideTheReadBacksScope(t *testing.T) {
 		t.Fatalf("the key, found uncertain: %d %s", status, raw)
 	}
 }
+
+// A key the lookup finds uncertain without a record of its own -- a dispatch
+// marker found without its answer (the crash window), or an attempt another
+// request claimed first -- is found uncertain as one with a record is: a link
+// that excludes the read-back's source and tool is refused as
+// unauthenticated, not answered the uncertain record (SPEC.md §11.8, gateway
+// #374 LOW-1). Only the request whose own dispatch left the key uncertain
+// answers 409.
+func TestKeyFoundUncertainWithoutItsRecordOutsideTheReadBacksScope(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	reads := h.countReads(t)
+	actionKeysMode(t, h.root, "write", "drop")
+	write := scopeOf("tickets/write", []any{"query"}, []any{"act"}, map[string]any{})
+	cred := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("88", 16), "scope": map[string]any{"sources": []any{write}}}))
+	sender := &caller{delegated: &delegatedSender{scope: reservationScope{sub: principalRef{"person", testIssuerURL, testSubjectSub}, rootActor: rootAgent, host: "desk"}}}
+	dir := func(key string) string {
+		return filepath.Join(h.g.storeRoot, "actions", h.g.actionNamespace(sender, key))
+	}
+	const unauthenticated = `{"error":"action-key-unauthenticated","refusal":"action-key-unauthenticated","refusedAt":"action-key"}`
+
+	// The crash window: the write's own dispatch answers its uncertain
+	// record, then its record is lost and the marker is found without it.
+	key := delegationKey(8)
+	status, raw := h.presentRaw(t, "/act", h.actBody("c-0", key, ""), cred)
+	var body map[string]any
+	if err := json.Unmarshal([]byte(raw), &body); err != nil || status != http.StatusConflict || body["action"] == nil || len(body) != 2 {
+		t.Fatalf("the uncertain first dispatch: %d %s", status, raw)
+	}
+	marker, err := os.ReadFile(filepath.Join(dir(key), "dispatch-1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir(key), "action.json")); err != nil {
+		t.Fatal(err)
+	}
+	calls := len(grantCalls(t, h.root))
+	status, raw = h.presentRaw(t, "/act", h.actBody("c-1", key, ""), cred)
+	if status != http.StatusForbidden || raw != unauthenticated || h.sent(key) != 1 || reads() != 0 || len(grantCalls(t, h.root)) != calls {
+		t.Fatalf("a marker found without its answer: %d %s, sent %d, reads %d", status, raw, h.sent(key), reads())
+	}
+
+	// A claim lost to another request: between this request's lookup and
+	// its dispatch marker, another claims the attempt. Nothing is sent by
+	// this request, and the key is found uncertain.
+	lost := delegationKey(9)
+	h.g.beforeAdmit = func() {
+		if err := os.WriteFile(filepath.Join(dir(lost), "dispatch-1.json"), marker, 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	status, raw = h.presentRaw(t, "/act", h.actBody("l-0", lost, ""), cred)
+	h.g.beforeAdmit = nil
+	if status != http.StatusForbidden || raw != unauthenticated || h.sent(lost) != 0 || reads() != 0 {
+		t.Fatalf("a claim lost to another request: %d %s, sent %d, reads %d", status, raw, h.sent(lost), reads())
+	}
+}
