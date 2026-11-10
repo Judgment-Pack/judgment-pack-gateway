@@ -481,6 +481,10 @@ The flag is shown with the approval and recorded. It is a report, never a refusa
   acquisition, after the admission read answers `admit`, and for a read-back before it runs, as
   the RFC orders a separate owner read; the admission read carries no owner (spec #284 NC2).
 - **Not built.** Reassignment out of quarantine, and acceptance.
+- **The operator's own calls under a quarantined grant.** RFC 0030 §5 rule 5 says a quarantined
+  grant admits no call, delegated or not. Here only a delegated call is admitted under the grant:
+  the operator's own writes, acquisitions and read-backs on a platform whose grant is quarantined
+  still run, under the platform's credentials files.
 - **Where the publisher record lives.** It is kept beside the engine configuration and not in the
   connection grant record. A customer MCP server is registered by the core (`gateway connect`), not
   by a connection custody. A customer binding without a declared publisher is `undeclared`. The
