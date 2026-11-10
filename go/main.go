@@ -17,6 +17,7 @@ package main
 //	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--source-shape NAME=SHAPE] [--receipt-version 2|3] [--port N]
 //	gateway keygen [seedfile]
 //	gateway rotate-key --seed <file> --registry <file>
+//	gateway journal compact --store <dir> --archive <dir> --retention <duration>
 //	gateway posture [--json] [--config <engine.json> | [serve] <store> <seedfile> <authority> <registry> [serve options]]
 //	gateway publishers --config <engine.json> [--check] [--policy report|refuse]
 //	gateway version
@@ -43,7 +44,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | mcp | posture | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | journal | mcp | posture | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -69,6 +70,8 @@ func main() {
 		os.Exit(cmdKeygen(os.Args[2:]))
 	case "rotate-key":
 		os.Exit(cmdRotateKey(os.Args[2:], os.Stdout, os.Stderr))
+	case "journal":
+		os.Exit(cmdJournal(os.Args[2:], os.Stdout, os.Stderr))
 	case "mcp":
 		os.Exit(cmdMCP(os.Args[2:]))
 	case "posture":
@@ -398,8 +401,21 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", witnessStartLine(log, cfg.witness))
 		witness = newWitnessService(log, cfg.witness, os.Stderr)
 	}
+	// held while the engine serves, so gateway journal compact refuses; taken
+	// before the service is built, so a compaction under way refuses the start
+	// before anything is made in the store (#359)
+	storeHold, err := holdServedStore(cfg.store)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	defer storeHold.Close()
 	service, err := buildService(cfg.store, seed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources, identity))
 	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	if err := storeHold.made(); err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
@@ -813,8 +829,21 @@ func cmdServe(args []string) int {
 		return 1
 	}
 
+	// held while the gateway serves, so gateway journal compact refuses; taken
+	// before the service is built, so a compaction under way refuses the start
+	// before anything is made in the store (#359)
+	storeHold, err := holdServedStore(storeRoot)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	defer storeHold.Close()
 	service, err := buildService(storeRoot, seed, authority, registryPath, opts)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	if err := storeHold.made(); err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
