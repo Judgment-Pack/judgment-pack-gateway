@@ -895,8 +895,14 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 			// parts around the counting admission, as for /act. Its state
 			// first: a grant that is not live is refused before the issuing
 			// host is read, so it consumes none of the delegation's budget.
-			if refusal := g.askCustody(spec.grant, grantCheck); refusal != nil {
-				return nil, refusal
+			// A call the chain's own scope check refuses is not asked about
+			// the grant at all: the admission reports out-of-scope, as /act
+			// does, and the agent is told nothing of a grant it cannot use.
+			credential := who.delegated.credential
+			if credential == nil || credential.chain.scopeRefusal(g.authority, source, tool, spec.effects[tool]) == nil {
+				if refusal := g.askCustody(spec.grant, grantCheck); refusal != nil {
+					return nil, refusal
+				}
 			}
 			member, refusal := g.delegation.admitDelegated(who.delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true})
 			if refusal != nil {

@@ -226,3 +226,150 @@ func TestUncertainFirstDispatchOutsideTheReadBacksScope(t *testing.T) {
 		t.Fatalf("the key, found uncertain: %d %s", status, raw)
 	}
 }
+
+// A key the lookup finds uncertain without a record of its own -- a dispatch
+// marker found without its answer (the crash window), or an attempt another
+// request claimed first -- is found uncertain as one with a record is: a link
+// that excludes the read-back's source and tool is refused as
+// unauthenticated, not answered the uncertain record (SPEC.md §11.8, gateway
+// #374 LOW-1). Only the request whose own dispatch left the key uncertain
+// answers 409.
+func TestKeyFoundUncertainWithoutItsRecordOutsideTheReadBacksScope(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	reads := h.countReads(t)
+	actionKeysMode(t, h.root, "write", "drop")
+	write := scopeOf("tickets/write", []any{"query"}, []any{"act"}, map[string]any{})
+	cred := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("88", 16), "scope": map[string]any{"sources": []any{write}}}))
+	sender := &caller{delegated: &delegatedSender{scope: reservationScope{sub: principalRef{"person", testIssuerURL, testSubjectSub}, rootActor: rootAgent, host: "desk"}}}
+	dir := func(key string) string {
+		return filepath.Join(h.g.storeRoot, "actions", h.g.actionNamespace(sender, key))
+	}
+	const unauthenticated = `{"error":"action-key-unauthenticated","refusal":"action-key-unauthenticated","refusedAt":"action-key"}`
+
+	// The crash window: the write's own dispatch answers its uncertain
+	// record, then its record is lost and the marker is found without it.
+	key := delegationKey(8)
+	status, raw := h.presentRaw(t, "/act", h.actBody("c-0", key, ""), cred)
+	var body map[string]any
+	if err := json.Unmarshal([]byte(raw), &body); err != nil || status != http.StatusConflict || body["action"] == nil || len(body) != 2 {
+		t.Fatalf("the uncertain first dispatch: %d %s", status, raw)
+	}
+	marker, err := os.ReadFile(filepath.Join(dir(key), "dispatch-1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir(key), "action.json")); err != nil {
+		t.Fatal(err)
+	}
+	calls := len(grantCalls(t, h.root))
+	status, raw = h.presentRaw(t, "/act", h.actBody("c-1", key, ""), cred)
+	if status != http.StatusForbidden || raw != unauthenticated || h.sent(key) != 1 || reads() != 0 || len(grantCalls(t, h.root)) != calls {
+		t.Fatalf("a marker found without its answer: %d %s, sent %d, reads %d", status, raw, h.sent(key), reads())
+	}
+
+	// A claim lost to another request: between this request's lookup and
+	// its dispatch marker, another claims the attempt. Nothing is sent by
+	// this request, and the key is found uncertain.
+	lost := delegationKey(9)
+	h.g.beforeAdmit = func() {
+		if err := os.WriteFile(filepath.Join(dir(lost), "dispatch-1.json"), marker, 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	status, raw = h.presentRaw(t, "/act", h.actBody("l-0", lost, ""), cred)
+	h.g.beforeAdmit = nil
+	if status != http.StatusForbidden || raw != unauthenticated || h.sent(lost) != 0 || reads() != 0 {
+		t.Fatalf("a claim lost to another request: %d %s, sent %d, reads %d", status, raw, h.sent(lost), reads())
+	}
+}
+
+// A delegated acquisition its chain's own scope check refuses is not asked
+// about the grant: a write-only link's /acquire on the platform's live
+// source, under a quarantined grant, is refused out-of-scope by its
+// admission, as /act refuses the same link, never told the grant's state
+// (SPEC.md §11.5, gateway #374 LOW-2). The admission read is made with
+// count false, so nothing is counted, and nothing runs.
+func TestOutOfScopeAcquisitionIsNotToldTheGrantsState(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	reads := h.countReads(t)
+	h.setGrant(grantStandIn(t, h.root))
+	grantAnswer(t, h.root, grantCheck, &grantStandInAnswer{Exit: 1, Stderr: "grants: grant-quarantined\n"})
+	write := scopeOf("tickets/write", []any{"query"}, []any{"act"}, map[string]any{})
+	writeOnly := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("88", 16), "scope": map[string]any{"sources": []any{write}}}))
+	hostReads := h.host.readCount()
+	status, raw := h.presentRaw(t, "/acquire", h.acquireBody("a-narrow", "query"), writeOnly)
+	if status != http.StatusForbidden || raw != `{"error":"out-of-scope: link 0 does not admit the call (source)","reason":"source","refusal":"out-of-scope"}` {
+		t.Fatalf("a write-only link's acquisition: %d %s", status, raw)
+	}
+	if reads() != 0 || len(grantCalls(t, h.root)) != 0 || h.host.readCount() != hostReads+1 || h.host.counted() != 0 {
+		t.Fatalf("reads %d, custody %d, host reads %d->%d, counted %d", reads(), len(grantCalls(t, h.root)), hostReads, h.host.readCount(), h.host.counted())
+	}
+	// The same grant still refuses a link whose scope holds the call.
+	cred := h.credential(t, statement(t, nil))
+	if status, raw := h.presentRaw(t, "/acquire", h.acquireBody("a-held", "query"), cred); status != http.StatusForbidden || raw != `{"error":"grant-quarantined: the platform's connection grant is quarantined","refusal":"grant-quarantined"}` || len(grantCalls(t, h.root)) != 1 {
+		t.Fatalf("a link whose scope holds the call: %d %s", status, raw)
+	}
+}
+
+// A delegated write with no key (an engine before version 14) that its
+// chain's own scope check refuses is not asked about the grant either: a
+// link without the write's source, under a quarantined grant, is refused
+// out-of-scope by its admission, which counts nothing, and nothing is sent
+// (SPEC.md §11.5). A link whose scope holds the write still gets the
+// grant's refusal.
+func TestOutOfScopeUnkeyedWriteIsNotToldTheGrantsState(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	h.g.requireActionKey = false
+	h.setGrant(grantStandIn(t, h.root))
+	grantAnswer(t, h.root, grantCheck, &grantStandInAnswer{Exit: 1, Stderr: "grants: grant-quarantined\n"})
+	unkeyed := func(session string) string {
+		key := delegationKey(4)
+		return strings.Replace(h.actBody(session, key, ""), `,"actionKey":"`+key+`"`, "", 1)
+	}
+	live := scopeOf("tickets/live", []any{"query"}, []any{"read"}, map[string]any{})
+	liveOnly := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("88", 16), "scope": map[string]any{"sources": []any{live}}}))
+	hostReads := h.host.readCount()
+	status, raw := h.presentRaw(t, "/act", unkeyed("u-narrow"), liveOnly)
+	if status != http.StatusForbidden || raw != `{"error":"out-of-scope: link 0 does not admit the call (source)","reason":"source","refusal":"out-of-scope","refusedAt":"delegation"}` {
+		t.Fatalf("an unkeyed write outside the link's scope: %d %s", status, raw)
+	}
+	if len(grantCalls(t, h.root)) != 0 || h.host.readCount() != hostReads+1 || h.host.counted() != 0 || h.sent(delegationKey(4)) != 0 {
+		t.Fatalf("custody %d, host reads %d->%d, counted %d", len(grantCalls(t, h.root)), hostReads, h.host.readCount(), h.host.counted())
+	}
+	cred := h.credential(t, statement(t, nil))
+	if status, raw := h.presentRaw(t, "/act", unkeyed("u-held"), cred); status != http.StatusForbidden || raw != `{"error":"grant-quarantined: the platform's connection grant is quarantined","refusal":"grant-quarantined","refusedAt":"grant"}` || len(grantCalls(t, h.root)) != 1 || h.host.counted() != 0 {
+		t.Fatalf("an unkeyed write its link's scope holds: %d %s", status, raw)
+	}
+}
+
+// A keyed write whose key holds a reservation in its scope, from a link that
+// names the write's source and tool but not its effect, is not asked about
+// the grant: the key lookup does not refuse it, since the reservation is its
+// scope's, and its admission refuses it out-of-scope (effect), counting
+// nothing (SPEC.md §11.5). A broader link reserved the key under a
+// quarantined grant first, and dispatches once the grant is live.
+func TestOutOfScopeWriteOnAReservedKeyIsNotToldTheGrantsState(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	h.setGrant(grantStandIn(t, h.root))
+	grantAnswer(t, h.root, grantCheck, &grantStandInAnswer{Exit: 1, Stderr: "grants: grant-quarantined\n"})
+	key := delegationKey(3)
+	cred := h.credential(t, statement(t, nil))
+	status, raw := h.presentRaw(t, "/act", h.actBody("p-0", key, ""), cred)
+	if status != http.StatusForbidden || raw != `{"error":"grant-quarantined: the platform's connection grant is quarantined","refusal":"grant-quarantined","refusedAt":"grant"}` || len(grantCalls(t, h.root)) != 1 || h.sent(key) != 0 {
+		t.Fatalf("the reserving request: %d %s", status, raw)
+	}
+	noEffect := scopeOf("tickets/write", []any{"query"}, []any{"read-external"}, map[string]any{})
+	narrow := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("88", 16), "scope": map[string]any{"sources": []any{noEffect}}}))
+	hostReads := h.host.readCount()
+	status, raw = h.presentRaw(t, "/act", h.actBody("p-1", key, ""), narrow)
+	if status != http.StatusForbidden || raw != `{"error":"out-of-scope: link 0 does not admit the call (effect)","reason":"effect","refusal":"out-of-scope","refusedAt":"delegation"}` {
+		t.Fatalf("a link without the write's effect: %d %s", status, raw)
+	}
+	if len(grantCalls(t, h.root)) != 1 || h.host.readCount() != hostReads+1 || h.host.counted() != 0 || h.sent(key) != 0 {
+		t.Fatalf("custody %d, host reads %d->%d, counted %d, sent %d", len(grantCalls(t, h.root)), hostReads, h.host.readCount(), h.host.counted(), h.sent(key))
+	}
+	grantAnswer(t, h.root, grantCheck, nil)
+	if status, out := h.present(t, "/act", h.actBody("p-2", key, ""), cred); status != http.StatusOK || h.sent(key) != 1 || h.host.counted() != 1 || len(grantCalls(t, h.root)) != 3 {
+		t.Fatalf("the broader link once the grant is live: %d %v, sent %d, counted %d", status, out, h.sent(key), h.host.counted())
+	}
+}
