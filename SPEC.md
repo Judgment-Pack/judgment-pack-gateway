@@ -2641,9 +2641,12 @@ key is found uncertain, and before anything else of the read-back is asked -- th
 its owner read, the publisher policy (§10, rules 3 and 8) -- the run's actor is held to that source
 and tool: every link of its chain must pass step 11's `source` and `tool` conditions for them, as
 for the write's. A link that excludes either is refused as `action-key-unauthenticated`, and no
-read-back runs. A request answered from retained evidence is not held to the read-back's source and
-tool. For every sender, the read-back is then a use of the platform's grant (§10, rule 3), counted
-against no limit: a grant the custody does not admit leaves the key uncertain.
+read-back runs. A request whose own dispatch left the key uncertain is not refused, since the write
+may have been sent: where a link excludes either, no read-back runs, and the request answers `409`
+`action-reconciliation-unavailable` with its uncertain record. A request answered from retained
+evidence is not held to the read-back's source and tool. For every sender, the read-back is then a
+use of the platform's grant (§10, rule 3), counted against no limit: a grant the custody does not
+admit leaves the key uncertain.
 
 A first dispatch, or a freed attempt, under a delegated key is the actor's alone and is admitted
 by §11.5 with counting; the dispatch marker of attempt *n* (§1.2b) records the receipt's

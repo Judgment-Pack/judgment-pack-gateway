@@ -255,8 +255,10 @@ owner is refused, serves no read-back (RFC 0030 §5 rule 5). The key then stays 
 answers `409` `action-reconciliation-unavailable`, naming the refusal, with its uncertain record,
 and nothing is sent again. That holds for every sender the key authenticates. Before the grant is
 asked, the run's actor is held to the read-back's own source and tool: every link of its chain
-must name the platform's `live` source and the declared read tool, or it is refused as
-`action-key-unauthenticated` (SPEC.md §11.8).
+must name the platform's `live` source and the declared read tool. On a key the lookup finds
+uncertain, a link that does not is refused as `action-key-unauthenticated` (SPEC.md §11.8). On a
+key this request's own dispatch left uncertain, the request is not refused, since the write may
+have been sent: no read-back runs, and it answers its uncertain record.
 
 No scope is recorded as used, since the call's token is the platform's and not the custody's.
 

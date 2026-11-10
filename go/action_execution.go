@@ -259,7 +259,11 @@ func (r *actionReconciliationRequest) member(result value) *vObject {
 	v.set("outcome", vString(r.read.outcome(r.key, result)))
 	return v
 }
-func (g *gatewayService) reconcileAction(session, platform string, args value, who *caller, key string, recovery *actionRecovery, prior map[string]any) (map[string]any, error) {
+
+// reconcileAction answers an uncertain key by its declared read-back:
+// one the key lookup found uncertain (lookup), or one this request's own
+// dispatch left uncertain.
+func (g *gatewayService) reconcileAction(session, platform string, args value, who *caller, key string, recovery *actionRecovery, prior map[string]any, lookup bool) (map[string]any, error) {
 	if recovery == nil || recovery.readBack == nil {
 		return nil, &actionUncertain{"action-reconciliation-unavailable", prior}
 	}
@@ -267,11 +271,17 @@ func (g *gatewayService) reconcileAction(session, platform string, args value, w
 	// actor causes one only within its own scope: the read-back runs the
 	// platform's live source, not the write's, so every link must name that
 	// source and the declared read tool, as it names the write's (SPEC.md
-	// §11.8; spec #291 L1). A link that excludes either is refused, saying
-	// nothing, before anything else of the read-back is asked -- its grant,
-	// its publisher -- and no read-back runs.
+	// §11.8; spec #291 L1). Where the key lookup found the key uncertain, a
+	// link that excludes either is refused, saying nothing, before anything
+	// else of the read-back is asked -- its grant, its publisher. Where this
+	// request's own dispatch left it uncertain, the request is not refused,
+	// since the write may have been sent: it answers the uncertain record.
+	// Either way no read-back runs.
 	if who != nil && who.delegated != nil && who.delegated.kind == "actor" && who.delegated.credential.chain.sourceToolRefusal(g.authority, platform+"/live", recovery.readBack.tool) {
-		return nil, refuse(refusalKeyUnauthenticated, "")
+		if lookup {
+			return nil, refuse(refusalKeyUnauthenticated, "")
+		}
+		return nil, &actionUncertain{"action-reconciliation-unavailable: the run's actor's scope does not hold the read-back's source and tool, and it did not run", prior}
 	}
 	request, err := recovery.readBack.request(key, args)
 	if err != nil {

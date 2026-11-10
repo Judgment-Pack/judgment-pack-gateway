@@ -198,3 +198,31 @@ func TestDelegatedReadBackIsHeldToTheGrant(t *testing.T) {
 		t.Fatalf("a replay through a link without the live source: %d %v", status, again)
 	}
 }
+
+// An actor whose scope holds the write and not the read-back's source
+// dispatches, and the outcome is uncertain. The write may have been sent,
+// so that request is not refused: no read-back runs, the custody is not
+// asked for one, and the key answers its uncertain record. A later request
+// on the key, which the key lookup finds uncertain, is refused (SPEC.md
+// §11.8, spec #291 L1).
+func TestUncertainFirstDispatchOutsideTheReadBacksScope(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	reads := h.countReads(t)
+	actionKeysMode(t, h.root, "write", "drop")
+	write := scopeOf("tickets/write", []any{"query"}, []any{"act"}, map[string]any{})
+	cred := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("88", 16), "scope": map[string]any{"sources": []any{write}}}))
+	key := delegationKey(7)
+	status, raw := h.presentRaw(t, "/act", h.actBody("r-0", key, ""), cred)
+	var body map[string]any
+	if err := json.Unmarshal([]byte(raw), &body); err != nil || status != http.StatusConflict || body["error"] != "action-reconciliation-unavailable: the run's actor's scope does not hold the read-back's source and tool, and it did not run" || body["action"] == nil || len(body) != 2 {
+		t.Fatalf("the uncertain first dispatch: %d %s", status, raw)
+	}
+	// The write's check and admission, and no read-back's.
+	if calls := grantCalls(t, h.root); len(calls) != 2 || h.sent(key) != 1 || reads() != 0 {
+		t.Fatalf("custody calls %d, sent %d, reads %d", len(calls), h.sent(key), reads())
+	}
+	status, raw = h.presentRaw(t, "/act", h.actBody("r-1", key, ""), cred)
+	if status != http.StatusForbidden || raw != `{"error":"action-key-unauthenticated","refusal":"action-key-unauthenticated","refusedAt":"action-key"}` || h.sent(key) != 1 || reads() != 0 || len(grantCalls(t, h.root)) != 2 {
+		t.Fatalf("the key, found uncertain: %d %s", status, raw)
+	}
+}
