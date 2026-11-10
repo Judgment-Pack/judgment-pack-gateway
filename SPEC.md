@@ -2241,11 +2241,18 @@ no credential, no token, no token digest, no provider account and no content.
    search, a connection test), the gateway reads the owner's standing from its issuing host. `removed` applies the operator's removal and refuses
    (`owner-removed`); any answer other than `current` or `removed`, and no answer, refuses
    (`owner-unknown`). A grant without an owner record is used as before and reported.
-   A grant covers the connection custody's own credentials only. An engine platform's
-   operations, `<platform>/live` and `<platform>/write`, take their tokens from the
-   credentials files the configuration names and use no grant, so no rule of this section
-   applies to them: an action through `/act`, delegated or not, gets no owner read, idle
-   expiry, quarantine or `excess-scope` check (gateway #368).
+   An engine platform's operations, `<platform>/live` and `<platform>/write`, take their
+   tokens from the credentials files the configuration names, not from the custody. A
+   **delegated** action through `/act` is admitted under the connection grant its platform
+   names (below): the custody admits it as it admits every use of its own credentials, with
+   this rule's owner read and rules 1, 4 and 5, and records the use as rule 2 says but with no
+   scope used, since the write's token is the platform's. A delegated write on a platform that
+   names no grant, or whose grant the custody holds no record of, is refused (`grant-unknown`).
+   A custody that cannot be read, a custody program that cannot be run or does not answer, and
+   an answer of any other form refuse (`grant-unreadable`): what could not be read is never
+   taken for a grant that is not there. An undelegated action is the operator's own and uses
+   no grant, as before; nor does an acquisition of an engine platform, delegated or not, or a
+   read-back of an uncertain key (gateway #372).
 4. A grant with an idle expiry whose last use, or creation where it was never used, is at least
    that long before now is expired; equal is expired, and so is a time that cannot be read. It is
    revoked and refused (`grant-idle-expired`) at its next use of any kind.
@@ -2280,6 +2287,29 @@ no credential, no token, no token digest, no provider account and no content.
    its key, and recorded its first scope if it sent `keyScope` (§1.2b): nothing was begun, and the
    key is its scope's once the policy allows. A registration whose name closely matches an
    integration the gateway ships, under another publisher, is flagged `name-lookalike`.
+
+**The platform's grant** (`engineVersion` 16). A platform that sets `write: true` may name the
+custody connection its delegated writes are admitted under:
+
+```json
+"grant": {"provider": "azure-devops", "connection": "boards", "stateDir": "/var/lib/connections", "principal": "operator", "user": "engine-custody"}
+```
+
+`provider` is one of the providers above, `connection` the connection's name in custody (a flat
+token), `stateDir` the custody's absolute root, `principal` the custody's principal, and `user`
+the OS user the custody belongs to. The signer never reads the custody: for each delegated
+dispatch it runs `gateway-connections` as `user`, with an empty environment and the request
+`{"connection", "provider"}` on stdin, for at most 30 seconds each, twice: `--grants check`
+before the admission read (§11.5), the grant's state alone (rules 1, 4 and 5, no owner read and
+no record), answered `{"check": "pass", "connection", "provider", "version": 1}`; and, once the
+admission read answers `admit`, `--grants admit`, the use with this rule's owner read, answered
+`{"admission": "admit", "connection", "provider", "version": 1}`. A refusal is
+`grants: <refusal>` on stderr with exit 1; each stream is bounded at 4096 bytes. Only the
+refusals of rules 1, 3 (from `admit` alone), 4 and 5, `grant-revoked` and `grant-unknown` are
+read as themselves,
+and the requester is told the refusal's name and a fixed sentence, never the scopes or the
+connection. `user` is never root, the signer's, the MCP server's or a platform's, whose adapters
+would then read the custody's credentials.
 
 ## 11. Delegated authority
 
@@ -2421,7 +2451,16 @@ Every call presented with a credential is admitted **immediately before it is di
 action-key lookup (§11.8) and before the dispatch marker (§1.2b) is created. A request that the
 key lookup answers from retained evidence, sends to a read-back, or refuses, dispatches nothing
 and is not admitted. The gateway has no approval pause of its own; every dispatch is admitted at
-that point, after any wait for an action key's lock. Admission applies, in order, steps 0 to 7
+that point, after any wait for an action key's lock. For `/act`, the platform's connection grant
+(§10, rule 3) comes first: a delegated write on a platform that names no grant is refused before
+the session is admitted; the custody's check of the grant's state is made after the session is
+admitted and before step 0, so a grant not live is refused before the issuing host is read and
+consumes nothing of the delegation's limits; and the custody's admission, with its owner read, is
+made after the admission read answers `admit` (RFC 0030 §2): a call steps 0 to 12 refuse reports
+that refusal, and one the owner read refuses is not dispatched and leaves its count used, which
+fails closed. The exception is a first keyed request whose leaf excludes the write (§11.8): it is
+refused as its admission refuses it, which reads the issuing host, and since it never dispatches,
+it uses no grant and the grant is not checked. Admission applies, in order, steps 0 to 7
 (§11.4, §11.1), then:
 
 | Step | Refusal | Condition |
@@ -2460,7 +2499,8 @@ host's step 11 or 12. A lost answer to a counting read refuses
 the call, which the host may already have counted: that fails closed.
 
 **Refusals** are answered `403` with `{"error", "refusal"}` (and `reason` for `out-of-scope`);
-`/act` adds `"refusedAt": "delegation"`. Nothing is dispatched, retained or minted.
+`/act` adds `"refusedAt": "delegation"`, or `"refusedAt": "grant"` for the grant's refusals.
+Nothing is dispatched, retained or minted.
 
 ### 11.6 Revocation
 
@@ -2622,12 +2662,13 @@ What this section defines where the RFC leaves it open, and where it departs fro
   more than five links are refused at steps 3 and 1, enforcing the RFC's open-question bounds.
 - **Scope.** Only `mcp` sources name a tool; the effect is the owner taxonomy's; no `x-` limit is
   declared.
-- **Admission read.** It carries no grant owner (spec #284 NC2). The connection custody's owner
-  read (§10 rule 3) is made at every use of an owned grant, delegated or not, but a delegated
-  `/act` uses no grant: the engine's write takes its token from the operator's credentials file
-  (§10 rule 3), so it gets no owner read, idle expiry, quarantine or `excess-scope` check. NC2
-  stays open for it (gateway #368). Its answer names the first refusal of steps 8 to 12 the host
-  finds; the gateway orders it with its own.
+- **Admission read.** It carries no grant owner (spec #284 NC2). A delegated `/act` is admitted
+  under its platform's connection grant (§10 rule 3), whose owner's standing the custody reads
+  with its own owner read after the admission read answers `admit`, as the RFC orders a separate
+  owner read, rather than having the admission read carry it. A delegated `/acquire`, and the
+  read-back of an uncertain delegated key, use no grant, though the RFC holds every use of a grant
+  to the owner read, a read-back included; NC2 stays open for them (gateway #372). The answer names the first refusal of steps 8
+  to 12 the host finds; the gateway orders it with its own.
 - **The actor row** also requires the write's source and tool in the leaf's scope for a request
   the key lookup answers (spec #284 NC1), and the subject row reads the subject's standing
   (spec #284 NC5).

@@ -40,15 +40,17 @@ import (
 // version 10 a decision policy's optional `shape`, version 11 per-operation
 // owner descriptor approvals, version 12 signed `descriptorStatements`, and
 // version 13 the source sandbox wrapper and optional `sandbox` configuration,
-// version 14 a required action key, and version 15 the optional `delegation`
-// (SPEC.md §11.2):
+// version 14 a required action key, version 15 the optional `delegation`
+// (SPEC.md §11.2), and version 16 a platform's optional `grant`, the
+// connection grant its delegated writes are admitted under (SPEC.md §10,
+// rule 3; grant_gate.go):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "15"
+const engineVersion = "16"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -152,6 +154,10 @@ type platformConfig struct {
 	// (engineVersion 8, binding_template.go): a tenant's part of a URL and
 	// of a tool's name, never a secret; nil when the platform gives none.
 	parameters map[string]string
+	// grant is the connection grant the platform's delegated writes are
+	// admitted under (engineVersion 16, grant_gate.go); nil when it names
+	// none, and then no delegated write is admitted.
+	grant *platformGrant
 }
 
 // identitySpec is the identity member as written: the token issuer, the
@@ -275,7 +281,7 @@ var engineMembers = map[string]bool{
 var platformMembers = map[string]bool{
 	"binding": true, "credentials": true, "user": true,
 	"endpoint": false, "environment": false, "write": false, "descriptors": false, "operationDescriptors": false, "descriptorStatements": false,
-	"decisionPolicy": false, "parameters": false,
+	"decisionPolicy": false, "parameters": false, "grant": false,
 }
 
 // parseEngineConfig holds the file to the shape the design note states.
@@ -578,6 +584,19 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: parameters is a version-8 member; engineVersion %s has no parameters", name, version)
 			}
 			if pc.parameters, err = parsePlatformParameters(parametersValue); err != nil {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: %v", name, err)
+			}
+		}
+		if grantValue, present := p.get("grant"); present {
+			if !versionAtLeast(version, "16") {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: grant is a version-16 member; engineVersion %s has no grant", name, version)
+			}
+			// A grant admits delegated writes; a platform that allows none
+			// has nothing to admit, and the member would read as a hold.
+			if !pc.write {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: grant admits delegated writes under a connection grant, and the platform does not set write: true", name)
+			}
+			if pc.grant, err = parsePlatformGrant(grantValue); err != nil {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: %v", name, err)
 			}
 		}
@@ -1235,7 +1254,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.write.url != "" {
 				endpoint, transport = b.write.url, "http"
 			}
-			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.write)}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.write), grant: grantGateOf(p, adapter("gateway-connections"))}
 		}
 	}
 	if cfg.sandbox != nil {
@@ -1651,6 +1670,29 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 			}
 		}
 	}
+	// The custody a platform's delegated writes are admitted under is read
+	// by its program as the custody's own user (grant_gate.go): never root
+	// or the signer, which would read the seed and the custody both, never
+	// the MCP server's, and never a platform's, whose adapters would then
+	// read the custody's credentials.
+	for i := range cfg.platforms {
+		p := &cfg.platforms[i]
+		if p.grant == nil {
+			continue
+		}
+		uid, user := p.grant.uid, p.grant.user
+		switch {
+		case uid == 0:
+			return nil, fmt.Errorf("platform %s: grant.user %s is root; the custody's program would read the seed", p.name, user)
+		case uid == host.euid:
+			return nil, fmt.Errorf("platform %s: grant.user %s is the signer's own; the signer never reads the custody", p.name, user)
+		case uid == frontendUID || user == frontendUser:
+			return nil, fmt.Errorf("platform %s: grant.user %s is the MCP server's (%s)", p.name, user, frontendUser)
+		}
+		if other, dup := seen[uid]; dup {
+			return nil, fmt.Errorf("platform %s: grant.user %s is platform %s's; its adapters would read the custody's credentials", p.name, user, other)
+		}
+	}
 	// a host runtime's socket is an adapter's way to the seed; an engine
 	// with no platform runs no adapter
 	if host.sockets != nil && len(cfg.platforms) > 0 {
@@ -1827,6 +1869,22 @@ func holdAdapterSources(sources map[string]sourceSpec, host engineHost) error {
 			resolved[command] = path
 		}
 		spec.argv = append([]string{path}, spec.argv[1:]...)
+		if spec.grant != nil {
+			// The custody program a delegated write is admitted through,
+			// held as an adapter is.
+			command := spec.grant.argv[0]
+			custody, held := resolved[command]
+			if !held {
+				var err error
+				if custody, err = holdAdapter(command, host); err != nil {
+					return fmt.Errorf("source %s: grant custody %s: %v", name, command, err)
+				}
+				resolved[command] = custody
+			}
+			gate := *spec.grant
+			gate.argv = append([]string{custody}, gate.argv[1:]...)
+			spec.grant = &gate
+		}
 		if spec.sandbox != nil {
 			command := spec.sandbox.helper
 			helper, held := resolved[command]
@@ -2192,6 +2250,11 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
 		p.uid, p.home = uid, home
+		if p.grant != nil {
+			if p.grant.uid, _, err = account(p.grant.user); err != nil {
+				return nil, fmt.Errorf("platform %s: grant.user: %v", p.name, err)
+			}
+		}
 		b, err := loadBinding(cfg.catalog, p.binding)
 		if err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)

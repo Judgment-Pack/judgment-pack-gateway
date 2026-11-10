@@ -55,6 +55,10 @@ type delegationRefusal struct {
 	reason string
 	// scopeReason is step 11's reason, for out-of-scope alone.
 	scopeReason string
+	// at is the step an /act refusal names other than the delegation's:
+	// "grant" for a refusal of the platform's connection grant (SPEC.md
+	// §10, rule 3); "" for the delegation's own.
+	at string
 }
 
 func (r *delegationRefusal) Error() string {

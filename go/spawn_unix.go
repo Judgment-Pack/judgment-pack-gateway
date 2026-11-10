@@ -199,6 +199,16 @@ func lookupCredential(name string) (*syscall.Credential, error) {
 // acquisition instead, where the start error is reported in full.
 func requireUserSwitching(sources map[string]sourceSpec) error {
 	for name, spec := range sources {
+		// The custody program a delegated write is admitted through runs
+		// as the custody's user (grant_gate.go).
+		if spec.grant != nil && spec.grant.user != "" {
+			if err := switchingRefusal(os.Geteuid(), processCapabilities()); err != nil {
+				return fmt.Errorf("source %s: grant.user %s: %v", name, spec.grant.user, err)
+			}
+			if _, err := lookupCredential(spec.grant.user); err != nil {
+				return fmt.Errorf("source %s: grant.user: %w", name, err)
+			}
+		}
 		if spec.user == "" {
 			continue
 		}

@@ -43,6 +43,9 @@ func requireUserSwitching(sources map[string]sourceSpec) error {
 		if spec.user != "" {
 			return fmt.Errorf("--source-user %s=%s: running a source as another user is not supported on this platform", name, spec.user)
 		}
+		if spec.grant != nil && spec.grant.user != "" {
+			return fmt.Errorf("source %s: grant.user %s: running a program as another user is not supported on this platform", name, spec.grant.user)
+		}
 	}
 	return nil
 }

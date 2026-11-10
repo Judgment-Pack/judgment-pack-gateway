@@ -17,11 +17,14 @@ Google Drive, Gmail, Notion, Databricks and Azure DevOps. Each Drive, Gmail or N
 at most one connection, named after its provider. Databricks and Azure DevOps name each connection
 by its `id`.
 
+An engine platform's operations take their tokens from the credentials files its configuration
+names, not from custody. A delegated write through `/act` is admitted under the grant of a custody
+connection its platform names ([below](#delegated-writes)); the operator's own writes, and the
+platform's acquisitions, delegated or not, use no grant.
+
 These have no record in this release:
 
-- an engine platform's credentials files, from which its `<platform>/live` and `<platform>/write`
-  operations take their tokens: an action through `/act`, delegated or not, uses no grant, so no
-  owner read, idle expiry, quarantine or `excess-scope` check applies to it (gateway #368);
+- an engine platform's credentials files;
 - an Obsidian folder, which is local;
 - an object store's access keys;
 - a search service's or a processing service's API key.
@@ -206,6 +209,8 @@ does not know, exits 2.
 | `remove-owner` | `{"owner", "ownerHost", "removal"?}` | revokes or quarantines the owner's grants |
 | `revoke` | `{"provider", "connection"}` | revokes one grant |
 | `sweep` | `{}` | revokes idle grants and makes the owner read for every live owned grant; each result is `idle-expired`, `owner-removed`, `owner-unknown` or `current` |
+| `check` | `{"provider", "connection"}` | the engine's check of a delegated write's grant before its admission read ([below](#delegated-writes)): the grant's state alone, no owner read and no record; answers `{"check": "pass", "connection", "provider", "version": 1}` |
+| `admit` | `{"provider", "connection"}` | the engine's admission of a delegated write after its admission read answers `admit` ([below](#delegated-writes)): the check of a use, owner read included, and its record; answers `{"admission": "admit", "connection", "provider", "version": 1}` |
 
 The report gives each grant the record's members except the custody identifier, together with:
 
@@ -217,6 +222,53 @@ The report gives each grant the record's members except the custody identifier, 
 A finding's sentence names no path, no account and no token, as `/posture`'s public reasons do
 not (#350). The report's members are the owner reference and scope names, and never a provider
 account.
+
+## Delegated writes
+
+A delegated write through `/act` (SPEC.md §11) is admitted under a connection grant (gateway #368,
+SPEC.md §10 rule 3). The platform names it with its `grant` member (engine version 16):
+
+```json
+"grant": {"provider": "azure-devops", "connection": "boards", "stateDir": "/var/lib/connections", "principal": "operator", "user": "engine-custody"}
+```
+
+The signer never reads the custody, so for each delegated dispatch it runs `gateway-connections`
+as the custody's `user`, with an empty environment, twice:
+
+- `--grants check`, after the session is admitted and before the issuing host's admission read:
+  the first half of the check every use passes (`grantState`): reconciliation, so a scope granted
+  since is found (drift), quarantine, idle expiry and excess. A grant refused here reads no
+  issuing host and counts nothing.
+- `--grants admit`, once the admission read answers `admit`: the whole check every use of the
+  custody's own credentials passes (`grantUse`), the state again, the owner read, the state again
+  under the lock, and the record of the grant's last use. The owner read follows the delegation's
+  admission, as RFC 0030 §2 orders a separate owner read: a call the issuing host refuses reports
+  that refusal, and one the owner read refuses is not dispatched and leaves its count used.
+
+No scope is recorded as used, since the write's token is the platform's and not the custody's.
+
+What the engine reads of the answer is closed:
+
+- the admission of the connection asked for, exactly, with exit 0;
+- or one refusal of a use alone on stderr with exit 1: `grant-unknown` (no custody for the
+  provider, or no record of the connection), `grant-revoked`, `grant-quarantined`,
+  `grant-idle-expired`, `owner-removed`, `owner-unknown` or `excess-scope`;
+- anything else is `grant-unreadable`: a custody that cannot be read, a program that cannot be
+  started, a failure, 30 seconds passed, more than 4096 bytes on either stream.
+
+The requester is told the refusal's name and a fixed sentence, with `"refusedAt": "grant"`, and
+never the scopes or the connection. A delegated write on a platform that names no grant is refused
+as `grant-unknown` before the session is admitted.
+
+The custody's `user` is held apart at start: never root, the signer's, the MCP server's or a
+platform's, whose adapters would otherwise read the custody's credentials. The custody's own checks
+hold its directories private and owned by that user.
+
+**What it does not cover.** The custody's grant is of its connection's provider authorization, and
+the write is sent with the platform's token. The grant answers for the write, and the token is the
+operator's to keep to it. A delegated acquisition and a read-back use no grant (gateway #372).
+`gateway connect --replace` keeps a platform's `decisionPolicy` but not its `grant`: an entry
+replaced names no grant until it is written again, and its delegated writes are refused until then.
 
 ## Publisher trust for customer MCP
 
@@ -371,9 +423,15 @@ The flag is shown with the approval and recorded. It is a report, never a refusa
   per call: an acquisition's credential read re-checks the grant's state, not the owner.
 - **The owner read's wire.** The RFC names the read but not its wire. The address and credential
   are the operator's configuration, held in custody.
-- **Not built.** A delegated `/act` uses no grant, as above: the admission read carries no owner
-  (spec #284 NC2), and a delegated write reads none (gateway #368). Reassignment out of
-  quarantine, and acceptance, are not built.
+- **The owner read of a delegated write.** The RFC lets the admission read carry the grant's
+  owner for a delegated call. Here the custody makes its own owner read for a delegated write,
+  after the admission read answers `admit`, as the RFC orders a separate owner read; the admission
+  read carries no owner (spec #284 NC2).
+- **A delegated acquisition and a read-back.** The RFC holds every use of a grant to the owner
+  read, a read-back included, and a quarantined grant serves no call. A delegated acquisition of an
+  engine platform, and the read-back of an uncertain delegated key, use no grant here: the
+  read-back runs whatever the custody would answer (gateway #372).
+- **Not built.** Reassignment out of quarantine, and acceptance.
 - **Where the publisher record lives.** It is kept beside the engine configuration and not in the
   connection grant record. A customer MCP server is registered by the core (`gateway connect`), not
   by a connection custody. A customer binding without a declared publisher is `undeclared`. The
