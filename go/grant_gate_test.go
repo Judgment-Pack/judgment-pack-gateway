@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -128,7 +129,15 @@ func TestGrantGateReadsOnlyTheCustodysAnswers(t *testing.T) {
 		t.Fatalf("an admission: %v", refusal)
 	}
 	calls := grantCalls(t, root)
-	if len(calls) != 2 || calls[0].Request != `{"connection":"boards","provider":"azure-devops"}`+"\n" || len(calls[0].Env) != 1 || calls[0].Env[0] != "GRANT_STANDIN="+root ||
+	// On Windows os/exec adds SYSTEMROOT to an explicit environment; nothing
+	// else may reach the custody.
+	env := []string{}
+	for _, kv := range calls[0].Env {
+		if !(runtime.GOOS == "windows" && strings.HasPrefix(strings.ToUpper(kv), "SYSTEMROOT=")) {
+			env = append(env, kv)
+		}
+	}
+	if len(calls) != 2 || calls[0].Request != `{"connection":"boards","provider":"azure-devops"}`+"\n" || len(env) != 1 || env[0] != "GRANT_STANDIN="+root ||
 		strings.Join(calls[0].Args, " ") != "-- --grants=check" || strings.Join(calls[1].Args, " ") != "-- --grants=admit" {
 		t.Fatalf("the custody was asked: %+v", calls)
 	}
@@ -209,6 +218,15 @@ func TestGrantGateReadsOnlyTheCustodysAnswers(t *testing.T) {
 	absent := &grantGate{argv: []string{filepath.Join(root, "absent")}, env: []string{}, provider: "azure-devops", connection: "boards"}
 	if refusal := g.askCustody(absent, grantCheck); refusal == nil || refusal.Error() != unreadable {
 		t.Fatalf("no custody program: %v", refusal)
+	}
+	// The custody's program runs as the gate's user: one this host cannot
+	// switch to, or has not, starts nothing and is unreadable.
+	calledBefore := len(grantCalls(t, root))
+	asUser := grantStandIn(t, root)
+	asUser.user = "engine-no-such-custody-user"
+	grantAnswer(t, root, grantCheck, nil)
+	if refusal := g.askCustody(asUser, grantCheck); refusal == nil || refusal.Error() != unreadable || len(grantCalls(t, root)) != calledBefore {
+		t.Fatalf("a custody user that cannot be run as: %v, %d calls", refusal, len(grantCalls(t, root))-calledBefore)
 	}
 	if refusal := g.askCustody(nil, grantCheck); refusal == nil || refusal.name != refusalGrantUnknown {
 		t.Fatalf("no gate: %v", refusal)

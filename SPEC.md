@@ -2252,7 +2252,7 @@ no credential, no token, no token digest, no provider account and no content.
    an answer of any other form refuse (`grant-unreadable`): what could not be read is never
    taken for a grant that is not there. An undelegated action is the operator's own and uses
    no grant, as before; nor does an acquisition of an engine platform, delegated or not, or a
-   read-back (gateway #368).
+   read-back of an uncertain key (gateway #372).
 4. A grant with an idle expiry whose last use, or creation where it was never used, is at least
    that long before now is expired; equal is expired, and so is a time that cannot be read. It is
    revoked and refused (`grant-idle-expired`) at its next use of any kind.
@@ -2458,7 +2458,9 @@ admitted and before step 0, so a grant not live is refused before the issuing ho
 consumes nothing of the delegation's limits; and the custody's admission, with its owner read, is
 made after the admission read answers `admit` (RFC 0030 §2): a call steps 0 to 12 refuse reports
 that refusal, and one the owner read refuses is not dispatched and leaves its count used, which
-fails closed. Admission applies, in order, steps 0 to 7
+fails closed. The exception is a first keyed request whose leaf excludes the write (§11.8): it is
+refused as its admission refuses it, which reads the issuing host, and since it never dispatches,
+it uses no grant and the grant is not checked. Admission applies, in order, steps 0 to 7
 (§11.4, §11.1), then:
 
 | Step | Refusal | Condition |
@@ -2663,8 +2665,9 @@ What this section defines where the RFC leaves it open, and where it departs fro
 - **Admission read.** It carries no grant owner (spec #284 NC2). A delegated `/act` is admitted
   under its platform's connection grant (§10 rule 3), whose owner's standing the custody reads
   with its own owner read after the admission read answers `admit`, as the RFC orders a separate
-  owner read, rather than having the admission read carry it. A delegated `/acquire` uses no
-  grant, and NC2 stays open for it (gateway #368). The answer names the first refusal of steps 8
+  owner read, rather than having the admission read carry it. A delegated `/acquire`, and the
+  read-back of an uncertain delegated key, use no grant, though the RFC holds every use of a grant
+  to the owner read, a read-back included; NC2 stays open for them (gateway #372). The answer names the first refusal of steps 8
   to 12 the host finds; the gateway orders it with its own.
 - **The actor row** also requires the write's source and tool in the leaf's scope for a request
   the key lookup answers (spec #284 NC1), and the subject row reads the subject's standing

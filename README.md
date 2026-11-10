@@ -261,7 +261,9 @@ owner is current. Removing the owner revokes or quarantines the grant. An engine
 tokens from the operator's credentials files; a delegated action through `/act` is admitted only
 under the connection grant its platform names (`grant`, engine version 16), which the custody
 holds to the same checks: the grant's state before the issuing host is read, the owner read after
-the delegation's admission. A platform that names none refuses it. The operator's own actions, and acquisitions, use no grant.
+the delegation's admission. A platform that names none refuses it. The operator's own actions,
+acquisitions and read-backs use no grant. The engine image ships no `gateway-connections`, so an
+image deployment refuses delegated writes until a custody is installed and named.
 `gateway-connections --grants report` lists the grants, with their unused scopes and findings,
 and names no path, no account and no token
 ([connection grants](docs/design/connection-grants.md), SPEC.md §10).
@@ -276,7 +278,7 @@ when unanswered. The receipt names the delegation, its actor and its subject, an
 the subject, so a reader written before the member reads the same caller. Action keys under a
 delegation are scoped to the subject and the root actor, so a takeover under a new lease reads
 back instead of writing again. No platform credential is narrowed; the gateway enforces the
-scope, and posture says so (engine version 15, SPEC.md §11).
+scope, and posture says so (engine version 15, and 16 for a platform's grant; SPEC.md §11).
 
 A source declared with `--source-shape NAME=airbyte|mcp|http` is an adapter
 ([ADR-0002](docs/adr/0002-adapters-report-in-the-envelope.md)): its stdout is an

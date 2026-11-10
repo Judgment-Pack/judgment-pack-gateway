@@ -266,7 +266,7 @@ hold its directories private and owned by that user.
 
 **What it does not cover.** The custody's grant is of its connection's provider authorization, and
 the write is sent with the platform's token. The grant answers for the write, and the token is the
-operator's to keep to it. A delegated acquisition and a read-back use no grant.
+operator's to keep to it. A delegated acquisition and a read-back use no grant (gateway #372).
 `gateway connect --replace` keeps a platform's `decisionPolicy` but not its `grant`: an entry
 replaced names no grant until it is written again, and its delegated writes are refused until then.
 
@@ -426,8 +426,11 @@ The flag is shown with the approval and recorded. It is a report, never a refusa
 - **The owner read of a delegated write.** The RFC lets the admission read carry the grant's
   owner for a delegated call. Here the custody makes its own owner read for a delegated write,
   after the admission read answers `admit`, as the RFC orders a separate owner read; the admission
-  read carries no owner (spec #284 NC2). A delegated acquisition uses no grant
-  (gateway #368).
+  read carries no owner (spec #284 NC2).
+- **A delegated acquisition and a read-back.** The RFC holds every use of a grant to the owner
+  read, a read-back included, and a quarantined grant serves no call. A delegated acquisition of an
+  engine platform, and the read-back of an uncertain delegated key, use no grant here: the
+  read-back runs whatever the custody would answer (gateway #372).
 - **Not built.** Reassignment out of quarantine, and acceptance.
 - **Where the publisher record lives.** It is kept beside the engine configuration and not in the
   connection grant record. A customer MCP server is registered by the core (`gateway connect`), not

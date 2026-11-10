@@ -446,8 +446,12 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		// A delegated write is admitted only under the connection grant its
 		// platform names (SPEC.md §10, rule 3): with none named it is refused
 		// here, before a session is admitted, the custody asked or the
-		// issuing host read. An undelegated write is the operator's own, and
-		// its platform's credentials file is all it is held to.
+		// issuing host read. The one exception is a first keyed request whose
+		// leaf excludes the write, refused above as its admission refuses it
+		// (that admission reads the host): it never dispatches, so it uses no
+		// grant and the grant is not checked. An undelegated write is the
+		// operator's own, and its platform's credentials file is all it is
+		// held to.
 		if delegated != nil && spec.grant == nil {
 			return nil, grantRefused(refusalGrantUnknown, fmt.Sprintf("platform %s names no connection grant, and a delegated write is admitted only under one", requestText(platform)))
 		}
