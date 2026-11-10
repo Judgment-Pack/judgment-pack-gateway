@@ -1153,11 +1153,11 @@ What it changes for callers, all in SPEC.md §11:
 
 A file without the member, and every call made under no delegation, behave as before.
 
-## A delegated write's grant (engine version 16)
+## A platform's grant (engine version 16)
 
-Version 16 adds a platform's optional `grant` member (SPEC.md §10 rule 3, gateway #368): the
-connection grant the platform's delegated writes are admitted under, which the connection custody
-holds ([connection-grants.md](connection-grants.md#delegated-writes)).
+Version 16 adds a platform's optional `grant` member (SPEC.md §10 rule 3, gateway #368, #372):
+the connection grant the platform's delegated calls are admitted under, which the connection
+custody holds ([connection-grants.md](connection-grants.md#delegated-calls)).
 
 ```json
 "boards": {
@@ -1172,19 +1172,21 @@ holds ([connection-grants.md](connection-grants.md#delegated-writes)).
 `provider` is one of `google-drive`, `gmail`, `notion`, `databricks` and `azure-devops`;
 `connection` is the connection's name in custody, a flat token; `stateDir` is the custody's root,
 absolute; `principal` is the custody's principal; `user` is the OS user the custody belongs to,
-which `gateway-connections --grants admit` runs as. The platform must set `write: true`. Every
-member is required, and a member it does not name is refused by name.
+which `gateway-connections --grants admit` runs as. A platform that does not set `write: true`
+may name one too: its delegated acquisitions are admitted under it. Every member is required, and
+a member it does not name is refused by name.
 
 At start the engine holds `gateway-connections` as it holds every adapter (in `adapters`, or on
 the engine's PATH where `adapters` is not set), and refuses a `grant.user` the host does not have,
-root, the signer's own user, the MCP server's, or a platform's. The platform's `write` operation is then admitted through the custody for each
-delegated dispatch; its `history` and `live` operations, and every undelegated call, are not.
-A delegated write on a platform with no `grant` is refused as `grant-unknown`. The engine image
-ships no `gateway-connections` and no custody user, so a file that names a grant is refused at
-start there.
+root, the signer's own user, the MCP server's, or a platform's. Each delegated call on the
+platform is then admitted through the custody, whichever of its operations it runs: a write, an
+acquisition of `live` or `history`, and the read-back of a delegated key's uncertain action, which
+runs `live`. No undelegated call is. A delegated call on a platform with no `grant` is refused as
+`grant-unknown`. The engine image ships no `gateway-connections` and no custody user, so a file
+that names a grant is refused at start there.
 
 `connect --replace` keeps a platform's `decisionPolicy` and drops its `grant`: the replaced entry's
-delegated writes are refused until the member is written again.
+delegated calls are refused until the member is written again.
 
 ## Keyed actions (engine version 14 and later)
 

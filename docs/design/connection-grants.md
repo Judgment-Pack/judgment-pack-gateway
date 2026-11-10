@@ -18,9 +18,10 @@ at most one connection, named after its provider. Databricks and Azure DevOps na
 by its `id`.
 
 An engine platform's operations take their tokens from the credentials files its configuration
-names, not from custody. A delegated write through `/act` is admitted under the grant of a custody
-connection its platform names ([below](#delegated-writes)); the operator's own writes, and the
-platform's acquisitions, delegated or not, use no grant.
+names, not from custody. A delegated call -- a write through `/act`, an acquisition through
+`/acquire`, or the read-back of a delegated key's uncertain action -- is admitted under the grant
+of a custody connection its platform names ([below](#delegated-calls)); the operator's own writes,
+acquisitions and read-backs use no grant.
 
 These have no record in this release:
 
@@ -65,6 +66,14 @@ The record is reconciled with custody whenever it is read:
 - a connection without a live record gets a new record with no owner;
 - a record whose connection has gone (disconnected) is revoked, with reason `disconnected`;
 - a live record takes its required and granted scopes as they stand now.
+
+**The record is the custody's.** A grant's quarantine and its owner are kept in
+`connection-grants.json` alone. A file that is there and cannot be read or parsed refuses every
+use. A file that is not there is an empty ledger, as for a custody made before this release: each
+connection is given a new record, `active` and with no owner, and the report flags it
+`owner-missing`. So a quarantined grant whose file is deleted is usable again, until the operator
+revokes it. Deleting the file takes write access to the custody's namespace, the access that
+reaches the credential itself (#362 L2).
 
 ## Least privilege
 
@@ -123,7 +132,12 @@ operation declares is recorded as used, with the time. The report lists `granted
 **Owner.** The operator records a grant's owner and its issuing host once, with `set-owner`. A
 second owner is refused (`owner-recorded`). This release has no reassignment. A grant recorded
 before this release, or with no owner set, has no owner record. It is used as before, and the
-report flags it `owner-missing` (spec #284 NC3).
+report flags it `owner-missing` (spec #284 NC3). `set-owner` records the owner the operator
+names: the issuing host is not asked about it then. The first use makes the owner read, so an
+owner the host does not answer `current` for refuses that use (`owner-unknown`, or
+`owner-removed` and the removal). A recorded owner cannot be cleared or replaced; a grant whose
+owner was recorded wrongly is revoked (`revoke`) and connected again, which makes a new grant
+(#362 L3).
 
 **The owner read.** Before every use of the credential of a grant that has an owner, the gateway
 asks the owner's issuing host whether the owner is still a current principal. The request
@@ -209,8 +223,8 @@ does not know, exits 2.
 | `remove-owner` | `{"owner", "ownerHost", "removal"?}` | revokes or quarantines the owner's grants |
 | `revoke` | `{"provider", "connection"}` | revokes one grant |
 | `sweep` | `{}` | revokes idle grants and makes the owner read for every live owned grant; each result is `idle-expired`, `owner-removed`, `owner-unknown` or `current` |
-| `check` | `{"provider", "connection"}` | the engine's check of a delegated write's grant before its admission read ([below](#delegated-writes)): the grant's state alone, no owner read and no record; answers `{"check": "pass", "connection", "provider", "version": 1}` |
-| `admit` | `{"provider", "connection"}` | the engine's admission of a delegated write after its admission read answers `admit` ([below](#delegated-writes)): the check of a use, owner read included, and its record; answers `{"admission": "admit", "connection", "provider", "version": 1}` |
+| `check` | `{"provider", "connection"}` | the engine's check of a delegated call's grant before its admission read ([below](#delegated-calls)): the grant's state alone, no owner read and no record; answers `{"check": "pass", "connection", "provider", "version": 1}` |
+| `admit` | `{"provider", "connection"}` | the engine's admission of a delegated call after its admission read answers `admit`, and of a delegated key's read-back before it runs ([below](#delegated-calls)): the check of a use, owner read included, and its record; answers `{"admission": "admit", "connection", "provider", "version": 1}` |
 
 The report gives each grant the record's members except the custody identifier, together with:
 
@@ -223,17 +237,20 @@ A finding's sentence names no path, no account and no token, as `/posture`'s pub
 not (#350). The report's members are the owner reference and scope names, and never a provider
 account.
 
-## Delegated writes
+## Delegated calls
 
-A delegated write through `/act` (SPEC.md §11) is admitted under a connection grant (gateway #368,
-SPEC.md §10 rule 3). The platform names it with its `grant` member (engine version 16):
+A delegated call (SPEC.md §11) is admitted under a connection grant (gateway #368, #372, SPEC.md
+§10 rule 3): a write through `/act`, an acquisition through `/acquire`, and the read-back of a
+delegated key's uncertain action. The platform names it with its `grant` member (engine version
+16), whichever of its operations the call runs; a platform that does not allow writes may name
+one:
 
 ```json
 "grant": {"provider": "azure-devops", "connection": "boards", "stateDir": "/var/lib/connections", "principal": "operator", "user": "engine-custody"}
 ```
 
-The signer never reads the custody, so for each delegated dispatch it runs `gateway-connections`
-as the custody's `user`, with an empty environment, twice:
+The signer never reads the custody, so for each delegated write or acquisition it runs
+`gateway-connections` as the custody's `user`, with an empty environment, twice:
 
 - `--grants check`, after the session is admitted and before the issuing host's admission read:
   the first half of the check every use passes (`grantState`): reconciliation, so a scope granted
@@ -245,7 +262,18 @@ as the custody's `user`, with an empty environment, twice:
   admission, as RFC 0030 §2 orders a separate owner read: a call the issuing host refuses reports
   that refusal, and one the owner read refuses is not dispatched and leaves its count used.
 
-No scope is recorded as used, since the write's token is the platform's and not the custody's.
+The read-back of a delegated key's uncertain action makes no admission read and counts nothing,
+so it runs `--grants admit` alone, before its program starts: a grant that is not live, or whose
+owner is refused, serves no read-back (RFC 0030 §5 rule 5). The key then stays uncertain: it
+answers `409` `action-reconciliation-unavailable`, naming the refusal, with its uncertain record,
+and nothing is sent again. That holds for every sender the key authenticates. Before the grant is
+asked, the run's actor is held to the read-back's own source and tool: every link of its chain
+must name the platform's `live` source and the declared read tool. On a key the lookup finds
+uncertain, a link that does not is refused as `action-key-unauthenticated` (SPEC.md §11.8). On a
+key this request's own dispatch left uncertain, the request is not refused, since the write may
+have been sent: no read-back runs, and it answers its uncertain record.
+
+No scope is recorded as used, since the call's token is the platform's and not the custody's.
 
 What the engine reads of the answer is closed:
 
@@ -256,19 +284,20 @@ What the engine reads of the answer is closed:
 - anything else is `grant-unreadable`: a custody that cannot be read, a program that cannot be
   started, a failure, 30 seconds passed, more than 4096 bytes on either stream.
 
-The requester is told the refusal's name and a fixed sentence, with `"refusedAt": "grant"`, and
-never the scopes or the connection. A delegated write on a platform that names no grant is refused
-as `grant-unknown` before the session is admitted.
+The requester is told the refusal's name and a fixed sentence, with `"refusedAt": "grant"` on
+`/act`, and never the scopes or the connection. A delegated write or acquisition on a platform that
+names no grant is refused as `grant-unknown` before the session is admitted; a read-back there
+leaves its key uncertain, naming `grant-unknown`.
 
 The custody's `user` is held apart at start: never root, the signer's, the MCP server's or a
 platform's, whose adapters would otherwise read the custody's credentials. The custody's own checks
 hold its directories private and owned by that user.
 
 **What it does not cover.** The custody's grant is of its connection's provider authorization, and
-the write is sent with the platform's token. The grant answers for the write, and the token is the
-operator's to keep to it. A delegated acquisition and a read-back use no grant (gateway #372).
-`gateway connect --replace` keeps a platform's `decisionPolicy` but not its `grant`: an entry
-replaced names no grant until it is written again, and its delegated writes are refused until then.
+the call is made with the platform's token. The grant answers for the call, and the token is the
+operator's to keep to it. `gateway connect --replace` keeps a platform's `decisionPolicy` but not
+its `grant`: an entry replaced names no grant until it is written again, and its delegated calls
+are refused until then.
 
 ## Publisher trust for customer MCP
 
@@ -295,6 +324,9 @@ the rule at parse is this:
   tell a host under a registrable domain (`tickets.acme.example`) from a registrable domain under a
   public suffix it does not list (`acme.com.zz`), and the name it would suggest could be another's
   domain or a suffix; such a server declares its repository or package, or no publisher;
+- under `sch.uk`, every name one label down is itself a public suffix (`kent.sch.uk`), so no
+  domain there can be declared: `sch.uk` and a name one label under it are refused as public
+  suffixes, and a longer name (`myschool.kent.sch.uk`) is refused without naming a domain;
 - a listed public suffix itself (`co.uk`, `nhs.uk`) is refused. The list is partial: a public
   suffix it does not name, declared as a two-label domain, parses, and is read as that suffix's
   registry object, which says nothing of a publisher. Such a declaration is meaningless, and
@@ -326,13 +358,20 @@ The 404 cases are these, exactly:
   HTTPS service, is inconclusive (`unknown`).
 - **Never the name above:** the gateway asks for the declared name alone. It never reads the
   object of a name above it, such as a public suffix's own object.
+- **Redirects:** no read follows a redirect that leaves HTTPS. The npm and GitHub reads follow
+  none: their answers are not checked against the declared name, so a redirect (a renamed or
+  transferred repository) would read another name's liveness for it. Such a read failed, and is
+  `unknown`. The RDAP bootstrap and the registry's RDAP service follow an HTTPS redirect: the
+  RDAP answer must name the declared domain (#362 L5).
 
 Any other answer leaves the state `unknown`.
 
 **An inconclusive reading never lifts a conclusive one.** `maintained` and `unmaintained` are
 conclusive; `unknown` (a read that failed, timed out, was refused or rate-limited, or answered
 what cannot be read) and `unverifiable` are not. When a re-check or a recapture reads a publisher
-inconclusively, and its record holds a conclusive reading of the same declared publisher:
+inconclusively, and its record holds a conclusive reading of the same declared publisher (the
+same kind and name; a repository's name is compared without case, as GitHub compares it, #362
+N12):
 
 - the record keeps that state and its time;
 - the failed read is recorded beside it (`lastAttempt`, `attemptState` and `attemptReason`) and
@@ -344,6 +383,11 @@ reading, and a recapture whose reading fails is refused as before. A platform wi
 reading yet takes the inconclusive state, and is not refused. A customer binding that declares no publisher is
 `undeclared`. The reads disclose to those public services which servers an operator uses, so their
 schedule is the operator's.
+
+**A declaration is the binding's claim.** The gateway reads whether the declared name is live,
+never whether the server is that publisher's. A recapture that drops the declaration, or declares
+another publisher, starts a new reading: the earlier publisher's `unmaintained` no longer refuses.
+The recapture is the operator's, and its publisher lines are shown with its approval (#362 L6).
 
 **Where it is read and kept.** The read happens at registration: `gateway connect` for a customer
 binding, `--replace` (a recapture) included. It happens before any adapter is run, and its lines
@@ -365,10 +409,13 @@ owner, as a replaced configuration is: a root `connect` or a root-run `gateway p
 configuration the signer owns leaves a record the signer can read.
 
 **Policy.** `gateway publishers --config <engine.json> --policy report|refuse` sets the operator's
-policy; `report` is the default (open question 15). An unmaintained publisher is always reported
-as `publisher-unmaintained`, and an unverifiable one as `publisher-unverifiable`. Under `refuse`,
-a record of the platform's own binding that says `unmaintained` (evidence of a lapse, never a
-404) also refuses three things:
+policy; `report` is the default (open question 15). The policy is kept in the record,
+`<engine.json>.publishers.json`, and nowhere else. A configuration moved or restored without its
+record has neither readings nor a policy: it is under `report` until the policy is set again, and
+nothing says so. Move the record with the configuration (#362 L8). An unmaintained publisher is
+always reported as `publisher-unmaintained`, and an unverifiable one as `publisher-unverifiable`.
+Under `refuse`, a record of the platform's own binding that says `unmaintained` (evidence of a
+lapse, never a 404) also refuses three things:
 
 - its registration;
 - each acquisition, before the source starts;
@@ -423,14 +470,10 @@ The flag is shown with the approval and recorded. It is a report, never a refusa
   per call: an acquisition's credential read re-checks the grant's state, not the owner.
 - **The owner read's wire.** The RFC names the read but not its wire. The address and credential
   are the operator's configuration, held in custody.
-- **The owner read of a delegated write.** The RFC lets the admission read carry the grant's
-  owner for a delegated call. Here the custody makes its own owner read for a delegated write,
-  after the admission read answers `admit`, as the RFC orders a separate owner read; the admission
-  read carries no owner (spec #284 NC2).
-- **A delegated acquisition and a read-back.** The RFC holds every use of a grant to the owner
-  read, a read-back included, and a quarantined grant serves no call. A delegated acquisition of an
-  engine platform, and the read-back of an uncertain delegated key, use no grant here: the
-  read-back runs whatever the custody would answer (gateway #372).
+- **The owner read of a delegated call.** The RFC lets the admission read carry the grant's
+  owner for a delegated call. Here the custody makes its own owner read for a delegated write or
+  acquisition, after the admission read answers `admit`, and for a read-back before it runs, as
+  the RFC orders a separate owner read; the admission read carries no owner (spec #284 NC2).
 - **Not built.** Reassignment out of quarantine, and acceptance.
 - **Where the publisher record lives.** It is kept beside the engine configuration and not in the
   connection grant record. A customer MCP server is registered by the core (`gateway connect`), not
@@ -446,8 +489,8 @@ The flag is shown with the approval and recorded. It is a report, never a refusa
   for a declared domain is `unmaintained`.
 - **A domain publisher is a registrable domain, by a partial list.** Without a public-suffix
   list, a domain under a two-label public suffix the gateway does not list cannot be declared as a
-  domain publisher. Hosts, including hosts on shared platforms, cannot be declared at all; such a
-  server declares its repository or package.
+  domain publisher, nor can any domain under `sch.uk`. Hosts, including hosts on shared platforms,
+  cannot be declared at all; such a server declares its repository or package.
 - **Name lookalike against the gateway's own integrations.** The known integrations are the ones
   the gateway ships, a fixed list. The operator cannot extend it in this release.
 - **Owner removal at use.** An owner read that answers `removed` changes the grants in the custody

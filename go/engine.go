@@ -42,7 +42,7 @@ import (
 // version 13 the source sandbox wrapper and optional `sandbox` configuration,
 // version 14 a required action key, version 15 the optional `delegation`
 // (SPEC.md §11.2), and version 16 a platform's optional `grant`, the
-// connection grant its delegated writes are admitted under (SPEC.md §10,
+// connection grant its delegated calls are admitted under (SPEC.md §10,
 // rule 3; grant_gate.go):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
@@ -154,9 +154,10 @@ type platformConfig struct {
 	// (engineVersion 8, binding_template.go): a tenant's part of a URL and
 	// of a tool's name, never a secret; nil when the platform gives none.
 	parameters map[string]string
-	// grant is the connection grant the platform's delegated writes are
-	// admitted under (engineVersion 16, grant_gate.go); nil when it names
-	// none, and then no delegated write is admitted.
+	// grant is the connection grant the platform's delegated calls are
+	// admitted under (engineVersion 16, grant_gate.go): its writes, its
+	// acquisitions and the read-backs of its delegated keys; nil when it
+	// names none, and then no delegated call is admitted.
 	grant *platformGrant
 }
 
@@ -591,11 +592,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			if !versionAtLeast(version, "16") {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: grant is a version-16 member; engineVersion %s has no grant", name, version)
 			}
-			// A grant admits delegated writes; a platform that allows none
-			// has nothing to admit, and the member would read as a hold.
-			if !pc.write {
-				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: grant admits delegated writes under a connection grant, and the platform does not set write: true", name)
-			}
+			// A grant admits every delegated call on the platform, an
+			// acquisition and a read-back as well as a write (gateway #372),
+			// so a platform that allows no write may name one too.
 			if pc.grant, err = parsePlatformGrant(grantValue); err != nil {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: %v", name, err)
 			}
@@ -1201,6 +1200,10 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 	for _, p := range cfg.platforms {
 		b := bindings[p.name]
 		env := append([]string{"HOME=" + p.home}, p.environment...)
+		// The connection grant every delegated call on the platform is
+		// admitted under, whichever of its sources it runs (SPEC.md §10,
+		// rule 3); nil where the platform names none.
+		grant := grantGateOf(p, adapter("gateway-connections"))
 		if b.history != nil {
 			// Every flag and its value as one word, flag=value: a value that
 			// is "--" would otherwise be the delimiter the adapter splits its
@@ -1209,7 +1212,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if p.endpoint != "" {
 				argv = append(argv, "--endpoint="+p.endpoint)
 			}
-			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte"}
+			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte", grant: grant}
 		}
 		if b.live != nil {
 			argv := mcpServerArgv(adapter("adapter-mcp"), *b.live, p.credentials["live"], cfg.runtime, p.endpoint, p.name+"/"+b.live.name, append(ownerFileArguments(cfg, p, b.live), approvedArguments(cfg, p, b.live)...)...)
@@ -1228,7 +1231,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if len(b.live.command) > 0 {
 				argv = append(append(argv, "--"), b.live.command...)
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", binding: p.binding, tools: b.live.tools, check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live"), approval: approvalOf(p, b.live), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.live)}
+			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", binding: p.binding, tools: b.live.tools, check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live"), approval: approvalOf(p, b.live), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.live), grant: grant}
 		}
 		// The write operation, for a platform that allows writes: the
 		// executor is adapter-mcp on the binding's write server with the
@@ -1254,7 +1257,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.write.url != "" {
 				endpoint, transport = b.write.url, "http"
 			}
-			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.write), grant: grantGateOf(p, adapter("gateway-connections"))}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.write), grant: grant}
 		}
 	}
 	if cfg.sandbox != nil {
@@ -1670,7 +1673,7 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 			}
 		}
 	}
-	// The custody a platform's delegated writes are admitted under is read
+	// The custody a platform's delegated calls are admitted under is read
 	// by its program as the custody's own user (grant_gate.go): never root
 	// or the signer, which would read the seed and the custody both, never
 	// the MCP server's, and never a platform's, whose adapters would then
@@ -1870,7 +1873,7 @@ func holdAdapterSources(sources map[string]sourceSpec, host engineHost) error {
 		}
 		spec.argv = append([]string{path}, spec.argv[1:]...)
 		if spec.grant != nil {
-			// The custody program a delegated write is admitted through,
+			// The custody program a delegated call is admitted through,
 			// held as an adapter is.
 			command := spec.grant.argv[0]
 			custody, held := resolved[command]

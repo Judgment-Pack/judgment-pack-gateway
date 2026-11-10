@@ -394,7 +394,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 				if prior.outcome == "response" {
 					return prior.response, nil
 				}
-				return g.reconcileAction(sessionID, platform, arguments, who, key, recovery, prior.response)
+				return g.reconcileAction(sessionID, platform, arguments, who, key, recovery, prior.response, true)
 			}
 			if !errors.Is(readErr, os.ErrNotExist) {
 				return nil, readErr
@@ -719,7 +719,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			return nil, err
 		}
 		if uncertain {
-			return g.reconcileAction(sessionID, platform, arguments, who, key, recovery, out)
+			return g.reconcileAction(sessionID, platform, arguments, who, key, recovery, out, false)
 		}
 	}
 	return out, nil

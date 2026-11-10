@@ -74,6 +74,15 @@ func TestActionKeysTarget(t *testing.T) {
 			os.Exit(2)
 		}
 	}
+	// A read the test counts: each run of the program in read mode.
+	if reads := os.Getenv("ACTION_KEYS_READS"); reads != "" && mode == "read" {
+		f, err := os.OpenFile(reads, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			os.Exit(6)
+		}
+		fmt.Fprintln(f, "read")
+		f.Close()
+	}
 	data, _ := os.ReadFile(state)
 	found := ""
 	for _, line := range strings.Split(string(data), "\n") {

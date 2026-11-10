@@ -8,8 +8,9 @@ import (
 )
 
 // A platform's grant member (engineVersion 16, SPEC.md §10 rule 3): the
-// connection grant its delegated writes are admitted under, held to its
-// forms, its user held apart, and the write source derived with the gate.
+// connection grant its delegated calls are admitted under, held to its
+// forms, its user held apart, and each of the platform's sources derived
+// with the gate (gateway #372), a platform that allows no write included.
 func TestEngineGrantMember(t *testing.T) {
 	catalog := catalogWith(t, map[string]string{"postgres": postgresBinding})
 	ref := "postgres@" + digestOf(postgresBinding)
@@ -35,18 +36,24 @@ func TestEngineGrantMember(t *testing.T) {
 		argv: []string{filepath.Join(clean(bin), "gateway-connections"), "--state-dir=" + clean(stateDir), "--principal=operator", "--provider=azure-devops"},
 		env:  []string{}, user: "engine-desk", provider: "azure-devops", connection: "boards",
 	}
-	if got := sources["warehouse/write"].grant; !reflect.DeepEqual(got, want) {
-		t.Fatalf("the write's gate: %+v, want %+v", got, want)
+	for _, name := range []string{"warehouse/write", "warehouse/live", "warehouse/history"} {
+		spec, derived := sources[name]
+		if !derived || !reflect.DeepEqual(spec.grant, want) {
+			t.Fatalf("%s's gate: %v %+v, want %+v", name, derived, spec.grant, want)
+		}
 	}
-	if sources["warehouse/live"].grant != nil || sources["warehouse/history"].grant != nil {
-		t.Fatal("a read is given a grant gate")
-	}
-	if _, sources, err := load(t, text("16", `,"write":true`)); err != nil || sources["warehouse/write"].grant != nil {
+	if _, sources, err := load(t, text("16", `,"write":true`)); err != nil || sources["warehouse/write"].grant != nil || sources["warehouse/live"].grant != nil || sources["warehouse/history"].grant != nil {
 		t.Fatalf("a platform naming no grant: %v", err)
+	}
+	// A platform that allows no write names the grant its delegated
+	// acquisitions are admitted under.
+	readOnly := strings.Replace(engineJSON(t, catalog, `,"adapters":"`+bin+`"`, platformJSONFor(t, "warehouse", ref, "engine-warehouse", good, "history", "live")), `"engineVersion":"1"`, `"engineVersion":"16"`, 1)
+	_, sources, err = load(t, readOnly)
+	if _, write := sources["warehouse/write"]; err != nil || write || !reflect.DeepEqual(sources["warehouse/live"].grant, want) || !reflect.DeepEqual(sources["warehouse/history"].grant, want) {
+		t.Fatalf("a platform that allows no write: %v, %+v", err, sources)
 	}
 	for _, c := range []struct{ name, version, extra, want string }{
 		{"a version-15 file", "15", `,"write":true` + good, "grant is a version-16 member"},
-		{"a platform that allows no write", "16", good, "the platform does not set write: true"},
 		{"a provider with no grant", "16", `,"write":true` + member("obsidian", "boards", stateDir, "operator", "engine-desk"), "grant.provider must be one of"},
 		{"a connection not a flat token", "16", `,"write":true` + member("azure-devops", "../boards", stateDir, "operator", "engine-desk"), "grant.connection must be a flat token"},
 		{"a relative custody", "16", `,"write":true` + member("azure-devops", "boards", "custody", "operator", "engine-desk"), "grant.stateDir must be an absolute path"},

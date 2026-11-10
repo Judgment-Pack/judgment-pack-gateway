@@ -126,7 +126,7 @@ var sharedPlatforms = []string{
 // not name is refused (its third label is taken for a host), and is
 // declared by its repository or package instead.
 var multiLabelSuffixes = map[string]bool{
-	"nhs.uk": true, "police.uk": true, "sch.uk": true, "mod.uk": true,
+	"nhs.uk": true, "police.uk": true, "mod.uk": true,
 	"com.es": true, "org.es": true, "nom.es": true, "edu.es": true, "gob.es": true,
 	"ab.ca": true, "bc.ca": true, "mb.ca": true, "nb.ca": true, "nf.ca": true, "nl.ca": true, "ns.ca": true, "nt.ca": true,
 	"nu.ca": true, "on.ca": true, "pe.ca": true, "qc.ca": true, "sk.ca": true, "yk.ca": true,
@@ -138,6 +138,14 @@ var multiLabelSuffixes = map[string]bool{
 	"com.tr": true, "com.ar": true, "co.il": true, "com.my": true, "com.ph": true, "com.vn": true, "com.pl": true, "co.id": true,
 }
 
+// wildcardSuffixes are public suffixes every name one label under which
+// is a public suffix too (`*.sch.uk`: `kent.sch.uk`), so that a registrable
+// domain under one has four labels. The gateway lists no such domain and
+// verifies none (gateway #362 N11): the suffix and a name one label under
+// it are refused as public suffixes, and a longer name is refused without
+// naming a domain.
+var wildcardSuffixes = []string{"sch.uk"}
+
 // registrableDomain refuses a domain publisher that is not itself a
 // registrable domain: a host under one, a public suffix, or a shared
 // platform or a host on it.
@@ -146,6 +154,15 @@ func registrableDomain(name string) error {
 		if name == platform || strings.HasSuffix(name, "."+platform) {
 			return fmt.Errorf("publisher: %s is a shared platform's domain, under which anyone may be given a host; declare the server's repository or package as its publisher instead", platform)
 		}
+	}
+	for _, suffix := range wildcardSuffixes {
+		if name != suffix && !strings.HasSuffix(name, "."+suffix) {
+			continue
+		}
+		if strings.Count(name, ".") <= strings.Count(suffix, ".")+1 {
+			return fmt.Errorf("publisher: %s is a public suffix, not a registrable domain", name)
+		}
+		return fmt.Errorf("publisher: %s is under %s, where every name one label under it is a public suffix too, and the gateway verifies no domain there; declare the server's repository or package as its publisher, or none", name, suffix)
 	}
 	labels := strings.Split(name, ".")
 	want := 2
@@ -199,13 +216,27 @@ func conclusive(state string) bool {
 // under the reading's binding. A conclusive reading, a first reading, and
 // a reading of another declared publisher replace the record.
 func mergeReading(prev publisherRecord, had bool, reading publisherRecord) publisherRecord {
-	if conclusive(reading.State) || !had || !conclusive(prev.State) || reading.Kind == "" || prev.Kind != reading.Kind || prev.Name != reading.Name {
+	if conclusive(reading.State) || !had || !conclusive(prev.State) || reading.Kind == "" || !sameDeclared(prev, reading) {
 		return reading
 	}
 	kept := prev
 	kept.Binding, kept.Lookalike = reading.Binding, reading.Lookalike
 	kept.LastAttempt, kept.AttemptState, kept.AttemptReason = reading.CheckedAt, reading.State, reading.Reason
 	return kept
+}
+
+// sameDeclared is whether two records are of the same declared publisher.
+// GitHub's owner and repository names are not case-sensitive, so a
+// repository name differing only in case is the same repository (gateway
+// #362 N12); a package name and a domain name are lower-case at parse.
+func sameDeclared(prev, reading publisherRecord) bool {
+	if prev.Kind != reading.Kind {
+		return false
+	}
+	if prev.Kind == "repository" {
+		return strings.EqualFold(prev.Name, reading.Name)
+	}
+	return prev.Name == reading.Name
 }
 
 // inconclusiveRead is whether a reading was inconclusive where it should
@@ -359,7 +390,7 @@ const (
 // rdapService is the HTTPS base of the RDAP service the IANA bootstrap
 // names for a top-level domain, and whether it names one.
 func (c publisherChecker) rdapService(ctx context.Context, tld string) (string, bool, error) {
-	status, body, err := c.get(ctx, c.bootstrap, "application/json")
+	status, body, err := c.get(ctx, c.bootstrap, "application/json", true)
 	if err != nil || status != 200 {
 		return "", false, errors.New("the RDAP bootstrap could not be read")
 	}
@@ -393,8 +424,14 @@ func (c publisherChecker) rdapService(ctx context.Context, tld string) (string, 
 	return "", false, nil
 }
 
-// get is one bounded GET; the status, and the body of a 200.
-func (c publisherChecker) get(ctx context.Context, endpoint, accept string) (int, []byte, error) {
+// get is one bounded GET; the status, and the body of a 200. A redirect
+// that leaves HTTPS is never followed, and with follow false none is: the
+// npm and GitHub reads answer for the name asked, and a redirect -- a
+// renamed or transferred repository -- would read another's liveness for
+// it (gateway #362 L5). Each is a read that failed. An RDAP answer names
+// its domain, which is checked against the declared one, and the bootstrap
+// is IANA's, so they follow HTTPS redirects.
+func (c publisherChecker) get(ctx context.Context, endpoint, accept string, follow bool) (int, []byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, publisherTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
@@ -403,7 +440,19 @@ func (c publisherChecker) get(ctx context.Context, endpoint, accept string) (int
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", "judgment-pack-gateway publisher check")
-	resp, err := c.client.Do(req)
+	client := *c.client
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		switch {
+		case next.URL.Scheme != "https":
+			return errors.New("a redirect that leaves HTTPS")
+		case !follow:
+			return errors.New("a redirect from a read that answers for the name asked")
+		case len(via) >= 10:
+			return errors.New("too many redirects")
+		}
+		return nil
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -426,7 +475,7 @@ func (c publisherChecker) check(ctx context.Context, d *publisherDecl) (string, 
 	switch d.kind {
 	case "registry":
 		pkg := strings.TrimPrefix(d.name, "npm:")
-		status, body, err := c.get(ctx, c.npm+strings.Replace(pkg, "/", "%2f", 1), "application/vnd.npm.install-v1+json")
+		status, body, err := c.get(ctx, c.npm+strings.Replace(pkg, "/", "%2f", 1), "application/vnd.npm.install-v1+json", false)
 		switch {
 		case err != nil:
 		case status == 404:
@@ -451,7 +500,7 @@ func (c publisherChecker) check(ctx context.Context, d *publisherDecl) (string, 
 			return publisherMaintained, reasonPackageLive
 		}
 	case "repository":
-		status, body, err := c.get(ctx, c.github+strings.TrimPrefix(d.name, "github.com/"), "application/vnd.github+json")
+		status, body, err := c.get(ctx, c.github+strings.TrimPrefix(d.name, "github.com/"), "application/vnd.github+json", false)
 		switch {
 		case err != nil:
 		case status == 404:
@@ -483,7 +532,7 @@ func (c publisherChecker) check(ctx context.Context, d *publisherDecl) (string, 
 		if !known {
 			return publisherUnverifiable, reasonDomainNoService
 		}
-		status, body, err := c.get(ctx, service+"domain/"+name, "application/rdap+json")
+		status, body, err := c.get(ctx, service+"domain/"+name, "application/rdap+json", true)
 		switch {
 		case err != nil:
 		case status == 404:

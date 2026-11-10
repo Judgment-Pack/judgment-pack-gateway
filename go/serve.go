@@ -107,9 +107,10 @@ type sourceSpec struct {
 	// live or write source, by tool (declaredEffects): what a delegation's
 	// scope is held to (SPEC.md §11.5). Nothing else reads it.
 	effects map[string]string
-	// grant is the connection grant a write source's delegated dispatch is
-	// admitted under (SPEC.md §10, rule 3; grant_gate.go); nil where the
-	// platform names none, which refuses every delegated write.
+	// grant is the connection grant a delegated call on the source's
+	// platform is admitted under, a write, an acquisition or the read-back
+	// of a delegated key (SPEC.md §10, rule 3; grant_gate.go); nil where the
+	// platform names none, which refuses every delegated call.
 	grant *grantGate
 }
 
@@ -765,9 +766,13 @@ func (g *gatewayService) acquireForTrail(sessionID, source, trail string, argume
 	return g.acquireWithReconciliation(sessionID, source, trail, arguments, who, nil)
 }
 
-// readBackRefused is a read-back the publisher policy refused before any
-// program started: its key's answer names it.
-type readBackRefused struct{ err error }
+// readBackRefused is a read-back refused before its program started: by
+// the publisher policy, or, for a delegated key, by the platform's
+// connection grant (grant set). Its key's answer names it.
+type readBackRefused struct {
+	err   error
+	grant bool
+}
 
 func (r *readBackRefused) Error() string { return r.err.Error() }
 
@@ -781,6 +786,10 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 		// that writes is not a read, and /acquire names no such source.
 		return nil, badRequest{fmt.Errorf("unknown source: %s", requestText(source))}
 	}
+	// A call under a delegation: an acquisition the delegation admits, or
+	// the read-back of a delegated key's uncertain action, which any sender
+	// the key authenticated may cause (SPEC.md §11.8).
+	delegated := who != nil && who.delegated != nil
 	if reconciliation != nil {
 		if !contains(spec.tools, reconciliation.read.tool) || spec.shape != "mcp" {
 			return nil, errors.New("action-reconciliation-unavailable: live tool is not configured")
@@ -797,13 +806,24 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 	// read-back included: it runs the platform's program with its credential,
 	// which is what the policy refuses. A read-back refused here leaves its key
 	// answering as uncertain, with the refusal named (reconcileAction).
-	if platform, _, _ := strings.Cut(source, "/"); spec.publishers != "" {
+	platform, _, _ := strings.Cut(source, "/")
+	if spec.publishers != "" {
 		if err := publisherRefusal(spec.publishers, platform, spec.binding); err != nil {
 			if reconciliation != nil {
-				return nil, &readBackRefused{err}
+				return nil, &readBackRefused{err: err}
 			}
 			return nil, err
 		}
+	}
+	// A delegated call is admitted only under the connection grant its
+	// platform names (SPEC.md §10, rule 3), a read-back of a delegated key
+	// included: with none named it is refused here, before a session is
+	// admitted, the custody asked or the issuing host read.
+	if delegated && spec.grant == nil {
+		if reconciliation != nil {
+			return nil, &readBackRefused{err: grantRefused(refusalGrantUnknown, fmt.Sprintf("platform %s names no connection grant, and the read-back of a delegated action is admitted only under one", requestText(platform))), grant: true}
+		}
+		return nil, grantRefused(refusalGrantUnknown, fmt.Sprintf("platform %s names no connection grant, and a delegated acquisition is admitted only under one", requestText(platform)))
 	}
 	if p := spec.descriptorProvenance; p != nil {
 		// Re-read before every source execution, including after a restart.
@@ -851,19 +871,42 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 	// source starts (SPEC.md §11.5); a read-back of a delegated action is not
 	// a call under the delegation, and records who sent it instead (§11.7).
 	var delegationMember, reconcilerMember *vObject
-	if who != nil && who.delegated != nil {
+	if delegated {
 		if g.receiptVersion != receiptVersion3 {
 			return nil, errors.New("a call under a delegation is receipted in version 3, and this gateway mints version " + g.receiptVersion)
 		}
 		if reconciliation != nil {
+			// The read-back is a use of the platform's grant (RFC 0030 §5,
+			// rule 5), admitted as every use is: the grant's state, then its
+			// owner read, then the record of the use. A grant that is not
+			// live, or whose owner is refused, serves none, and the key
+			// stays uncertain. It is not a call under the delegation, so
+			// nothing is counted, and nothing is sent again.
+			if refusal := g.askCustody(spec.grant, grantAdmit); refusal != nil {
+				return nil, &readBackRefused{err: refusal, grant: true}
+			}
 			reconcilerMember = who.delegated.reconcilerMember()
 		} else {
 			tool := ""
 			if obj, isObject := arguments.(*vObject); isObject && spec.shape == "mcp" {
 				tool, _ = memberString(obj, "tool")
 			}
+			// The platform's connection grant (SPEC.md §10, rule 3), in two
+			// parts around the counting admission, as for /act. Its state
+			// first: a grant that is not live is refused before the issuing
+			// host is read, so it consumes none of the delegation's budget.
+			if refusal := g.askCustody(spec.grant, grantCheck); refusal != nil {
+				return nil, refusal
+			}
 			member, refusal := g.delegation.admitDelegated(who.delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true})
 			if refusal != nil {
+				return nil, refusal
+			}
+			// Its use, the owner read included, once the admission answers
+			// admit (RFC 0030 §2): a call steps 0 to 12 refuse reports that
+			// refusal, and a call refused here is not run and leaves its
+			// counted budget used, which fails closed.
+			if refusal := g.askCustody(spec.grant, grantAdmit); refusal != nil {
 				return nil, refusal
 			}
 			delegationMember = member
