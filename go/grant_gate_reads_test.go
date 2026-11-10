@@ -282,3 +282,31 @@ func TestKeyFoundUncertainWithoutItsRecordOutsideTheReadBacksScope(t *testing.T)
 		t.Fatalf("a claim lost to another request: %d %s, sent %d, reads %d", status, raw, h.sent(lost), reads())
 	}
 }
+
+// A delegated acquisition its chain's own scope check refuses is not asked
+// about the grant: a write-only link's /acquire on the platform's live
+// source, under a quarantined grant, is refused out-of-scope by its
+// admission, as /act refuses the same link, never told the grant's state
+// (SPEC.md §11.5, gateway #374 LOW-2). The admission read is made with
+// count false, so nothing is counted, and nothing runs.
+func TestOutOfScopeAcquisitionIsNotToldTheGrantsState(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	reads := h.countReads(t)
+	h.setGrant(grantStandIn(t, h.root))
+	grantAnswer(t, h.root, grantCheck, &grantStandInAnswer{Exit: 1, Stderr: "grants: grant-quarantined\n"})
+	write := scopeOf("tickets/write", []any{"query"}, []any{"act"}, map[string]any{})
+	writeOnly := h.credential(t, statement(t, map[string]any{"id": strings.Repeat("88", 16), "scope": map[string]any{"sources": []any{write}}}))
+	hostReads := h.host.readCount()
+	status, raw := h.presentRaw(t, "/acquire", h.acquireBody("a-narrow", "query"), writeOnly)
+	if status != http.StatusForbidden || raw != `{"error":"out-of-scope: link 0 does not admit the call (source)","reason":"source","refusal":"out-of-scope"}` {
+		t.Fatalf("a write-only link's acquisition: %d %s", status, raw)
+	}
+	if reads() != 0 || len(grantCalls(t, h.root)) != 0 || h.host.readCount() != hostReads+1 || h.host.counted() != 0 {
+		t.Fatalf("reads %d, custody %d, host reads %d->%d, counted %d", reads(), len(grantCalls(t, h.root)), hostReads, h.host.readCount(), h.host.counted())
+	}
+	// The same grant still refuses a link whose scope holds the call.
+	cred := h.credential(t, statement(t, nil))
+	if status, raw := h.presentRaw(t, "/acquire", h.acquireBody("a-held", "query"), cred); status != http.StatusForbidden || raw != `{"error":"grant-quarantined: the platform's connection grant is quarantined","refusal":"grant-quarantined"}` || len(grantCalls(t, h.root)) != 1 {
+		t.Fatalf("a link whose scope holds the call: %d %s", status, raw)
+	}
+}
