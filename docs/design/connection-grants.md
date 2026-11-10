@@ -67,6 +67,14 @@ The record is reconciled with custody whenever it is read:
 - a record whose connection has gone (disconnected) is revoked, with reason `disconnected`;
 - a live record takes its required and granted scopes as they stand now.
 
+**The record is the custody's.** A grant's quarantine and its owner are kept in
+`connection-grants.json` alone. A file that is there and cannot be read or parsed refuses every
+use. A file that is not there is an empty ledger, as for a custody made before this release: each
+connection is given a new record, `active` and with no owner, and the report flags it
+`owner-missing`. So a quarantined grant whose file is deleted is usable again, until the operator
+revokes it. Deleting the file takes write access to the custody's namespace, the access that
+reaches the credential itself (#362 L2).
+
 ## Least privilege
 
 Each operation declares the narrowest scope it needs. The table is `grantDeclarations`, and the
@@ -124,7 +132,12 @@ operation declares is recorded as used, with the time. The report lists `granted
 **Owner.** The operator records a grant's owner and its issuing host once, with `set-owner`. A
 second owner is refused (`owner-recorded`). This release has no reassignment. A grant recorded
 before this release, or with no owner set, has no owner record. It is used as before, and the
-report flags it `owner-missing` (spec #284 NC3).
+report flags it `owner-missing` (spec #284 NC3). `set-owner` records the owner the operator
+names: the issuing host is not asked about it then. The first use makes the owner read, so an
+owner the host does not answer `current` for refuses that use (`owner-unknown`, or
+`owner-removed` and the removal). A recorded owner cannot be cleared or replaced; a grant whose
+owner was recorded wrongly is revoked (`revoke`) and connected again, which makes a new grant
+(#362 L3).
 
 **The owner read.** Before every use of the credential of a grant that has an owner, the gateway
 asks the owner's issuing host whether the owner is still a current principal. The request
@@ -371,6 +384,11 @@ reading yet takes the inconclusive state, and is not refused. A customer binding
 `undeclared`. The reads disclose to those public services which servers an operator uses, so their
 schedule is the operator's.
 
+**A declaration is the binding's claim.** The gateway reads whether the declared name is live,
+never whether the server is that publisher's. A recapture that drops the declaration, or declares
+another publisher, starts a new reading: the earlier publisher's `unmaintained` no longer refuses.
+The recapture is the operator's, and its publisher lines are shown with its approval (#362 L6).
+
 **Where it is read and kept.** The read happens at registration: `gateway connect` for a customer
 binding, `--replace` (a recapture) included. It happens before any adapter is run, and its lines
 are shown with the approval. It happens again on the operator's schedule, with
@@ -391,10 +409,13 @@ owner, as a replaced configuration is: a root `connect` or a root-run `gateway p
 configuration the signer owns leaves a record the signer can read.
 
 **Policy.** `gateway publishers --config <engine.json> --policy report|refuse` sets the operator's
-policy; `report` is the default (open question 15). An unmaintained publisher is always reported
-as `publisher-unmaintained`, and an unverifiable one as `publisher-unverifiable`. Under `refuse`,
-a record of the platform's own binding that says `unmaintained` (evidence of a lapse, never a
-404) also refuses three things:
+policy; `report` is the default (open question 15). The policy is kept in the record,
+`<engine.json>.publishers.json`, and nowhere else. A configuration moved or restored without its
+record has neither readings nor a policy: it is under `report` until the policy is set again, and
+nothing says so. Move the record with the configuration (#362 L8). An unmaintained publisher is
+always reported as `publisher-unmaintained`, and an unverifiable one as `publisher-unverifiable`.
+Under `refuse`, a record of the platform's own binding that says `unmaintained` (evidence of a
+lapse, never a 404) also refuses three things:
 
 - its registration;
 - each acquisition, before the source starts;
