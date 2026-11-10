@@ -505,10 +505,17 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			// The platform's connection grant (SPEC.md §10, rule 3), in two
 			// parts around the counting admission. Its state first: a grant
 			// that is not live is refused before the issuing host is read,
-			// so it consumes none of the delegation's budget.
-			if refusal := g.askCustody(spec.grant, grantCheck); refusal != nil {
-				g.abandonUnminted(sessionID)
-				return nil, refusal
+			// so it consumes none of the delegation's budget. A write the
+			// chain's own scope check refuses (one with no key, or one whose
+			// key holds a reservation in its scope, which the key lookup did
+			// not refuse above) is not asked about the grant: the admission
+			// reports out-of-scope, as for /acquire.
+			credential := delegated.credential
+			if credential == nil || credential.chain.scopeRefusal(g.authority, source, tool, spec.effects[tool]) == nil {
+				if refusal := g.askCustody(spec.grant, grantCheck); refusal != nil {
+					g.abandonUnminted(sessionID)
+					return nil, refusal
+				}
 			}
 			member, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true})
 			if refusal != nil {

@@ -2469,7 +2469,8 @@ issuing host is read and consumes nothing of the delegation's limits; and the cu
 admission, with its owner read, is made after the admission read answers `admit` (RFC 0030 §2): a
 call steps 0 to 12 refuse reports that refusal, and one the owner read refuses is not dispatched
 and leaves its count used, which fails closed. The exceptions are a first keyed request whose leaf excludes the write (§11.8),
-and an `/acquire` that the gateway's own part of step 11 refuses: each is refused as its admission
+and any other `/acquire` or `/act` that the gateway's own part of step 11 refuses (for `/act`, one
+with no `actionKey`, or one whose key holds a reservation in its scope): each is refused as its admission
 refuses it, which reads the issuing host, `out-of-scope` unless the host refuses it first, and
 since it never dispatches, it uses no grant and the grant is not checked. Admission applies, in order, steps 0 to 7
 (§11.4, §11.1), then:

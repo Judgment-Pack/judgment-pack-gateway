@@ -262,10 +262,10 @@ The signer never reads the custody, so for each delegated write or acquisition i
   admission, as RFC 0030 §2 orders a separate owner read: a call the issuing host refuses reports
   that refusal, and one the owner read refuses is not dispatched and leaves its count used.
 
-A call the chain's own part of step 11 refuses runs neither: a delegated acquisition outside some
-link's scope, and a first keyed write whose leaf excludes it. It is refused as its admission
-refuses it, `out-of-scope` unless the issuing host refuses it first, and is told nothing of the
-grant's state.
+A call the chain's own part of step 11 refuses runs neither: a delegated acquisition or write
+outside some link's scope, a write with no key and a first keyed write whose leaf excludes it
+included. It is refused as its admission refuses it, `out-of-scope` unless the issuing host
+refuses it first, and is told nothing of the grant's state.
 
 The read-back of a delegated key's uncertain action makes no admission read and counts nothing,
 so it runs `--grants admit` alone, before its program starts: a grant that is not live, or whose
