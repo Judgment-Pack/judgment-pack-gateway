@@ -252,10 +252,13 @@ func (h *delegationHarness) presentRaw(t *testing.T, path, body, credential stri
 	return resp.StatusCode, string(raw)
 }
 
+// setGrant names gate as the platform's grant, on each of its sources.
 func (h *delegationHarness) setGrant(gate *grantGate) {
-	spec := h.g.sources["tickets/write"]
-	spec.grant = gate
-	h.g.sources["tickets/write"] = spec
+	for _, name := range []string{"tickets/write", "tickets/live"} {
+		spec := h.g.sources[name]
+		spec.grant = gate
+		h.g.sources[name] = spec
+	}
 }
 
 // A delegated write on a platform that names no grant is refused before

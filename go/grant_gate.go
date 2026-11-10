@@ -12,23 +12,29 @@ import (
 	"time"
 )
 
-// The connection grant a platform's delegated writes are admitted under
-// (SPEC.md §10, rule 3; gateway #368). A platform's write takes its token
-// from the credentials file the configuration names, and the connection
-// custody holds the grant: its owner, its idle expiry, its state and its
-// scopes. The signer never reads the custody (ADR-0001), so the check is
-// the custody's own, run as a program under the custody's user, in two parts
-// around the delegation's counting admission (SPEC.md §11.5):
-// `gateway-connections --grants check` before it, the grant's state alone,
-// so a grant that is not live refuses before the issuing host is read; and
-// `--grants admit` after it answers admit, the check and the record every
-// use of the custody's credentials passes, the owner read included, so an
-// owner refusal follows the delegation's own (RFC 0030 §2). A delegated
-// write on a platform that names no grant is refused before anything is
+// The connection grant a platform's delegated calls are admitted under
+// (SPEC.md §10, rule 3; gateway #368, #372). A platform's sources take their
+// tokens from the credentials files the configuration names, and the
+// connection custody holds the grant: its owner, its idle expiry, its state
+// and its scopes. The signer never reads the custody (ADR-0001), so the
+// check is the custody's own, run as a program under the custody's user.
+// A delegated write through /act and a delegated acquisition through
+// /acquire are checked in two parts around the delegation's counting
+// admission (SPEC.md §11.5): `gateway-connections --grants check` before
+// it, the grant's state alone, so a grant that is not live refuses before
+// the issuing host is read; and `--grants admit` after it answers admit,
+// the check and the record every use of the custody's credentials passes,
+// the owner read included, so an owner refusal follows the delegation's own
+// (RFC 0030 §2). The read-back of a delegated key's uncertain action makes
+// no admission read and counts nothing, so it is held to `admit` alone
+// before it runs: a grant that is not live, or whose owner is refused,
+// serves no read-back, and the key stays uncertain (RFC 0030 §5, rule 5).
+// A delegated
+// call on a platform that names no grant is refused before anything is
 // admitted.
 
 // platformGrant is a platform's `grant` member (engineVersion 16): the
-// custody connection its delegated writes are admitted under, where that
+// custody connection its delegated calls are admitted under, where that
 // custody is kept and for whom, and the user its program runs as.
 type platformGrant struct {
 	provider   string
@@ -39,7 +45,7 @@ type platformGrant struct {
 	uid        int // resolved from the user database
 }
 
-// grantGate is what a write source's delegated dispatch is admitted
+// grantGate is what a delegated call on a platform's source is admitted
 // through: the custody program's command line, to which the operation is
 // added, run under user with an environment of env alone, and the
 // connection it asks for.
@@ -68,13 +74,13 @@ var grantGateTimeout = 30 * time.Second
 // grantAnswerBytes bounds what the custody may write on either stream.
 const grantAnswerBytes = 4096
 
-// The custody's two operations for a delegated write (SPEC.md §10, rule 3).
+// The custody's two operations for a delegated call (SPEC.md §10, rule 3).
 const (
 	grantCheck = "check" // before the counting admission: the state alone
-	grantAdmit = "admit" // after it answers admit: the use, the owner read included
+	grantAdmit = "admit" // after it answers admit, and before a read-back: the use, the owner read included
 )
 
-// The refusals of a delegated write's grant (SPEC.md §10, rule 3). Each but
+// The refusals of a delegated call's grant (SPEC.md §10, rule 3). Each but
 // grant-unreadable is the custody's own refusal of a use.
 const (
 	refusalGrantUnknown     = "grant-unknown"
@@ -104,8 +110,8 @@ var grantRefusals = map[string]string{
 // makes: from check they are not read as themselves.
 var grantOwnerRefusals = []string{refusalOwnerRemoved, refusalOwnerUnknown}
 
-// grantRefused is a refusal of a delegated write's grant: 403, refused at
-// `grant`.
+// grantRefused is a refusal of a delegated call's grant: 403, refused at
+// `grant` for /act.
 func grantRefused(name, reason string) *delegationRefusal {
 	return &delegationRefusal{name: name, reason: reason, at: "grant"}
 }
@@ -152,7 +158,7 @@ func flatToken(s string) bool {
 	return true
 }
 
-// grantGateOf is the gate a platform's write source is admitted through,
+// grantGateOf is the gate a platform's sources are admitted through,
 // with custody the custody program; nil for a platform with no grant.
 func grantGateOf(p platformConfig, custody string) *grantGate {
 	if p.grant == nil {
@@ -166,7 +172,7 @@ func grantGateOf(p platformConfig, custody string) *grantGate {
 	}
 }
 
-// askCustody runs one of the custody's operations for a delegated write
+// askCustody runs one of the custody's operations for a delegated call
 // under the platform's grant, grantCheck or grantAdmit, and is the refusal,
 // or nil where it passes. Only the two answers the custody gives are read:
 // the operation's own answer, naming the provider and connection asked

@@ -263,6 +263,16 @@ func (g *gatewayService) reconcileAction(session, platform string, args value, w
 	if recovery == nil || recovery.readBack == nil {
 		return nil, &actionUncertain{"action-reconciliation-unavailable", prior}
 	}
+	// The key is uncertain and answers by its declared read-back. The run's
+	// actor causes one only within its own scope: the read-back runs the
+	// platform's live source, not the write's, so every link must name that
+	// source and the declared read tool, as it names the write's (SPEC.md
+	// §11.8; spec #291 L1). A link that excludes either is refused, saying
+	// nothing, before anything else of the read-back is asked -- its grant,
+	// its publisher -- and no read-back runs.
+	if who != nil && who.delegated != nil && who.delegated.kind == "actor" && who.delegated.credential.chain.sourceToolRefusal(g.authority, platform+"/live", recovery.readBack.tool) {
+		return nil, refuse(refusalKeyUnauthenticated, "")
+	}
 	request, err := recovery.readBack.request(key, args)
 	if err != nil {
 		return nil, &actionUncertain{err.Error(), prior}
@@ -288,6 +298,9 @@ func (g *gatewayService) reconcileAction(session, platform string, args value, w
 	read, err := g.acquireWithReconciliation(session, platform+"/live", "", request, who, r)
 	var refused *readBackRefused
 	if errors.As(err, &refused) {
+		if refused.grant {
+			return nil, &actionUncertain{"action-reconciliation-unavailable: the platform's connection grant refused the read-back, and it did not run: " + refused.Error(), prior}
+		}
 		return nil, &actionUncertain{"action-reconciliation-unavailable: the read-back was refused, and no program ran: " + refused.Error(), prior}
 	}
 	if err != nil {
