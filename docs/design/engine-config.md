@@ -1180,8 +1180,9 @@ At start the engine holds `gateway-connections` as it holds every adapter (in `a
 the engine's PATH where `adapters` is not set), and refuses a `grant.user` the host does not have,
 root, the signer's own user, the MCP server's, or a platform's. Each delegated call on the
 platform is then admitted through the custody, whichever of its operations it runs: a write, an
-acquisition of `live` or `history`, and the read-back of a delegated key's uncertain action, which
-runs `live`. No undelegated call is. A delegated call on a platform with no `grant` is refused as
+acquisition of `live`, and the read-back of a delegated key's uncertain action, which runs `live`.
+A delegated acquisition of `history` names no tool, so it is always out of scope (SPEC.md §11.5,
+reason `tool`) and never asks the custody. No undelegated call is. A delegated call on a platform with no `grant` is refused as
 `grant-unknown`. The engine image ships no `gateway-connections` and no custody user, so a file
 that names a grant is refused at start there.
 

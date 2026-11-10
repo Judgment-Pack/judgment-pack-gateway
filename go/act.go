@@ -471,6 +471,11 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	// A dispatch marker without its not-dispatched answer: the mutation may
 	// have been sent, so it is recorded as uncertain and never sent again.
 	uncertain := begun
+	// Whether this request's own dispatch left the key uncertain, as against
+	// one it found so: a dispatch marker without its answer, or an attempt
+	// another request claimed first. Only its own may answer the uncertain
+	// record to a link the read-back's scope excludes (SPEC.md §11.8).
+	dispatched := false
 	// Under a delegation the dispatch is admitted here, immediately before it
 	// (SPEC.md §11.5), and the admission is recorded in the dispatch marker; a
 	// marker found without its answer carries the admission it was made under.
@@ -500,10 +505,17 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			// The platform's connection grant (SPEC.md §10, rule 3), in two
 			// parts around the counting admission. Its state first: a grant
 			// that is not live is refused before the issuing host is read,
-			// so it consumes none of the delegation's budget.
-			if refusal := g.askCustody(spec.grant, grantCheck); refusal != nil {
-				g.abandonUnminted(sessionID)
-				return nil, refusal
+			// so it consumes none of the delegation's budget. A write the
+			// chain's own scope check refuses (one with no key, or one whose
+			// key holds a reservation in its scope, which the key lookup did
+			// not refuse above) is not asked about the grant: the admission
+			// reports out-of-scope, as for /acquire.
+			credential := delegated.credential
+			if credential == nil || credential.chain.scopeRefusal(g.authority, source, tool, spec.effects[tool]) == nil {
+				if refusal := g.askCustody(spec.grant, grantCheck); refusal != nil {
+					g.abandonUnminted(sessionID)
+					return nil, refusal
+				}
 			}
 			member, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true})
 			if refusal != nil {
@@ -552,6 +564,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		return nil, closedKey()
 	}
 	if !uncertain {
+		dispatched = true
 		result, _, _, err = g.runSource(source, spec, canonicalRequest)
 		if err == nil {
 			_, err = readEnvelope(result, "mcp")
@@ -719,7 +732,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			return nil, err
 		}
 		if uncertain {
-			return g.reconcileAction(sessionID, platform, arguments, who, key, recovery, out, false)
+			return g.reconcileAction(sessionID, platform, arguments, who, key, recovery, out, !dispatched)
 		}
 	}
 	return out, nil

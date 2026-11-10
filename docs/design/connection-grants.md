@@ -262,6 +262,13 @@ The signer never reads the custody, so for each delegated write or acquisition i
   admission, as RFC 0030 §2 orders a separate owner read: a call the issuing host refuses reports
   that refusal, and one the owner read refuses is not dispatched and leaves its count used.
 
+A call the chain's own part of step 11 refuses runs neither: a delegated acquisition or write
+outside some link's scope, a write with no key and a first keyed write whose leaf excludes it
+included. It is refused as its admission refuses it, `out-of-scope` unless the issuing host
+refuses it first, and is told nothing of the grant's state. On a platform that names no grant,
+each of these is refused `grant-unknown` before the issuing host is read, except the first keyed
+write whose leaf excludes it, which its admission refuses.
+
 The read-back of a delegated key's uncertain action makes no admission read and counts nothing,
 so it runs `--grants admit` alone, before its program starts: a grant that is not live, or whose
 owner is refused, serves no read-back (RFC 0030 §5 rule 5). The key then stays uncertain: it
@@ -269,8 +276,9 @@ answers `409` `action-reconciliation-unavailable`, naming the refusal, with its 
 and nothing is sent again. That holds for every sender the key authenticates. Before the grant is
 asked, the run's actor is held to the read-back's own source and tool: every link of its chain
 must name the platform's `live` source and the declared read tool. On a key the lookup finds
-uncertain, a link that does not is refused as `action-key-unauthenticated` (SPEC.md §11.8). On a
-key this request's own dispatch left uncertain, the request is not refused, since the write may
+uncertain, a dispatch marker found without its answer and an attempt another request claimed first
+included, a link that does not is refused as `action-key-unauthenticated` (SPEC.md §11.8). Only on a
+key this request's own dispatch left uncertain is the request not refused, since the write may
 have been sent: no read-back runs, and it answers its uncertain record.
 
 No scope is recorded as used, since the call's token is the platform's and not the custody's.
@@ -475,6 +483,10 @@ The flag is shown with the approval and recorded. It is a report, never a refusa
   acquisition, after the admission read answers `admit`, and for a read-back before it runs, as
   the RFC orders a separate owner read; the admission read carries no owner (spec #284 NC2).
 - **Not built.** Reassignment out of quarantine, and acceptance.
+- **The operator's own calls under a quarantined grant.** RFC 0030 §5 rule 5 says a quarantined
+  grant admits no call, delegated or not. Here only a delegated call is admitted under the grant:
+  the operator's own writes, acquisitions and read-backs on a platform whose grant is quarantined
+  still run, under the platform's credentials files.
 - **Where the publisher record lives.** It is kept beside the engine configuration and not in the
   connection grant record. A customer MCP server is registered by the core (`gateway connect`), not
   by a connection custody. A customer binding without a declared publisher is `undeclared`. The
