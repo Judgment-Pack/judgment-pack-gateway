@@ -384,11 +384,13 @@ restart stay the operator's.
 1. Stop every gateway process that serves the store. The per-key lock holds one
    process only, and the journal's exclusive creation does not guard against a
    removal while a request is in flight. A gateway holds a shared lock (`flock(2)`) on the
-   store's directory from before it listens until it stops, under either serve command, and
-   the command takes it exclusive: the command is refused as `action-journal-held` while any
-   gateway holds it, and a gateway is refused its start as `action-journal-held` while a
-   compaction holds it. The lock is advisory, and as good as the filesystem's `flock(2)`: a
-   gateway of v0.24.0 or earlier takes none.
+   store's directory from before it builds its service until it stops, under either serve
+   command, and the command takes it exclusive: the command is refused as
+   `action-journal-held` while any gateway holds it, and a gateway is refused its start as
+   `action-journal-held` while a compaction holds it, before it makes anything in the store.
+   A store that is not there yet is locked once the start has made it. The lock is
+   advisory, and as good as the filesystem's `flock(2)`: a gateway of v0.24.0 or earlier
+   takes none.
 2. Back up the store with `actions/`.
 3. Keep `actions/index/` whole: nothing below removes a file from it. List what its records
    name: every `reservation` and every `subjectRecord`. A directory named `.staging-*` is no
@@ -458,7 +460,10 @@ refuses (exit 1, `journal compact: ` and the refusal) where it cannot follow it 
   `.staging-*` directory and no receipt, and deletes nothing.
 - **The archive** is a private directory outside the store, on the journal's filesystem, so
   that a move is a rename and never a copy and a removal; it is made at `0700` when it is not
-  there, and another compaction holding it refuses (`action-journal-archive`). Each retirement
+  there, and another compaction holding it refuses (`action-journal-archive`). An archive that
+  is the store, is inside it or holds it refuses; the directories along each path are compared
+  as files, not by their names, so a name that differs only in case, on a filesystem that
+  ignores case, or a second mount of the store does not pass for outside it. Each retirement
   is `<archive>/<namespace>.<n>`, `n` the first number from 1 that no retirement of the
   namespace holds: a private directory holding `entry`, the entry whole, or `action.json`, an
   indexed entry's, and `retirement.json`.
@@ -470,13 +475,17 @@ refuses (exit 1, `journal compact: ` and the refusal) where it cannot follow it 
 - It prints a line for each name in `actions/` but the index, `retired` or `kept` and why, a
   `finished` line for each retirement it finishes (below), and a last line of counts.
 
-**A compaction that stops**, killed or refused part way, is run again. Each retirement is made
-durable in an order no crash breaks: a staging directory `.staging-*` in the archive, then
-the record in it, then the move, each durable before the next, and only then its final name.
+**A compaction that stops**, killed or refused part way, is run again with the same
+`--archive`: a rerun finishes only the retirements staged in the archive it is given. Each
+retirement is made durable in an order no crash breaks: a staging directory `.staging-*` in
+the archive, then the record in it, then the move, each durable before the next, and only
+then its final name.
 A rerun first names every staging directory of the archive that holds what was moved beside
 its record, and leaves one that moved nothing as it is, inert. A gateway that serves between
 the two is answered as the journal then stands. What is moved is what was read: an entry
-replaced since stops the compaction, and is read again on the rerun.
+replaced since stops the compaction, and is read again on the rerun. The move is made by
+path, into the staging directory its record was made durable in: one replaced since stops
+the compaction before the move.
 
 ### A damaged entry
 
@@ -647,4 +656,6 @@ acts, and a client that only reconciles, as an agent's host does, never moves it
 - **The store lock keeps out the gateways that take it.** A gateway of v0.24.0 or earlier
   serving the store does not hold it, and a compaction beside one is not refused; a network
   filesystem's `flock(2)` may not exclude across hosts. Stopping every gateway process stays
-  step 1 of the procedure.
+  step 1 of the procedure. The compaction's moves are made by path, each checked just before
+  and after it against what it holds; a process that ignores the lock and replaces a directory
+  between the check and the move is not kept out.

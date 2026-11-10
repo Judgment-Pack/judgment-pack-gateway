@@ -53,23 +53,59 @@ filesystem. Refused while a gateway process serves the store.`
 // this one: a gateway serving the store, or a compaction.
 var errDirectoryHeld = errors.New("the directory is locked by another process")
 
-// holdServedStore is the lock a gateway process holds on its store's directory
+// servedStoreHold is the lock a gateway process holds on its store's directory
 // while it serves: shared, so that gateway processes serving one store do not
 // exclude each other, and so that gateway journal compact, which takes it
-// exclusive, is refused while any of them runs. A compaction under way refuses
-// the start. Where no journal is kept, nothing is locked.
-func holdServedStore(storeRoot string) (io.Closer, error) {
+// exclusive, is refused while any of them runs. Where no journal is kept,
+// nothing is locked.
+type servedStoreHold struct {
+	store string
+	lock  io.Closer
+}
+
+// holdServedStore takes the hold before the service is built, so that a start
+// while a compaction runs is refused before it makes anything in the store. A
+// store that is not a directory yet, which no compaction can hold, is held by
+// made, once the service has made it; one that cannot be, the service refuses
+// as it always has.
+func holdServedStore(storeRoot string) (*servedStoreHold, error) {
+	h := &servedStoreHold{store: storeRoot}
 	if !actionJournalSupported {
-		return io.NopCloser(nil), nil
+		return h, nil
 	}
-	lock, err := lockDirectory(storeRoot, false)
+	if info, err := os.Stat(storeRoot); err != nil || !info.IsDir() {
+		return h, nil
+	}
+	return h, h.take()
+}
+
+// made holds the store the service has just made, where it was not there when
+// the hold was taken.
+func (h *servedStoreHold) made() error {
+	if h.lock != nil || !actionJournalSupported {
+		return nil
+	}
+	return h.take()
+}
+
+func (h *servedStoreHold) take() error {
+	lock, err := lockDirectory(h.store, false)
 	if errors.Is(err, errDirectoryHeld) {
-		return nil, fmt.Errorf("action-journal-held: a journal compaction holds the store %s; start the gateway once it has finished", storeRoot)
+		return fmt.Errorf("action-journal-held: a journal compaction holds the store %s; start the gateway once it has finished", h.store)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("action-journal-unavailable: the store %s could not be locked against a journal compaction: %v", storeRoot, err)
+		return fmt.Errorf("action-journal-unavailable: the store %s could not be locked against a journal compaction: %v", h.store, err)
 	}
-	return lock, nil
+	h.lock = lock
+	return nil
+}
+
+// Close releases the hold.
+func (h *servedStoreHold) Close() error {
+	if h.lock == nil {
+		return nil
+	}
+	return h.lock.Close()
 }
 
 func cmdJournal(args []string, stdout, stderr io.Writer) int {
@@ -136,6 +172,7 @@ const retirementNames = 1 << 16
 
 type journalCompaction struct {
 	store, journal, archive string
+	storeInfo               os.FileInfo
 	actions, archived       *os.Root
 	retention               time.Duration
 	now                     time.Time
@@ -171,7 +208,7 @@ func compactJournal(storePath, archivePath string, retention time.Duration, cloc
 		return fmt.Errorf("action-journal-invalid: the store %s changed while it was locked: nothing was compacted", store)
 	}
 	c := &journalCompaction{
-		store: store, journal: filepath.Join(store, "actions"), retention: retention,
+		store: store, storeInfo: held, journal: filepath.Join(store, "actions"), retention: retention,
 		now: clock().UTC(), out: out, reservations: map[string]bool{}, subjects: map[string]bool{},
 	}
 	if info, err := storeRoot.Lstat("actions"); errors.Is(err, os.ErrNotExist) {
@@ -346,8 +383,8 @@ func (c *journalCompaction) openArchive(archivePath string) (io.Closer, error) {
 			return nil, fmt.Errorf("action-journal-archive: the directory %s to make the archive in is not there: nothing was compacted", filepath.Dir(abs))
 		}
 		abs = filepath.Join(parent, filepath.Base(abs))
-		if within(c.store, abs) {
-			return nil, fmt.Errorf("action-journal-archive: the archive %s is inside the store %s, and it must be outside it: nothing was compacted", archivePath, c.store)
+		if err := c.placeArchive(archivePath, parent, nil); err != nil {
+			return nil, err
 		}
 		if err = os.Mkdir(abs, 0o700); err != nil {
 			return nil, fmt.Errorf("action-journal-archive: the archive %s could not be made: nothing was compacted", archivePath)
@@ -367,8 +404,8 @@ func (c *journalCompaction) openArchive(archivePath string) (io.Closer, error) {
 	if err != nil {
 		return nil, notPrivate
 	}
-	if within(c.store, resolved) {
-		return nil, fmt.Errorf("action-journal-archive: the archive %s is inside the store %s, and it must be outside it: nothing was compacted", archivePath, c.store)
+	if err := c.placeArchive(archivePath, resolved, info); err != nil {
+		return nil, err
 	}
 	if made {
 		if err := syncDirectoryAt(filepath.Dir(resolved)); err != nil {
@@ -403,10 +440,47 @@ func (c *journalCompaction) openArchive(archivePath string) (io.Closer, error) {
 	return lock, nil
 }
 
-// within reports whether path is dir or below it.
-func within(dir, path string) bool {
-	rel, err := filepath.Rel(dir, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+// placeArchive refuses an archive that is the store, is inside it, or holds
+// it. at is the archive's resolved directory, or, for one not made yet, the
+// directory it is to be made in, and archive the archive's own, where it is
+// there. Directories are compared as files, along each path's directories, and
+// not by their names: a filesystem that ignores case, or a second mount of a
+// directory, gives one directory two names.
+func (c *journalCompaction) placeArchive(archivePath, at string, archive os.FileInfo) error {
+	inside, err := directoryAtOrAbove(at, c.storeInfo)
+	if err == nil && !inside && archive != nil {
+		var holds bool
+		holds, err = directoryAtOrAbove(c.store, archive)
+		if err == nil && holds {
+			return fmt.Errorf("action-journal-archive: the archive %s holds the store %s, and it must be outside it: nothing was compacted", archivePath, c.store)
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("action-journal-archive: whether the archive %s is outside the store %s could not be established: nothing was compacted", archivePath, c.store)
+	}
+	if inside {
+		return fmt.Errorf("action-journal-archive: the archive %s is inside the store %s, and it must be outside it: nothing was compacted", archivePath, c.store)
+	}
+	return nil
+}
+
+// directoryAtOrAbove reports whether the directory at path, or one above it,
+// is dir. A directory along the way that cannot be read refuses.
+func directoryAtOrAbove(path string, dir os.FileInfo) (bool, error) {
+	for {
+		info, err := os.Stat(path)
+		if err != nil {
+			return false, err
+		}
+		if os.SameFile(info, dir) {
+			return true, nil
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return false, nil
+		}
+		path = parent
+	}
 }
 
 // syncDirectoryAt makes the entries of the directory at path durable.
@@ -844,6 +918,13 @@ func (c *journalCompaction) retire(namespace string, v verdict) error {
 	}
 	if now, err := os.Lstat(from); err != nil || !os.SameFile(now, v.held) {
 		return fmt.Errorf("action-journal-invalid: %s changed after it was read, and was not moved: the compaction stopped there", what)
+	}
+	// The move is made by path: the staging directory there must still be
+	// the one the record was made durable in.
+	if holding, heldErr := staged.Stat("."); heldErr != nil {
+		return fmt.Errorf("action-journal-archive: the staging directory %s cannot be held: the compaction stopped there", filepath.Join(c.archive, stage))
+	} else if there, err := os.Lstat(filepath.Dir(to)); err != nil || !os.SameFile(there, holding) {
+		return fmt.Errorf("action-journal-archive: the staging directory %s was replaced after its record was made, and %s was not moved: the compaction stopped there", filepath.Join(c.archive, stage), what)
 	}
 	if err = os.Rename(from, to); err != nil {
 		if crossDevice(err) {

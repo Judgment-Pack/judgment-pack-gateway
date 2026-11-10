@@ -401,8 +401,21 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", witnessStartLine(log, cfg.witness))
 		witness = newWitnessService(log, cfg.witness, os.Stderr)
 	}
+	// held while the engine serves, so gateway journal compact refuses; taken
+	// before the service is built, so a compaction under way refuses the start
+	// before anything is made in the store (#359)
+	storeHold, err := holdServedStore(cfg.store)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	defer storeHold.Close()
 	service, err := buildService(cfg.store, seed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources, identity))
 	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	if err := storeHold.made(); err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
@@ -414,14 +427,6 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	defer registryHold.Close()
-	// held while the engine serves, so gateway journal compact refuses; a
-	// compaction under way refuses the start (#359)
-	storeHold, err := holdServedStore(service.storeRoot)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "start:", err)
-		return 1
-	}
-	defer storeHold.Close()
 	service.witness = witness
 	service.attachDelegation(delegation)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -824,8 +829,21 @@ func cmdServe(args []string) int {
 		return 1
 	}
 
+	// held while the gateway serves, so gateway journal compact refuses; taken
+	// before the service is built, so a compaction under way refuses the start
+	// before anything is made in the store (#359)
+	storeHold, err := holdServedStore(storeRoot)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	defer storeHold.Close()
 	service, err := buildService(storeRoot, seed, authority, registryPath, opts)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	if err := storeHold.made(); err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
@@ -837,14 +855,6 @@ func cmdServe(args []string) int {
 		return 1
 	}
 	defer registryHold.Close()
-	// held while the gateway serves, so gateway journal compact refuses; a
-	// compaction under way refuses the start (#359)
-	storeHold, err := holdServedStore(service.storeRoot)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "start:", err)
-		return 1
-	}
-	defer storeHold.Close()
 	// Sources run in their own process groups, so the terminal's interrupt
 	// no longer reaches them; the gateway's does, and it is carried to every
 	// source in flight through the service's context.

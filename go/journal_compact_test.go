@@ -107,6 +107,18 @@ func handEntry(t *testing.T, actions, name string, files map[string]string) stri
 	return dir
 }
 
+// realPath is path with every link in it resolved, as the command prints it: a
+// test's temporary directory can be reached through a link, as /var is
+// /private/var on macOS.
+func realPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
 // handStore is a store with a journal of one entry that never sent, and no
 // gateway: what the command reads of a store is its journal.
 func handStore(t *testing.T) (dir, store, entry string) {
@@ -226,16 +238,24 @@ func TestJournalCompactExcludesServe(t *testing.T) {
 			}
 
 			// While the compaction runs, between its record and its move, a gateway
-			// does not start.
+			// does not start, and makes nothing in the store first: not even the
+			// directories a start makes where they are not there.
 			started := 0
 			compactStep = func(point string) error {
 				if point == "record "+entry {
 					started++
+					for _, name := range []string{"artifacts", "receipts"} {
+						if err := os.Remove(filepath.Join(f.store, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+							t.Errorf("the store's %s: %v", name, err)
+						}
+					}
+					before := treeOf(t, store)
 					refused := serveInProcess(t, args)
 					want := "start: action-journal-held: a journal compaction holds the store " + f.store + "; start the gateway once it has finished\n"
 					if !refused.exited || refused.code != 1 || !strings.Contains(refused.stderr(), want) {
 						t.Errorf("a gateway started during a compaction: exited %v, code %d, %q", refused.exited, refused.code, refused.stderr())
 					}
+					sameTree(t, "the store a refused start saw", treeOf(t, store), before)
 				}
 				return nil
 			}
@@ -279,8 +299,8 @@ func TestJournalCompactNeverTakesAKeyInFlight(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	store := g.storeRoot
-	archive := filepath.Join(root, "archive")
+	store := realPath(t, g.storeRoot)
+	archive := filepath.Join(realPath(t, root), "archive")
 	hold, err := holdServedStore(store)
 	if err != nil {
 		t.Fatal(err)
@@ -320,9 +340,9 @@ func TestJournalCompactNeverTakesAKeyInFlight(t *testing.T) {
 // went sends nothing again; one that never sent dispatches.
 func TestJournalCompactClasses(t *testing.T) {
 	root, g, c := actionKeysSetup(t)
-	store := g.storeRoot
+	store := realPath(t, g.storeRoot)
 	actions := filepath.Join(store, "actions")
-	archive := filepath.Join(root, "archive")
+	archive := filepath.Join(realPath(t, root), "archive")
 	k := func(n int) string { return fmt.Sprintf("%064x", 0xa000+n) }
 	answered, dropped, missingKey, closedKey, indexedKey := k(1), k(2), k(3), k(4), k(5)
 	ns := func(key string) string { return g.actionNamespace(actionKeysWho, key) }
@@ -514,7 +534,7 @@ func TestJournalCompactRetentionBoundary(t *testing.T) {
 			if _, err := scopedAct(g, c, "served", key, actionKeysWho, indexed, false); err != nil {
 				t.Fatal(err)
 			}
-			store, archive := g.storeRoot, filepath.Join(root, "archive")
+			store, archive := realPath(t, g.storeRoot), filepath.Join(realPath(t, root), "archive")
 			journal := filepath.Join(store, "actions")
 			session, index, servedAt, served := servedOf(t, filepath.Join(journal, namespace, "action.json"))
 			kind, subject := "answered", namespace
@@ -731,6 +751,28 @@ func TestJournalCompactArchive(t *testing.T) {
 		}, func(dir, store, archive string) string {
 			return "action-journal-archive: the archive " + archive + " is inside the store " + store + ", and it must be outside it: nothing was compacted"
 		}},
+		{"the store itself", func(t *testing.T, dir, store string) string {
+			return store
+		}, func(dir, store, archive string) string {
+			return "action-journal-archive: the archive " + archive + " is inside the store " + store + ", and it must be outside it: nothing was compacted"
+		}},
+		{"the directory that holds the store", func(t *testing.T, dir, store string) string {
+			return dir
+		}, func(dir, store, archive string) string {
+			return "action-journal-archive: the archive " + archive + " holds the store " + store + ", and it must be outside it: nothing was compacted"
+		}},
+		{"inside the store under a name that differs in case", func(t *testing.T, dir, store string) string {
+			other := filepath.Join(dir, strings.ToUpper(filepath.Base(store)))
+			a, errA := os.Stat(other)
+			b, errB := os.Stat(store)
+			if errA != nil || errB != nil || !os.SameFile(a, b) {
+				t.Skip("this filesystem tells names apart by case")
+			}
+			mkdir(t, filepath.Join(store, "kept"), 0o700)
+			return filepath.Join(other, "kept")
+		}, func(dir, store, archive string) string {
+			return "action-journal-archive: the archive " + archive + " is inside the store " + store + ", and it must be outside it: nothing was compacted"
+		}},
 		{"inside the store through a link", func(t *testing.T, dir, store string) string {
 			mkdir(t, filepath.Join(store, "kept"), 0o700)
 			link := filepath.Join(dir, "to-store")
@@ -867,7 +909,7 @@ func TestJournalCompactStoppedAnywhereIsFinishedByARerun(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				store, archive := g.storeRoot, filepath.Join(root, "archive")
+				store, archive := realPath(t, g.storeRoot), filepath.Join(realPath(t, root), "archive")
 				journal := filepath.Join(store, "actions")
 				nsPlain, nsFlagged := g.actionNamespace(actionKeysWho, plain), g.actionNamespace(actionKeysWho, flagged)
 				target := nsPlain
@@ -993,7 +1035,7 @@ func TestJournalCompactRerunAfterAGatewayServed(t *testing.T) {
 			if _, err := actionKeysAct(missing, c, "missing", key); err == nil {
 				t.Fatal("dispatched without a program")
 			}
-			store, archive := missing.storeRoot, filepath.Join(root, "archive")
+			store, archive := realPath(t, missing.storeRoot), filepath.Join(realPath(t, root), "archive")
 			journal := filepath.Join(store, "actions")
 			namespace := missing.actionNamespace(actionKeysWho, key)
 			compactStep = func(at string) error {
@@ -1075,6 +1117,50 @@ func TestJournalCompactMovesOnlyWhatItRead(t *testing.T) {
 		"compacted " + filepath.Join(store, "actions") + ": 0 retired, 1 kept, 0 finished; the archive is " + archive + "\n"
 	if err != nil || out != want {
 		t.Fatalf("the rerun: %v %q", err, out)
+	}
+}
+
+// The move is made by path, into the staging directory the record was made
+// durable in: one put in its place since is not moved into, and the compaction
+// stops; the rerun leaves the replacement, which holds nothing, as it is.
+func TestJournalCompactMovesIntoTheStageItHolds(t *testing.T) {
+	dir, store, entry := handStore(t)
+	archive := filepath.Join(dir, "archive")
+	var stage string
+	compactStep = func(at string) error {
+		if at == "record "+entry {
+			for _, name := range archiveNames(t, archive) {
+				if strings.HasPrefix(name, ".staging-") {
+					stage = filepath.Join(archive, name)
+				}
+			}
+			if err := os.Rename(stage, filepath.Join(archive, "elsewhere")); err != nil {
+				return err
+			}
+			mkdir(t, stage, 0o700)
+		}
+		return nil
+	}
+	t.Cleanup(func() { compactStep = nil })
+	out, err := compactAt(store, archive, time.Hour, farFuture)
+	compactStep = nil
+	if err == nil || err.Error() != "action-journal-archive: the staging directory "+stage+" was replaced after its record was made, and "+entry+" was not moved: the compaction stopped there" || out != "" {
+		t.Fatalf("%v %q", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(store, "actions", entry, "intent.json")); err != nil {
+		t.Fatalf("the entry moved: %v", err)
+	}
+	if held, err := os.ReadDir(stage); err != nil || len(held) != 0 {
+		t.Fatalf("the replacement holds %v: %v", held, err)
+	}
+	out, err = compactAt(store, archive, time.Hour, farFuture)
+	want := "retired " + entry + ": never sent; archived as " + entry + ".1\n" +
+		"compacted " + filepath.Join(store, "actions") + ": 1 retired, 0 kept, 0 finished; the archive is " + archive + "\n"
+	if err != nil || out != want {
+		t.Fatalf("the rerun: %v %q", err, out)
+	}
+	if held, err := os.ReadDir(stage); err != nil || len(held) != 0 {
+		t.Fatalf("the rerun changed the replacement: %v %v", held, err)
 	}
 }
 
