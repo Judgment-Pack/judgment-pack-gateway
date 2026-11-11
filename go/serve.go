@@ -2171,13 +2171,14 @@ func bearerCallerFor(id *identityConfig, audience, authorization string, now tim
 	return &who, nil
 }
 
-// listenAndServe binds address, serve --config's `listen`, which the
-// configuration holds to a loopback address, and serves on it. Serve from
-// the command line binds through listenForServe (serve_listen.go). This
-// reference has no access control; it is for self-hosting a trust root and
-// demonstrating the mechanism, not a hardened public deployment.
+// listenAndServe binds address, serve --config's `listen`, through
+// listenForConfig (serve_listen.go), and serves on it. Serve from the
+// command line binds through listenForServe. This reference authenticates
+// a caller only where an identity is configured; it is for self-hosting a
+// trust root and demonstrating the mechanism, not a hardened public
+// deployment.
 func (g *gatewayService) listenAndServe(address string) error {
-	listener, err := net.Listen("tcp", address)
+	listener, err := listenForConfig(address, os.Stderr)
 	if err != nil {
 		return err
 	}

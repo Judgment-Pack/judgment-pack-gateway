@@ -265,10 +265,14 @@ a build is what a deployment pins, and this note is what it means.
 - No policy, pack, or decision. Packs live in the application's own project; the runtime
   evaluates what it is handed.
 - No network listener beyond the configured `listen` address, which the engine holds to a
-  loopback address whatever else is configured; an identity decides who may call, never from
-  where, and reaching the engine from another host means a TLS-terminating front the operator
-  runs and trusts ([engine-config.md](engine-config.md)). That is the image's command,
-  `serve --config`. A deployment that runs `gateway serve` from the command line in the image
+  loopback address unless the configuration, of version 19, has an `identity` and
+  `acceptOtherHostsOverPlainHTTP: true` and neither `witness` nor `mcp`; then it may name an
+  address the container's published port reaches, `0.0.0.0:8787` for one, and every endpoint
+  but `/registry` and `/publickey` holds its caller to a token. Either way the transport is
+  plain HTTP: an identity decides who may call, never from where, and reaching the engine from
+  another host safely means a TLS-terminating front the operator runs and trusts
+  ([engine-config.md](engine-config.md), "Listening off loopback (engine version 19)"). That is
+  the image's command, `serve --config`. A deployment that runs `gateway serve` from the command line in the image
   instead gets a listener on `127.0.0.1` inside the container, which its published port does
   not reach, unless `--listen` names another address; that form authenticates no caller, so an
   address that is not loopback takes `--accept-unauthenticated-callers` and an authenticating

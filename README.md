@@ -74,8 +74,8 @@ in Gateway; search hits remain distinct from fetched page evidence. See
 
 ## Run it
 
-One Go binary, standard library only, listening on a loopback address unless `--listen` names
-another (below). Build it as below, or take it
+One Go binary, standard library only, listening on a loopback address unless `--listen`, or an
+engine configuration's `listen`, names another (below). Build it as below, or take it
 built: a release made by the release workflow carries the gateway and the adapters for
 Linux, macOS and Windows, with checksums and a provenance attestation
 ([docs/releasing.md](docs/releasing.md#verifying-a-download)). Releases up to `v0.4.0`
@@ -204,9 +204,17 @@ gateway answer on the container's published port, and that port is then publishe
 network those callers are on. When the address bound is not loopback the gateway writes, on
 stderr and before its `gateway on http://…` line, a `start:` line saying that other hosts can
 reach it and that it authenticates no caller, and `/posture` reports it in its `listener-reach`
-line as `not-enforced`, naming neither the address nor the port. `serve --config` does not take
-`--listen`: an engine configuration's `listen` is a loopback address
-([docs/design/engine-config.md](docs/design/engine-config.md)).
+line as `not-enforced`, naming neither the address nor the port.
+
+`serve --config` does not take `--listen`. An engine configuration's `listen` is a loopback
+address unless the configuration, of version 19, also has an `identity` and
+`acceptOtherHostsOverPlainHTTP: true`, and has neither a `witness` nor `mcp`
+([docs/design/engine-config.md](docs/design/engine-config.md), "Listening off loopback (engine
+version 19)"). Such a `listen` is an IP address and a port written as the gateway prints them —
+`0.0.0.0:8787`, `[::]:8787`, `192.0.2.10:8787` — bound in its own family; every endpoint but
+`/registry` and `/publickey` then takes a caller's token, which still crosses plain HTTP, so a front
+that terminates TLS belongs in front of it. The start writes a `start:` line on stderr, before the
+readiness line, saying so, and `/posture` reports the listener `partial`.
 
 `./gateway posture` says which of the isolation protections in [`SECURITY.md`](SECURITY.md)
 this host enforces — the user switch for sources, the reaping of a source's descendants, the
@@ -223,7 +231,8 @@ The gateway mints version 3 receipts (SPEC.md §1.2a): `/acquire` answers
 `{result, receipt, salts}`, where `salts.args` is the 32-byte salt behind the receipt's
 arguments commitment, returned here and retained nowhere. Revealing the arguments to an
 auditor takes the salt, so whoever holds it can, and nobody else; this reference hands it
-over plaintext HTTP, on localhost unless `--listen` names another address, so the holder is
+over plaintext HTTP, on localhost unless `--listen`, or an engine configuration's `listen`, names
+another address, so the holder is
 whoever can read that exchange. A bare
 `--source` command is the `"command"` shape: its acquisition record names the command
 and the digest of the file its first word resolved to, read just before the source is
@@ -489,7 +498,8 @@ Stated plainly because the whole line is about being exact where proof stops:
   gateway's registry over the store**. It does not defend a compromised gateway: key
   disclosure forges everything.
 - This is a **single-identity, single-operator reference**, on a loopback address unless
-  `serve --listen` names another, no authentication
+  `serve --listen`, or an engine configuration's `listen` beside an `identity`, names another, no
+  authentication
   on the HTTP surface unless an `identity` is configured — and that decides who may call,
   never from where — no HA, and no authorization beyond two checks the operator configures.
   A platform's `writeRequesters` (engine configuration version 18) narrows which authenticated

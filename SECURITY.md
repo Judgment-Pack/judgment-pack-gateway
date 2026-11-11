@@ -95,7 +95,8 @@ only the mode and does not replace effect approval or source-user separation.
 
 This is a **reference gateway**, not a hardened deployment. It is pre-1.0, provides no security,
 compatibility, or support service-level guarantee, binds a loopback address unless `gateway serve
---listen` names another ([Security boundary](#security-boundary)), has no authorization on its HTTP
+--listen`, or an engine configuration's `listen` beside an `identity` and an acknowledgement, names
+another ([Security boundary](#security-boundary)), has no authorization on its HTTP
 surface beyond a checkpoint witness's registrations, its named operators and a platform's `writeRequesters`, and no authentication unless an `identity` is configured (which decides who may call,
 never from where; a token presented off the machine can be replayed), and runs as a single operator holding a single signing identity.
 It must not be used as the sole control for consequential production decisions, and a `/verify` that
@@ -193,15 +194,16 @@ requests nor the number of connections, so what is in front should limit them to
 plain HTTP, so on the
 network between a caller and the listener every result and a version 3 response's salts can be read,
 and a request changed. `serve --config` takes no `--listen`: an engine configuration's `listen` is a
-loopback address whatever else it configures, `identity` included (below).
+loopback address unless the configuration has an `identity` and acknowledges that its tokens cross
+plain HTTP (below).
 
 **Version 3 receipts, the default, commit to arguments under a per-receipt salt** that is returned
 in the acquire response and never retained (SPEC.md §1.2a). A party holding only the store learns
 nothing about the arguments from the commitment and cannot compare it with another receipt's;
 revealing a committed value takes its salt, so whoever holds the salt can reveal that one value
 and nobody else can. Who holds it is a matter of transport and custody: this reference delivers
-the response over unauthenticated plaintext HTTP, on localhost unless `gateway serve --listen` names
-another address, so the holder is whoever can read that exchange, and exclusivity to the caller is
+the response over unauthenticated plaintext HTTP, on localhost unless `gateway serve --listen`, or
+an engine configuration's `listen`, names another address, so the holder is whoever can read that exchange, and exclusivity to the caller is
 not something the reference provides. What the retained artifact itself discloses is the source's
 affair. `--receipt-version 2` keeps the version 2 form for a consumer not yet updated, and with
 it the oracle described next.
@@ -605,8 +607,26 @@ the image with an init (`docker run --init`, [docs/design/engine-image.md](docs/
 against a key file the operator holds, with the standard library and no fetch on the request path;
 a token names who asked at the engine's boundary and proves nothing about what they approved. The
 token is never stored and never signed into a receipt, only its digest. Transport is still plain
-HTTP on a loopback address: a token presented off the machine can be captured and replayed, and
-reaching the engine from another host means a TLS-terminating front the operator runs and trusts.
+HTTP: a token presented off the machine can be captured and replayed, and reaching the engine from
+another host safely means a TLS-terminating front the operator runs and trusts.
+
+**`serve --config` listens off loopback only with an `identity` and an acknowledgement**
+([ADR-0025](docs/adr/0025-serve-config-listens-off-loopback-with-an-identity-when-acknowledged.md);
+[docs/design/engine-config.md](docs/design/engine-config.md), "Listening off loopback (engine version
+19)"). From engine configuration version 19 its `listen` may name an address that is not loopback,
+an IP literal and a port written as the gateway binds them, no name and no zone, every address of a
+family only when `0.0.0.0` or `[::]` is written out, bound in its own family. It is taken only where
+the configuration also has an `identity` and `acceptOtherHostsOverPlainHTTP: true`, and has neither
+a `witness` nor `mcp`; either member alone is refused at load, and so is the acknowledgement beside a
+loopback `listen`. Every endpoint of such a listener but `/registry` and `/publickey` then holds its
+caller to a token, the start says on stderr that other hosts can reach the gateway over plain HTTP,
+and `/posture` reports its `listener-reach` line `partial`. What it does not give: the gateway
+terminates no TLS and cannot check that anything in front does, so on the network between a caller
+and the listener a bearer token can be read and replayed within its validity window, every result
+and a version 3 response's salts read, and a request changed; `/registry` and `/publickey` are
+readable by anyone who reaches the listener; and the gateway limits neither the rate of requests nor
+the number of connections. A front that terminates TLS and limits them still belongs in front of
+it.
 
 **`writeRequesters` decides who may ask for a write, and nothing else.** A platform's member
 (engine configuration version 18; [`SPEC.md`](SPEC.md) §6, "Who may ask for a write") holds
@@ -639,8 +659,9 @@ submitter, and 64 reads, a body
 of one mebibyte and a line of 4096 bytes, each read through its bound and held to its form as it
 is read, and 30 seconds to write an answer. Reads are open to anyone who names a trail, and the
 reference bounds no reader's rate. What it does not do: it speaks plain HTTP on a loopback
-address, so reaching it from another host takes a TLS-terminating front the witness's operator
-runs, which is also where reads are bounded. A submitter's token opens the witness and nothing
+address — a configuration with a `witness` is refused a `listen` that is not loopback — so
+reaching it from another host takes a TLS-terminating front the witness's operator runs, which is
+also where reads are bounded. A submitter's token opens the witness and nothing
 else: it names the witness's audience (`witness.audience`), not the engine's, and every other
 token-checked endpoint of the signer — `/seal` among them — and the MCP transport refuse a token
 that names it, or that is of a subject among `witness.submitters`; a front that exposes the

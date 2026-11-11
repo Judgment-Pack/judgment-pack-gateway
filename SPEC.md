@@ -1425,7 +1425,8 @@ not itself a finding.
   compromised gateway (key disclosure forges anything), and it is a single-identity,
   single-operator reference — not a multi-tenant or federated trust root.
 - Scope not claimed: no availability/HA guarantees, no authenticated transport
-  (binds a loopback address unless `gateway serve --listen` names another), no
+  (binds a loopback address unless `gateway serve --listen`, or a version-19 engine
+  configuration's `listen` beside an `identity`, names another), no
   access control on the HTTP surface beyond a witness's
   registrations (§6, "Witness endpoints") and a platform's `writeRequesters`
   (§6, "Who may ask for a write"). This is a reference for
@@ -1536,7 +1537,11 @@ Loopback by default, JSON, standard library only. `gateway serve` from the comma
 which authenticates no caller, listens on another address only where `--listen` names it,
 and on one that is not loopback only with `--accept-unauthenticated-callers` beside it
 (README.md, SECURITY.md); `serve --config` listens on its configuration's `listen`, a
-loopback address.
+loopback address, or, from engine configuration version 19, an address that is not loopback
+where the configuration also has an `identity` and `acceptOtherHostsOverPlainHTTP: true` and
+has neither `witness` nor `mcp` (`docs/design/engine-config.md`). Every endpoint of such a
+listener but `/registry` and `/publickey` holds its caller to a token, which crosses plain
+HTTP: the gateway terminates no TLS on either form.
 
 | Method | Path        | Body / result |
 |--------|-------------|---------------|
@@ -1734,7 +1739,8 @@ A gateway that is a witness (§8) — an engine whose configuration carries a `w
 (`docs/design/engine-config.md`) — answers five more endpoints, a submission, two reads and two
 acts of its operator (below, "Administration"), and a gateway that is not one serves no path
 under `/witness/`. They are the signer's, on the same loopback address as every other
-endpoint. Three of them — the submission, `/witness/checkpoints`, and the two reads under
+endpoint: a witness's signer listens on a loopback address, since an engine configuration
+that carries `witness` is refused a `listen` that is not loopback. Three of them — the submission, `/witness/checkpoints`, and the two reads under
 `/witness/trails/{trail}/` — are the first meant to be reached from other hosts by other
 parties: through the TLS-terminating front that address requires (`SECURITY.md`). A front for
 other parties is to pass those three and `GET /publickey`, open already, which a reader with no
@@ -2733,9 +2739,8 @@ with an RFC 9449 proof in the `DPoP` header, or, for a credential bound with a `
 string of 1 to 256 bytes, not seen before while a proof of its `iat` could still be accepted), `htm` (the request's
 method), `htu`, `iat` (within 60 seconds of the gateway's time either way) and `ath` (the unpadded
 base64url SHA-256 of the credential). `htu` is `"http://"` or `"https://"`, the request's `Host`,
-and the request's path, with no query and no fragment: the gateway serves plain HTTP on a
-loopback address and may be reached through a proxy that terminates TLS, so either scheme is
-read. A request may also carry the chain it believes it acts under as the body member
+and the request's path, with no query and no fragment: the gateway serves plain HTTP, and may be
+reached through a proxy that terminates TLS, so either scheme is read. A request may also carry the chain it believes it acts under as the body member
 `delegation`; the gateway never admits on it, and refuses the call when its `canon` bytes are not
 the bound chain's.
 
@@ -2987,7 +2992,7 @@ What this section defines where the RFC leaves it open, and where it departs fro
   narrowing a platform's credential, which none of its platforms can do: the narrowing is
   gateway-enforced, and posture says so. The RFC permits this (RFC 8693 issuance is not required).
 - **Sender constraint.** RFC 9449 (DPoP) only. RFC 8705 needs a TLS client certificate, and this
-  gateway serves plain HTTP on a loopback address. `htu` is read with either scheme (§11.4).
+  gateway serves plain HTTP and terminates no TLS. `htu` is read with either scheme (§11.4).
 - **Wire forms.** The credential, revocation and admission-read endpoints, their bodies and
   answers, the `delegation`, `reservation`, `keyScope` and `reconcile` request members, the `jpd1_`
   credential form, the `scope.json` journal record, the first-scope record, and the dispatch

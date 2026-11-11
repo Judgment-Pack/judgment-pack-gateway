@@ -54,20 +54,22 @@ The file is read through the same strict parser the gateway uses for everything 
 duplicate member names refused, integers only, unknown members refused by name. A misspelled
 key is an error, never an intention silently dropped. `engineVersion`, `authority`, `seed`,
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
-`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox`, `delegation` and `sealOpenAtStart` are optional; within a
+`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox`, `delegation`, `sealOpenAtStart` and `acceptOtherHostsOverPlainHTTP` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
 `descriptors`, `operationDescriptors`, `descriptorStatements`, `decisionPolicy`,
 `parameters`, `grant` and `writeRequesters` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"18"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"19"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
   `operationDescriptors`, version 12 `descriptorStatements`, version 13 `sandbox`, version
   14 a required `actionKey`, version 15 `delegation`, version 16 a platform's `grant`,
-  version 17 `sealOpenAtStart`, and version 18 a platform's `writeRequesters`. A file of
-  an earlier version still loads without the member and is refused by name with it.
+  version 17 `sealOpenAtStart`, version 18 a platform's `writeRequesters`, and version 19
+  `acceptOtherHostsOverPlainHTTP`, without which `listen` is a loopback address ("Listening off
+  loopback (engine version 19)", below). A file of an earlier version still loads without the
+  member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
   it never lowers one — so a signer older than version 3 goes on reading every file `connect` has
@@ -249,8 +251,9 @@ verification requires their retained evidence (SPEC.md §9).
   origins when the member is absent, none at all when it is present and empty; and four bounds with their ranges, `sessions` (`1` to `4096`, default
   `64`), `idleSeconds` (`60` to `86400`, default `1800`), `concurrency` (`1` to `64`, default `8`)
   and `callsPerMinute` (`1` to `6000`, default `120`). With `mcp` present the signer's `listen`
-  may not name port `0` — by its number, whatever its spelling — since the MCP server finds
-  the signer by that value and nothing else. The signer reads the member and does nothing with it; the MCP server reads the whole
+  may not name port `0` — by its number, whatever its spelling — nor an address that is not
+  loopback, since the MCP server finds the signer by that value and nothing else, and fronts a
+  signer on loopback. The signer reads the member and does nothing with it; the MCP server reads the whole
   file as metadata and holds `identity.issuer`, when it serves HTTP, to an authorization
   server's identifier (an absolute `https` URL with no query and no fragment), which the
   signer does not demand.
@@ -303,7 +306,9 @@ verification requires their retained evidence (SPEC.md §9).
   else. None of its files may be the seed or the registry, or be in the store or the
   decision-record directory. The witness signs with the gateway's own seed, under a prefix of
   its own (SPEC.md §8.3): a party that wants the witness's key apart from its receipts' runs a
-  second engine with a seed of its own. `connect` keeps the member, its values unchanged.
+  second engine with a seed of its own. A witness's signer listens on a loopback address: beside
+  `witness`, a `listen` that is not loopback is refused, whatever else the file gives ("Listening
+  off loopback (engine version 19)", below). `connect` keeps the member, its values unchanged.
 - `witnessedBy`, in a version-7 file, names the checkpoint witness each trail is registered
   with, so that a receipt minted for the trail names it
   ([ADR-0014](../adr/0014-a-receipt-names-the-witness.md); SPEC.md §1.2a, `witness`, and §6,
@@ -352,11 +357,13 @@ verification requires their retained evidence (SPEC.md §9).
   one that anyone but root, the signer and its owner could write a record into (below).
 - `listen` is a literal loopback address with a port — `127.0.0.1:8787` or `[::1]:8787` —
   and the engine refuses any other, a name such as `localhost` included, since a resolver may
-  map a name elsewhere. The gateway speaks plain HTTP and a token presented over plain HTTP
-  off the machine can be captured and replayed; SECURITY.md lists authenticated transport as
-  out of scope, and this design does not change that. Reaching the engine from another host
-  means a TLS-terminating front the operator runs and trusts, outside this repository.
-  `identity` decides who may call, never from where.
+  map a name elsewhere, unless the file is of version 19 and has an `identity` and
+  `acceptOtherHostsOverPlainHTTP: true`, and neither `witness` nor `mcp` ("Listening off
+  loopback (engine version 19)", below). The gateway speaks plain HTTP wherever it listens, and
+  a token presented over plain HTTP off the machine can be captured and replayed; SECURITY.md
+  lists authenticated transport as out of scope, and this design does not change that.
+  Reaching the engine from another host safely means a TLS-terminating front the operator runs
+  and trusts, outside this repository. `identity` decides who may call, never from where.
 - `catalog` is the directory of binding files (below). `runtime` is the container runtime
   command the adapters use, `docker` by default or `podman`, by name or by path. `adapters` is
   the directory holding the adapter binaries; when absent they are found on the engine's
@@ -630,10 +637,11 @@ canonical JSON (SPEC.md §1.1), so two answers compare byte for byte:
   caller authenticated, which is `serve` from the command line given `--listen` an address that is
   not loopback and `--accept-unauthenticated-callers`. A listener off loopback that authenticates
   its callers is `partial`, since a bearer token over plain HTTP can be read and replayed on the
-  network between; no form of `serve` starts one. `gateway posture` starts nothing: given serve's
-  command line it judges the address `--listen` writes out, or `127.0.0.1` where it names none;
-  given `--config`, the configuration's `listen`, a loopback address, with callers authenticated
-  where it has an `identity`; given neither, `not-applicable`.
+  network between, which is `serve --config` under a version-19 `listen` that is not loopback
+  ("Listening off loopback (engine version 19)", below). `gateway posture` starts nothing: given
+  serve's command line it judges the address `--listen` writes out, or `127.0.0.1` where it names
+  none; given `--config`, the configuration's `listen`, with callers authenticated where it has
+  an `identity`; given neither, `not-applicable`.
 - After the six, a configuration with `delegation` adds its three lines (SPEC.md §11.9), and one
   where some platform gives `writeRequesters` adds `write-requesters`: `enforced` when every
   write tool is held to a requester list, `not-enforced` otherwise, the tools counted and no
@@ -1484,6 +1492,54 @@ Here `user-17` and `user-42` may ask for a write through every tool but two:
 It establishes that whoever asked was on the operator's list for the tool, and nothing more: a
 requester it admits is held to every later step, the decision policy included, and the target
 system's own authorization is unchanged.
+
+## Listening off loopback (engine version 19)
+
+Version 19 adds the optional `acceptOtherHostsOverPlainHTTP` member, `true` or `false` and
+nothing else ([ADR-0025](../adr/0025-serve-config-listens-off-loopback-with-an-identity-when-acknowledged.md),
+gateway #400), by which `serve --config` listens on an address other hosts can reach. A `listen`
+that is not loopback loads only where the file has both an `identity`, so that every endpoint but
+`/registry` and `/publickey` holds its caller to a token, and the member `true`, which
+acknowledges that those tokens cross plain HTTP unless TLS terminates in front of the engine:
+
+```json
+"listen": "0.0.0.0:8787",
+"identity": { "issuer": "https://login.example", "audience": "gateway:acme", "keys": "/etc/engine/issuer-keys.json" },
+"acceptOtherHostsOverPlainHTTP": true
+```
+
+- The address is an IP literal and a port, written exactly as the engine binds and prints it:
+  IPv4 in dotted decimal, IPv6 in brackets, compressed and in lowercase, an IPv4 address never in
+  IPv6 form, the port a number with no sign and no leading zero. A name, `localhost` included, a
+  zone and an empty host are refused, and any other spelling is refused naming the one to give.
+  `0.0.0.0` is every IPv4 address and no IPv6 one, `[::]` every IPv6 address and no IPv4 one;
+  each is bound only when written out, in its own family. The address is held by the rule
+  `gateway serve --listen` is held by ([ADR-0023](../adr/0023-serve-listens-off-loopback-only-when-acknowledged.md)),
+  the port written beside it.
+- Without both, the file is refused, the refusal naming both members and saying which is missing:
+  an `identity` alone is not enough, nor the member alone. The member `true` beside a loopback
+  `listen` is refused, since it would acknowledge nothing; `false` is taken anywhere and changes
+  nothing.
+- Beside `witness` such a `listen` is refused: a witness's two reads are open to anyone, and its
+  signer listens on a loopback address, behind a front that passes other parties the
+  submission, the two reads and `/publickey` alone (SPEC.md §6, "Witness endpoints"). Beside
+  `mcp` it is refused: the MCP server finds the signer by `listen` and fronts a signer on
+  loopback.
+- When what was bound is not loopback the start writes on stderr, before its `gateway on
+  http://…` line, `start: listening on <address>, which is not a loopback address: other hosts
+  can reach this gateway; it holds every caller but those of /registry and /publickey to a
+  token, and speaks plain HTTP, so unless TLS terminates in front of it a token can be read and
+  replayed on the network between`. `posture` reports the listener `partial` (above).
+- A loopback `listen` is held, rewritten to one spelling and bound as before, at every version,
+  and the start writes what it wrote. A file of version 18 or earlier with a `listen` that is
+  not loopback is refused as before, and a gateway older than version 19 refuses a version-19
+  file by its version.
+
+What this does not give: the gateway does not terminate TLS, so on the network between a caller
+and the listener a bearer token can be read and replayed within its validity window, results and
+a version 3 response's salts read and a request changed; `/registry` and `/publickey` are open to
+whoever reaches the listener; and the gateway limits neither the rate of requests nor the number
+of connections. A front that terminates TLS and limits them still belongs in front of it.
 
 ## Keyed actions (engine version 14 and later)
 
