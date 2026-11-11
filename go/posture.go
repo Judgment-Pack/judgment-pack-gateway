@@ -35,10 +35,11 @@ const (
 	protectionContainerCustody = "container-custody"
 	protectionSeedFile         = "seed-file-protection"
 	protectionOperatorPrograms = "operator-program-confinement"
-	// The two lines a gateway configured with a delegation adds (SPEC.md
-	// §11.9); a gateway without one reports neither.
+	// The three lines a gateway configured with a delegation adds (SPEC.md
+	// §11.9); a gateway without one reports none of them.
 	protectionDelegationNarrowing = "delegation-narrowing"
 	protectionDelegationSender    = "delegation-sender-constraint"
+	protectionDelegationGrants    = "delegation-grants"
 	// The line a configuration that gives some platform writeRequesters
 	// adds (write_requesters.go); one that gives none reports no such line.
 	protectionWriteRequesters = "write-requesters"
@@ -75,8 +76,8 @@ type postureInput struct {
 	seed       string
 	sources    map[string]sourceSpec
 	public     bool
-	// delegation is the configuration's delegation, which adds its two lines;
-	// nil adds none.
+	// delegation is the configuration's delegation, which adds its three
+	// lines; nil adds none.
 	delegation *delegationPosture
 }
 
@@ -84,8 +85,9 @@ type postureInput struct {
 // credential is admitted for a read-only chain.
 type delegationPosture struct{ bearerReadOnly bool }
 
-// delegationLines are the lines of SPEC.md §11.9.
-func delegationLines(d *delegationPosture) []postureLine {
+// delegationLines are the lines of SPEC.md §11.9, the grants line judged
+// over the sources the gateway serves.
+func delegationLines(d *delegationPosture, sources map[string]sourceSpec) []postureLine {
 	if d == nil {
 		return nil
 	}
@@ -99,7 +101,85 @@ func delegationLines(d *delegationPosture) []postureLine {
 		{protectionDelegationNarrowing, postureEnforced,
 			"the gateway enforces each delegation's scope before dispatch; no platform's standing credential is narrowed, so the narrowing is gateway-enforced, not platform-enforced"},
 		sender,
+		delegationGrantsLine(sources),
 	}
+}
+
+// delegationGrantsNamed bounds how many platforms the grants line names;
+// the rest it counts.
+const delegationGrantsNamed = 5
+
+// delegationGrantsLine is whether every platform a delegated call can reach
+// names the connection grant its delegated calls are admitted under (SPEC.md
+// §10, rule 3). A delegated call names a tool: /act a write source's, and
+// /acquire an mcp source's, the only shape it reads a tool of
+// (acquireWithReconciliation), so a platform is reached through those, a
+// platform being the part of a source's name before the slash, as the grant
+// gate names it. The gate holds whatever this line says: a platform that
+// names no grant refuses every delegated call (grant-unknown), so it is not
+// an open boundary but one the delegation does not serve. Where no platform
+// reached names one, the delegation serves no call, which is not-applicable;
+// where some do, the line is enforced and names the rest.
+func delegationGrantsLine(sources map[string]sourceSpec) postureLine {
+	granted := map[string]bool{}
+	for name, spec := range sources {
+		if spec.shape != "mcp" && !strings.HasSuffix(name, "/write") {
+			continue
+		}
+		platform, _, _ := strings.Cut(name, "/")
+		if held, seen := granted[platform]; !seen || held {
+			granted[platform] = spec.grant != nil
+		}
+	}
+	var without []string
+	for platform, held := range granted {
+		if !held {
+			without = append(without, platform)
+		}
+	}
+	sort.Strings(without)
+	line := func(state, reason string) postureLine { return postureLine{protectionDelegationGrants, state, reason} }
+	switch {
+	case len(granted) == 0:
+		return line(postureNotApplicable, "no source offers a tool a delegated call could name, so the delegation serves no call")
+	case len(without) == 0 && len(granted) == 1:
+		return line(postureEnforced, "the 1 platform a delegated call can reach names a connection grant, and every delegated call on it is admitted only under that grant")
+	case len(without) == 0:
+		return line(postureEnforced, fmt.Sprintf("each of the %d platforms a delegated call can reach names a connection grant, and every delegated call is admitted only under its platform's grant", len(granted)))
+	}
+	refuse := quotedPlatforms(without) + " names no connection grant and refuses every delegated call (grant-unknown) until it names one"
+	if len(without) > 1 {
+		refuse = quotedPlatforms(without) + " name no connection grant and refuse every delegated call (grant-unknown) until they name one"
+	}
+	if len(without) == len(granted) {
+		return line(postureNotApplicable, refuse+", so the delegation serves no call")
+	}
+	held, verb := len(granted)-len(without), "name"
+	if held == 1 {
+		verb = "names"
+	}
+	return line(postureEnforced, fmt.Sprintf("%d of the %d platforms a delegated call can reach %s a connection grant, and every delegated call is admitted only under its platform's grant; %s", held, len(granted), verb, refuse))
+}
+
+// quotedPlatforms is `platform "a"` or `platforms "a", "b"`, naming at
+// most delegationGrantsNamed of the sorted names and counting the rest.
+func quotedPlatforms(names []string) string {
+	shown := names
+	if len(shown) > delegationGrantsNamed {
+		shown = shown[:delegationGrantsNamed]
+	}
+	quoted := make([]string, len(shown))
+	for i, name := range shown {
+		quoted[i] = fmt.Sprintf("%q", name)
+	}
+	if len(names) == 1 {
+		return "platform " + quoted[0]
+	}
+	text := "platforms " + strings.Join(quoted, ", ")
+	if rest := len(names) - len(shown); rest > 0 {
+		text += fmt.Sprintf(" and %d more", rest)
+	}
+	return text
 }
 
 // operatorProgramsLine is the legacy/no-evidence statement. Version 13 sources
@@ -145,7 +225,7 @@ func hostPosture(in postureInput) postureReport {
 		custodyPosture(in.public),
 		seedPosture(in),
 		programConfinementPosture(programs),
-	}, append(delegationLines(in.delegation), writeRequestersLines(in.sources)...)...)}
+	}, append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...)...)}
 }
 
 // sourceUserPosture is whether every source runs as a user of its own
