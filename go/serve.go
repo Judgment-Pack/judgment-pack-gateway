@@ -227,6 +227,11 @@ type gatewayService struct {
 	// seedPath is the seed file serve was started with, which /posture
 	// judges as gateway posture does; empty where none was named.
 	seedPath string
+	// listening is the address the listener serveOn serves is bound to,
+	// which /posture judges as loopback or not (boundToLoopback); nil
+	// before serveOn, which /posture, like boundToLoopback, takes as an
+	// address other hosts can reach.
+	listening net.Addr
 	// ctx is the service's lifetime. Every source's context derives from it,
 	// so shutting the service down cancels every source in flight; a source
 	// in its own process group would otherwise outlive the gateway that
@@ -2060,15 +2065,17 @@ func (g *gatewayService) handler() http.Handler {
 
 	// /posture is gateway posture's report for this gateway as it runs
 	// (posture.go), in canonical JSON so a desk can compare two answers
-	// byte for byte, its reasons naming no path and no account; it is read
-	// as /verify is, with a token where an issuer is configured. The seed
-	// and the sources are judged at each request; the descendants' probe
-	// is kept for the process once it reaches a verdict.
+	// byte for byte, its reasons naming no path, no account and no address;
+	// it is read as /verify is, with a token where an issuer is configured.
+	// The seed and the sources are judged at each request; the descendants'
+	// probe is kept for the process once it reaches a verdict. The listener
+	// judged is the one serveOn serves, as it was bound.
 	mux.HandleFunc("/posture", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := authenticate(w, r); !ok {
 			return
 		}
-		in := postureInput{configured: true, seed: g.seedPath, sources: g.sources, public: true}
+		in := postureInput{configured: true, seed: g.seedPath, sources: g.sources, public: true,
+			listener: listenerReach{loopback: boundToLoopback(g.listening), authenticated: g.identity != nil}}
 		if g.delegation != nil {
 			in.delegation = &delegationPosture{bearerReadOnly: g.delegation.bearerReadOnly}
 		}
@@ -2194,6 +2201,9 @@ func (g *gatewayService) announceAndServe(listener net.Listener) error {
 // written; a request still open when the grace expires is aborted, and the
 // error returned says so.
 func (g *gatewayService) serveOn(listener net.Listener) error {
+	// what /posture reports of the listener is what was bound, from either
+	// form of serve
+	g.listening = listener.Addr()
 	server := &http.Server{
 		Handler:           g.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
