@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSandboxProbeSharedSettings(t *testing.T) {
@@ -449,5 +450,92 @@ func TestPublicPostureTellsUnmeasuredFromUnwrapped(t *testing.T) {
 	}
 	if *calls != 2 {
 		t.Fatalf("probe calls: %d", *calls)
+	}
+}
+
+// stubHangingFirstSource makes the probe of the source "a/live" block until
+// its context ends, as a helper that hangs does, and every other source's
+// probe answer at once, after the check runSandboxProbe makes first: a
+// context already ended measures nothing.
+func stubHangingFirstSource(t *testing.T, sourceBudget, reportBudget time.Duration) map[string]sourceSpec {
+	t.Helper()
+	savedProbe, savedSource, savedReport := sandboxPostureProbe, sandboxPostureSourceBudget, sandboxPostureReportBudget
+	t.Cleanup(func() {
+		sandboxPostureProbe, sandboxPostureSourceBudget, sandboxPostureReportBudget = savedProbe, savedSource, savedReport
+	})
+	sandboxPostureSourceBudget, sandboxPostureReportBudget = sourceBudget, reportBudget
+	sandboxPostureProbe = func(ctx context.Context, s sourceSpec) (sandboxProbeReport, error) {
+		if s.sandbox.source == "a/live" {
+			<-ctx.Done()
+			return sandboxProbeReport{}, ctx.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			return sandboxProbeReport{}, err
+		}
+		return decodeSandboxProbe([]byte(`{"preset":"custom","policyDigest":"none","settings":{"mode":"workspace-write","approval":"","operations":null},"protection":{"mode":"workspace-write","backend":"landlock","state":"partial","reason":"measured"}}`))
+	}
+	sources := map[string]sourceSpec{}
+	for _, name := range []string{"a/live", "b/live", "c/live"} {
+		sources[name] = sourceSpec{sandbox: &sourceSandbox{source: name, classes: []string{"adapter"}}}
+	}
+	return sources
+}
+
+// programReasons is each program entry's state and reason, by source.
+func programReasons(t *testing.T, sources map[string]sourceSpec, public bool) map[string][2]string {
+	t.Helper()
+	out := map[string][2]string{}
+	for _, p := range hostPosture(postureInput{configured: true, sources: sources, public: public}).programs {
+		out[p.source] = [2]string{p.report.Protection.State, p.report.Protection.Reason}
+	}
+	return out
+}
+
+// Each source is probed under a budget of its own: one whose helper hangs
+// until its budget ends is unmeasured, and the sources after it are still
+// measured, as their launches, each probing under its own budget, would be.
+func TestPostureProbesEachSourceUnderItsOwnBudget(t *testing.T) {
+	sources := stubHangingFirstSource(t, 50*time.Millisecond, time.Minute)
+	for _, public := range []bool{false, true} {
+		got := programReasons(t, sources, public)
+		for _, name := range []string{"b/live", "c/live"} {
+			if got[name][0] != "partial" {
+				t.Fatalf("public %v: %s after a hanging source is not measured: %q", public, name, got[name])
+			}
+		}
+		want := "sandbox-not-enforced: source-user backend check did not complete successfully"
+		if public {
+			want = publicUnmeasuredReason
+		}
+		if got["a/live"][0] != postureNotEnforced || got["a/live"][1] != want {
+			t.Fatalf("public %v: the hanging source: %q", public, got["a/live"])
+		}
+	}
+}
+
+// The whole report is bounded: once its budget is spent, a source still
+// to be probed is not probed, and is answered a sentence that says the
+// report ran out of time -- not one that says what its helper reported or
+// what its launch does -- and the report ends near the budget.
+func TestPostureProbesStayWithinTheReportBudget(t *testing.T) {
+	sources := stubHangingFirstSource(t, time.Minute, 50*time.Millisecond)
+	for _, public := range []bool{false, true} {
+		start := time.Now()
+		got := programReasons(t, sources, public)
+		if elapsed := time.Since(start); elapsed > 10*time.Second {
+			t.Fatalf("the report outlived its budget: %s", elapsed)
+		}
+		want := unprobedReason
+		if public {
+			want = publicUnprobedReason
+		}
+		for _, name := range []string{"a/live", "b/live", "c/live"} {
+			if got[name][0] != postureNotEnforced || got[name][1] != want {
+				t.Fatalf("public %v: %s once the report's budget is spent: %q", public, name, got[name])
+			}
+		}
+	}
+	if strings.Contains(publicUnprobedReason, "refuse") {
+		t.Fatalf("the out-of-budget sentence speaks of a launch: %q", publicUnprobedReason)
 	}
 }

@@ -1260,6 +1260,15 @@ fails at launch does not fall back to Landlock. A changed policy therefore takes
 effect only after a restart measures it, and posture never reports a selection a
 launch does not use.
 
+A posture report probes its wrapped sources one at a time, each under twelve seconds of its
+own, as a launch's probe is, so one helper that hangs leaves only its own source unmeasured,
+and all of them within thirty seconds for the whole report, which `/posture` answers over
+HTTP. A probe already kept is answered whatever is left. A source whose check the report's
+thirty seconds ended, or left no time to start, is reported `not-enforced`, backend `none`,
+with `sandbox-not-enforced: this report's time for backend checks ran out before this source's
+check gave a report`; that says nothing of its launch, which probes under its own twelve
+seconds.
+
 **When the sandbox cannot be had, in a container or elsewhere.** The backends, their fixed
 launcher locations and their limits are in [adapters/README.md](../../adapters/README.md#customer-bindings)
 and [SECURITY.md](../../SECURITY.md); what follows is what each needs of the kernel, which a
