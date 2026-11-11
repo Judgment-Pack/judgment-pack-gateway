@@ -1423,7 +1423,8 @@ not itself a finding.
   compromised gateway (key disclosure forges anything), and it is a single-identity,
   single-operator reference — not a multi-tenant or federated trust root.
 - Scope not claimed: no availability/HA guarantees, no authenticated transport
-  (binds localhost), no access control on the HTTP surface beyond a witness's
+  (binds a loopback address unless `gateway serve --listen` names another), no
+  access control on the HTTP surface beyond a witness's
   registrations (§6, "Witness endpoints") and a platform's `writeRequesters`
   (§6, "Who may ask for a write"). This is a reference for
   self-hosting a trust root and for demonstrating the mechanism, not a hardened
@@ -1529,7 +1530,11 @@ byte-lineage never becomes truth on the way through (§5).
 
 ## 6. HTTP surface (reference)
 
-Localhost, JSON, standard library only.
+Loopback by default, JSON, standard library only. `gateway serve` from the command line,
+which authenticates no caller, listens on another address only where `--listen` names it,
+and on one that is not loopback only with `--accept-unauthenticated-callers` beside it
+(README.md, SECURITY.md); `serve --config` listens on its configuration's `listen`, a
+loopback address.
 
 | Method | Path        | Body / result |
 |--------|-------------|---------------|
@@ -1611,9 +1616,13 @@ the platform's write tools.
 - **How they are compared.** An entry admits a requester whose `issuer` and `subject` are the
   entry's, each compared as a string byte for byte: no case folding, no Unicode normalization,
   no trimming. Every entry is bound to its issuer, so a subject of one issuer never matches an
-  entry naming the same subject of another.
+  entry naming the same subject of another. Under a delegation (§11) the `issuer` and `subject`
+  compared are the chain's `sub` as its issuing host signed it: nothing ties an issuing host to
+  an issuer, so an entry admits a chain that any configured issuing host signs naming that
+  `sub`, of any issuer, the configured identity's included.
 - **Where it is held.** Once the requester is authenticated (a delegation credential presented,
-  a reservation's sender authenticated against the reservation) and the session, platform and
+  a reservation's sender authenticated against the reservation, which for the subject's own
+  token includes the read of its standing at the issuing host) and the session, platform and
   tool steps have passed, and before anything else in the request is read: the arguments, the
   action key and its members, the decision, the cites and the decision policy. A requester the
   tool's list does not name is refused `403` with exactly the body

@@ -94,7 +94,8 @@ only the mode and does not replace effect approval or source-user separation.
 ## Support status
 
 This is a **reference gateway**, not a hardened deployment. It is pre-1.0, provides no security,
-compatibility, or support service-level guarantee, binds localhost, has no authorization on its HTTP
+compatibility, or support service-level guarantee, binds a loopback address unless `gateway serve
+--listen` names another ([Security boundary](#security-boundary)), has no authorization on its HTTP
 surface beyond a checkpoint witness's registrations, its named operators and a platform's `writeRequesters`, and no authentication unless an `identity` is configured (which decides who may call,
 never from where; a token presented off the machine can be replayed), and runs as a single operator holding a single signing identity.
 It must not be used as the sole control for consequential production decisions, and a `/verify` that
@@ -174,15 +175,35 @@ never enumerate — `/verify` would answer `ok` for a store missing sessions the
 silently voiding the coverage guarantee in [`SPEC.md` §3](SPEC.md). Treat any input that can steer
 where the gateway writes as a vulnerability in this class, not as a configuration mistake.
 
+**Serve from the command line authenticates no caller, and listens on loopback unless told
+otherwise.** `gateway serve <store> <seed> <authority> <registry>` has no `identity`: every request
+is admitted and no caller is recorded, so whoever reaches its listener can run any source it is
+configured with, with arguments of their choosing, have receipts signed under its key, seal any
+session it holds and read `/verify` and `/posture`; `/registry` and `/publickey` are open to every
+caller in every form, by design; `/act` is refused, since nobody is a requester. It listens on
+`127.0.0.1` unless `--listen` names another address, which is an IP address written out: a name is
+refused, so no resolver decides where it listens, and every address of a family is bound only when
+`0.0.0.0` or `::` is written out. An address that is not loopback is taken only with
+`--accept-unauthenticated-callers` beside it, and the start then writes a line on stderr saying that
+other hosts can reach the gateway and that it authenticates no caller. Such a listener needs
+something in front of it that decides who reaches it: an authenticating proxy that terminates TLS,
+or a private network that admits only the intended callers. The gateway limits neither the rate of
+requests nor the number of connections, so what is in front should limit them too. The transport is
+plain HTTP, so on the
+network between a caller and the listener every result and a version 3 response's salts can be read,
+and a request changed. `serve --config` takes no `--listen`: an engine configuration's `listen` is a
+loopback address whatever else it configures, `identity` included (below).
+
 **Version 3 receipts, the default, commit to arguments under a per-receipt salt** that is returned
 in the acquire response and never retained (SPEC.md §1.2a). A party holding only the store learns
 nothing about the arguments from the commitment and cannot compare it with another receipt's;
 revealing a committed value takes its salt, so whoever holds the salt can reveal that one value
 and nobody else can. Who holds it is a matter of transport and custody: this reference delivers
-the response over unauthenticated plaintext HTTP on localhost, so the holder is whoever can read
-that exchange, and exclusivity to the caller is not something the reference provides. What the
-retained artifact itself discloses is the source's affair. `--receipt-version 2` keeps the
-version 2 form for a consumer not yet updated, and with it the oracle described next.
+the response over unauthenticated plaintext HTTP, on localhost unless `gateway serve --listen` names
+another address, so the holder is whoever can read that exchange, and exclusivity to the caller is
+not something the reference provides. What the retained artifact itself discloses is the source's
+affair. `--receipt-version 2` keeps the version 2 form for a consumer not yet updated, and with
+it the oracle described next.
 
 **For the `"command"` shape, a version 3 acquisition record names the source by the digest of the
 file the command's first word resolved to**, resolved once and read before anything is started. It is that file at that
@@ -572,7 +593,11 @@ taken. It does not establish:
 It restricts the requester only. Under a delegation that is the delegation's subject, so it says
 nothing about which agent or which reservation sender carried the request; the delegation's own
 scope and admission (§11.5) bound those. The lists are as strong as the identity behind them: an
-issuer that will mint a token for any subject admits anyone a list names. Which tools a platform
+issuer that will mint a token for any subject admits anyone a list names. With `delegation`
+configured they are also as strong as every issuing host the configuration names: a chain's
+`sub` is what its issuing host signed, of any issuer, `identity.issuer` included, and nothing
+ties a host to an issuer, so an entry admits any chain a configured issuing host signs naming
+that `sub`. Which tools a platform
 offers is not hidden, since the session, platform and tool steps answer every requester alike.
 
 **A checkpoint witness is reached from other hosts by other parties** ([ADR-0013](docs/adr/0013-checkpoint-witness.md);

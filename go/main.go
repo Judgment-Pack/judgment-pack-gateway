@@ -14,7 +14,7 @@ package main
 //	gateway witness verify --log <file> --public-key <file> [--marks <file>]
 //	gateway witness register|retire|repair --config <engine.json> ...
 //	gateway witness fetch --store <dir> --registry <file> ... --record <file> --trail <file> --runtime <path> --out <dir>
-//	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--source-shape NAME=SHAPE] [--receipt-version 2|3] [--port N]
+//	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--source-shape NAME=SHAPE] [--receipt-version 2|3] [--listen ADDRESS [--accept-unauthenticated-callers]] [--port N]
 //	gateway keygen [seedfile]
 //	gateway rotate-key --seed <file> --registry <file>
 //	gateway journal compact --store <dir> --archive <dir> --retention <duration>
@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -526,7 +527,13 @@ type serveOptions struct {
 	requireActionKey bool
 	sources          map[string]sourceSpec
 	port             string
-	maxSourceOutput  int64
+	// listen is the address --listen names (serve_listen.go); the zero
+	// Addr when none is named, and serve listens on 127.0.0.1.
+	listen netip.Addr
+	// acceptUnauthenticatedCallers is --accept-unauthenticated-callers, the
+	// acknowledgment a --listen address that is not loopback needs.
+	acceptUnauthenticatedCallers bool
+	maxSourceOutput              int64
 	// maxRequest bounds an /acquire body (--max-request).
 	maxRequest     int64
 	receiptVersion string
@@ -592,7 +599,7 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 		return serveOptions{}, "usage: gateway serve --config <engine.json> | gateway serve <store> <seedfile> <authority> <registry> " +
 			"[--source NAME=CMD ...] [--source-env NAME=KEY[=VALUE] ...] [--source-user NAME=USER ...] " +
 			"[--source-shape NAME=airbyte|mcp|http] [--source-max-output BYTES] [--source-timeout NAME=SECONDS ...] " +
-			"[--max-request BYTES] [--receipt-version 2|3] [--witnessed-by TRAIL=ORIGIN,PUBLICKEY ...] [--seal-open-at-start] [--port N]", false
+			"[--max-request BYTES] [--receipt-version 2|3] [--witnessed-by TRAIL=ORIGIN,PUBLICKEY ...] [--seal-open-at-start] [--listen ADDRESS [--accept-unauthenticated-callers]] [--port N]", false
 	}
 
 	opts := serveOptions{
@@ -612,6 +619,7 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 	pendingTimeout := map[string]time.Duration{}
 	rest := args[4:]
 	portSeen := false
+	listenSeen := false
 	maxOutputSeen := false
 	maxRequestSeen := false
 	versionSeen := false
@@ -779,6 +787,27 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 			opts.port = rest[i+1]
 			portSeen = true
 			i++
+		case rest[i] == "--listen":
+			if i+1 >= len(rest) {
+				return opts, "--listen requires a following value", false
+			}
+			// A singleton, as --port is, and validated here for the reason
+			// --port is: before the seed is read or anything is made.
+			if listenSeen {
+				return opts, "duplicate --listen option", false
+			}
+			addr, msg, ok := parseListenAddress(rest[i+1])
+			if !ok {
+				return opts, msg, false
+			}
+			opts.listen = addr
+			listenSeen = true
+			i++
+		case rest[i] == "--accept-unauthenticated-callers":
+			if opts.acceptUnauthenticatedCallers {
+				return opts, "duplicate --accept-unauthenticated-callers option", false
+			}
+			opts.acceptUnauthenticatedCallers = true
 		case rest[i] == "--seal-open-at-start":
 			if opts.sealOpenAtStart {
 				return opts, "duplicate --seal-open-at-start option", false
@@ -813,6 +842,17 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 		}
 		spec.timeout = timeout
 		opts.sources[name] = spec
+	}
+	// This form of serve authenticates no caller, so a listener other hosts
+	// can reach is the operator's written choice, beside the address, and an
+	// acknowledgment with no such address to acknowledge is refused rather
+	// than kept for a later --listen to rely on.
+	offLoopback := opts.listen.IsValid() && !opts.listen.IsLoopback()
+	if offLoopback && !opts.acceptUnauthenticatedCallers {
+		return opts, fmt.Sprintf("--listen %s is not a loopback address: other hosts can reach it, and serve from the command line authenticates no caller; give --accept-unauthenticated-callers as well to listen there", opts.listen), false
+	}
+	if opts.acceptUnauthenticatedCallers && !offLoopback {
+		return opts, "--accept-unauthenticated-callers is given without a --listen address that is not loopback", false
 	}
 	if len(opts.witnessedBy) > 0 && opts.receiptVersion != receiptVersion3 {
 		return opts, "--witnessed-by needs --receipt-version 3: the member that names a witness is a version 3 member", false
@@ -904,7 +944,12 @@ func cmdServe(args []string) int {
 	defer stop()
 	service.bindLifetime(ctx)
 	installOperatorControls(ctx, service)
-	if err := service.listenAndServe("127.0.0.1:" + opts.port); err != nil {
+	listener, err := listenForServe(opts, os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "serve:", err)
+		return 1
+	}
+	if err := service.announceAndServe(listener); err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1
 	}

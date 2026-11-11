@@ -1282,7 +1282,10 @@ Here `user-17` and `user-42` may ask for a write through every tool but two:
   reconciliation and a read-back are held alike.
 - **`connect --replace`** keeps the member as written, since an entry written without it would
   admit everyone, and refuses a replacement it no longer fits: one without `--write`, or a
-  binding whose write operation no longer names a tool the member lists.
+  binding whose write operation no longer names a tool the member lists. A replacement whose
+  binding names a new write tool holds it to the `platform` list; with only `tools` given, the
+  new tool is held to no list. Give a `platform` list, an empty one if need be, so that a tool
+  added later is refused until it is named.
 - **`/posture`** adds a `write-requesters` line where some platform gives the member: `enforced`
   when every write tool is held to a list, `not-enforced` otherwise, its reason counting the
   tools held and never naming a requester. A file without the member reports no such line.
