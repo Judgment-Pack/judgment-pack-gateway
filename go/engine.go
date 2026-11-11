@@ -41,16 +41,18 @@ import (
 // owner descriptor approvals, version 12 signed `descriptorStatements`, and
 // version 13 the source sandbox wrapper and optional `sandbox` configuration,
 // version 14 a required action key, version 15 the optional `delegation`
-// (SPEC.md §11.2), and version 16 a platform's optional `grant`, the
+// (SPEC.md §11.2), version 16 a platform's optional `grant`, the
 // connection grant its delegated calls are admitted under (SPEC.md §10,
-// rule 3; grant_gate.go):
+// rule 3; grant_gate.go), and version 17 the optional `sealOpenAtStart`,
+// which seals at the start each session an earlier process left open
+// (SPEC.md §3c; seal_open.go):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "16"
+const engineVersion = "17"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -98,6 +100,10 @@ type engineConfig struct {
 	// delegation makes the gateway an enforcing host of delegated calls
 	// (SPEC.md §11.2); nil when the configuration has none.
 	delegation *delegationSpec
+	// sealOpenAtStart is the switch by which the start seals each session
+	// an earlier process left open, after the interruption (SPEC.md §3c);
+	// off unless the configuration sets it.
+	sealOpenAtStart bool
 }
 
 // mcpConfig is the `mcp` member (docs/design/mcp-server.md): where the MCP
@@ -277,6 +283,7 @@ var engineMembers = map[string]bool{
 	"decisionRecords": true, "listen": true, "catalog": true, "platforms": true,
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
 	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
+	"sealOpenAtStart": false,
 }
 
 var platformMembers = map[string]bool{
@@ -406,6 +413,16 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 		}
 		cfg.adapters = s
+	}
+	if value, present := obj.get("sealOpenAtStart"); present {
+		if !versionAtLeast(version, "17") {
+			return engineConfig{}, fmt.Errorf("engine configuration: sealOpenAtStart is a version-17 member; engineVersion %s has no sealOpenAtStart", version)
+		}
+		on, ok := value.(vBool)
+		if !ok {
+			return engineConfig{}, errors.New("engine configuration: sealOpenAtStart, when present, is true or false")
+		}
+		cfg.sealOpenAtStart = bool(on)
 	}
 	for _, name := range []string{"rootSigner", "hostRuntime"} {
 		if _, present := obj.get(name); !present {

@@ -437,6 +437,13 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	defer registryHold.Close()
+	// under the hold, before anything is served (SPEC.md §3c)
+	if cfg.sealOpenAtStart {
+		if err := sealOpenAtStart(service, os.Stderr, nowStamp); err != nil {
+			fmt.Fprintln(os.Stderr, "start:", err)
+			return 1
+		}
+	}
 	service.witness = witness
 	service.attachDelegation(delegation)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -530,6 +537,10 @@ type serveOptions struct {
 	// seedPath is the seed file the command line or the configuration
 	// names, which /posture judges.
 	seedPath string
+	// sealOpenAtStart seals, at the start, each session an earlier process
+	// left open, after the interruption (--seal-open-at-start; serve
+	// --config reads the configuration's sealOpenAtStart; SPEC.md §3c).
+	sealOpenAtStart bool
 }
 
 // validateEnvKey accepts what an environment variable name can be on the
@@ -572,7 +583,7 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 		return serveOptions{}, "usage: gateway serve --config <engine.json> | gateway serve <store> <seedfile> <authority> <registry> " +
 			"[--source NAME=CMD ...] [--source-env NAME=KEY[=VALUE] ...] [--source-user NAME=USER ...] " +
 			"[--source-shape NAME=airbyte|mcp|http] [--source-max-output BYTES] [--source-timeout NAME=SECONDS ...] " +
-			"[--max-request BYTES] [--receipt-version 2|3] [--witnessed-by TRAIL=ORIGIN,PUBLICKEY ...] [--port N]", false
+			"[--max-request BYTES] [--receipt-version 2|3] [--witnessed-by TRAIL=ORIGIN,PUBLICKEY ...] [--seal-open-at-start] [--port N]", false
 	}
 
 	opts := serveOptions{
@@ -759,6 +770,11 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 			opts.port = rest[i+1]
 			portSeen = true
 			i++
+		case rest[i] == "--seal-open-at-start":
+			if opts.sealOpenAtStart {
+				return opts, "duplicate --seal-open-at-start option", false
+			}
+			opts.sealOpenAtStart = true
 		case strings.HasPrefix(rest[i], "--"):
 			return opts, fmt.Sprintf("unknown option %q", rest[i]), false
 		default:
@@ -865,6 +881,13 @@ func cmdServe(args []string) int {
 		return 1
 	}
 	defer registryHold.Close()
+	// under the hold, before anything is served (SPEC.md §3c)
+	if opts.sealOpenAtStart {
+		if err := sealOpenAtStart(service, os.Stderr, nowStamp); err != nil {
+			fmt.Fprintln(os.Stderr, "start:", err)
+			return 1
+		}
+	}
 	// Sources run in their own process groups, so the terminal's interrupt
 	// no longer reaches them; the gateway's does, and it is carried to every
 	// source in flight through the service's context.

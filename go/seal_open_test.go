@@ -461,3 +461,46 @@ func TestSealOpenByTheEngineConfigurationSeesARotationBesideTheSeedResolved(t *t
 		t.Fatalf("exit %d\nstdout %q\nstderr %q\nwant   %q", code, stdout.String(), stderr.String(), want)
 	}
 }
+
+// The switch is off unless it is given: --seal-open-at-start on serve's
+// command line, once, or sealOpenAtStart in a configuration of version 17,
+// true or false and nothing else.
+func TestTheSealOpenAtStartSwitch(t *testing.T) {
+	base := []string{"store", "seed", "gateway:test", "registry.jsonl"}
+	if opts, msg, ok := parseServeOptions(base); !ok || opts.sealOpenAtStart {
+		t.Fatalf("off by default: %v %q", opts.sealOpenAtStart, msg)
+	}
+	if opts, msg, ok := parseServeOptions(append(base, "--seal-open-at-start")); !ok || !opts.sealOpenAtStart {
+		t.Fatalf("on: %v %q", opts.sealOpenAtStart, msg)
+	}
+	if _, msg, ok := parseServeOptions(append(base, "--seal-open-at-start", "--seal-open-at-start")); ok || msg != "duplicate --seal-open-at-start option" {
+		t.Fatalf("twice: %q", msg)
+	}
+
+	catalog := t.TempDir()
+	at := func(version, extra string) string {
+		return strings.Replace(engineJSON(t, catalog, extra, ``), `"engineVersion":"1"`, `"engineVersion":"`+version+`"`, 1)
+	}
+	for _, tc := range []struct {
+		name, text string
+		on         bool
+	}{
+		{"version 17 without it", at("17", ``), false},
+		{"version 17, false", at("17", `,"sealOpenAtStart":false`), false},
+		{"version 17, true", at("17", `,"sealOpenAtStart":true`), true},
+	} {
+		cfg, err := parseEngineConfig([]byte(tc.text))
+		if err != nil || cfg.sealOpenAtStart != tc.on {
+			t.Fatalf("%s: %v %v", tc.name, err, cfg.sealOpenAtStart)
+		}
+	}
+	for _, tc := range []struct{ name, text, want string }{
+		{"version 16", at("16", `,"sealOpenAtStart":true`), "engine configuration: sealOpenAtStart is a version-17 member; engineVersion 16 has no sealOpenAtStart"},
+		{"a string", at("17", `,"sealOpenAtStart":"true"`), "engine configuration: sealOpenAtStart, when present, is true or false"},
+		{"a number", at("17", `,"sealOpenAtStart":1`), "engine configuration: sealOpenAtStart, when present, is true or false"},
+	} {
+		if _, err := parseEngineConfig([]byte(tc.text)); err == nil || err.Error() != tc.want {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+	}
+}

@@ -168,6 +168,35 @@ func sealOpenUnder(storeRoot, authority string, writer *registryWriter, data []b
 	return sealed, refused, nil
 }
 
+// sealOpenAtStart is the switch at a gateway's start (sealOpenAtStart,
+// --seal-open-at-start): the registry held, before anything is served, each
+// session an earlier process left open whose receipts are whole is sealed
+// after the interruption, sealedVia start, and said on stderr as its
+// registry line. A session that is not whole, or a directory no session id
+// names, is named there and left as it is, open, as it is with the switch
+// off. A session that cannot be read, or a seal that cannot be appended,
+// stops the start: what was left open is not known, or not all sealed.
+func sealOpenAtStart(service *gatewayService, stderr io.Writer, stamp func() string) error {
+	data, present, err := readRegistryBytes(service.regPath)
+	if err != nil {
+		return fmt.Errorf("registry: %w", err)
+	}
+	if !present {
+		return fmt.Errorf("the registry the engine made at its start is not there: %s", service.regPath)
+	}
+	sealed, refused, err := sealOpenUnder(service.storeRoot, service.authority, service.registry, data, "", sealedViaStart, stamp)
+	for _, record := range sealed {
+		fmt.Fprintf(stderr, "start: sealed after an interruption: %s\n", canon(record))
+	}
+	for _, refusal := range refused {
+		fmt.Fprintf(stderr, "start: %s\n", refusal)
+	}
+	if err != nil {
+		return fmt.Errorf("sealing the sessions left open: %w; the gateway does not start", err)
+	}
+	return nil
+}
+
 // sealOpenOptions is the command line: the store, the seed by each name it
 // is known by, the registry, the authority, and the session or all of them.
 type sealOpenOptions struct {
