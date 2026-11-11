@@ -1952,7 +1952,10 @@ const conformStubUsage = "usage: verify <store-root> <registry-path> <authority>
 //     know, the usage on standard error, nothing on standard output, and
 //     exit 64, as a verifier written before the option that refuses what it
 //     does not know;
-//   - no-verdict: every verify refused so, the option or not.
+//   - no-verdict: every verify refused so, the option or not;
+//   - observation-kept-under-option: under --ordinary-seals-only, the
+//     finding sealed-after-interruption and, beside it, the observation the
+//     verdict without the option carries, which the option takes away.
 func conformStub(mode string, args []string) int {
 	if len(args) == 0 {
 		return 2
@@ -2017,6 +2020,19 @@ func conformStub(mode string, args []string) int {
 	case "observations-twice":
 		rep.Observations = append(rep.Observations, rep.Observations...)
 	case "observations-malformed":
+	case "observation-kept-under-option":
+		if option {
+			plain, err := verifierFor(false)(args[0], args[1], args[2], decisionRecords, publicKey)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "verify:", err)
+				return 1
+			}
+			for _, observed := range plain.Observations {
+				if observed["observation"] == "sealed-after-interruption" {
+					rep.Observations = append(rep.Observations, observed)
+				}
+			}
+		}
 	default:
 		return 2
 	}
@@ -2047,7 +2063,9 @@ func conformStub(mode string, args []string) int {
 // other: the member is not read where a vector does not state it. One that
 // refuses the option, giving no verdict, disagrees with each vector run
 // under it, and the run goes on; one that gives no verdict for a vector run
-// without the option stops the run. Each is the test binary driven through
+// without the option stops the run. One that finds the session so under the
+// option and still observes it is caught through the vectors that expect no
+// observation under the option. Each is the test binary driven through
 // the process contract, as `gateway conform --impl` drives one, and the
 // faithful one, which takes the option, agrees with every vector.
 func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *testing.T) {
@@ -2062,6 +2080,10 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 	}
 	refusal := func(name string) string {
 		return "store " + name + ": no verdict under --ordinary-seals-only: " + strconv.Quote(conformStubUsage)
+	}
+	kept := func(name string) string {
+		return "store " + name + ": observations disagree\n    expected: []\n" +
+			`    produced: [{"callIndex":2,"observation":"sealed-after-interruption","sessionId":"s1"}]`
 	}
 	for _, c := range []struct {
 		mode string
@@ -2079,6 +2101,11 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 		{"observations-twice", []string{"observations-interruption-seal", "ordinary-seals-only-interruption-seal-forged"}, nil},
 		{"observations-malformed", stating, nil},
 		{"rejects-option", underTheOption, refusal},
+		// caught only through the [] the two vectors expect, the finding and
+		// ok as the option makes them
+		{"observation-kept-under-option", []string{
+			"ordinary-seals-only-interruption-seal", "ordinary-seals-only-interruption-seal-twice",
+		}, kept},
 	} {
 		t.Run(c.mode, func(t *testing.T) {
 			t.Setenv(envConformStub, c.mode)
