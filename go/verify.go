@@ -42,8 +42,8 @@ type report struct {
 	OK       bool      `json:"ok"`
 	Findings []finding `json:"findings"`
 	// Observations are what the verifier says of a receipt without failing
-	// it (SPEC.md §4 step 8): absent when there are none, and never a
-	// part of ok.
+	// it (SPEC.md §4, "Observations"): absent when there are none, and
+	// never a part of ok.
 	Observations []finding `json:"observations,omitempty"`
 	// Witnesses are the distinct witnesses named by receipts whose ladder
 	// status is ok (ADR-0014; SPEC.md §4): absent when none is, and never a
@@ -664,6 +664,7 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 	}
 
 	counts := map[string]int64{}
+	whole := map[string]bool{}
 	signatures := map[string]map[string]string{}
 	var actions, naming, reconciling []*receipt
 	for _, sessionID := range sessions {
@@ -672,6 +673,7 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 			return nil, err
 		}
 		counts[sessionID] = result.count
+		whole[sessionID] = result.whole
 		signatures[sessionID] = result.signatures
 		actions = append(actions, result.actions...)
 		reconciling = append(reconciling, result.reconciling...)
@@ -707,6 +709,15 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 			rep.Findings = append(rep.Findings, finding{
 				"sessionId": sessionID, "status": "unregistered-session",
 			})
+			// A whole session no seal closes reads as open -- still being
+			// written, or left so by an interruption -- and is observed so
+			// on its last receipt, beside the finding, which stands: a
+			// whole session copied from another store reads the same.
+			if whole[sessionID] {
+				rep.Observations = append(rep.Observations, finding{
+					"sessionId": sessionID, "callIndex": have - 1, "observation": "session-open",
+				})
+			}
 		case have < s.finalCount:
 			rep.Findings = append(rep.Findings, finding{
 				"sessionId": sessionID, "status": "tail-rollback",
@@ -921,6 +932,11 @@ type sessionResult struct {
 	actions     []*receipt
 	// named are the receipts that passed the ladder and name a witness.
 	named []*receipt
+	// whole is a session holding at least one receipt, every one of which
+	// passed the ladder, whose sequence and chain hold: one with nothing
+	// of its own to report, which unsealed reads as open (SPEC.md §4
+	// step 3).
+	whole bool
 }
 
 func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*sessionResult, error) {
@@ -1026,6 +1042,13 @@ func verifySessionUnder(storeRoot, sessionID, authority string, keys []reachedKe
 		}
 	}
 	result.findings, result.count = findings, int64(len(names))
+	result.whole = len(names) > 0
+	for _, f := range findings {
+		if f["status"] != "ok" {
+			result.whole = false
+			break
+		}
+	}
 	return result, nil
 }
 

@@ -818,8 +818,10 @@ func TestASignedRecordHasOneByteIdentity(t *testing.T) {
 				got[index] = fmt.Sprint(f["status"])
 			}
 		}
+		// bytes-1 is not sealed, and is observed session-open on its last
+		// receipt (#381): what is read here is each record's observation
 		for _, o := range rep.Observations {
-			if index, ok := o["callIndex"].(int64); ok {
+			if index, ok := o["callIndex"].(int64); ok && o["observation"] != "session-open" {
 				got[index] = fmt.Sprint(o["observation"])
 			}
 		}

@@ -55,7 +55,7 @@ export type Finding = ReadonlyArray<readonly [string, string | number | bigint |
 
 // A verdict's findings are made again each time they are read, from what
 // verification kept, so none is held for the verdict to be written; so are
-// its observations (§4 step 8), which are no part of ok.
+// its observations (§4, "Observations"), which are no part of ok.
 // Its witnesses are the distinct witnesses named by the receipts that
 // passed the ladder (§4, ADR-0014), no part of ok either.
 // Its rotations are those the walk of the registry followed from the key
@@ -666,30 +666,13 @@ export function verifyStore(
         }
       }
       // The sequence and the chain, over the receipts that passed.
-      const passing = judged.filter((j) => j.status === "ok").sort((a, b) => (a.callIndex! < b.callIndex! ? -1 : 1));
-      if (passing.some((j, i) => j.callIndex !== BigInt(i))) {
+      const broken = sessionBreak(judged);
+      if (broken !== null) {
         yield [
           ["sessionId", session],
           ["callIndex", null],
-          ["status", "sequence-broken"],
+          ["status", broken],
         ];
-      } else {
-        const head = passing[0]?.chain!.version;
-        for (let i = 0; i < passing.length; i++) {
-          const { version, prev, keyPos } = passing[i]!.chain!;
-          const expected = i === 0 ? null : passing[i - 1]!.chain!.signature;
-          const linked = expected === null ? prev.kind === "null" : prev.kind === "string" && prev.value === expected;
-          // A session runs forward through a rotation and never back (§3b).
-          const back = i > 0 && keyPos < passing[i - 1]!.chain!.keyPos;
-          if (!linked || version !== head || back) {
-            yield [
-              ["sessionId", session],
-              ["callIndex", null],
-              ["status", "chain-broken"],
-            ];
-            break;
-          }
-        }
       }
       // §4 step 3: the session's count is its .json files, whether or not
       // each verified.
@@ -780,13 +763,27 @@ export function verifyStore(
       ];
     }
   }
-  // §4 step 8's observation: each action whose record was found and is
-  // not a runtime evaluation record, which is not compared.
+  // The observations, in the order the reference reports them: §1.2b's of
+  // each uncertain action; §4 step 3's of each open session; and §4 step
+  // 8's of each action whose record was found and is not a runtime
+  // evaluation record, which is not compared.
   function* observations(): Generator<Finding> {
     for (const [session, judged] of sessions) {
       for (const j of judged) {
         const delivery = deliveryState.get(j);
         if (delivery !== undefined) yield [["sessionId", session],["callIndex", j.callIndex!],["observation", delivery]];
+      }
+    }
+    // §4 step 3's observation: a session no seal closes, holding receipts
+    // every one of which passed, in sequence and chained, is open, on its
+    // last receipt; its unregistered-session finding stands beside it.
+    for (const [session, judged] of sessions) {
+      if (!seals.has(session) && judged.length > 0 && judged.every((j) => j.status === "ok") && sessionBreak(judged) === null) {
+        yield [
+          ["sessionId", session],
+          ["callIndex", BigInt(judged.length) - 1n],
+          ["observation", "session-open"],
+        ];
       }
     }
     for (const [session, judged] of sessions) {
@@ -834,6 +831,31 @@ export function verifyStore(
     witnesses: { [Symbol.iterator]: witnesses },
     rotations: walk.followed() > 0 ? { count: walk.followed(), keyId: walk.current().keyId } : null,
   };
+}
+
+// sessionBreak is what the sequence and the chain of a session's receipts
+// that passed say of it (§1.4): sequence-broken when their indices are
+// not 0 to n-1, chain-broken at the first receipt that does not link to the
+// one before it, is of another version than the first, or is under a key
+// the walk of the registry reached before the key of the one before it
+// (§3b); null when they hold.
+function sessionBreak(judged: readonly Judged[]): "sequence-broken" | "chain-broken" | null {
+  const passing = judged.filter((j) => j.status === "ok").sort((a, b) => (a.callIndex! < b.callIndex! ? -1 : 1));
+  if (passing.some((j, i) => j.callIndex !== BigInt(i))) {
+    return "sequence-broken";
+  }
+  const head = passing[0]?.chain!.version;
+  for (let i = 0; i < passing.length; i++) {
+    const { version, prev, keyPos } = passing[i]!.chain!;
+    const expected = i === 0 ? null : passing[i - 1]!.chain!.signature;
+    const linked = expected === null ? prev.kind === "null" : prev.kind === "string" && prev.value === expected;
+    // A session runs forward through a rotation and never back (§3b).
+    const back = i > 0 && keyPos < passing[i - 1]!.chain!.keyPos;
+    if (!linked || version !== head || back) {
+      return "chain-broken";
+    }
+  }
+  return null;
 }
 
 // recordClaims is §4 step 8's reading of a record: its claims when it is a
