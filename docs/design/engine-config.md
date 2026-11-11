@@ -619,7 +619,7 @@ managed gateway's posture beside the gateway's status. The answer is canonical J
   completed successful boundary check. With version 13 sources it aggregates the
   per-program entries below: `enforced` only when every entry is enforced, otherwise
   `partial` when any entry is enforced or partial.
-- After the five, a configuration with `delegation` adds its two lines (SPEC.md §11.9), and one
+- After the five, a configuration with `delegation` adds its three lines (SPEC.md §11.9), and one
   where some platform gives `writeRequesters` adds `write-requesters`: `enforced` when every
   write tool is held to a requester list, `not-enforced` otherwise, the tools counted and no
   requester named.
@@ -1329,7 +1329,11 @@ What it changes for callers, all in SPEC.md §11:
   each call immediately before it is dispatched, and receipt it with the `delegation` member;
 - `/act` takes `reservation`, through which the subject, the issuing host or an operator reaches
   a delegated action by its key, never a dispatch;
-- `/posture` adds `delegation-narrowing` and `delegation-sender-constraint`.
+- `/posture` adds `delegation-narrowing`, `delegation-sender-constraint` and
+  `delegation-grants`, the last naming each platform a delegated call can reach that names no
+  `grant` (engine version 16) and so refuses every delegated call `grant-unknown`:
+  `not-applicable` when no platform reached names one, the delegation then serving no call, and
+  `enforced` otherwise.
 
 A file without the member, and every call made under no delegation, behave as before.
 

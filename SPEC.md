@@ -2941,13 +2941,21 @@ and a marker that records either not refuses as `action-journal-invalid`.
 
 ### 11.9 Posture
 
-A gateway with `delegation` adds two lines to its posture (`gateway posture`, `/posture`):
-`delegation-narrowing`, `enforced`, saying that a delegation's scope is enforced by the gateway
-before dispatch and that no platform's standing credential is narrowed — the gateway enforces the
-narrowing, the platform does not; and `delegation-sender-constraint`, `enforced` when every
-credential is bound to a proof-of-possession key, `not-enforced` when `bearerReadOnly` admits a
-bearer credential for a read-only chain. A gateway without `delegation` reports neither line, and
-its posture is the one it was.
+A gateway with `delegation` adds three lines to its posture (`gateway posture`, `/posture`), in
+this order: `delegation-narrowing`, `enforced`, saying that a delegation's scope is enforced by the
+gateway before dispatch and that no platform's standing credential is narrowed — the gateway
+enforces the narrowing, the platform does not; `delegation-sender-constraint`, `enforced` when
+every credential is bound to a proof-of-possession key, `not-enforced` when `bearerReadOnly` admits
+a bearer credential for a read-only chain; and `delegation-grants`, whether each platform a
+delegated call can reach names the connection grant its delegated calls are admitted under (§10,
+rule 3). A delegated call reaches a platform through its write source or a source of the `mcp`
+shape, the calls that name a tool; a platform's other sources are not counted. The line is
+`enforced` when at least one platform reached names a grant, its reason counting the platforms
+that do; `not-applicable` when none does, or none is reached, since the delegation then serves no
+call. Its reason names each platform reached that names no grant, sorted, at most five and the
+rest counted, as refusing every delegated call `grant-unknown` until it names one: such a
+platform is refused, never open, so the line is never `not-enforced`. A gateway without
+`delegation` reports none of the three lines, and its posture is the one it was.
 
 ### 11.10 Definitions and departures
 
