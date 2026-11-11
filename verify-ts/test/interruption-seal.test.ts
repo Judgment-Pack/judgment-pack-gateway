@@ -121,7 +121,7 @@ test("a line loads as a seal after an interruption only when it holds the form, 
   }
 });
 
-test("main.ts verify takes --ordinary-seals-only first, and the verdict it writes is the strict one", () => {
+test("main.ts verify takes --ordinary-seals-only first or not at all, and the verdict it writes is the strict one", () => {
   const v = vector("stores/interruption-seal.json");
   const { root, registry } = materialize(v);
   const run = (...args: string[]) => spawnSync(process.execPath, [main, "verify", ...args], { input: publicKey });
@@ -138,4 +138,22 @@ test("main.ts verify takes --ordinary-seals-only first, and the verdict it write
     '{"ok":true,"findings":[{"sessionId":"s1","callIndex":0,"status":"ok"},{"sessionId":"s1","callIndex":1,"status":"ok"},{"sessionId":"s1","callIndex":2,"status":"ok"}],"observations":[{"sessionId":"s1","callIndex":2,"observation":"sealed-after-interruption"}]}\n',
   );
   assert.equal(run("--ordinary-seals-only", root, registry).status, 64);
+  const usage =
+    "usage: main.ts canon | main.ts verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n";
+  const notFirst = "verify: --ordinary-seals-only goes first, before the store root; a directory so named is given as ./--ordinary-seals-only\n" + usage;
+  const misplaced: [string, string[]][] = [
+    ["a fourth argument", [root, registry, v.authority, "--ordinary-seals-only"]],
+    ["second, after a store root", [root, "--ordinary-seals-only", registry, v.authority]],
+    ["first and again", ["--ordinary-seals-only", "--ordinary-seals-only", root, registry, v.authority]],
+    ["first and as a fourth argument", ["--ordinary-seals-only", root, registry, v.authority, "--ordinary-seals-only"]],
+  ];
+  for (const [name, args] of misplaced) {
+    const r = run(...args);
+    assert.equal(r.status, 64, name);
+    assert.equal(r.stdout.toString(), "", name);
+    assert.equal(r.stderr.toString(), notFirst, name);
+  }
+  const dir = run(root, registry, v.authority, "./--ordinary-seals-only");
+  assert.equal(dir.status, 0, dir.stderr.toString());
+  assert.equal(dir.stdout.toString(), plain.stdout.toString());
 });

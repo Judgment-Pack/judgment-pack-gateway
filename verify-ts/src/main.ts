@@ -11,7 +11,9 @@
 //                      verdict was reached, 2 when none could be; with
 //                      the option, first or not at all, a session a seal
 //                      made after an interruption anchors is a finding
-//                      (SPEC.md §4 step 3)
+//                      (SPEC.md §4 step 3); the option in a later place
+//                      is a usage error, exit 64, and a directory so
+//                      spelled is given as ./--ordinary-seals-only
 //   main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]
 //                      a reading of a chain of witness statements
 //                      (SPEC.md §8.6); stdout: the answer, a refusal
@@ -176,7 +178,10 @@ function main(args: string[]): number {
   }
   const ordinarySealsOnly = command === "verify" && rest[0] === "--ordinary-seals-only";
   const positional = ordinarySealsOnly ? rest.slice(1) : rest;
-  if (command === "verify" && (positional.length === 3 || positional.length === 4)) {
+  // The option in any later place is a usage error, never taken as an
+  // argument and the plain verdict run in its stead.
+  const misplaced = command === "verify" && rest.slice(1).includes("--ordinary-seals-only");
+  if (command === "verify" && !misplaced && (positional.length === 3 || positional.length === 4)) {
     try {
       const [root, registry, authority, decisionRecords] = exactArguments(positional) as [string, string, string, string | undefined];
       const key = readInput(32);
@@ -198,6 +203,9 @@ function main(args: string[]): number {
   }
   if (command === "witness") {
     return witness(rest);
+  }
+  if (misplaced) {
+    process.stderr.write("verify: --ordinary-seals-only goes first, before the store root; a directory so named is given as ./--ordinary-seals-only\n");
   }
   process.stderr.write(
     "usage: main.ts canon | main.ts verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n",

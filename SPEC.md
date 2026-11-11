@@ -1080,9 +1080,15 @@ Where the count and the head hold, the report carries the observation
 departure is such a session verifies `ok`. What the seal cannot say is whether receipts
 after its count were minted and lost before the interruption: the minting process's count
 went with it, and a session whose last receipts were taken away before the seal was made
-reads the same as one that never had them. A verifier run with `--ordinary-seals-only`
-(§4) reports such a session as the finding `sealed-after-interruption`, for a consumer that
-acts only on counts a minting process sealed.
+reads the same as one that never had them. Nor can `gateway seal-open` or the start switch
+(below) tell a session that was never sealed from one whose seal line was taken out of the
+registry: either is a session no seal closes. So one who can write to the store and the
+registry, without the key, can shorten a sealed session, take its seal line away, and have
+the shortened session sealed by a key holder who runs the command; with `sealOpenAtStart`
+on, the next start seals it, with no operator looking. A verifier run with
+`--ordinary-seals-only` (§4) reports such a session as the finding
+`sealed-after-interruption`, for a consumer that acts only on counts a minting process
+sealed and needs to rule this out.
 
 A session so sealed is sealed in the registry (§3): `/acquire`, `/seal` and an action into
 it are refused as for any sealed session (§6), and it is never continued. A gateway writes
@@ -1092,10 +1098,14 @@ made after an interruption, the first still anchors and the verdict finds `seal-
 (§4 step 4); two seals of §3's form are read as they always were, the first anchoring and
 nothing found.
 
-**Who makes it.** `gateway seal-open --session <id>`, or `--all`, with the gateway stopped:
-the registry is held as a running gateway holds it, so a gateway serving it refuses the
-command, and a rotation under way beside the seed (§3b), or a registry whose walk ends at
-another key than the seed's, is refused under the lock. The seal is signed by the key in
+**Who makes it.** `gateway seal-open --session <id>`, or `--all`, with the gateway stopped.
+On Unix the registry is held as a running gateway holds it, so a gateway serving it refuses
+the command; elsewhere no lock is held, so a gateway still serving it is not looked for: the
+command seals as it otherwise would and says so on stderr, and that the gateway is stopped is
+its operator's to see to. A rotation under way beside the seed (§3b), or a registry whose walk
+ends at another key than the seed's, is refused, under the lock where there is one. A store
+belongs to one registry: the command reads seals only from the registry it is given, so a
+session sealed in another is to it a session no seal closes. The seal is signed by the key in
 force; receipts signed by keys the walk reached before it verify through the walk. The
 command prints each seal it appends as its registry line. A gateway's start makes it too
 when the switch is on — `--seal-open-at-start` on `gateway serve`, or `sealOpenAtStart:
@@ -1283,8 +1293,10 @@ verifier reports the rotations it followed before a rotation finding too.
 `--ordinary-seals-only`, given to `gateway verify` and to verify-ts's `verify` as the
 first argument. Under it a session a seal made after an interruption anchors is the
 finding `sealed-after-interruption` of step 3, not the observation, and `ok` is then
-false; nothing else changes. A store root spelled so is given as
-`./--ordinary-seals-only`.
+false; nothing else changes. The option in any later place is a usage error (exit 2 from
+`gateway verify`, 64 from verify-ts's `verify`), never read as an argument with the plain
+verdict reached in its stead; a store root or decision-record directory spelled so is given
+as `./--ordinary-seals-only`.
 
 `ok` is true only if the inline verify passed **and** no registry finding fired
 **and** no rotation finding fired (§3b) **and** no citation, decision-record,

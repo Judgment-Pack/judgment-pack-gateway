@@ -132,10 +132,13 @@ stopped, `./gateway seal-open --store ./store --seed gateway.seed --registry
 ./registry.jsonl --authority gateway:demo --session s1` (or `--all`) seals each such
 session whose receipts are whole with a seal that says it was made after an interruption
 (SPEC.md §3c), and prints each seal it appends; `gateway serve --seal-open-at-start`, or
-`sealOpenAtStart` in an engine configuration, does the same at the start. The store then
-verifies, with the observation `sealed-after-interruption`; `gateway verify
---ordinary-seals-only` makes that a finding, for a consumer that accepts only counts the
-minting process sealed. A session that is not whole is named and left as it is.
+`sealOpenAtStart` in an engine configuration, does the same at the start. On Unix
+`seal-open` refuses while a gateway holds the registry; elsewhere it cannot tell, says so on
+stderr, and seals. A store belongs to one registry: give the command the registry the store's
+gateway seals into. The store then verifies, with the observation `sealed-after-interruption`;
+`gateway verify --ordinary-seals-only`, the option given first, makes that a finding, for a
+consumer that accepts only counts the minting process sealed (in a later place the option is
+a usage error). A session that is not whole is named and left as it is.
 
 ```
 curl -s localhost:8787/acquire -d '{"session":"s1","source":"screening","arguments":{"subject":"acme"}}'

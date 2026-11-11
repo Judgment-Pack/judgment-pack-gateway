@@ -287,13 +287,15 @@ func TestASealAfterInterruptionCatchesWhatChangesAfterIt(t *testing.T) {
 
 // gateway verify --ordinary-seals-only: the option first, or not at all. The
 // verdict it writes is the strict one, byte for byte; without it, the plain
-// one; a fourth argument of that spelling is still the decision-record
-// directory, as the process contract reserves no spelling there.
+// one. The option in a later place is a usage error, exit 2 with nothing on
+// stdout -- never taken as the decision-record directory with the plain
+// verdict run -- and a directory so spelled is given as
+// ./--ordinary-seals-only.
 func TestVerifyOrdinarySealsOnlyOnTheCommandLine(t *testing.T) {
 	g := leftOpenStore(t)
 	priv := ed25519.NewKeyFromSeed(testSeed)
 	appendRegistry(t, g.regPath, interruptionSealLineBy(priv, g.keyID, "left", 2, receiptSignature(t, g.storeRoot, "left", 1), "2026-11-10T00:00:00Z", "command"))
-	captureStderr(t)
+	stderr := captureStderr(t)
 	oldStdin, oldStdout := os.Stdin, os.Stdout
 	t.Cleanup(func() { os.Stdin, os.Stdout = oldStdin, oldStdout })
 	run := func(args ...string) (int, string) {
@@ -326,8 +328,23 @@ func TestVerifyOrdinarySealsOnlyOnTheCommandLine(t *testing.T) {
 	if code, out := run(g.storeRoot, g.regPath, "gateway:test"); code != 0 || out != plain {
 		t.Fatalf("plain: %d %s", code, out)
 	}
-	if code, out := run(g.storeRoot, g.regPath, "gateway:test", "--ordinary-seals-only"); code != 0 || out != plain {
-		t.Fatalf("a fourth argument so spelled: %d %s", code, out)
+	const notFirst = "gateway verify: --ordinary-seals-only goes first, before the store root; a directory so named is given as ./--ordinary-seals-only\n" +
+		"usage: gateway verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]\n"
+	for name, args := range map[string][]string{
+		"a fourth argument":               {g.storeRoot, g.regPath, "gateway:test", "--ordinary-seals-only"},
+		"the value of --decision-records": {g.storeRoot, g.regPath, "gateway:test", "--decision-records", "--ordinary-seals-only"},
+		"second, after a store root":      {g.storeRoot, "--ordinary-seals-only", g.regPath, "gateway:test"},
+		"first and again":                 {"--ordinary-seals-only", "--ordinary-seals-only", g.storeRoot, g.regPath, "gateway:test"},
+		"first and as a fourth argument":  {"--ordinary-seals-only", g.storeRoot, g.regPath, "gateway:test", "--ordinary-seals-only"},
+	} {
+		before := stderr()
+		code, out := run(args...)
+		if got := strings.TrimPrefix(stderr(), before); code != 2 || out != "" || got != notFirst {
+			t.Fatalf("--ordinary-seals-only as %s: %d %q %q", name, code, out, got)
+		}
+	}
+	if code, out := run(g.storeRoot, g.regPath, "gateway:test", "./--ordinary-seals-only"); code != 0 || out != plain {
+		t.Fatalf("a decision-record directory given as ./--ordinary-seals-only: %d %s", code, out)
 	}
 	if code, _ := run("--ordinary-seals-only", g.storeRoot, g.regPath); code != 2 {
 		t.Fatalf("--ordinary-seals-only and two arguments: %d, want usage", code)

@@ -134,8 +134,17 @@ func cmdVerify(args []string) int {
 	const usage = "usage: gateway verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
 	// --ordinary-seals-only, first or not at all: a session a seal made
 	// after an interruption anchors is then a finding, not an observation
-	// (SPEC.md §4 step 3). A store root of that spelling is given as
+	// (SPEC.md §4 step 3). The option in any later place is a usage error,
+	// never taken as an argument and the plain verdict run in its stead; a
+	// directory of that spelling, in any place, is given as
 	// ./--ordinary-seals-only.
+	for i, a := range args {
+		if i > 0 && a == "--ordinary-seals-only" {
+			fmt.Fprintln(os.Stderr, "gateway verify: --ordinary-seals-only goes first, before the store root; a directory so named is given as ./--ordinary-seals-only")
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+	}
 	verify := verifyWithRegistryAndRecords
 	if len(args) > 0 && args[0] == "--ordinary-seals-only" {
 		verify, args = verifyOrdinarySealsOnly, args[1:]
