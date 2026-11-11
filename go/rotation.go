@@ -162,6 +162,10 @@ type registryWalk struct {
 	order   []string
 	keys    []reachedKey
 	finding finding
+	// conflicted are the sessions for which more than one seal loads, one
+	// of them at least a seal made after an interruption (SPEC.md §3c): the
+	// first still anchors the session, and the verdict finds seal-conflict.
+	conflicted map[string]bool
 }
 
 // followed is how many rotations the walk followed.
@@ -188,7 +192,7 @@ func (w *registryWalk) position(keyID string) int {
 // its reverse on the line after it; and the first statement that is not so
 // stops the walk with its finding.
 func walkRegistry(data []byte, pinned ed25519.PublicKey) *registryWalk {
-	w := &registryWalk{seals: map[string]seal{}, keys: []reachedKey{{key: pinned, keyID: keyIDFor(pinned)}}}
+	w := &registryWalk{seals: map[string]seal{}, conflicted: map[string]bool{}, keys: []reachedKey{{key: pinned, keyID: keyIDFor(pinned)}}}
 	lines := strings.Split(string(data), "\n")
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
@@ -197,7 +201,13 @@ func walkRegistry(data []byte, pinned ed25519.PublicKey) *registryWalk {
 		}
 		kind, obj := rotationKindOf(line)
 		if kind == "" {
-			w.loadSeal(line)
+			// a line whose kind is seal-after-interruption is read as
+			// that seal and as nothing else (SPEC.md §3c)
+			if sealObj := interruptionSealLine(line); sealObj != nil {
+				w.loadInterruptionSeal(sealObj)
+			} else {
+				w.loadSeal(line)
+			}
 			continue
 		}
 		if w.finding != nil {
@@ -303,15 +313,125 @@ func (w *registryWalk) loadSeal(line string) {
 	if !ed25519.Verify(current.key, sealSigningInput(sessionID, int64(count), sealedAt, keyID), sig) {
 		return
 	}
-	if _, seen := w.seals[sessionID]; seen {
-		// SPEC.md §3 refuses re-sealing a session, so a conforming
-		// gateway writes no second seal for one; where a registry holds
-		// one anyway, §4 step 2 lets the first loadable seal win, first
-		// in the registry's lines. See AMBIGUITIES.md, section 9.
+	w.take(seal{sessionID: sessionID, finalCount: int64(count)})
+}
+
+// take keeps a seal that loaded. SPEC.md §3 refuses re-sealing a session,
+// so a conforming gateway writes no second seal for one; where a registry
+// holds one anyway, §4 step 2 lets the first loadable seal win, first in the
+// registry's lines (AMBIGUITIES.md, section 9). Two seals of today's form
+// for one session are read so and nothing more, as they always were; a
+// second seal where either is a seal made after an interruption is a
+// conflict the verdict finds (SPEC.md §3c), the first still the anchor.
+func (w *registryWalk) take(s seal) {
+	if first, seen := w.seals[s.sessionID]; seen {
+		if first.interrupted || s.interrupted {
+			w.conflicted[s.sessionID] = true
+		}
 		return
 	}
-	w.seals[sessionID] = seal{sessionID: sessionID, finalCount: int64(count)}
-	w.order = append(w.order, sessionID)
+	w.seals[s.sessionID] = s
+	w.order = append(w.order, s.sessionID)
+}
+
+// A seal made after an interruption (SPEC.md §3c): the record by which a
+// gateway seals a session an earlier process left open, over the receipts
+// the store holds in it, saying so. It only seals: such a session is never
+// continued.
+const (
+	sealKindInterruption    = "seal-after-interruption"
+	interruptionSealContext = "judgment-pack-gateway/seal-after-interruption/1:"
+	// sealedVia: the operator's command, or the gateway's start with the
+	// switch on.
+	sealedViaCommand = "command"
+	sealedViaStart   = "start"
+)
+
+// interruptionSealMembers are the members such a seal holds, exactly.
+var interruptionSealMembers = map[string]bool{
+	"finalCount": true, "headSignature": true, "keyId": true, "kind": true,
+	"sealedAt": true, "sealedVia": true, "sessionId": true, "signature": true,
+}
+
+// interruptionSealLine is a registry line's object when the line is one
+// JSON object, read by §1.1's parser, whose kind member is
+// seal-after-interruption, and nil for any other line.
+func interruptionSealLine(line string) *vObject {
+	v, err := parseJSON([]byte(line))
+	if err != nil {
+		return nil
+	}
+	obj, ok := v.(*vObject)
+	if !ok {
+		return nil
+	}
+	if kind, _ := memberString(obj, "kind"); kind != sealKindInterruption {
+		return nil
+	}
+	return obj
+}
+
+// interruptionSealOf holds a seal made after an interruption to its form
+// (SPEC.md §3c): exactly its members, each of its form. It answers the
+// seal, the key id it names and its signature's bytes.
+func interruptionSealOf(obj *vObject) (seal, string, []byte, bool) {
+	// every member is required below, and §1.1's parser admits no name
+	// twice, so a member of no other name is all that is left to refuse
+	for name := range obj.byName {
+		if !interruptionSealMembers[name] {
+			return seal{}, "", nil, false
+		}
+	}
+	sessionID, okSession := memberString(obj, "sessionId")
+	head, okHead := memberString(obj, "headSignature")
+	keyID, okKey := memberString(obj, "keyId")
+	sealedAt, okAt := memberString(obj, "sealedAt")
+	via, _ := memberString(obj, "sealedVia")
+	signatureHex, okSig := memberString(obj, "signature")
+	countV, _ := obj.get("finalCount")
+	count, okCount := countV.(vInt)
+	if !okSession || requireSession(sessionID) != nil ||
+		!okCount || int64(count) < 1 ||
+		!okHead || !isLowerHexOfLen(head, 128) ||
+		!okKey || !isLowerHexOfLen(keyID, 32) ||
+		!okAt || !witnessTimeForm.MatchString(sealedAt) ||
+		(via != sealedViaCommand && via != sealedViaStart) ||
+		!okSig || !isLowerHexOfLen(signatureHex, 128) {
+		return seal{}, "", nil, false
+	}
+	signature, _ := hex.DecodeString(signatureHex)
+	return seal{sessionID: sessionID, finalCount: int64(count), interrupted: true, head: head}, keyID, signature, true
+}
+
+// interruptionSealSigningInput is what such a seal's signature covers: the
+// prefix, then canon of the seal with its top-level signature removed and
+// every other member retained.
+func interruptionSealSigningInput(obj *vObject) []byte {
+	covered := newObject()
+	for _, name := range obj.names {
+		if name == "signature" {
+			continue
+		}
+		v, _ := obj.get(name)
+		covered.set(name, v)
+	}
+	return append([]byte(interruptionSealContext), canon(covered)...)
+}
+
+// loadInterruptionSeal loads a seal made after an interruption under the
+// current key, as loadSeal loads one of today's form: of its form, its keyId
+// the current key's and its signature verifying under it. A line that is not
+// so loads nothing, and is never read as a seal of today's form.
+func (w *registryWalk) loadInterruptionSeal(obj *vObject) {
+	s, keyID, signature, ok := interruptionSealOf(obj)
+	if !ok {
+		return
+	}
+	current := w.current()
+	if keyID != current.keyID || !ed25519.Verify(current.key, interruptionSealSigningInput(obj), signature) {
+		return
+	}
+	w.take(s)
 }
 
 // registryFirstKey is the key a gateway walks its own registry from, since

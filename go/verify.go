@@ -206,6 +206,10 @@ func (r *receipt) signingInput() []byte {
 type seal struct {
 	sessionID  string
 	finalCount int64
+	// interrupted is a seal made after an interruption (SPEC.md §3c), and
+	// head the signature of the last receipt it seals.
+	interrupted bool
+	head        string
 }
 
 // sealSigningInput is spelled out by SPEC.md §3: the seal context prefix, then
@@ -602,7 +606,16 @@ func verifyWithRegistry(storeRoot, registryPath, authority string, publicKey []b
 // per-session findings, the registry anchor, and for version 3 action receipts
 // the citation and decision-record checks of steps 5 to 8.
 func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
-	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, publicKey, false)
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, publicKey, false, false)
+}
+
+// verifyOrdinarySealsOnly is the strict verdict (gateway verify
+// --ordinary-seals-only; SPEC.md §4 step 3): a session a seal made after an
+// interruption anchors is found sealed-after-interruption, where the plain
+// verdict observes it so, for a consumer that accepts only a session sealed
+// by the process that minted it.
+func verifyOrdinarySealsOnly(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, publicKey, false, true)
 }
 
 // verifyAsEngine is the engine's own verification (/verify): the registry it
@@ -610,10 +623,10 @@ func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRe
 // verdict, never "no seals" -- which, with no session left to enumerate,
 // would verify.
 func verifyAsEngine(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
-	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, publicKey, true)
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, publicKey, true, false)
 }
 
-func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte, registryRequired bool) (*report, error) {
+func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte, registryRequired, ordinarySealsOnly bool) (*report, error) {
 	// the inputs' spellings are judged before anything is read (SPEC.md §4.1)
 	if err := requirePlainSpelling(registryPath, true); err != nil {
 		return nil, err
@@ -728,6 +741,25 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 				"sessionId": sessionID, "status": "count-exceeds-seal",
 				"have": have, "sealed": s.finalCount,
 			})
+		// SPEC.md §3c: a seal made after an interruption names the
+		// signature of the last receipt it seals, as the receipt file at
+		// that index gives it -- what a citation resolves against -- so a
+		// session whose receipts were replaced after it is not the one it
+		// sealed.
+		case s.interrupted && signatures[sessionID][strconv.FormatInt(s.finalCount-1, 10)] != s.head:
+			rep.Findings = append(rep.Findings, finding{
+				"sessionId": sessionID, "status": "seal-head-mismatch",
+			})
+		case s.interrupted && ordinarySealsOnly:
+			rep.Findings = append(rep.Findings, finding{
+				"sessionId": sessionID, "status": "sealed-after-interruption",
+			})
+		// Its count and its last receipt hold: the session is sealed, and
+		// is observed so on that receipt, beside ok.
+		case s.interrupted:
+			rep.Observations = append(rep.Observations, finding{
+				"sessionId": sessionID, "callIndex": s.finalCount - 1, "observation": "sealed-after-interruption",
+			})
 		}
 	}
 	// SPEC.md §4 step 4: every sealed session must still be in the store.
@@ -739,6 +771,17 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 		if !inStore[sessionID] {
 			rep.Findings = append(rep.Findings, finding{
 				"sessionId": sessionID, "status": "sealed-session-missing",
+			})
+		}
+	}
+	// SPEC.md §3c: a session for which more than one seal loads, one of
+	// them at least a seal made after an interruption, has two answers to
+	// how it closed; the first still anchors it, and the conflict is found,
+	// once, whether or not the store holds the session.
+	for _, sessionID := range sealOrder {
+		if walk.conflicted[sessionID] {
+			rep.Findings = append(rep.Findings, finding{
+				"sessionId": sessionID, "status": "seal-conflict",
 			})
 		}
 	}

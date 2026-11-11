@@ -1,0 +1,42 @@
+{
+  "name": "interruption-seal-old-key-after-rotation",
+  "note": "The same rotation, then a seal after an interruption the test key signed after it: a key rotated from seals nothing after the rotation, so the seal loads nothing and s1 is unregistered-session.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa": "{\"n\":1,\"session\":\"s1\"}",
+    "artifacts/9dd7b8b169dccbb3345667c1bd0a45ca0309510165682a7e8b3bf9001d7dc563": "{\"n\":2,\"session\":\"s1\"}",
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:fab115d81199f3eb681db3e8c6162d350fad4bb9fd4546b7bd39b8c2e803ac66\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-07-31T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"a8a6b7901c6a116adba1475806576d5bf31a8d9b6543ed0cd338e2f729876ffe041e8df6c5cbbaacf6d7ef491ce1a9cccc0a736bbc09903252487ff87c330f06\",\"source\":\"corpus\"}\n",
+    "receipts/s1/1.json": "{\"argumentsDigest\":\"hmac-sha256:b32b6d1ee01cc569ecd54595c323ed19687683caf3c64c769c2ab49ee7c5a1c4\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":\"a8a6b7901c6a116adba1475806576d5bf31a8d9b6543ed0cd338e2f729876ffe041e8df6c5cbbaacf6d7ef491ce1a9cccc0a736bbc09903252487ff87c330f06\",\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa\",\"servedAt\":\"2026-07-31T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"9ee172fb79a771bff36e430a545c2fbdab24a763942f98d99fce1ee1cd6a8669df203971653a4565c5352ad1908ba7c8ed72c943f5baa0149e3e06f6bbf3ff09\",\"source\":\"corpus\"}\n",
+    "receipts/s1/2.json": "{\"argumentsDigest\":\"hmac-sha256:e80d0d68217f6696cffcb43ea45137144061a394e0c0bf4bb93cea9eadb9ead0\",\"authority\":\"gateway:corpus\",\"callIndex\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":\"9ee172fb79a771bff36e430a545c2fbdab24a763942f98d99fce1ee1cd6a8669df203971653a4565c5352ad1908ba7c8ed72c943f5baa0149e3e06f6bbf3ff09\",\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:9dd7b8b169dccbb3345667c1bd0a45ca0309510165682a7e8b3bf9001d7dc563\",\"servedAt\":\"2026-07-31T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"9485538c3ead0ffc59e83275a6f61693336f2638bf2af7f5728fa24289cbd89ec97e9535e89d01fb99ed074001500cd49e425368b5c150ef886806bbeabe380e\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"key-rotation\",\"next\":\"5adc7f0b58c7fd53d226650e7db2e618f9ed937844e441d44fe91f9dd283f5bf\",\"nextKeyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"90d06ebfbb019c1c6179385df11394284a75ac90ce629c08618e98f01f0658b7067d340af4e91632b9bbd4fa20ea08edd42fb44a137ed2b85c2c85fdec20040a\"}\n{\"keyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"kind\":\"key-continuation\",\"previous\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\",\"previousKeyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"ccb16240d6b98b9254abdc7d99caced38eb04ecafdcd1d6a92f60a35f528d6269e41e07fe0c3e39be0f7c6397b837e5e6d68b8cdde5c3796bc0c4de8aa571b0f\"}\n{\"finalCount\":3,\"headSignature\":\"9485538c3ead0ffc59e83275a6f61693336f2638bf2af7f5728fa24289cbd89ec97e9535e89d01fb99ed074001500cd49e425368b5c150ef886806bbeabe380e\",\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"seal-after-interruption\",\"sealedAt\":\"2026-11-10T00:00:01Z\",\"sealedVia\":\"command\",\"sessionId\":\"s1\",\"signature\":\"2d3666f15f129e083242dea3d87a4221c4f92d4e2321ae5c8a71980184841e766f9a53f9c5e47fd7f902fc8d55b95122622028d06cc59b36002ffe7dfe2b9401\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "callIndex": 1,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "callIndex": 2,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "status": "unregistered-session"
+      }
+    ],
+    "rotations": {
+      "count": 1,
+      "keyId": "33719bd9925ba0b0ef0ddb302e5a3ef4"
+    }
+  }
+}

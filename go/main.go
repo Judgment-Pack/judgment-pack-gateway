@@ -129,7 +129,15 @@ func cmdCanon() int {
 }
 
 func cmdVerify(args []string) int {
-	const usage = "usage: gateway verify <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
+	const usage = "usage: gateway verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
+	// --ordinary-seals-only, first or not at all: a session a seal made
+	// after an interruption anchors is then a finding, not an observation
+	// (SPEC.md §4 step 3). A store root of that spelling is given as
+	// ./--ordinary-seals-only.
+	verify := verifyWithRegistryAndRecords
+	if len(args) > 0 && args[0] == "--ordinary-seals-only" {
+		verify, args = verifyOrdinarySealsOnly, args[1:]
+	}
 	if len(args) < 3 || len(args) > 5 {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
@@ -170,7 +178,7 @@ func cmdVerify(args []string) int {
 		return 1
 	}
 
-	report, err := verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords, publicKey)
+	report, err := verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
 	if err != nil {
 		// Could not produce a verdict at all.
 		fmt.Fprintln(os.Stderr, "verify:", err)

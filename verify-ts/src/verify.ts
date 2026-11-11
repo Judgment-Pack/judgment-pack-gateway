@@ -167,6 +167,10 @@ const receiptPrefix: Record<string, string> = {
   "3": "judgment-pack-gateway/receipt/3:",
 };
 const sealPrefix = "judgment-pack-gateway/seal/2:";
+// §3c: a seal made after an interruption, its own kind and its own domain.
+const interruptionKind = "seal-after-interruption";
+const interruptionPrefix = "judgment-pack-gateway/seal-after-interruption/1:";
+const interruptionMembers = ["finalCount", "headSignature", "keyId", "kind", "sealedAt", "sealedVia", "sessionId", "signature"];
 
 // A key id: SHA-256 of the 32 raw bytes of the public key, in hex, its
 // first 32 characters.
@@ -398,7 +402,10 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
   };
 }
 
-type Seal = { readonly sessionId: string; readonly finalCount: bigint };
+// A seal that loaded. head is, for a seal made after an interruption
+// (§3c), the signature of the last receipt it seals; undefined for one of
+// §3's form.
+type Seal = { readonly sessionId: string; readonly finalCount: bigint; readonly head?: string };
 
 // sealOf is a registry line, read, as a seal, when it is one whose key id
 // is the current key's at its line (§3b, §4 step 2) and whose signature
@@ -440,15 +447,72 @@ function sealOf(seal: Value | null, key: crypto.KeyObject, keyId: string): Seal 
   return { sessionId: own(sessionId.value), finalCount: finalCount.integer };
 }
 
+// isInterruption is whether a registry line is to be read as a seal made
+// after an interruption (§3c), and as nothing else: one JSON object whose
+// kind is that seal's.
+function isInterruption(v: Value | null): v is ObjectValue {
+  return v !== null && v.type === "object" && str(member(v, "kind")) === interruptionKind;
+}
+
+// interruptionSealOf is such a line, read, as a seal when it holds its form
+// -- exactly its members, no name given twice, each of its form, and a count
+// §1.1's domain holds, which the signature's canonical form asks -- its key
+// id is the current key's at its line and its signature verifies under that
+// key, over the prefix and the canonical form of everything but the
+// signature; any other such line is no seal of either kind.
+function interruptionSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string): Seal | null {
+  if (hasDuplicate(v) || !v.members.every((m) => interruptionMembers.includes(m.name))) {
+    return null;
+  }
+  const of = (name: string, form: RegExp): string | undefined => {
+    const s = str(member(v, name));
+    return s !== undefined && form.test(s) ? s : undefined;
+  };
+  const sessionId = of("sessionId", /^[A-Za-z0-9._-]{1,128}$/);
+  const finalCount = member(v, "finalCount");
+  const head = of("headSignature", /^[0-9a-f]{128}$/);
+  const sealKeyId = of("keyId", /^[0-9a-f]{32}$/);
+  const sealedAt = of("sealedAt", /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
+  const sealedVia = of("sealedVia", /^(?:command|start)$/);
+  const signature = of("signature", /^[0-9a-f]{128}$/);
+  if (
+    sessionId === undefined ||
+    sessionId === "." ||
+    sessionId === ".." ||
+    finalCount?.type !== "number" ||
+    finalCount.integer === null ||
+    finalCount.integer < 1n ||
+    head === undefined ||
+    sealKeyId === undefined ||
+    sealedAt === undefined ||
+    sealedVia === undefined ||
+    signature === undefined
+  ) {
+    return null;
+  }
+  if (sealKeyId !== keyId) {
+    return null;
+  }
+  const payload: ObjectValue = { type: "object", members: v.members.filter((m) => m.name !== "signature") };
+  if (!signed(key, interruptionPrefix, payload, signature)) {
+    return null;
+  }
+  return { sessionId: own(sessionId), finalCount: finalCount.integer, head: own(head) };
+}
+
 // verifyStore is the verdict of §4 over the store at root, against the
-// registry at registryPath, under the public key.
+// registry at registryPath, under the public key. With ordinarySealsOnly,
+// a session a seal made after an interruption anchors is a finding, not an
+// observation (§4 step 3).
 export function verifyStore(
   root: string,
   registryPath: string,
   authority: string,
   decisionRecordsPath: string | undefined,
   publicKey: Uint8Array,
+  options: { readonly ordinarySealsOnly?: boolean } = {},
 ): Verdict {
+  const ordinarySealsOnly = options.ordinarySealsOnly === true;
   refuseUnsupportedPlatform();
   if (publicKey.length !== 32) {
     throw new NoVerdict(`the public key is ${publicKey.length} bytes, not 32`);
@@ -476,6 +540,9 @@ export function verifyStore(
   // object could be a seal or a rotation statement, so it is no verdict;
   // any other line past it is not one JSON object, and neither.
   const seals = new Map<string, Seal>();
+  // §3c: the sessions for which more than one seal loads, one of them at
+  // least a seal made after an interruption; the first still anchors.
+  const conflicted = new Set<string>();
   const walk = new RegistryWalk(publicKey, (k) => budget.charge(entryCost + size(k.keyId) + 64, "the keys the registry's rotations reached"));
   eachRegistryLine(registry, (line) => {
     if (line.bytes === null) {
@@ -496,10 +563,17 @@ export function verifyStore(
       return;
     }
     const current = walk.current();
-    const seal = sealOf(read, current.key, current.keyId);
-    if (seal !== null && !seals.has(seal.sessionId)) {
-      budget.charge(entryCost + size(seal.sessionId), "the registry's seals");
+    const seal = isInterruption(read) ? interruptionSealOf(read, current.key, current.keyId) : sealOf(read, current.key, current.keyId);
+    if (seal === null) {
+      return;
+    }
+    const first = seals.get(seal.sessionId);
+    if (first === undefined) {
+      budget.charge(entryCost + size(seal.sessionId) + (seal.head === undefined ? 0 : size(seal.head)), "the registry's seals");
       seals.set(seal.sessionId, seal);
+    } else if ((first.head !== undefined || seal.head !== undefined) && !conflicted.has(seal.sessionId)) {
+      budget.charge(entryCost, "the registry's seals");
+      conflicted.add(seal.sessionId);
     }
   });
   walk.end();
@@ -551,6 +625,9 @@ export function verifyStore(
     if (target !== undefined) raise(target, !matched ? "action-mismatch" : r.outcome === "committed" ? "action-committed" : "action-uncertain");
   }
   const resolves = (c: Citation): boolean => signatures.get(c.sessionId)?.get(c.callIndex) === c.signature;
+  // headOf is the signature the receipt file at a seal's last index gives,
+  // as a citation reads it (§3c).
+  const headOf = (session: string, seal: Seal): string | undefined => signatures.get(session)?.get(String(seal.finalCount - 1n));
 
   // §4 step 5, now that the enumeration is whole: each action that passed
   // is read again for its citations, and must be the bytes it was.
@@ -690,6 +767,18 @@ export function verifyStore(
           ["have", have],
           ["sealed", seal.finalCount],
         ];
+      } else if (seal.head !== undefined && headOf(session, seal) !== seal.head) {
+        // §3c: the receipt file at the last index it seals gives another
+        // signature than the one it names.
+        yield [
+          ["sessionId", session],
+          ["status", "seal-head-mismatch"],
+        ];
+      } else if (seal.head !== undefined && ordinarySealsOnly) {
+        yield [
+          ["sessionId", session],
+          ["status", "sealed-after-interruption"],
+        ];
       }
       for (const j of judged) if (reconciliationUnresolved.has(j)) yield [["sessionId",session],["callIndex",j.callIndex!],["status","action-reconciliation-unresolved"]];
       // §4 steps 5 and 6, for each version 3 action receipt that passed.
@@ -753,6 +842,16 @@ export function verifyStore(
         ];
       }
     }
+    // §3c: two answers to how a session closed, found once, whether or
+    // not the store holds it.
+    for (const sessionId of seals.keys()) {
+      if (conflicted.has(sessionId)) {
+        yield [
+          ["sessionId", sessionId],
+          ["status", "seal-conflict"],
+        ];
+      }
+    }
     yield* recordFindings.findings();
     // §3b: the walk's finding, naming the rotation it could not take.
     if (walk.finding !== null) {
@@ -777,12 +876,23 @@ export function verifyStore(
     // §4 step 3's observation: a session no seal closes, holding receipts
     // every one of which passed, in sequence and chained, is open, on its
     // last receipt; its unregistered-session finding stands beside it.
+    // A session a seal made after an interruption anchors, whose count
+    // and last receipt hold it, is observed sealed so on that receipt
+    // (§3c), unless the verdict takes only ordinary seals, where it is a
+    // finding instead.
     for (const [session, judged] of sessions) {
-      if (!seals.has(session) && judged.length > 0 && judged.every((j) => j.status === "ok") && sessionBreak(judged) === null) {
+      const seal = seals.get(session);
+      if (seal === undefined && judged.length > 0 && judged.every((j) => j.status === "ok") && sessionBreak(judged) === null) {
         yield [
           ["sessionId", session],
           ["callIndex", BigInt(judged.length) - 1n],
           ["observation", "session-open"],
+        ];
+      } else if (seal?.head !== undefined && !ordinarySealsOnly && BigInt(judged.length) === seal.finalCount && headOf(session, seal) === seal.head) {
+        yield [
+          ["sessionId", session],
+          ["callIndex", seal.finalCount - 1n],
+          ["observation", "sealed-after-interruption"],
         ];
       }
     }
