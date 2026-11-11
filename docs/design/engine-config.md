@@ -1292,18 +1292,21 @@ file, as above, and measures nothing, so it prints nothing about the sandbox. `g
 `sandbox-not-enforced: no usable filesystem sandbox backend`, backend `none`, when neither
 backend could be prepared; `sandbox-not-enforced: restricted probe could not execute`, under
 the backend prepared, when the probe then failed to run under it; or
-`sandbox-not-enforced: source-user backend check did not complete successfully`, backend
-`none`, when the helper itself gave no report. `operator-program-confinement` is then
+`sandbox-not-enforced: source-user backend check did not complete successfully: ` and the
+cause, the path an operating-system error carries left out, backend `none`, when the helper
+itself gave no report. `operator-program-confinement` is then
 `not-enforced` unless another entry is `enforced` or `partial`. `/posture` answers a fixed
 sentence in place of the helper's reason; where the helper itself gave no report, that sentence
 says the source is wrapped and nothing was measured, and is not the sentence of a source with no
-wrapper. Every launch of such a source under a restricted mode
-refuses before anything is started, with `sandbox-not-enforced: the source's sandbox probe
-measured that the <mode> boundary does not hold under <backend>, so the source is not launched;
-gateway posture says why`, or, where the probe did not complete,
-`sandbox-not-enforced: the source's sandbox posture could not be measured before its launch:`
-and the cause. A source whose policy selects `danger-full-access` launches unrestricted, as it
-does on every host.
+wrapper. A launch of a source whose probe completed and measured the boundary as not holding
+under a restricted mode refuses before anything is started, with `sandbox-not-enforced: the
+source's sandbox probe measured that the <mode> boundary does not hold under <backend>, so the
+source is not launched; gateway posture says why`. A launch of a source with no completed probe
+probes again first, and where that probe does not complete it refuses whatever the mode,
+`danger-full-access` included, before anything is started, with `sandbox-not-enforced: the
+source's sandbox posture could not be measured before its launch:` and the cause. A source whose
+policy selects `danger-full-access` and whose probe completed launches unrestricted, as it does
+on every host.
 
 ## Delegated authority (engine version 15)
 

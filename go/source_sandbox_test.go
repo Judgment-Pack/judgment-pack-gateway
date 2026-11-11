@@ -418,7 +418,7 @@ func TestPublicPostureReasonsNameNoPathOrAccount(t *testing.T) {
 // A wrapped source whose helper gave no report is not told apart by its
 // mode, so /posture must not answer the sentence of a source with no wrapper.
 func TestPublicPostureTellsUnmeasuredFromUnwrapped(t *testing.T) {
-	calls := stubSandboxProbe(t, "", errors.New("helper failed at "+filepath.Join("/", "home", "someone", "bin", "helper")))
+	calls := stubSandboxProbe(t, "", &os.PathError{Op: "fork/exec", Path: filepath.Join("/", "home", "someone", "bin", "helper"), Err: os.ErrPermission})
 	sources := map[string]sourceSpec{
 		"a/live": {sandbox: &sourceSandbox{classes: []string{"adapter"}}},
 		"b/live": {},
@@ -445,7 +445,8 @@ func TestPublicPostureTellsUnmeasuredFromUnwrapped(t *testing.T) {
 		t.Fatalf("unwrapped source changed: %q", public["b/live"])
 	}
 	operator := reasons(false)
-	if operator["a/live"] != "sandbox-not-enforced: source-user backend check did not complete successfully" || operator["b/live"] != unwrapped {
+	// The operator's report names the cause, without the path it carried.
+	if operator["a/live"] != "sandbox-not-enforced: source-user backend check did not complete successfully: fork/exec: permission denied" || operator["b/live"] != unwrapped {
 		t.Fatalf("operator report changed: %+v", operator)
 	}
 	if *calls != 2 {
@@ -503,7 +504,7 @@ func TestPostureProbesEachSourceUnderItsOwnBudget(t *testing.T) {
 				t.Fatalf("public %v: %s after a hanging source is not measured: %q", public, name, got[name])
 			}
 		}
-		want := "sandbox-not-enforced: source-user backend check did not complete successfully"
+		want := "sandbox-not-enforced: source-user backend check did not complete successfully: context deadline exceeded"
 		if public {
 			want = publicUnmeasuredReason
 		}

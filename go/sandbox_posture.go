@@ -90,8 +90,10 @@ func sourceProgramPosture(sources map[string]sourceSpec) []postureProgram {
 				unmeasured, unprobed = true, true
 				report.Protection.Reason = unprobedReason
 			default:
+				// the cause, as a launch's refusal gives it, without the
+				// path an *os.PathError carries
 				unmeasured = true
-				report.Protection.Reason = "sandbox-not-enforced: source-user backend check did not complete successfully"
+				report.Protection.Reason = "sandbox-not-enforced: source-user backend check did not complete successfully: " + pathless(err)
 			}
 		}
 		for _, class := range classes {
@@ -154,7 +156,10 @@ func probeSourceSandbox(ctx context.Context, spec sourceSpec) (sandboxProbeRepor
 
 // publicUnmeasuredReason is /posture's sentence for a wrapped source whose
 // sandbox helper gave no report.
-const publicUnmeasuredReason = "the source configuration selects the adapter sandbox wrapper, and its backend check gave no report, so nothing was measured for this source and its restricted launches refuse; gateway posture, given the configuration, says why"
+// A launch of such a source probes again, and refuses before any mode is
+// known unless that probe completes (sandboxSourceCommand), so the sentence
+// speaks of every launch, danger-full-access included.
+const publicUnmeasuredReason = "the source configuration selects the adapter sandbox wrapper, and its backend check gave no report, so nothing was measured for this source; a launch checks again before it starts and is refused, whatever its mode, unless that check completes; gateway posture, given the configuration, names the cause"
 
 // publicUnprobedReason is /posture's sentence for a wrapped source whose
 // check this report's budget ended or left no time to start: it says
