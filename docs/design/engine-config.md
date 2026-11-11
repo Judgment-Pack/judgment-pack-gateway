@@ -575,20 +575,21 @@ configuration to what the filesystem and the kernel report, and no further.
 
 `GET /posture` answers what `gateway posture --json` prints, for the engine as it runs: which of
 the isolation protections in [SECURITY.md](../../SECURITY.md) this host enforces, judged against
-the seed and the sources the engine started with. It is the field a desk reads to show its
-managed gateway's posture beside the gateway's status. The answer is canonical JSON (SPEC.md
-§1.1), so two answers compare byte for byte:
+the seed and the sources the engine started with and the listener it serves on. It is the field
+a desk reads to show its managed gateway's posture beside the gateway's status. The answer is
+canonical JSON (SPEC.md §1.1), so two answers compare byte for byte:
 
 ```json
-{"platform":"linux","protections":[{"name":"source-user-switch","reason":"every source runs as a user of its own that is not the signer's, and this process can switch to each","state":"enforced"},{"name":"descendant-reaping","reason":"…","state":"enforced"},{"name":"container-custody","reason":"…","state":"enforced"},{"name":"seed-file-protection","reason":"…","state":"enforced"},{"name":"operator-program-confinement","reason":"…","state":"not-enforced"}]}
+{"platform":"linux","protections":[{"name":"source-user-switch","reason":"every source runs as a user of its own that is not the signer's, and this process can switch to each","state":"enforced"},{"name":"descendant-reaping","reason":"…","state":"enforced"},{"name":"container-custody","reason":"…","state":"enforced"},{"name":"seed-file-protection","reason":"…","state":"enforced"},{"name":"operator-program-confinement","reason":"…","state":"not-enforced"},{"name":"listener-reach","reason":"the gateway listens on a loopback address, which other hosts cannot reach","state":"enforced"}]}
 ```
 
 - `platform` is the operating system as Go names it: `linux`, `darwin`, `windows`.
-- `protections` holds the five protections, always in this order, each with exactly `name`,
+- `protections` holds the six protections, always in this order, each with exactly `name`,
   `state` — `enforced`, `partial`, `not-enforced` or `not-applicable` — and `reason`, one sentence for a
-  reader, which a consumer shows and never parses. A reason `/posture` answers names no path and
-  no account; the command, run by the operator, may. `not-applicable` is a protection with nothing
-  to hold here: no source, no seed, an image this platform does not run.
+  reader, which a consumer shows and never parses. A reason `/posture` answers names no path, no
+  account and no address; the command, run by the operator, may name a path or an account.
+  `not-applicable` is a protection with nothing to hold here: no source, no seed, an image this
+  platform does not run, no configuration naming a listener.
 - `source-user-switch`: every source names a user, none is root, and this process passes the
   check `serve` makes at start, that it can switch to each; `not-applicable` with no source.
 - `descendant-reaping`: on Linux, a probe: a child started as a source is, in an anchor-led
@@ -622,7 +623,18 @@ managed gateway's posture beside the gateway's status. The answer is canonical J
   completed successful boundary check. With version 13 sources it aggregates the
   per-program entries below: `enforced` only when every entry is enforced, otherwise
   `partial` when any entry is enforced or partial.
-- After the five, a configuration with `delegation` adds its three lines (SPEC.md §11.9), and one
+- `listener-reach`: whether the gateway listens on a loopback address and, where it does not,
+  whether it authenticates its callers — the class of the address, never the address or the
+  port, from the command and the route alike. `/posture` judges the listener the gateway serves
+  on, as it was bound: `enforced` on a loopback address, and `not-enforced` off loopback with no
+  caller authenticated, which is `serve` from the command line given `--listen` an address that is
+  not loopback and `--accept-unauthenticated-callers`. A listener off loopback that authenticates
+  its callers is `partial`, since a bearer token over plain HTTP can be read and replayed on the
+  network between; no form of `serve` starts one. `gateway posture` starts nothing: given serve's
+  command line it judges the address `--listen` writes out, or `127.0.0.1` where it names none;
+  given `--config`, the configuration's `listen`, a loopback address, with callers authenticated
+  where it has an `identity`; given neither, `not-applicable`.
+- After the six, a configuration with `delegation` adds its three lines (SPEC.md §11.9), and one
   where some platform gives `writeRequesters` adds `write-requesters`: `enforced` when every
   write tool is held to a requester list, `not-enforced` otherwise, the tools counted and no
   requester named.
@@ -1242,7 +1254,7 @@ by source then by the fixed classes `adapter`, `customer-command` or
 Legacy/unavailable selections use mode `unconfigured`, backend `none`, state
 `not-enforced`, preset `custom`, approval `""` and operations `[]`. A completed
 probe reports its actual selection; policy version 1 has empty approval/families.
-No-source posture keeps the original five-line shape without `programs`.
+No-source posture has the six lines above and no `programs`.
 Container-helper entries concern the local runtime client, and are partial even
 when its backend enforces all filesystem writes: the external daemon is not
 confined by that client boundary. Such a source's probe and launch keep

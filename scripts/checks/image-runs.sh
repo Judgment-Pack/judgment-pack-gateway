@@ -16,8 +16,8 @@ for user in 65532 65601; do
 done
 # The engine, as built and as its own user, reports the image's custody
 # and the reaping of a source's descendants as enforced (gateway posture),
-# and its report is one line for each of the five protections.
+# and its report is one line for each of the six protections.
 out=$(docker run --rm engine:ci posture) || { echo "gateway posture does not run in the image"; exit 1; }
-[ "$(printf '%s\n' "$out" | wc -l)" -eq 5 ] || { echo "gateway posture does not report five protections: $out"; exit 1; }
+[ "$(printf '%s\n' "$out" | wc -l)" -eq 6 ] || { echo "gateway posture does not report six protections: $out"; exit 1; }
 printf '%s\n' "$out" | grep -Eq '^container-custody +enforced ' || { echo "the image does not report its own custody: $out"; exit 1; }
 printf '%s\n' "$out" | grep -Eq '^descendant-reaping +enforced ' || { echo "the image does not report a source's descendants reaped: $out"; exit 1; }
