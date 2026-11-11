@@ -694,7 +694,12 @@ name populated with the key before policy checks; a conflicting caller value
 is refused. A closed decision policy reaches the member so populated as the
 gateway's (§1.2a); a policy of the tool whose `bind`, `fix` or `shape` names
 that member, or a value under it, is refused when the configuration is read:
-the member holds the action key, which no policy decides. `readBack` is
+the member holds the action key, which no policy decides. The empty pointer,
+which covers the whole arguments, is not refused: a policy that binds or fixes
+it holds the gateway's member with the rest. A closed policy so establishes
+nothing about that member beyond its holding the request's action key, so a
+binding names as `idempotencyArgument` only an argument the target treats as
+an idempotency token. `readBack` is
 exactly `{tool, arguments, keyPointer, outcomePointer, committedValue}`. The
 tool must be an allowed live tool whose owner declares operation `read` and
 effect `read` or `read-external`. Each argument maps to
