@@ -2194,6 +2194,63 @@ func (g *gatewayService) announceAndServe(listener net.Listener) error {
 	return g.serveOn(listener)
 }
 
+// The limits a listener other hosts can reach is served under, beside the
+// read timeouts every listener has. An idle connection is closed after a
+// minute and a request's headers are bounded, as the MCP server's are
+// (mcp_http.go). The answers of /registry and /publickey, the two that need
+// no token, are each written within openRouteWriteTimeout. The bound is per
+// answer, never the server's WriteTimeout: that would count a handler's own
+// run against its answer, and an /acquire or /act has no fixed longest run
+// -- a source runs to its timeout, which --source-timeout sets up to
+// maxSourceTimeout, and requests under one action key wait on each other
+// without a bound (actionKeyLocks).
+const (
+	offLoopbackIdleTimeout    = 60 * time.Second
+	offLoopbackMaxHeaderBytes = 64 << 10
+	openRouteWriteTimeout     = 30 * time.Second
+)
+
+// openRoutes are the endpoints that answer a caller with no token.
+var openRoutes = map[string]bool{"/registry": true, "/publickey": true}
+
+// httpServer is serveOn's server for a listener bound at addr, which is
+// what /posture reports of the listener, from either form of serve. A
+// loopback listener is served as it always was; one that is not loopback
+// (boundToLoopback) is served under the limits above.
+func (g *gatewayService) httpServer(addr net.Addr) *http.Server {
+	g.listening = addr
+	server := &http.Server{
+		Handler:           g.handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+	}
+	if boundToLoopback(addr) {
+		return server
+	}
+	server.Handler = boundOpenWrites(server.Handler, openRouteWriteTimeout)
+	server.IdleTimeout = offLoopbackIdleTimeout
+	server.MaxHeaderBytes = offLoopbackMaxHeaderBytes
+	return server
+}
+
+// boundOpenWrites gives the answer to a request for an open route a write
+// deadline within the given time, and clears the deadline for every other
+// request: the server has no WriteTimeout to reset a connection's deadline
+// between requests, so one an open route set would otherwise hold over a
+// later request on the same connection. The path is the one the mux
+// routes, as it was received; an unclean spelling of an open route is
+// answered by the mux's redirect, and reaches the route on its own request.
+func boundOpenWrites(next http.Handler, within time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var deadline time.Time
+		if openRoutes[r.URL.Path] {
+			deadline = time.Now().Add(within)
+		}
+		_ = http.NewResponseController(w).SetWriteDeadline(deadline)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // serveOn serves until the service's lifetime ends -- the signal context
 // cmdServe bound -- or until Serve fails. Either way it ends the lifetime,
 // which kills every source in flight, then waits for every request in flight
@@ -2202,14 +2259,7 @@ func (g *gatewayService) announceAndServe(listener net.Listener) error {
 // written; a request still open when the grace expires is aborted, and the
 // error returned says so.
 func (g *gatewayService) serveOn(listener net.Listener) error {
-	// what /posture reports of the listener is what was bound, from either
-	// form of serve
-	g.listening = listener.Addr()
-	server := &http.Server{
-		Handler:           g.handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-	}
+	server := g.httpServer(listener.Addr())
 	shutdown := make(chan error, 1)
 	go func() {
 		<-g.ctx.Done()
