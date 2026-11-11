@@ -2329,7 +2329,9 @@ func describedOperation(b binding, write bool) *operation {
 
 // policiesMatch holds a platform's decision policies to its binding: each
 // names a tool the binding's write operation names, since a policy for a
-// tool no write can reach would read as a hold on nothing.
+// tool no write can reach would read as a hold on nothing; and none binds,
+// fixes or shapes the tool's idempotency argument, or a value under it,
+// since the gateway sets that argument to the action key (#380).
 func policiesMatch(p platformConfig, b binding) error {
 	tools := make([]string, 0, len(p.policies))
 	for tool := range p.policies {
@@ -2342,6 +2344,9 @@ func policiesMatch(p platformConfig, b binding) error {
 		}
 		if !contains(b.write.tools, tool) {
 			return fmt.Errorf("decisionPolicy names tool %q, which the binding's write operation does not name", requestText(tool))
+		}
+		if held := p.policies[tool].heldGatewayArgument(b.actionRecovery[tool]); held != "" {
+			return fmt.Errorf("decisionPolicy.%s: %s, which the gateway sets to the action key (actionRecovery); a policy neither binds, fixes nor shapes it, nor a value under it", requestText(tool), held)
 		}
 	}
 	return nil

@@ -190,6 +190,21 @@ verification requires their retained evidence (SPEC.md §9).
   `policy-bind`, after the bindings ([executor.md](executor.md), step 11), and are part of the
   policy's digest; fixed entries in another order are another digest for the same checks.
 
+  For a tool whose binding's `actionRecovery` names an `idempotencyArgument`, the gateway sets
+  that top-level argument to the request's `actionKey` before the policy is checked
+  ([action reconciliation](action-reconciliation.md)), and `closed` reaches it as the gateway's:
+  that one member, while it holds the key, and nothing else by it. A request that sends the
+  argument with another value is refused at `action-key` before the policy is read, as before; a
+  request with no `actionKey` is given no such member, so one it sends is the caller's and
+  `closed` refuses it as any other. A policy of that tool neither binds, fixes nor shapes the
+  argument, or a value under it: the gateway's value is the key, so a fixed value would admit
+  one key, a shape none, and a binding only a record that states the key. Such a policy is
+  refused when the configuration is read, by `serve`, `connect` and `posture` alike, naming the
+  entry —
+  `platform tickets: decisionPolicy.update_ticket: bind[1] names "/requestId", the tool's idempotency argument "requestId", which the gateway sets to the action key (actionRecovery); a policy neither binds, fixes nor shapes it, nor a value under it`.
+  The empty pointer, which covers the whole arguments, is not refused: a policy that binds or
+  fixes it holds the gateway's member with the rest.
+
   `shape`, in a version-10 file, is optional
   ([ADR-0018](../adr/0018-a-policy-holds-a-containers-shape.md)) —
 
@@ -1223,7 +1238,10 @@ Binding version 3 retains owner declarations and adds a per-write-tool
 `actionRecovery` map, including explicit null entries for unsupported tools.
 The shipped write bindings declare unsupported recovery. An operator-owned
 contract may name an idempotency argument and a read-only live tool; updating
-the binding requires a new digest pin and recaptured descriptor approval. See
+the binding requires a new digest pin and recaptured descriptor approval. The
+gateway sets the idempotency argument to the action key, and a closed decision
+policy reaches it as the gateway's; a policy of that tool may not bind, fix or
+shape it (`closed`, under the platform's `decisionPolicy` above). See
 [action reconciliation](action-reconciliation.md) and SPEC.md §1.2b.
 
 The initial durable journal requires Unix file and directory synchronization;
