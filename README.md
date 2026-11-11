@@ -425,8 +425,11 @@ Stated plainly because the whole line is about being exact where proof stops:
   disclosure forges everything.
 - This is a **single-identity, single-operator reference**, localhost, no authentication
   on the HTTP surface unless an `identity` is configured — and that decides who may call,
-  never from where — no authorization, no HA. It is for self-hosting a trust root and demonstrating the
-  mechanism — not a hardened public deployment.
+  never from where — no HA, and no authorization beyond two checks the operator configures.
+  A platform's `writeRequesters` (engine configuration version 18) narrows which authenticated
+  requesters may ask `/act` for a write through each tool. A `decisionPolicy` holds a write to
+  its decision record. Neither replaces the target system's own authorization. It is for
+  self-hosting a trust root and demonstrating the mechanism — not a hardened public deployment.
 
 ## Where this is going
 

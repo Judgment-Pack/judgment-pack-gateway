@@ -88,7 +88,14 @@ with one it also compares them with the record they name (step 10).
    request is read at its own step — `session` at step 2, `platform` here, `tool` at step 4,
    `decision` and `cites` at theirs — absent, unparseable or of the wrong type is a refusal at
    that step — so a request with several faults is answered by the earliest step it fell at.
-4. The tool is not one the `write` binding names → refused. The executor is spawned with
+4. The tool is not one the `write` binding names → refused. Where the platform gives
+   `writeRequesters` (engine version 18, [engine-config.md](engine-config.md)), the requester
+   the receipt would name — a token's subject, or a delegation's subject, never its agent or
+   the sender of a reservation — must then be one the tool's list names, byte for byte with its
+   issuer, or the request is refused `403` at `write-requesters` with one fixed sentence, before
+   anything else of it is read: its arguments, its key, its decision, its cites, and the
+   tool's policy ([SPEC.md](../../SPEC.md) §6, "Who may ask for a write"). That holds a first
+   send, a replay, a reconciliation and a read-back alike. The executor is spawned with
    `--tools=<that tool>` and nothing else — the binding's list narrowed to the one requested —
    so a server offering more cannot be asked for more. The arguments must be a JSON object:
    the executor sends `{tool, arguments}` as an object, and the commitment is over what is
@@ -240,6 +247,12 @@ The receipt is lineage of a request and a response. It does not say the write wa
 it does not say the requester approved it: a token proves who asked. Evidence that a person
 approved this specific action is an open question the plan names, and nothing here answers it.
 
+`writeRequesters` establishes only that the requester was one the operator's list named for the
+tool when the request was taken; a requester it admits is held to every later step as before.
+It does not replace the decision policy or the target system's own authorization, says nothing
+of the agent or the sender that carried a delegated request, and does not hide which tools a
+platform offers: the session, platform and tool steps answer every requester alike.
+
 Without a policy, the engine establishes only that the record exists with the stated digest and
 that the cited receipts verify. It does not establish that the record permitted the write, that
 its outcome is the one the write assumes, that its inputs are the object written, or that the
@@ -333,6 +346,12 @@ permissions are what bound it.
   record, a chained record in the runtime's own form, the write refused while no sidecar signs
   it, a write to another revision refused once one does, both before the executor starts, and
   the receipt naming the policy by the digest the configuration gives it.
+- `writeRequesters` (`go/write_requesters_test.go`): the refusal's exact bytes; a tool's
+  list, the platform's list it inherits and the empty list; near misses of case, space,
+  Unicode and issuer; the order against a bad key, a policy's argument and a bad decision;
+  a first send, a replay, a reconciliation, a read-back, a delegated actor and each
+  reservation sender; the target's bytes unchanged without the member; each safeguard with
+  a mutation that removes it.
 - The receipt's one new member, `action.policy`, is held by the vectors `v3-action-policy`
   and `v3-action-policy-malformed`; what the verifier compares of a record, by
   `v3-decision-pack-mismatch`, `v3-decision-cites-mismatch` and

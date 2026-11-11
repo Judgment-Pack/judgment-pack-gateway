@@ -95,7 +95,7 @@ only the mode and does not replace effect approval or source-user separation.
 
 This is a **reference gateway**, not a hardened deployment. It is pre-1.0, provides no security,
 compatibility, or support service-level guarantee, binds localhost, has no authorization on its HTTP
-surface beyond a checkpoint witness's registrations and its named operators, and no authentication unless an `identity` is configured (which decides who may call,
+surface beyond a checkpoint witness's registrations, its named operators and a platform's `writeRequesters`, and no authentication unless an `identity` is configured (which decides who may call,
 never from where; a token presented off the machine can be replayed), and runs as a single operator holding a single signing identity.
 It must not be used as the sole control for consequential production decisions, and a `/verify` that
 answers `ok` must not be read as a statement that the underlying facts are true — see
@@ -558,6 +558,23 @@ token is never stored and never signed into a receipt, only its digest. Transpor
 HTTP on a loopback address: a token presented off the machine can be captured and replayed, and
 reaching the engine from another host means a TLS-terminating front the operator runs and trusts.
 
+**`writeRequesters` decides who may ask for a write, and nothing else.** A platform's member
+(engine configuration version 18; [`SPEC.md`](SPEC.md) §6, "Who may ask for a write") holds
+`/act` to the requesters each write tool's list names, by issuer and subject compared byte for
+byte, before the request's arguments, key, decision or policy are read. A refused requester is
+answered one fixed sentence, `403` at `write-requesters`, and nothing is sent, read back or
+minted. What it establishes is that the receipt's requester was on the list when the request was
+taken. It does not establish:
+- that the requester approved the write, or was right to ask for it;
+- that the write meets a decision: the decision policy is still the only check of that;
+- that the target system would itself permit the write: its own authorization is unchanged.
+
+It restricts the requester only. Under a delegation that is the delegation's subject, so it says
+nothing about which agent or which reservation sender carried the request; the delegation's own
+scope and admission (§11.5) bound those. The lists are as strong as the identity behind them: an
+issuer that will mint a token for any subject admits anyone a list names. Which tools a platform
+offers is not hidden, since the session, platform and tool steps answer every requester alike.
+
 **A checkpoint witness is reached from other hosts by other parties** ([ADR-0013](docs/adr/0013-checkpoint-witness.md);
 [`SPEC.md`](SPEC.md) §6, "Witness endpoints"). It is the first surface of this reference meant
 for that, and what the reference does for it is narrow. A submission carries a bearer token of
@@ -640,7 +657,7 @@ process wrote. A consumer that needs to rule this out verifies with `--ordinary-
 under which such a session is a finding.
 
 **Not in scope for this reference:** availability or HA, authenticated transport, access control
-beyond a checkpoint witness's registrations and named operators, multi-tenancy, key rotation or custody, rate limiting
+beyond a checkpoint witness's registrations, named operators and a platform's `writeRequesters`, multi-tenancy, key rotation or custody, rate limiting
 beyond a witness's bounds on its submitters, and resistance to a local attacker who can
 concurrently rename or replace store ancestors. Run it from a directory whose ownership and write
 permissions you control.
