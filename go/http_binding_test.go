@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -84,6 +86,8 @@ func TestHTTPOperationRefusals(t *testing.T) {
 		{"a query", httpLive(`,"endpoint":"https://records.example","paths":["/a?x=1"],"bearer":"T"`), "paths[0] carries a query"},
 		{"a backslash", httpLive(`,"endpoint":"https://records.example","paths":["/a\\b"],"bearer":"T"`), "paths[0] carries a query, a fragment or a backslash"},
 		{"a space", httpLive(`,"endpoint":"https://records.example","paths":["/a b"],"bearer":"T"`), "paths[0] must be printable ASCII"},
+		{"a character sent escaped", httpLive(`,"endpoint":"https://records.example","paths":["/a","/a|b"],"bearer":"T"`), "operation live: paths[1] carries a character adapter-http would send percent-escaped, not as written"},
+		{"a character sent escaped in the endpoint", httpLive(`,"endpoint":"https://records.example/a[b]","paths":["/a"],"bearer":"T"`), "operation live: endpoint's path carries a character adapter-http would send percent-escaped, not as written"},
 		{"beyond ASCII", httpLive(`,"endpoint":"https://records.example","paths":["/café"],"bearer":"T"`), "paths[0] must be printable ASCII"},
 		{"a dot segment", httpLive(`,"endpoint":"https://records.example","paths":["/a/../admin"],"bearer":"T"`), "paths[0] carries a dot segment"},
 		{"an empty segment", httpLive(`,"endpoint":"https://records.example","paths":["/a//b"],"bearer":"T"`), "paths[0] carries an empty segment"},
@@ -134,6 +138,57 @@ func TestHTTPOperationRefusals(t *testing.T) {
 			t.Errorf("%s: the refusal repeats a value: %v", c.name, err)
 		}
 	}
+}
+
+// httpRequestLine is the path adapter-http's request carries for path
+// under endpoint, formed as the adapter forms it (adapters/httpsource,
+// build): the endpoint parsed, the request's path set after its decoded
+// path with the escaping left to the URL package, and the request made
+// from that URL. An endpoint the URL package cannot parse carries nothing.
+func httpRequestLine(t *testing.T, endpoint, path string) string {
+	t.Helper()
+	base, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	target := *base
+	target.Path = strings.TrimSuffix(base.Path, "/") + path
+	target.RawPath = ""
+	req, err := http.NewRequest(http.MethodGet, target.String(), nil)
+	if err != nil {
+		return ""
+	}
+	return req.URL.RequestURI()
+}
+
+// A path, and the endpoint's path, are accepted exactly when adapter-http
+// sends them as written (gateway #407): every printable ASCII byte inside
+// one, against the request line formed as the adapter forms it. The one
+// byte sent as written and refused anyway is the comma in a path, which
+// would split it into two on the adapter's command line.
+func TestHTTPPathsAreAcceptedExactlyWhenSentAsWritten(t *testing.T) {
+	var refusedPath, refusedEndpoint string
+	for c := byte(0x20); c <= 0x7e; c++ {
+		path := "/a" + string(c) + "b"
+		sent := httpRequestLine(t, "https://records.example", path) == path
+		problem := httpPathProblem(path)
+		if want := sent && c != ','; want != (problem == nil) {
+			t.Errorf("paths: %q is sent as written: %v; httpPathProblem: %v", path, sent, problem)
+		}
+		if problem != nil {
+			refusedPath += string(c)
+		}
+		endpoint := "https://records.example" + path
+		sent = httpRequestLine(t, endpoint, "/x") == path+"/x"
+		problem = httpEndpointPathProblem(endpoint)
+		if sent != (problem == nil) {
+			t.Errorf("endpoint: %q is sent as written: %v; httpEndpointPathProblem: %v", endpoint, sent, problem)
+		}
+		if problem != nil {
+			refusedEndpoint += string(c)
+		}
+	}
+	t.Logf("refused within a path: %q; within the endpoint's path: %q", refusedPath, refusedEndpoint)
 }
 
 // A binding of an http live operation parses to what adapter-http is

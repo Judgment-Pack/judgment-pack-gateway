@@ -783,14 +783,16 @@ The members are exactly these, `methods`, `headers` and `checkPath` optional, an
   gives a remote server — `https`, or `http` at a loopback address written as one, `localhost`
   not among them; no user, query or fragment — with no placeholder, since no platform parameter
   fills one here, and a path the adapter sends as written: no percent sign, which the adapter
-  would send decoded and escaped again, no dot segment and no empty segment, but for one `/` at
-  the end, which the adapter drops before the request's path. The binding's digest pins it, and
-  the receipt names the URL the adapter sent to under it;
+  would send decoded and escaped again, no other character its URL escaping would send
+  percent-escaped (below), no dot segment and no empty segment, but for one `/` at the end,
+  which the adapter drops before the request's path. The binding's digest pins it, and the
+  receipt names the URL the adapter sent to under it;
 - `paths` are the only paths an acquisition may name, 1 to 128, each sent as written under the
   endpoint: it begins with `/`, is printable ASCII without a space, and carries no query,
   fragment, backslash, dot segment or empty segment — what `adapter-http` accepts — and no comma,
   percent sign or brace, which the engine's command line would split into two paths, the adapter
-  would send escaped, or a reader would take for a placeholder. A path given twice is refused, and
+  would send escaped, or a reader would take for a placeholder; nor any other character the
+  adapter would send percent-escaped (below). A path given twice is refused, and
   so are paths that, comma-joined after `--paths=`, make a word of 128 KiB or more: the one
   argument of the adapter's command line they are passed in, which Linux would refuse to start a
   program with;
@@ -810,6 +812,20 @@ The members are exactly these, `methods`, `headers` and `checkPath` optional, an
 - `checkPath` is the path a check GETs: one of `paths`, with `GET` among `methods`, so a check
   asks for nothing an acquisition could not. Without it a check is the TLS handshake, or, to
   plaintext loopback, the connection alone.
+
+A path is sent as written, or refused when the binding is loaded (gateway #407). The adapter sets
+a request's path, the endpoint's decoded path followed by the request's, and leaves its escaping
+to Go's `net/url`, which sends some printable characters percent-escaped; a path, or the
+endpoint's path, holding one would be sent as other bytes than the binding states. The engine
+refuses such a path, in `paths` and in the endpoint, by that same escaping rather than by a list
+of its own: a path is refused when `url.URL{Path: p}.EscapedPath()` is not `p`. Under Go 1.26
+the printable ASCII characters so refused are the space, `!`, `"`, `#`, `%`, `'`, `(`, `)`, `*`,
+`<`, `>`, `?`, `[`, `\`, `]`, `^`, `` ` ``, `{`, `|` and `}`; the punctuation sent as written is
+`$`, `&`, `+`, `,`, `-`, `.`, `/`, `:`, `;`, `=`, `@`, `_` and `~` (a comma is refused in `paths`
+anyway). The tests derive the set over every printable ASCII byte and log it. `adapter-http`
+holds the paths it is given, `--paths`, `--check-path` and a request's path, to the same rule, so
+the two agree on a path, and a path it was given in the plain form with such a character, a
+percent escape among them, is refused rather than sent escaped again.
 
 The source is `<platform>/live` (the table above): `adapter-http`, started as every engine
 source is — as the platform's OS user, with `no_new_privs`, under the source sandbox as an

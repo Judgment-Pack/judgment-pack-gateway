@@ -1711,10 +1711,12 @@ one operation is `live` of that shape, run by the program the plain form runs fo
 shape `mcp`, the executor's alone and never named by `/acquire`. A source is held to this
 contract whichever form declared it: the envelope of an `http` source in the engine is the
 plain form's and is refused as any other departs, and the receipt minted from it is the
-plain form's, member for member. A platform whose `live` is of shape `http` names no
-connection grant, so a call under a delegation, with a delegation credential presented or
-not, is refused `grant-unknown` (§10, rule 3) before the scope check or the source; a grant
-would admit nothing, since an `http` acquisition names no tool and the scope check (§11.5)
+plain form's, member for member. The binding fixes the endpoint and the paths, each sent
+as written: a gateway refuses, when it loads the binding, a path or an endpoint's path that
+holds a character the adapter would send percent-escaped. A platform whose `live` is of
+shape `http` names no connection grant, so a call under a delegation, with a delegation
+credential presented or not, is refused `grant-unknown` (§10, rule 3) before the scope
+check or the source; a grant would admit nothing, since an `http` acquisition names no tool and the scope check (§11.5)
 refuses it `out-of-scope`, reason `source` when no scope entry names the source and `tool`
 when one does.
 

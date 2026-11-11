@@ -717,3 +717,37 @@ func TestSecretsReadsTheCredentialsFileForRedaction(t *testing.T) {
 		t.Fatal("no file, no secrets")
 	}
 }
+
+// A path is accepted exactly when the request build forms for it carries
+// it as written (gateway #407): every printable ASCII byte inside a path,
+// and one beyond ASCII, against the request line build writes. A
+// character the URL package sends percent-escaped -- a percent sign among
+// them, which would be sent as "%25" -- is refused, so the path sent is the
+// path the operator wrote.
+func TestAPathIsAcceptedExactlyWhenItIsSentAsWritten(t *testing.T) {
+	base, err := endpointOf("https://api.example/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &prepared{base: base, headers: http.Header{}}
+	paths := []string{"/aéb"}
+	for c := 0x20; c <= 0x7e; c++ {
+		paths = append(paths, "/a"+string(rune(c))+"b")
+	}
+	refused := ""
+	for _, path := range paths {
+		out, err := p.build(context.Background(), Config{Paths: []string{path}}, Request{Path: path, Method: http.MethodPost})
+		if err != nil {
+			t.Fatalf("%q: build: %v", path, err)
+		}
+		asWritten := out.URL.RequestURI() == "/v1"+path
+		problem := pathProblem(path)
+		if asWritten != (problem == nil) {
+			t.Errorf("%q: sent as %q, and pathProblem says %v", path, out.URL.RequestURI(), problem)
+		}
+		if problem != nil {
+			refused += path[2 : len(path)-1]
+		}
+	}
+	t.Logf("refused within a path: %q", refused)
+}
