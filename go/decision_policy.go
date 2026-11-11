@@ -475,8 +475,11 @@ func sameCitations(a, b []citation) bool {
 // shapes (ADR-0018) and, when it is closed, to the pointers it names, in
 // that order. The first that fails is the refusal, and
 // nothing is sent. The bytes read are the bytes step 7 hashed, so the
-// record judged is the record named.
-func holdToPolicy(data []byte, claimed decision, cites []citation, arguments value, policy *decisionPolicy, signed sidecarEvidence) error {
+// record judged is the record named. The arguments are those that will be
+// sent, the idempotency argument the gateway set among them (applyKey runs
+// first); supplied is that argument, nil when it set none, and a closed
+// policy reaches it as the gateway's.
+func holdToPolicy(data []byte, claimed decision, cites []citation, arguments value, policy *decisionPolicy, signed sidecarEvidence, supplied *gatewayArgument) error {
 	record, why := readRuntimeRecord(data)
 	if record == nil {
 		return actRefusal{"record", why + "; a tool held to a decision policy acts only on a runtime evaluation record"}
@@ -584,11 +587,51 @@ func holdToPolicy(data []byte, claimed decision, cites []citation, arguments val
 		}
 	}
 	if policy.closed {
-		if at, found := unreachedArgument(arguments, policy.namedArguments(), policy.shapedArguments()); found {
+		if at, found := unreachedArgument(arguments, policy.namedArguments(), policy.shapedArguments(), supplied); found {
 			return actRefusal{"policy-bind", fmt.Sprintf("argument %q is reached by no binding", requestText(at))}
 		}
 	}
 	return nil
+}
+
+// heldGatewayArgument is the first entry of a policy's bind, fix or shape
+// whose pointer names the idempotency argument of recovery, or a value under
+// it, described for a refusal; "" when there is none, or when recovery names
+// no such argument. The argument is the gateway's, set to the action key
+// (applyKey): holding it to a value would admit one key, to a container or
+// to a value under it none, and to a fact only a record that states the key,
+// which is what reconciles a write and not what decides it; and a closed
+// policy reaches it as the gateway's (unreachedArgument).
+func (p *decisionPolicy) heldGatewayArgument(recovery *actionRecovery) string {
+	pointer := recovery.argumentPointer()
+	if p == nil || pointer == "" {
+		return ""
+	}
+	held := func(list string, i int, at string) string {
+		if at == pointer {
+			return fmt.Sprintf("%s[%d] names %q, the tool's idempotency argument %q", list, i, at, recovery.idempotencyArgument)
+		}
+		if strings.HasPrefix(at, pointer+"/") {
+			return fmt.Sprintf("%s[%d] names %q, under the tool's idempotency argument %q", list, i, at, recovery.idempotencyArgument)
+		}
+		return ""
+	}
+	for i, b := range p.bind {
+		if why := held("bind", i, b.argument); why != "" {
+			return why
+		}
+	}
+	for i, f := range p.fix {
+		if why := held("fix", i, f.argument); why != "" {
+			return why
+		}
+	}
+	for i, s := range p.shape {
+		if why := held("shape", i, s.pointer); why != "" {
+			return why
+		}
+	}
+	return ""
 }
 
 // namedArguments are the pointers into the request's arguments that a
@@ -632,8 +675,10 @@ func (p *decisionPolicy) shapedArguments() []string {
 // the array; "-" and an index with a leading zero name no element (RFC 6901
 // §4) and so reach none. A member's token is its name with "~" written "~0"
 // and "/" written "~1", the one spelling RFC 6901 gives it, so a pointer
-// reaches a member exactly when it resolves to it.
-func unreachedArgument(arguments value, named, shaped []string) (string, bool) {
+// reaches a member exactly when it resolves to it. The argument the gateway
+// supplied, when there is one, is reached as the gateway's: its one member,
+// while it holds the key, and nothing else by it (#380).
+func unreachedArgument(arguments value, named, shaped []string, supplied *gatewayArgument) (string, bool) {
 	covered := func(at string) bool {
 		for _, p := range named {
 			if p == "" || at == p || strings.HasPrefix(at, p+"/") {
@@ -657,7 +702,7 @@ func unreachedArgument(arguments value, named, shaped []string) (string, bool) {
 	}
 	var under func(v value, at string) (string, bool)
 	visit := func(v value, at string) (string, bool) {
-		if covered(at) {
+		if covered(at) || supplied.holds(at, v) {
 			return "", false
 		}
 		switch v.(type) {
@@ -673,8 +718,7 @@ func unreachedArgument(arguments value, named, shaped []string) (string, bool) {
 		case *vObject:
 			for _, name := range c.names {
 				member, _ := c.get(name)
-				token := strings.ReplaceAll(strings.ReplaceAll(name, "~", "~0"), "/", "~1")
-				if bad, found := visit(member, at+"/"+token); found {
+				if bad, found := visit(member, at+"/"+pointerToken(name)); found {
 					return bad, true
 				}
 			}
@@ -691,6 +735,12 @@ func unreachedArgument(arguments value, named, shaped []string) (string, bool) {
 		return "", false
 	}
 	return under(arguments, "")
+}
+
+// pointerToken is a member name as one RFC 6901 reference token: "~" written
+// "~0" and "/" written "~1", the one spelling the RFC gives it.
+func pointerToken(name string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(name, "~", "~0"), "/", "~1")
 }
 
 // recordClaims is what the verifier reads of a decision record an action

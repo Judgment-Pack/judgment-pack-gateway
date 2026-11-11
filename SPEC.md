@@ -379,7 +379,8 @@ and it is the target's, or its adapter's, to supply. A policy's `bind` stops an
 action on another object than the one decided; it does not stop a concurrent
 edit of that object. A policy that sets `closed` establishes that the request's
 arguments were exactly those the policy names, each bound to the record or fixed
-by the policy, at the moment of the check; not that the target interpreted them
+by the policy, and the idempotency argument the gateway set to the action key
+(§1.2b), at the moment of the check; not that the target interpreted them
 as intended, and a policy that does not set it establishes nothing of an
 argument it does not name. A policy's `shape` establishes that each value it
 names was a container of the type it states, an array no longer than its bound;
@@ -428,8 +429,11 @@ covers the value it names and everything under it, or an object or array on the
 way to a pointer of `bind`, `fix` or `shape`, or named by a pointer of `shape`,
 each of whose members or elements is reached in turn — a pointer of `shape`
 reaches its container and covers nothing under it — an array's element reached
-by its index pointer or by a pointer covering the array. It refuses the request
-otherwise, with nothing sent and nothing minted. `reviewed`
+by its index pointer or by a pointer covering the array; and, for a request
+with an `actionKey` to a tool whose `actionRecovery` names an
+`idempotencyArgument` (§1.2b), the top-level member of that name reached while
+it holds the key, which the gateway set, and nothing else reached by it. It
+refuses the request otherwise, with nothing sent and nothing minted. `reviewed`
 holds the record to whatever reviewed-set lock was current when it was written,
 not to particular bytes: a pack that is edited and locked again yields records
 with `"reviewed": true` and a new pack digest, which a policy without `packs`
@@ -687,9 +691,13 @@ Binding version 3 retains version 2 owner declarations and adds required
 tool to null (unsupported) or an object with optional `idempotencyArgument` and
 `readBack`, at least one present. The former is a nonempty top-level argument
 name populated with the key before policy checks; a conflicting caller value
-is refused. `readBack` is exactly `{tool, arguments, keyPointer, outcomePointer,
-committedValue}`. The tool must be an allowed live tool whose owner declares
-operation `read` and effect `read` or `read-external`. Each argument maps to
+is refused. A closed decision policy reaches the member so populated as the
+gateway's (§1.2a); a policy of the tool whose `bind`, `fix` or `shape` names
+that member, or a value under it, is refused when the configuration is read:
+the member holds the action key, which no policy decides. `readBack` is
+exactly `{tool, arguments, keyPointer, outcomePointer, committedValue}`. The
+tool must be an allowed live tool whose owner declares operation `read` and
+effect `read` or `read-external`. Each argument maps to
 exactly one of `{actionKey: true}`, `{argument: <JSON pointer>}` or
 `{literal: <canonical JSON value>}`. Result pointers follow JSON Pointer; the
 observed key must equal the action key and the observed outcome must equal

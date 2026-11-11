@@ -186,7 +186,10 @@ file whole — so the record judged is the record named:
     `bind` or `fix` — covered by one, the empty pointer covering everything, or an object or array
     on the way to one, or on the way to or at a pointer of `shape`, whose members or elements are
     each reached in turn, an element by its index pointer or by a pointer covering its array; a
-    pointer of `shape` reaches its container and covers nothing under it — or the request is
+    pointer of `shape` reaches its container and covers nothing under it; or, for a request with
+    an `actionKey` to a tool whose `actionRecovery` names an `idempotencyArgument`, the top-level
+    member of that name while it holds the key, which the gateway set
+    ([action reconciliation](action-reconciliation.md)) — or the request is
     refused, `argument "<pointer>" is reached by no binding`, naming the first value refused. This
     is what refuses another `action` of a dispatcher tool, an operation added to a list, a member
     the policy does not name, or an object in place of an array the policy shapes.

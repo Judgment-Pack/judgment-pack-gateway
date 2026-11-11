@@ -226,7 +226,7 @@ func TestAClosedPolicyReachesAShapedContainerAndNothingUnderIt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, found := unreachedArgument(v, tc.named, tc.shaped)
+		got, found := unreachedArgument(v, tc.named, tc.shaped, nil)
 		if found != (tc.want != "") || got != tc.want {
 			t.Fatalf("%q, shaped %q, over %s: got %q (%v), want %q", tc.named, tc.shaped, tc.arguments, got, found, tc.want)
 		}
