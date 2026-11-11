@@ -779,13 +779,18 @@ The members are exactly these, `methods`, `headers` and `checkPath` optional, an
 - `endpoint` is the base URL every request goes under, held to the endpoint form SPEC.md §1.2a
   gives a remote server — `https`, or `http` at a loopback address written as one, `localhost`
   not among them; no user, query or fragment — with no placeholder, since no platform parameter
-  fills one here. The binding's digest pins it, and the receipt names the URL the adapter sent to
-  under it;
+  fills one here, and a path the adapter sends as written: no percent sign, which the adapter
+  would send decoded and escaped again, no dot segment and no empty segment, but for one `/` at
+  the end, which the adapter drops before the request's path. The binding's digest pins it, and
+  the receipt names the URL the adapter sent to under it;
 - `paths` are the only paths an acquisition may name, 1 to 128, each sent as written under the
   endpoint: it begins with `/`, is printable ASCII without a space, and carries no query,
   fragment, backslash, dot segment or empty segment — what `adapter-http` accepts — and no comma,
   percent sign or brace, which the engine's command line would split into two paths, the adapter
-  would send escaped, or a reader would take for a placeholder. A path given twice is refused;
+  would send escaped, or a reader would take for a placeholder. A path given twice is refused, and
+  so are paths that, comma-joined after `--paths=`, make a word of 128 KiB or more: the one
+  argument of the adapter's command line they are passed in, which Linux would refuse to start a
+  program with;
 - `methods` are the methods an acquisition may name, `GET` and `POST`, each once; `POST` alone
   when the member is absent, as the adapter's own default;
 - `headers` are `NAME=VALUE` pairs sent on every request, 1 to 32 when present, the value
@@ -813,10 +818,26 @@ the plain form mints for shape `http` (SPEC.md §1.2a): `shape` `http`, the adap
 digest, the URL sent to as `endpoint`, the request's commitment as `statement`, the answer's
 `ETag` or `Last-Modified` as `snapshot`, and the TLS peer's certificate as `peerIdentity`. The
 adapter's own bounds, a 1 MiB envelope and twenty seconds, lie inside the engine's on every
-source; no `--ca-file`, `--max-output` or `--timeout` is passed, so the endpoint's certificate
-chains to the system's roots, as a remote MCP server's does. An acquisition's arguments are the
-adapter's request, `{"path", "method"?, "query"?, "body"?}`: the path one of `paths`, the method
-one of `methods`; anything else is refused by the adapter before a connection is made.
+source. The 1 MiB is on the adapter's whole answer, the envelope: an answer the endpoint did not
+say is JSON is carried in base64, which is four bytes for every three, so such an answer is
+refused above roughly three quarters of a mebibyte. No `--ca-file`, `--max-output` or `--timeout`
+is passed, so the endpoint's certificate chains to the system's roots, as a remote MCP server's
+does.
+
+An endpoint under a private certificate authority is reached only through the platform's
+`environment`: on Linux, `SSL_CERT_FILE` replaces the file the adapter reads the system's roots
+from and `SSL_CERT_DIR` the directories, so both are set to trust that authority alone. This
+changes the roots of that platform's adapter only, since the environment is the platform's. The
+binding's digest does not cover it: the environment is the engine configuration's, not the
+binding's, so what the binding pins is the endpoint and not the authority its certificate chains
+to. The file must be readable by the platform's OS user, and lie outside that user's runtime
+directories (`XDG_RUNTIME_DIR`, `/run/user/<uid>`), which the source sandbox hides under
+bubblewrap; the sandbox restricts writes, not reads, elsewhere. What a verifier can hold to is
+the receipt's `peerIdentity`, the digest of the certificate the endpoint presented.
+
+An acquisition's arguments are the adapter's request, `{"path", "method"?, "query"?, "body"?}`:
+the path one of `paths`, the method one of `methods`; anything else is refused by the adapter
+before a connection is made.
 
 An `http` live operation is its binding's only operation, and the binding's version is 1: no
 owner taxonomy is defined for an operation whose acquisitions name no tool, so a
@@ -825,12 +846,15 @@ owner-declaration requirement, which is of MCP operations, does not reach it. A 
 reads by it acts elsewhere: `/act` names another platform's `write`, citing the acquisition, and
 takes no write for this one, which derives no write source. The engine refuses, at start and at
 `connect`, what such a platform would leave unused and so read as in force — `write: true`, and
-with it a `decisionPolicy` or `writeRequesters`; a `grant`, since a delegated acquisition names
-no tool and is always out of scope (SPEC.md §11.5, reason `tool`), so a grant would admit nothing;
-an `endpoint`, since the binding fixes the endpoint; `parameters`, since nothing names a
-placeholder; and `descriptors`, `operationDescriptors` or `descriptorStatements`, since there is no
-tool to describe. A delegated acquisition of the platform is refused as `grant-unknown`, before
-anything runs. The MCP server lists no tool of the platform; a client reaches it through
+with it a `decisionPolicy` or `writeRequesters`; a `grant`, since an acquisition names no tool, so
+a delegation's own scope check (SPEC.md §11.5) would refuse every one under the grant as
+`out-of-scope` — reason `source` when no scope entry names the source, `tool` when one does — and
+a grant would admit nothing; an `endpoint`, since the binding fixes the endpoint; `parameters`,
+since nothing names a placeholder; and `descriptors`, `operationDescriptors` or
+`descriptorStatements`, since there is no tool to describe. Since the platform names no grant, a
+delegated acquisition of it, with a delegation credential presented or not, is refused as
+`grant-unknown` (SPEC.md §10, rule 3) before the scope check, the custody, the issuing host or the
+adapter is reached. The MCP server lists no tool of the platform; a client reaches it through
 `/acquire`, authenticated as every source is.
 
 No engine version is added: the configuration's members are unchanged, and every release before

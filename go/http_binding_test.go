@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -24,6 +25,21 @@ const recordsBinding = `{
 // and the shape and licence every operation carries.
 func httpLive(members string) string {
 	return `{"bindingVersion":"1","platform":"p","operations":{"live":{"shape":"http","licence":"MIT"` + members + `}}}`
+}
+
+// pathsOfWord is the paths member of 128 distinct paths, none past its
+// bound, whose "--paths=" word on adapter-http's command line is exactly
+// word bytes long.
+func pathsOfWord(word int) string {
+	n := maxHTTPPaths
+	left := word - len("--paths=") - (n - 1)
+	quoted := make([]string, n)
+	for i := range quoted {
+		size := min(maxHTTPItem, left-5*(n-1-i))
+		quoted[i] = `"/` + fmt.Sprintf("%03d", i) + strings.Repeat("a", size-4) + `"`
+		left -= size
+	}
+	return `"paths":[` + strings.Join(quoted, ",") + `]`
 }
 
 // An http live operation is held to its shape before the engine starts:
@@ -52,6 +68,11 @@ func TestHTTPOperationRefusals(t *testing.T) {
 		{"an endpoint with a user", httpLive(`,"endpoint":"https://u@records.example","paths":["/a"],"bearer":"T"`), "endpoint must be https"},
 		{"an endpoint template", httpLive(`,"endpoint":"https://{tenant}.records.example","paths":["/a"],"bearer":"T"`), "names no placeholder"},
 		{"a relative endpoint", httpLive(`,"endpoint":"records.example/api","paths":["/a"],"bearer":"T"`), "endpoint must be https"},
+		{"a percent sign in the endpoint", httpLive(`,"endpoint":"https://records.example/a%2Fb","paths":["/a"],"bearer":"T"`), "endpoint's path carries a percent sign"},
+		{"a dot segment in the endpoint", httpLive(`,"endpoint":"https://records.example/api/../admin","paths":["/a"],"bearer":"T"`), "endpoint's path carries a dot segment"},
+		{"an endpoint ending in a dot segment", httpLive(`,"endpoint":"https://records.example/api/.","paths":["/a"],"bearer":"T"`), "endpoint's path carries a dot segment"},
+		{"an empty segment in the endpoint", httpLive(`,"endpoint":"https://records.example/a//b","paths":["/a"],"bearer":"T"`), "endpoint's path carries an empty segment"},
+		{"an endpoint ending in two slashes", httpLive(`,"endpoint":"https://records.example/api//","paths":["/a"],"bearer":"T"`), "endpoint's path carries an empty segment"},
 		{"paths not an array", httpLive(`,"endpoint":"https://records.example","paths":"/a","bearer":"T"`), "paths must be an array of 1 to 128 strings"},
 		{"no path", httpLive(`,"endpoint":"https://records.example","paths":[],"bearer":"T"`), "paths must be an array of 1 to 128 strings"},
 		{"a path null", httpLive(`,"endpoint":"https://records.example","paths":["/a",null],"bearer":"T"`), "paths[1] must be a non-empty string"},
@@ -68,6 +89,7 @@ func TestHTTPOperationRefusals(t *testing.T) {
 		{"an empty segment", httpLive(`,"endpoint":"https://records.example","paths":["/a//b"],"bearer":"T"`), "paths[0] carries an empty segment"},
 		{"a path twice", httpLive(`,"endpoint":"https://records.example","paths":["/a","/b","/a"],"bearer":"T"`), "paths[2] repeats an earlier path"},
 		{"a path past its bound", httpLive(`,"endpoint":"https://records.example","paths":["/` + strings.Repeat("a", maxHTTPItem) + `"],"bearer":"T"`), "paths[0] must be a non-empty string of at most 1024 bytes"},
+		{"paths past one argument", httpLive(`,"endpoint":"https://records.example",` + pathsOfWord(maxHTTPPathsWord+1) + `,"bearer":"T"`), "paths must join, with commas, into one argument of adapter-http's command line under 128 KiB"},
 		{"no method", httpLive(ok + `,"methods":[]`), "methods must be an array of 1 to 2 strings"},
 		{"a method of another kind", httpLive(ok + `,"methods":["PUT"]`), "methods[0] is neither GET nor POST"},
 		{"a method in lower case", httpLive(ok + `,"methods":["get"]`), "methods[0] is neither GET nor POST"},
@@ -145,6 +167,16 @@ func TestHTTPOperationParses(t *testing.T) {
 	}
 	if err := currentBindingOwners(engineConfig{platforms: []platformConfig{{name: "p"}}}, map[string]binding{"p": b}); err != nil {
 		t.Fatalf("the current admission holds no http operation to an owner taxonomy: %v", err)
+	}
+	// The bounds hold from inside: paths whose word is the longest one
+	// argument carries, and an endpoint ending in the one "/" the adapter
+	// drops.
+	b, err = parseBinding([]byte(httpLive(`,"endpoint":"https://records.example/api/",` + pathsOfWord(maxHTTPPathsWord) + `,"bearer":"T"`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if word := httpSourceArgv("adapter-http", *b.live.http, "c")[2]; maxHTTPPathsWord != 128<<10-1 || len(word) != maxHTTPPathsWord || !strings.HasPrefix(word, "--paths=/000") {
+		t.Fatalf("the paths word at its bound: %d bytes", len(word))
 	}
 }
 

@@ -7,8 +7,9 @@ package main
 // engine version 13, with the platform's credentials file for live -- and
 // receipted exactly as the plain form receipts it, since the signer reads
 // the same envelope from the same program. The binding fixes the endpoint,
-// the paths, the methods and the headers; an acquisition chooses among
-// them and steers nothing else.
+// the paths, the methods and the headers; an acquisition chooses a path
+// and a method among them and gives the query and, by POST, the body, and
+// names no other URL, header or credential.
 
 import (
 	"encoding/json"
@@ -46,11 +47,16 @@ type httpOperation struct {
 }
 
 // The bounds of an http operation, so a binding cannot grow the command
-// line the engine builds without limit.
+// line the engine builds without limit. maxHTTPPathsWord bounds the one
+// word the paths are passed in, "--paths=" and the paths comma-joined:
+// Linux with 4 KiB pages refuses to start a program given a word of 128
+// KiB or more, its terminator counted, which 128 paths of 1024 bytes
+// would pass, and a binding that loads would then never start.
 const (
-	maxHTTPPaths   = 128
-	maxHTTPHeaders = 32
-	maxHTTPItem    = 1024 // bytes, of a path or a header
+	maxHTTPPaths     = 128
+	maxHTTPHeaders   = 32
+	maxHTTPItem      = 1024 // bytes, of a path or a header
+	maxHTTPPathsWord = 128<<10 - 1
 )
 
 // httpCredentialHeaders are the request headers adapter-http refuses as a
@@ -70,14 +76,15 @@ var httpOperationMembers = map[string]bool{
 
 // parseHTTPOperation holds an http operation to its shape: exactly the
 // members above; an endpoint of the endpoint form, with no placeholder,
-// since no platform parameter fills one here; paths each as adapter-http
-// accepts a path and none with a comma, which would split into two on the
-// adapter's command line, or a percent sign, which it would send escaped;
-// methods GET and POST; headers an operator may fix; exactly one of bearer
-// and credentialHeader, since the platform's credentials file for live is
-// required and is read for that member alone; and a check path among the
-// paths, by GET. A refusal names the member by its place and repeats no
-// value.
+// since no platform parameter fills one here, and a path the adapter sends
+// as written; paths each as adapter-http accepts a path and none with a
+// comma, which would split into two on the adapter's command line, or a
+// percent sign, which it would send escaped, and all of them within the
+// one word of that command line they are passed in; methods GET and POST;
+// headers an operator may fix; exactly one of bearer and credentialHeader,
+// since the platform's credentials file for live is required and is read
+// for that member alone; and a check path among the paths, by GET. A
+// refusal names the member by its place and repeats no value.
 func parseHTTPOperation(op *vObject, name string, o *operation) error {
 	if err := exactlyMembers(op, httpOperationMembers, "operation "+name); err != nil {
 		return err
@@ -86,6 +93,9 @@ func parseHTTPOperation(op *vObject, name string, o *operation) error {
 	var err error
 	if h.endpoint, err = requireString(op, "endpoint"); err != nil || strings.ContainsAny(h.endpoint, "{}") || !isRemoteEndpoint(h.endpoint) {
 		return fmt.Errorf("operation %s: endpoint must be %s, and names no placeholder", name, remoteEndpointForm)
+	}
+	if err := httpEndpointPathProblem(h.endpoint); err != nil {
+		return fmt.Errorf("operation %s: endpoint's path %v", name, err)
 	}
 	if h.paths, err = httpStrings(op, "paths", name, maxHTTPPaths); err != nil {
 		return err
@@ -99,6 +109,9 @@ func parseHTTPOperation(op *vObject, name string, o *operation) error {
 				return fmt.Errorf("operation %s: paths[%d] repeats an earlier path", name, i)
 			}
 		}
+	}
+	if len(httpPathsWord(h.paths)) > maxHTTPPathsWord {
+		return fmt.Errorf("operation %s: paths must join, with commas, into one argument of adapter-http's command line under 128 KiB", name)
 	}
 	h.methods = []string{"POST"}
 	if _, present := op.get("methods"); present {
@@ -223,6 +236,30 @@ func httpPathProblem(path string) error {
 	return nil
 }
 
+// httpEndpointPathProblem holds the path of an endpoint of the endpoint
+// form to what adapter-http sends as written: the adapter sends the path
+// decoded and escaped again, so a percent sign is refused, as in paths;
+// and a dot segment or an empty segment, which a server or a proxy may
+// resolve or merge, is refused but for the one "/" that may end the
+// endpoint, which the adapter drops before the request's path.
+func httpEndpointPathProblem(endpoint string) error {
+	_, rest, _ := strings.Cut(endpoint, "://")
+	_, path, _ := strings.Cut(rest, "/")
+	if strings.Contains(path, "%") {
+		return errors.New("carries a percent sign")
+	}
+	segments := strings.Split(path, "/")
+	for i, segment := range segments {
+		if segment == "." || segment == ".." {
+			return errors.New("carries a dot segment")
+		}
+		if segment == "" && i < len(segments)-1 {
+			return errors.New("carries an empty segment")
+		}
+	}
+	return nil
+}
+
 // visibleASCII is whether s is of U+0021 to U+007E alone; printableASCII
 // admits the space too.
 func visibleASCII(s string) bool {
@@ -249,7 +286,7 @@ func printableASCII(s string) bool {
 // and how, and the fixed headers. The adapter's own bounds -- a 1 MiB
 // envelope, a 20 second request -- lie inside the engine's on every source.
 func httpSourceArgv(adapter string, op httpOperation, credentials string) []string {
-	argv := []string{adapter, "--endpoint=" + op.endpoint, "--paths=" + strings.Join(op.paths, ","), "--methods=" + strings.Join(op.methods, ","), "--credentials=" + credentials}
+	argv := []string{adapter, "--endpoint=" + op.endpoint, httpPathsWord(op.paths), "--methods=" + strings.Join(op.methods, ","), "--credentials=" + credentials}
 	if op.bearer != "" {
 		argv = append(argv, "--bearer="+op.bearer)
 	} else {
@@ -259,6 +296,12 @@ func httpSourceArgv(adapter string, op httpOperation, credentials string) []stri
 		argv = append(argv, "--header="+h)
 	}
 	return argv
+}
+
+// httpPathsWord is the word of adapter-http's command line that carries
+// the paths.
+func httpPathsWord(paths []string) string {
+	return "--paths=" + strings.Join(paths, ",")
 }
 
 // httpPlatformMatch refuses what a platform names that its http binding

@@ -58,8 +58,9 @@ func memberNames(obj map[string]any) []string {
 // from the platform's file; the receipt is the one the plain form mints for
 // the same request, member for member; an action on another platform's
 // write cites it; and the store, the registry and the records verify. On
-// the way: a caller with no token and a delegated caller are refused
-// before the adapter runs, so is a path the binding does not name, /act
+// the way: a caller with no token and a delegated caller, with a
+// delegation credential or without, are refused before the adapter runs,
+// so is a path the binding does not name, /act
 // does not dispatch to the http platform, and the adapter's check of the
 // source reads as connect reads it. The platforms' users are stripped
 // before the service is built, as in the MCP end-to-end test: the
@@ -253,5 +254,23 @@ func TestEngineConfigDrivesTheHTTPAdapterEndToEnd(t *testing.T) {
 	verified, err := verifyWithRegistryAndRecords(service.storeRoot, service.regPath, "gateway:test", cfg.decisionRecords, service.publicKey)
 	if err != nil || !verified.OK {
 		t.Fatalf("the store, the registry and the records must verify together: %v %v", err, verified)
+	}
+	// With a delegation credential presented, a chain bound by an issuing
+	// host, the refusal is the same: the platform names no grant, so the
+	// call is refused grant-unknown before the scope check, the custody or
+	// the issuing host is reached, and the adapter does not run. Last, since
+	// the harness sets the environment of the rest of the test.
+	if actionJournalSupported {
+		h := newDelegationHarness(t, false)
+		cred := h.credential(t, statement(t, nil))
+		h.d.mu.Lock()
+		bound := h.d.credentials[tokenDigestOf(cred)]
+		h.d.mu.Unlock()
+		leaf := bound.chain.leaf()
+		who := &caller{issuer: id.issuer, subject: "user-7", delegated: &delegatedSender{kind: "actor", credential: bound, scope: reservationScope{sub: leaf.sub, rootActor: leaf.agent, host: "desk"}}}
+		sent = hits.Load()
+		if _, err := service.acquireWithReconciliation("cfg-3", "records/live", "", request, who, nil); err == nil || !strings.Contains(err.Error(), refusalGrantUnknown) || hits.Load() != sent {
+			t.Fatalf("a delegated acquisition with a credential: %v, the API asked %d times", err, hits.Load()-sent)
+		}
 	}
 }

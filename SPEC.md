@@ -1709,8 +1709,12 @@ one operation is `live` of that shape, run by the program the plain form runs fo
 shape `mcp`, the executor's alone and never named by `/acquire`. A source is held to this
 contract whichever form declared it: the envelope of an `http` source in the engine is the
 plain form's and is refused as any other departs, and the receipt minted from it is the
-plain form's, member for member. An `http` acquisition names no tool, so under a delegation
-it is out of scope (§11.5, reason `tool`).
+plain form's, member for member. A platform whose `live` is of shape `http` names no
+connection grant, so a call under a delegation, with a delegation credential presented or
+not, is refused `grant-unknown` (§10, rule 3) before the scope check or the source; a grant
+would admit nothing, since an `http` acquisition names no tool and the scope check (§11.5)
+refuses it `out-of-scope`, reason `source` when no scope entry names the source and `tool`
+when one does.
 
 The gateway refuses an envelope that departs from this in any way — not an object,
 a member missing or unlisted at either level, a member of another type or form,

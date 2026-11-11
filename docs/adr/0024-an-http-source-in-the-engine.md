@@ -54,17 +54,20 @@ The decisions within it:
    and, optionally, `methods`, `headers`, `checkPath`, and exactly one of `bearer` and
    `credentialHeader` (`docs/design/engine-config.md`, "An HTTP API as a platform's live
    operation"). The endpoint is held to SPEC.md §1.2a's endpoint form, stricter than the adapter,
-   which also takes `localhost`; no placeholder. A path is what the adapter accepts and, besides,
-   printable ASCII without a comma, a percent sign or a brace: the engine passes the paths
+   which also takes `localhost`; no placeholder; and in its path, as in a path, no percent sign, dot
+   segment or empty segment (one closing `/` aside, which the adapter drops), since the adapter
+   sends the endpoint's path decoded and escaped again. A path is what the adapter accepts and,
+   besides, printable ASCII without a comma, a percent sign or a brace: the engine passes the paths
    comma-joined, so a comma would widen the allowlist; the adapter sends a path escaped, so a
    percent sign would not be what the operator wrote; a brace reads as a placeholder no parameter
-   fills. A credential member is required, since the platform names a live credentials file as for
-   every operation; a credential header may not be `Proxy-Authorization`, which a proxy reads, nor
-   one the adapter writes. A check path is one of the paths with `GET` among the methods, as a
-   probe is one of the tools: a check asks for nothing an acquisition could not. No `caFile`,
-   `maxOutput` or `timeout`: the endpoint chains to the system's roots, as a remote MCP server's
-   does, and the adapter's own bounds (1 MiB, twenty seconds) lie inside the engine's on every
-   source (1 MiB, thirty seconds).
+   fills; and the paths, comma-joined after `--paths=`, make one word under 128 KiB, since Linux
+   refuses to start a program given one of 128 KiB or more. A credential member is required, since
+   the platform names a live credentials file as for every operation; a credential header may not be
+   `Proxy-Authorization`, which a proxy reads, nor one the adapter writes. A check path is one of
+   the paths with `GET` among the methods, as a probe is one of the tools: a check asks for nothing
+   an acquisition could not. No `caFile`, `maxOutput` or `timeout`: the endpoint chains to the
+   system's roots, as a remote MCP server's does, and the adapter's own bounds (1 MiB, twenty
+   seconds) lie inside the engine's on every source (1 MiB, thirty seconds).
 2. **Alone, and in bindingVersion 1.** An `http` live operation is its binding's only operation:
    its platform reads by it and acts through another platform's `write`, and `/act` reads a write
    platform's live source as an MCP server's. No owner taxonomy (ADR-0021) is defined for an
@@ -82,17 +85,21 @@ The decisions within it:
    else: it follows no redirect, and no request names the host. The signer reads the envelope from
    the adapter's stdout and signs; it never reads the credential. The plain form may run the same
    adapter as the signer's own user; the engine cannot.
-4. **What a platform may name beside it.** Refused at start and at `connect`: a `grant`, since a
-   delegated acquisition of a non-MCP shape names no tool and is always out of scope (SPEC.md §11.5,
-   reason `tool`), so a grant would admit nothing; an `endpoint`, since the binding fixes it and the
-   receipt names the URL sent to; and, by the rules that already hold for a binding without a write
-   operation, a live MCP operation or a placeholder, `write: true` — and with it `decisionPolicy`
-   and `writeRequesters` — `parameters`, `descriptors`, `operationDescriptors` and
-   `descriptorStatements`. The platform's `environment` stays, for a proxy, say.
-5. **Admission.** `/acquire` of the source is authenticated as every source's is; a delegated
-   acquisition is refused `grant-unknown` before anything runs. The MCP server lists no tool of the
-   platform, since it has none; `/act` takes no write for it, since it derives no write source, and
-   takes a write on another platform that cites its acquisition, as it takes one citing any.
+4. **What a platform may name beside it.** Refused at start and at `connect`: a `grant`, since an
+   `http` acquisition names no tool, so a delegation's own scope check (SPEC.md §11.5) would refuse
+   every one under the grant as `out-of-scope` — reason `source` when no scope entry names the
+   source, `tool` when one does — and the grant would admit nothing; an `endpoint`, since the
+   binding fixes it and the receipt names the URL sent to; and, by the rules that already hold for a
+   binding without a write operation, a live MCP operation or a placeholder, `write: true` — and
+   with it `decisionPolicy` and `writeRequesters` — `parameters`, `descriptors`,
+   `operationDescriptors` and `descriptorStatements`. The platform's `environment` stays, for a
+   proxy, say.
+5. **Admission.** `/acquire` of the source is authenticated as every source's is. Since the platform
+   names no grant, a delegated acquisition, with a delegation credential presented or not, is
+   refused `grant-unknown` (SPEC.md §10, rule 3) before the scope check, the custody, the issuing
+   host or the adapter is reached. The MCP server lists no tool of the platform, since it has none;
+   `/act` takes no write for it, since it derives no write source, and takes a write on another
+   platform that cites its acquisition, as it takes one citing any.
 6. **`connect` and `posture`.** `connect` runs `adapter-http --check`, with the check path, as the
    platform's user; the endpoint the report names must be the binding's, a probe must be reported
    exactly when a check path was given and must have answered 2xx; nothing is captured, and the
@@ -119,7 +126,8 @@ The decisions within it:
 - Bad, because an endpoint under a private certificate authority cannot be named except through
   the platform's environment, and an answer above one mebibyte cannot be read: the engine keeps its
   bounds on every source.
-- Bad, because a delegated caller cannot read an `http` source, since no scope names it.
+- Bad, because a delegated caller cannot read an `http` source, since no scope admits a call that
+  names no tool.
 - Revisit when an owner taxonomy for a non-MCP read is defined (which would let a delegation name
   one, and a bindingVersion 2 binding carry one), when a credential-less or private-CA endpoint is
   needed in the engine, or when an `http` operation is wanted beside `history` or `write` in one
