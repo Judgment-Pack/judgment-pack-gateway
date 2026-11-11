@@ -2158,6 +2158,24 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 	})
 }
 
+// No verdict is an implementation that ran and exited non-zero, and only
+// that: one that could not be started is no answer to a vector, under the
+// option or not, and stops the run (SPEC.md §7).
+func TestNoVerdictIsAnImplementationThatRanAndExitedNonZero(t *testing.T) {
+	store := t.TempDir()
+	t.Setenv(envConformStub, "rejects-option")
+	_, err := subprocess{argv: []string{os.Args[0]}}.verify(store, filepath.Join(store, "registry"), "a", "", true, make([]byte, 32))
+	var refused noVerdict
+	if !errors.As(err, &refused) || refused.stderr != conformStubUsage+"\n" {
+		t.Fatalf("an implementation refusing the option: %v, want no verdict with its usage", err)
+	}
+	absent := filepath.Join(t.TempDir(), "no-such-implementation")
+	_, err = subprocess{argv: []string{absent}}.verify(store, filepath.Join(store, "registry"), "a", "", true, make([]byte, 32))
+	if err == nil || errors.As(err, &refused) {
+		t.Fatalf("an implementation that could not be started: %v, want an error that is not no verdict", err)
+	}
+}
+
 // What a disagreement quotes of an implementation's standard error: trimmed,
 // quoted, and no more than stderrBound bytes of it, whatever it wrote.
 func TestBoundedStderrQuotesAtMostTheBound(t *testing.T) {
