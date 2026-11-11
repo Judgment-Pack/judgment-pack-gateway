@@ -308,6 +308,11 @@ func judgeCustody(f custodyFacts, public bool) postureLine {
 		return line(postureNotEnforced, "the signer runs as root, which holds whatever the container runtime gives root and is outside the image's custody")
 	}
 	if f.exeOwner != f.euid || f.exeMode != 0o700 {
+		if public {
+			// the owner's uid, the mode and the signer's uid are the
+			// operator's to read, not /posture's
+			return line(postureNotEnforced, "the gateway binary is not the signer's own at mode 0700")
+		}
 		return line(postureNotEnforced, fmt.Sprintf("the gateway binary is not the signer's own at mode 0700 (owner uid %d, mode %04o, signer uid %d)", f.exeOwner, f.exeMode, f.euid))
 	}
 	if !f.capabilities {

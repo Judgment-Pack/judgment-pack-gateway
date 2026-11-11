@@ -610,11 +610,14 @@ managed gateway's posture beside the gateway's status. The answer is canonical J
   `CAP_KILL` in effect and nothing more — no capability that reads past permissions, nothing
   ambient or inheritable, as `serve --config` holds a signer — beside
   `/usr/share/engine/catalog` and `/usr/share/engine/corpus`, directories of root's that nobody
-  else may write. Elsewhere `not-applicable`.
+  else may write. Where the binary is not the signer's own at `0700`, `/posture` says so
+  without the uids and the mode, which `gateway posture` names. Elsewhere `not-applicable`.
 - `seed-file-protection`: on Unix, the seed as `serve` judges it at start, read through a link
   as `serve` opens it — a regular file owned by the signer, readable by nobody else by its mode
-  bits; an access-control list is not seen.
-  On Windows it is stated as `not-enforced`.
+  bits; an access-control list is not seen. For a seed `serve` refuses, `/posture` says which
+  of the three fails (or, where its owner cannot be read, that `gateway posture` says why),
+  naming no uid and no mode; `gateway posture` names the file's owner, the signer's uid and the
+  mode. On Windows it is stated as `not-enforced`.
 - `operator-program-confinement`: `not-enforced` without a selected wrapper or a
   completed successful boundary check. With version 13 sources it aggregates the
   per-program entries below: `enforced` only when every entry is enforced, otherwise
