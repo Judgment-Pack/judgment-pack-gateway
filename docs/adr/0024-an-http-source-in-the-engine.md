@@ -60,8 +60,12 @@ The decisions within it:
    besides, printable ASCII without a comma, a percent sign or a brace: the engine passes the paths
    comma-joined, so a comma would widen the allowlist; the adapter sends a path escaped, so a
    percent sign would not be what the operator wrote; a brace reads as a placeholder no parameter
-   fills; and the paths, comma-joined after `--paths=`, make one word under 128 KiB, since Linux
-   refuses to start a program given one of 128 KiB or more. A credential member is required, since
+   fills. Neither a path nor the endpoint's path carries any other character the adapter's URL
+   escaping would send percent-escaped (gateway #407): the engine refuses the path at load, by
+   that same escaping, rather than having the adapter send it otherwise, so the path sent is the
+   path the binding states and the operator reviewed. And the paths, comma-joined after
+   `--paths=`, make one word under 128 KiB, since Linux refuses to start a program given one of
+   128 KiB or more. A credential member is required, since
    the platform names a live credentials file as for every operation; a credential header may not be
    `Proxy-Authorization`, which a proxy reads, nor one the adapter writes. A check path is one of
    the paths with `GET` among the methods, as a probe is one of the tools: a check asks for nothing
@@ -128,6 +132,17 @@ The decisions within it:
   bounds on every source.
 - Bad, because a delegated caller cannot read an `http` source, since no scope admits a call that
   names no tool.
+- Good, because a path is sent as written or refused before the engine starts (gateway #407):
+  in `paths` and in the endpoint's path, a character the adapter's URL escaping sends
+  percent-escaped is refused, and `adapter-http` holds the paths it is given to the same rule.
+- Bad, because a binding naming such a path, which loaded before gateway #407, no longer loads.
+- Open until needed (gateway #407): the paths' word is bounded as one argument of a Linux command
+  line, while a Windows command line is bounded in total, and lower; and a private certificate
+  authority is named only through the platform's `environment`, which the binding's pin does not
+  cover, where an optional pinned `caFile` member of the operation would.
+- Declined for now (gateway #407): an endpoint that takes no credential, and a delegated read of
+  an `http` source, which would need a scope entry naming a source by path and method, a change
+  to SPEC.md's delegation section. Each stands as the consequence above states it.
 - Revisit when an owner taxonomy for a non-MCP read is defined (which would let a delegation name
   one, and a bindingVersion 2 binding carry one), when a credential-less or private-CA endpoint is
   needed in the engine, or when an `http` operation is wanted beside `history` or `write` in one
