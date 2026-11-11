@@ -70,6 +70,12 @@ func TestDelegationGrantsPostureLine(t *testing.T) {
 			`1 of the 3 platforms a delegated call can reach names a connection grant, and every delegated call is admitted only under its platform's grant; platforms "crm", "notes" name no connection grant and refuse every delegated call (grant-unknown) until they name one`},
 		{"a platform one of whose sources names none", with(map[string]sourceSpec{"tickets/live": mcp(true), "tickets/write": mcp(false), "crm/live": mcp(true), "docs/live": mcp(true)}), postureEnforced,
 			`2 of the 3 platforms a delegated call can reach name a connection grant, and every delegated call is admitted only under its platform's grant; platform "tickets" names no connection grant and refuses every delegated call (grant-unknown) until it names one`},
+		// The same platform with its sources' grants the other way round: in
+		// name order the source without a grant now comes first, so a line
+		// that kept the first source's or the last source's grant alone
+		// fails one of the two cases.
+		{"a platform whose first source by name names none", with(map[string]sourceSpec{"tickets/live": mcp(false), "tickets/write": mcp(true), "crm/live": mcp(true), "docs/live": mcp(true)}), postureEnforced,
+			`2 of the 3 platforms a delegated call can reach name a connection grant, and every delegated call is admitted only under its platform's grant; platform "tickets" names no connection grant and refuses every delegated call (grant-unknown) until it names one`},
 		{"none named, one platform", with(map[string]sourceSpec{"crm/live": mcp(false), "crm/write": mcp(false)}), postureNotApplicable,
 			`platform "crm" names no connection grant and refuses every delegated call (grant-unknown) until it names one, so the delegation serves no call`},
 		{"none named, more than the line names", many, postureNotApplicable,
