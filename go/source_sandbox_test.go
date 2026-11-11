@@ -444,6 +444,11 @@ func TestPublicPostureTellsUnmeasuredFromUnwrapped(t *testing.T) {
 	if public["b/live"] != unwrapped {
 		t.Fatalf("unwrapped source changed: %q", public["b/live"])
 	}
+	// Every clause true: a launch whose probe does not complete refuses
+	// before any mode is known, and the operator's report names the cause.
+	if publicUnmeasuredReason != "the source configuration selects the adapter sandbox wrapper, and its backend check gave no report, so nothing was measured for this source; a launch checks again before it starts and is refused, whatever its mode, unless that check completes; gateway posture, given the configuration, names the cause" {
+		t.Fatalf("the unmeasured sentence changed: %q", publicUnmeasuredReason)
+	}
 	operator := reasons(false)
 	// The operator's report names the cause, without the path it carried.
 	if operator["a/live"] != "sandbox-not-enforced: source-user backend check did not complete successfully: fork/exec: permission denied" || operator["b/live"] != unwrapped {
@@ -536,7 +541,7 @@ func TestPostureProbesStayWithinTheReportBudget(t *testing.T) {
 			}
 		}
 	}
-	if strings.Contains(publicUnprobedReason, "refuse") {
-		t.Fatalf("the out-of-budget sentence speaks of a launch: %q", publicUnprobedReason)
+	if publicUnprobedReason != "the source configuration selects the adapter sandbox wrapper, and this report's time for backend checks ran out before this source's check gave a report, so nothing was measured for this source in this report" {
+		t.Fatalf("the out-of-budget sentence changed: %q", publicUnprobedReason)
 	}
 }
