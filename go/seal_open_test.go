@@ -42,6 +42,19 @@ func writeSeedFile(t *testing.T, dir string, seed []byte) string {
 	return path
 }
 
+// sealOpenUnlocked is the line seal-open adds to its stderr where the
+// platform locks no registry (registryLocked: true in registry_lock_unix.go,
+// false in registry_lock_other.go), once it has gone past the hold a
+// gateway would refuse it at: after any session refused, and before the
+// error that ends the command or the line saying nothing was sealed
+// (cmdSealOpenAt). Where the registry is locked it adds nothing.
+func sealOpenUnlocked() string {
+	if registryLocked {
+		return ""
+	}
+	return "seal-open: this platform locks no registry, so a gateway still running was not looked for; the gateway was to be stopped\n"
+}
+
 // sealOpenVector is a corpus vector whose registry ends in a seal made after
 // an interruption, materialized with the registry as it stood before that
 // seal; sealLine is the seal, as the corpus holds it.
@@ -82,7 +95,7 @@ func TestSealOpenWritesTheSealTheCorpusHolds(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		code := cmdSealOpenAt([]string{"--store", storeRoot, "--seed", seedPath, "--registry", registry, "--authority", vec.Authority, "--session", "s1"},
 			&stdout, &stderr, fixedStamp("2026-11-10T00:00:01Z"))
-		if code != 0 || stdout.String() != sealLine+"\n" || stderr.String() != "" {
+		if code != 0 || stdout.String() != sealLine+"\n" || stderr.String() != sealOpenUnlocked() {
 			t.Fatalf("%s: exit %d\nstdout %q\nstderr %q\nwant stdout %q", tc.vector, code, stdout.String(), stderr.String(), sealLine+"\n")
 		}
 		if got := readFile(t, registry); got != vec.Registry {
@@ -178,7 +191,10 @@ func sealOpenOn(t *testing.T, g *gatewayService, seedPath string, at string, res
 }
 
 // What the command refuses, each named as it is, exit 1, and the store and
-// the registry as they were: nothing sealed, changed or deleted.
+// the registry as they were: nothing sealed, changed or deleted. A refusal
+// made once the registry is held has, where the platform locks none, the
+// line saying so beside it (sealOpenUnlocked): after a session refused,
+// before the error that ends the command.
 func TestSealOpenRefusesWhatItMayNotSeal(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -188,27 +204,29 @@ func TestSealOpenRefusesWhatItMayNotSeal(t *testing.T) {
 	}{
 		{"a session sealed in the registry", nil, "closed",
 			func(*gatewayService, string) string {
-				return "seal-open: session closed is sealed in the registry; it is not sealed again\n"
+				return "seal-open: session closed is sealed in the registry; it is not sealed again\n" + sealOpenUnlocked()
 			}},
 		{"a session the store does not hold", nil, "ghost",
-			func(*gatewayService, string) string { return "seal-open: session ghost is not in the store\n" }},
+			func(*gatewayService, string) string {
+				return "seal-open: session ghost is not in the store\n" + sealOpenUnlocked()
+			}},
 		{"a session holding no receipt", func(t *testing.T, g *gatewayService, _ string) {
 			if err := os.Mkdir(filepath.Join(g.storeRoot, "receipts", "empty"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 		}, "empty", func(*gatewayService, string) string {
-			return "seal-open: session empty holds no receipt; there is nothing to seal\n"
+			return "seal-open: session empty holds no receipt; there is nothing to seal\n" + sealOpenUnlocked()
 		}},
 		{"a file where a session directory would be", func(t *testing.T, g *gatewayService, _ string) {
 			if err := os.WriteFile(filepath.Join(g.storeRoot, "receipts", "flat"), []byte("{}"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}, "flat", func(*gatewayService, string) string {
-			return "seal-open: session flat is in the store as something other than a session directory; nothing is sealed there\n"
+			return "seal-open: session flat is in the store as something other than a session directory; nothing is sealed there\n" + sealOpenUnlocked()
 		}},
 		{"a session id §3a refuses", nil, "a/b",
 			func(*gatewayService, string) string {
-				return "seal-open: session id must match ^[A-Za-z0-9._-]{1,128}$\n"
+				return sealOpenUnlocked() + "seal-open: session id must match ^[A-Za-z0-9._-]{1,128}$\n"
 			}},
 		{"its last receipt torn", func(t *testing.T, g *gatewayService, _ string) {
 			path := filepath.Join(g.storeRoot, "receipts", "left", "1.json")
@@ -217,14 +235,14 @@ func TestSealOpenRefusesWhatItMayNotSeal(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "left", func(*gatewayService, string) string {
-			return "seal-open: session left is not whole, so it is not sealed: file 1.json malformed; gateway verify reports what it finds of it, and nothing is changed or deleted\n"
+			return "seal-open: session left is not whole, so it is not sealed: file 1.json malformed; gateway verify reports what it finds of it, and nothing is changed or deleted\n" + sealOpenUnlocked()
 		}},
 		{"its first receipt gone", func(t *testing.T, g *gatewayService, _ string) {
 			if err := os.Remove(filepath.Join(g.storeRoot, "receipts", "left", "0.json")); err != nil {
 				t.Fatal(err)
 			}
 		}, "left", func(*gatewayService, string) string {
-			return "seal-open: session left is not whole, so it is not sealed: sequence-broken; gateway verify reports what it finds of it, and nothing is changed or deleted\n"
+			return "seal-open: session left is not whole, so it is not sealed: sequence-broken; gateway verify reports what it finds of it, and nothing is changed or deleted\n" + sealOpenUnlocked()
 		}},
 		{"the registry not there", func(t *testing.T, g *gatewayService, _ string) {
 			if err := os.Remove(g.regPath); err != nil {
@@ -317,7 +335,7 @@ func TestSealOpenAllSealsWhatIsWholeAndNamesWhatIsNot(t *testing.T) {
 
 	code, stdout, stderr := sealOpenOn(t, g, seedPath, "2026-11-10T00:00:01Z", "--all")
 	want := interruptionSealLineBy(priv, g.keyID, "left", 2, head, "2026-11-10T00:00:01Z", "command") + "\n"
-	if code != 1 || stdout != want || stderr != tornRefusal {
+	if code != 1 || stdout != want || stderr != tornRefusal+sealOpenUnlocked() {
 		t.Fatalf("exit %d\nstdout %q\nstderr %q\nwant   %q", code, stdout, stderr, want)
 	}
 	if readFile(t, staging) != `{"half":` || readFile(t, torn) != text[:len(text)/2] {
@@ -333,7 +351,7 @@ func TestSealOpenAllSealsWhatIsWholeAndNamesWhatIsNot(t *testing.T) {
 
 	registry := readFile(t, g.regPath)
 	code, stdout, stderr = sealOpenOn(t, g, seedPath, "2026-11-10T00:00:02Z", "--all")
-	if code != 1 || stdout != "" || stderr != tornRefusal || readFile(t, g.regPath) != registry {
+	if code != 1 || stdout != "" || stderr != tornRefusal+sealOpenUnlocked() || readFile(t, g.regPath) != registry {
 		t.Fatalf("again: exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
 	}
 }
@@ -343,12 +361,12 @@ func TestSealOpenAllSealsWhatIsWholeAndNamesWhatIsNot(t *testing.T) {
 func TestSealOpenAllWithNothingLeftOpen(t *testing.T) {
 	g := leftOpenStore(t)
 	seedPath := writeSeedFile(t, t.TempDir(), testSeed)
-	if code, _, stderr := sealOpenOn(t, g, seedPath, "2026-11-10T00:00:01Z", "--session", "left"); code != 0 || stderr != "" {
+	if code, _, stderr := sealOpenOn(t, g, seedPath, "2026-11-10T00:00:01Z", "--session", "left"); code != 0 || stderr != sealOpenUnlocked() {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}
 	registry := readFile(t, g.regPath)
 	code, stdout, stderr := sealOpenOn(t, g, seedPath, "2026-11-10T00:00:02Z", "--all")
-	if code != 0 || stdout != "" || stderr != "seal-open: no session in the store is left open; nothing was sealed\n" || readFile(t, g.regPath) != registry {
+	if code != 0 || stdout != "" || stderr != sealOpenUnlocked()+"seal-open: no session in the store is left open; nothing was sealed\n" || readFile(t, g.regPath) != registry {
 		t.Fatalf("exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
 	}
 }
@@ -359,7 +377,7 @@ func TestSealOpenAllWithNothingLeftOpen(t *testing.T) {
 func TestASessionSealedAfterAnInterruptionIsNeverContinued(t *testing.T) {
 	g := leftOpenStore(t)
 	seedPath := writeSeedFile(t, t.TempDir(), testSeed)
-	if code, _, stderr := sealOpenOn(t, g, seedPath, "2026-11-10T00:00:01Z", "--session", "left"); code != 0 || stderr != "" {
+	if code, _, stderr := sealOpenOn(t, g, seedPath, "2026-11-10T00:00:01Z", "--session", "left"); code != 0 || stderr != sealOpenUnlocked() {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}
 	restarted, err := newGatewayService(g.storeRoot, testSeed, "gateway:test", g.regPath, g.sources)
@@ -428,7 +446,7 @@ func TestSealOpenByTheEngineConfiguration(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := cmdSealOpenAt([]string{"--config", config, "--session", "left"}, &stdout, &stderr, fixedStamp("2026-11-10T00:00:01Z"))
 	want := interruptionSealLineBy(ed25519.NewKeyFromSeed(testSeed), g.keyID, "left", 2, receiptSignature(t, g.storeRoot, "left", 1), "2026-11-10T00:00:01Z", "command") + "\n"
-	if code != 0 || stdout.String() != want || stderr.String() != "" {
+	if code != 0 || stdout.String() != want || stderr.String() != sealOpenUnlocked() {
 		t.Fatalf("exit %d\nstdout %q\nstderr %q", code, stdout.String(), stderr.String())
 	}
 }
@@ -453,10 +471,17 @@ func TestSealOpenByTheEngineConfigurationSeesARotationBesideTheSeedResolved(t *t
 	if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// the name the link resolves to, the temporary directory's own resolved
+	// with it (/var to /private/var on macOS, a short name made long on
+	// Windows), as the command resolves it
+	resolved, err := filepath.EvalSymlinks(link)
+	if err != nil || filepath.Base(resolved) != "seed" {
+		t.Fatalf("the link resolves to %q: %v", resolved, err)
+	}
 	registry := readFile(t, g.regPath)
 	var stdout, stderr bytes.Buffer
 	code := cmdSealOpenAt([]string{"--config", config, "--session", "left"}, &stdout, &stderr, fixedStamp("2026-11-10T00:00:01Z"))
-	want := "seal-open: a rotation is pending: " + real + ".rotation is there; finish it with gateway rotate-key --resume --seed " + real + " --registry " + g.regPath + "\n"
+	want := "seal-open: a rotation is pending: " + resolved + ".rotation is there; finish it with gateway rotate-key --resume --seed " + resolved + " --registry " + g.regPath + "\n"
 	if code != 1 || stdout.String() != "" || stderr.String() != want || readFile(t, g.regPath) != registry {
 		t.Fatalf("exit %d\nstdout %q\nstderr %q\nwant   %q", code, stdout.String(), stderr.String(), want)
 	}
