@@ -359,9 +359,10 @@ func TestTheCorpusHoldsNothingUnread(t *testing.T) {
 // and witness recovery, it refuses the run as any other such member does,
 // where encoding/json, matching names ignoring case, would read it as the
 // member it folds to, the last one given winning; at the top, in expected,
-// in a file's parts and in a recovery step. canon.json's vectors, which may
-// carry members no runner reads, pass it over: a vector read by the names
-// it gives exactly agrees.
+// in a file's parts and in a recovery step, and so does a member whose
+// value is no object where the runner reads one. canon.json's vectors,
+// which may carry members no runner reads, pass it over: a vector read by
+// the names it gives exactly agrees.
 func TestAVectorsMembersAreItsNamesExactly(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.CopyFS(dir, os.DirFS(corpusPath())); err != nil {
@@ -408,6 +409,28 @@ func TestAVectorsMembersAreItsNamesExactly(t *testing.T) {
 			t.Errorf("%s: %v\nwant %s", c.what, err, want)
 		}
 		restore()
+	}
+	// A member whose value is no object where the runner reads one refuses
+	// the run too: a store vector's expected given as an array, as its
+	// last member.
+	sealed := filepath.Join(dir, "stores", "valid-sealed.json")
+	original, err := os.ReadFile(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := bytes.LastIndex(original, []byte(`"expected": {`))
+	if at < 0 {
+		t.Fatal("valid-sealed.json gives no expected")
+	}
+	if err := os.WriteFile(sealed, append(original[:at:at], "\"expected\": []\n}\n"...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = runCorpus(dir, quick)
+	if want := sealed + ": json: cannot unmarshal array into Go struct field storeVector.expected of type struct {"; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("a store vector's expected given as an array: %v\nwant %s...", err, want)
+	}
+	if err := os.WriteFile(sealed, original, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	// canon.json: each of a vector's members under another case, beside the
 	// member, giving what would disagree were it read

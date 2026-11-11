@@ -2096,9 +2096,15 @@ func writeEdited(answer []byte, edit string) int {
 //   - twice: the member, then the member again, its value the same;
 //   - wrong-first: the member with a wrong value, then as it was, which is
 //     what a reader keeping the last occurrence reads;
-//   - right-first: the member as it was, then with a wrong value.
+//   - right-first: the member as it was, then with a wrong value;
+//   - cut, naming no member: the answer without its last byte, no JSON
+//     value.
 func editedAnswer(answer []byte, edit string) ([]byte, error) {
 	how, path, _ := strings.Cut(edit, ":")
+	if how == "cut" {
+		whole := bytes.TrimSpace(answer)
+		return whole[:len(whole)-1], nil
+	}
 	outer, inner, nested := strings.Cut(path, ".")
 	object := reflect.TypeFor[map[string]any]()
 	members, err := objectMembers(answer, object)
@@ -2569,12 +2575,24 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 	}
 	// Through the command itself, the whole corpus: a verdict and an
 	// answer giving a member twice are disagreements, exit 1, never no
-	// run; ones carrying other cases of a member beside it agree, exit 0.
+	// run; ones carrying other cases of a member beside it agree, exit 0;
+	// and an answer that is no JSON value is no answer, exit 2, a witness's
+	// as a verdict's.
 	t.Run("gateway conform", func(t *testing.T) {
-		for edit, want := range map[string]int{"twice:ok": 1, "beside:ok": 0, "beside:findings": 0} {
+		for edit, want := range map[string]int{"twice:ok": 1, "beside:ok": 0, "beside:findings": 0, "cut:": 2} {
 			if rc := cmdConform([]string{"--impl", os.Args[0] + " " + edit, "--corpus", corpusDir}); rc != want {
 				t.Errorf("gateway conform --impl, %s: exit %d, want %d", edit, rc, want)
 			}
+		}
+		// each family stopping on its own: the exit alone would be the
+		// witness's, were the verdict cut short read as one
+		_, _, err := runStoreVectors(corpusDir, subprocess{argv: []string{os.Args[0], "cut:"}})
+		if want := "unexpected end of JSON input"; err == nil || err.Error() != want {
+			t.Errorf("a verdict cut short: %v, want %s", err, want)
+		}
+		_, _, err = runWitnessVectors(corpusDir, subprocess{argv: []string{os.Args[0], "cut:"}})
+		if want := "witness begins-late-index-one: witness answered with no JSON object: unexpected end of JSON input"; err == nil || err.Error() != want {
+			t.Errorf("a witness answer cut short: %v, want %s", err, want)
 		}
 	})
 }
@@ -2582,8 +2600,13 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 // decodeVerdict reads a member by its name exactly, not as Unicode's
 // simple folding matches it: the Kelvin sign and the long s, which
 // encoding/json reads as k and s, are other names. A name given twice is
-// the same name however it is escaped. And what a disagreement says of a
-// member given twice quotes its name, bounded as standard error is.
+// the same name however it is escaped. What a disagreement says of a
+// member given twice quotes its name, bounded as standard error is. And
+// what is no reading of an answer, a text that is not one JSON value, a
+// verdict that is not an object, a member the runner reads of the wrong
+// type, refuses it as such, never as a member given twice: the run stops.
+// A member given twice is found first, before any member is read, so
+// beside a member of the wrong type it is still a disagreement.
 func TestAVerdictsMembersAreItsNamesExactly(t *testing.T) {
 	for _, c := range []struct {
 		what, verdict string
@@ -2627,6 +2650,52 @@ func TestAVerdictsMembersAreItsNamesExactly(t *testing.T) {
 		t.Fatalf("a witness answer's member twice: %v, %d failures of %d vectors", err, len(failures), count)
 	}
 	if want := `witness begins-late-index-one: the answer gives a member twice in one object: "\x1b[2J"`; failures[0] != want {
+		t.Errorf("failure:\n got %q\nwant %q", failures[0], want)
+	}
+
+	for _, c := range []struct{ verdict, refused string }{
+		{`{"ok":true`, "unexpected end of JSON input"},
+		{`{"ok":true} {}`, "invalid character '{' after top-level value"},
+		{`{"ok":true}x`, "invalid character 'x' after top-level value"},
+		{`[]`, "json: cannot unmarshal array into Go value of type main.contractVerdict"},
+		{`"x"`, "json: cannot unmarshal string into Go value of type main.contractVerdict"},
+		{`1`, "json: cannot unmarshal number into Go value of type main.contractVerdict"},
+		{`["ok",true,"findings",[]]`, "json: cannot unmarshal array into Go value of type main.contractVerdict"},
+		{`{"ok":"x"}`, "json: cannot unmarshal string into Go struct field contractVerdict.ok of type bool"},
+	} {
+		verdict, err := decodeVerdict([]byte(c.verdict))
+		var twice memberTwice
+		if err == nil || errors.As(err, &twice) || err.Error() != c.refused {
+			t.Errorf("%s: %v (ok=%v), want %s", c.verdict, err, verdict.OK, c.refused)
+		}
+	}
+	var twice memberTwice
+	if _, err := decodeVerdict([]byte(`{"ok":"x","a":1,"a":1}`)); !errors.As(err, &twice) || twice.name != "a" {
+		t.Errorf("a member twice beside a member of the wrong type: %v", err)
+	}
+	// and through the runner, of either family
+	for what, run := range map[string]struct {
+		run     func(string, implementation) ([]string, int, error)
+		answer  answering
+		refused string
+	}{
+		"a verdict cut short":           {runStoreVectors, answering{verdict: `{"ok":true`}, "unexpected end of JSON input"},
+		"a verdict and more":            {runStoreVectors, answering{verdict: `{"ok":true,"findings":[]} {}`}, "invalid character '{' after top-level value"},
+		"a verdict that is no object":   {runStoreVectors, answering{verdict: `["ok",true,"findings",[]]`}, "json: cannot unmarshal array into Go value of type main.contractVerdict"},
+		"a verdict's ok of no type":     {runStoreVectors, answering{verdict: `{"ok":"x","findings":[]}`}, "json: cannot unmarshal string into Go struct field contractVerdict.ok of type bool"},
+		"a witness answer cut short":    {runWitnessVectors, answering{answer: `{"refused":"x"`}, "witness begins-late-index-one: unexpected end of JSON input"},
+		"a witness answer and more":     {runWitnessVectors, answering{answer: `{"refused":"x"}x`}, "witness begins-late-index-one: invalid character 'x' after top-level value"},
+		"a witness answer of no object": {runWitnessVectors, answering{answer: `[]`}, "witness begins-late-index-one: json: cannot unmarshal array into Go value of type map[string]interface {}"},
+	} {
+		if failures, _, err := run.run(corpusDir, run.answer); err == nil || err.Error() != run.refused {
+			t.Errorf("%s: %v, %d failures, want %s", what, err, len(failures), run.refused)
+		}
+	}
+	failures, count, err = runStoreVectors(corpusDir, answering{verdict: `{"ok":"x","findings":[],"a":1,"a":1}`})
+	if err != nil || len(failures) != count || count == 0 {
+		t.Fatalf("a member twice beside a member of the wrong type: %v, %d failures of %d vectors", err, len(failures), count)
+	}
+	if want := `store absent-registry: the verdict gives a member twice in one object: "a"`; failures[0] != want {
 		t.Errorf("failure:\n got %q\nwant %q", failures[0], want)
 	}
 }
