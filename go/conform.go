@@ -148,16 +148,24 @@ type storeVector struct {
 
 // expectedObservations is the observations a vector states, and whether it
 // states the member at all: without it, the vector is not compared on
-// observations (SPEC.md §7). A member that is not an array of objects --
-// null among them -- states nothing a runner could compare, and refuses
-// the run.
+// observations (SPEC.md §7). A member that is not an array of objects
+// refuses the run, and so does one with an element that is not an object:
+// given as null, the member would read as not stated and compare nothing,
+// and an element given as null, which is no object, would decode as one
+// with no members.
 func (v storeVector) expectedObservations() ([]map[string]any, bool, error) {
 	if v.Expected.Observations == nil {
 		return nil, false, nil
 	}
+	refused := errors.New("expected observations are not an array of objects")
 	var stated []map[string]any
 	if err := json.Unmarshal(v.Expected.Observations, &stated); err != nil || stated == nil {
-		return nil, false, errors.New("expected observations are not an array of objects")
+		return nil, false, refused
+	}
+	for _, observation := range stated {
+		if observation == nil {
+			return nil, false, refused
+		}
 	}
 	return stated, true, nil
 }

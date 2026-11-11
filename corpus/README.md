@@ -172,7 +172,10 @@ after the seal, a registry edited beside it — and are not conformance.
 §4), and a runner compares them with the implementation's as a **multiset**: order aside,
 and how many counted, since each observation is carried once, on the one receipt §4 names
 for it. `[]` expects none, and an implementation that reports none may leave the member
-out. Unlike `witnesses` and `rotations`, a vector **without** the member is not compared on
+out. A vector that states the member as `null`, or with an element that is `null` or no
+object, refuses the run: it states nothing a runner could compare. An implementation's
+`"observations": null` counts as none, as a left-out member does, and a member that is no
+array of objects disagrees with a vector that states observations. Unlike `witnesses` and `rotations`, a vector **without** the member is not compared on
 observations at all: what an implementation reports of them there is not read, so every
 vector written before the member holds what it held. A vector run under the option gives
 `"ordinarySealsOnly": true` beside `registry`, and the runner passes `--ordinary-seals-only`

@@ -172,8 +172,10 @@ func TestObservationsAreComparedAsAMultiset(t *testing.T) {
 
 // A vector's expected observations are stated or not, and stated as an
 // array of objects or not at all: the member absent is no comparison, [] is
-// a comparison expecting none, and null or a member that is no array of
-// objects refuses the run, where read as absent it would compare nothing.
+// a comparison expecting none, and null, an element given as null, or a
+// member that is no array of objects refuses the run, where the member read
+// as absent would compare nothing and the element read as an object would
+// be one no vector wrote.
 func TestExpectedObservationsAreStatedOrNot(t *testing.T) {
 	read := func(expected string) (storeVector, error) {
 		var vector storeVector
@@ -192,6 +194,8 @@ func TestExpectedObservationsAreStatedOrNot(t *testing.T) {
 		{`{"ok": true, "findings": [], "observations": null}`, false, 0, true},
 		{`{"ok": true, "findings": [], "observations": {}}`, false, 0, true},
 		{`{"ok": true, "findings": [], "observations": ["session-open"]}`, false, 0, true},
+		{`{"ok": true, "findings": [], "observations": [null]}`, false, 0, true},
+		{`{"ok": true, "findings": [], "observations": [{"sessionId": "s1", "callIndex": 0, "observation": "session-open"}, null]}`, false, 0, true},
 	} {
 		vector, err := read(c.expected)
 		if err != nil {
@@ -201,35 +205,44 @@ func TestExpectedObservationsAreStatedOrNot(t *testing.T) {
 		if (err != nil) != c.refused || stated != c.stated || len(observations) != c.count {
 			t.Errorf("%s: stated=%v, %d, %v; want stated=%v, %d, refused=%v", c.expected, stated, len(observations), err, c.stated, c.count, c.refused)
 		}
+		if c.refused && (err == nil || err.Error() != "expected observations are not an array of objects") {
+			t.Errorf("%s: refused with %v", c.expected, err)
+		}
 	}
 	// and the runner refuses such a vector rather than compare nothing
-	dir := t.TempDir()
-	if err := os.CopyFS(dir, os.DirFS(corpusPath())); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(dir, "stores", "observations-interruption-seal.json")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatal(err)
-	}
-	expected, _ := doc["expected"].(map[string]any)
-	if _, there := expected["observations"]; !there {
-		t.Fatal("the vector states no observations")
-	}
-	expected["observations"] = nil
-	edited, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, edited, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := runStoreVectors(dir, inProcess{}); err == nil || !strings.Contains(err.Error(), "expected observations are not an array of objects") {
-		t.Errorf("expected observations given as null: the run was not refused: %v", err)
+	for _, given := range []struct {
+		name  string
+		value any
+	}{{"null", nil}, {"[null]", []any{nil}}} {
+		dir := t.TempDir()
+		if err := os.CopyFS(dir, os.DirFS(corpusPath())); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "stores", "observations-interruption-seal.json")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		expected, _ := doc["expected"].(map[string]any)
+		if _, there := expected["observations"]; !there {
+			t.Fatal("the vector states no observations")
+		}
+		expected["observations"] = given.value
+		edited, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, edited, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		want := path + ": expected observations are not an array of objects"
+		if _, _, err := runStoreVectors(dir, inProcess{}); err == nil || err.Error() != want {
+			t.Errorf("expected observations given as %s: the run was not refused with %q: %v", given.name, want, err)
+		}
 	}
 }
 
