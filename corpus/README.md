@@ -393,7 +393,11 @@ not read — a file or directory at the top it has no rule for, anything but vec
 the vectors — a witness vector with a member it does not know or of a family it does not
 read, one whose `name` is not its file's, and one whose `expected` holds a member its form
 does not, at any depth, and a store vector, of `stores/` or `v3/stores/`, with a member it
-does not know, at the top or in `expected`. Every file of every family is read as exactly one JSON value, with
+does not know, at the top or in `expected`. Store, witness and witness recovery vectors are
+held to that: a member the runner does not read refuses the corpus. `canon.json` is not:
+read for its vectors' `inputJson`, `expectedHex` and `reject`, it passes over any other
+member, such as a vector's `expectedUtf8`. In every family `note` is the member for commentary, read
+by no comparison. Every file of every family is read as exactly one JSON value, with
 nothing after it and no member given twice in one object at any depth, and a recovery vector
 whose run never reaches a fault it declares disagrees. It also refuses a corpus whose counts
 this README misstates: the
