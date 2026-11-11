@@ -1247,9 +1247,10 @@ func TestAnUnterminatedSealRefusesASecond(t *testing.T) {
 // and registry refuses an acquisition into a session an earlier process
 // sealed, before the source is started -- the registry is the one record of
 // that seal, and the new process's session map does not hold it. An
-// unsealed session from before the restart may still be continued by a
-// read, as it always could; and a registry that cannot be read is a
-// refusal, never taken for the absence of a seal.
+// unsealed session from before the restart is refused before its source
+// starts too (gateway #381): its chain cannot be continued from an empty
+// memory; and a registry that cannot be read is a refusal, never taken for
+// the absence of a seal.
 func TestAcquireAfterRestartHonoursTheRegistrysSeal(t *testing.T) {
 	service, _ := testService(t)
 	if _, err := service.acquire("restart-sealed", "screening", vString("x"), nil); err != nil {
@@ -1285,18 +1286,19 @@ func TestAcquireAfterRestartHonoursTheRegistrysSeal(t *testing.T) {
 	if entered {
 		t.Fatal("the refused session entered the new process's map")
 	}
-	// the unsealed session from before the restart: a read may continue it
-	// as it always could -- the registry does not refuse it, its source runs,
-	// and, its first receipt being on disk, the stamp is the append-only
-	// collision it has always been (act_test holds the case where the first
-	// receipt is gone and the read succeeds)
-	startsBefore := restarted.started.Load()
+	// the unsealed session from before the restart: the registry does not
+	// refuse it, the store does, before its source starts -- until gateway
+	// #381 the source ran and the stamp then found receipt 0 in place, the
+	// append-only collision, for a result that could not be kept
 	_, err = restarted.acquire("restart-open", "screening", vString("x"), nil)
-	if err == nil || !strings.Contains(err.Error(), "receipt already exists (append-only)") {
+	if err == nil || err.Error() != fmt.Sprintf(refusalLeftOpen, "restart-open") || !errors.As(err, new(badRequest)) {
 		t.Fatalf("an unsealed session from before the restart: %v", err)
 	}
-	if restarted.started.Load() != startsBefore+1 {
-		t.Fatal("the unsealed session's source did not run: the read was refused before it")
+	if _, err := os.Stat(started); err == nil {
+		t.Fatal("the source ran for a session an earlier process left open")
+	}
+	if restarted.started.Load() != 0 {
+		t.Fatal("a source started for a session an earlier process left open")
 	}
 	// a session new to both processes is admitted and minted
 	if _, err := restarted.acquire("restart-new", "screening", vString("x"), nil); err != nil {
