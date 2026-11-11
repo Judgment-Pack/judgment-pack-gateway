@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -79,7 +80,8 @@ var httpOperationMembers = map[string]bool{
 // since no platform parameter fills one here, and a path the adapter sends
 // as written; paths each as adapter-http accepts a path and none with a
 // comma, which would split into two on the adapter's command line, or a
-// percent sign, which it would send escaped, and all of them within the
+// percent sign or any other character it would send escaped, and all of
+// them within the
 // one word of that command line they are passed in; methods GET and POST;
 // headers an operator may fix; exactly one of bearer and credentialHeader,
 // since the platform's credentials file for live is required and is read
@@ -212,8 +214,10 @@ func httpStrings(op *vObject, member, name string, limit int) ([]string, error) 
 // begins with "/", carries no query, fragment, backslash, dot segment or
 // empty segment -- and to what the engine's command line carries as one:
 // printable ASCII without a space, a comma or a percent sign, and no
-// brace, which reads as a placeholder no parameter fills. httpStrings has
-// held it to be non-empty and bounded.
+// brace, which reads as a placeholder no parameter fills; and to what the
+// adapter sends as written: no character its URL escaping would send
+// percent-escaped (httpSentAsWritten). httpStrings has held it to be
+// non-empty and bounded.
 func httpPathProblem(path string) error {
 	switch {
 	case path[0] != '/':
@@ -224,6 +228,8 @@ func httpPathProblem(path string) error {
 		return errors.New("carries a query, a fragment or a backslash")
 	case strings.ContainsAny(path, ",%{}"):
 		return errors.New("carries a comma, a percent sign or a brace")
+	case !httpSentAsWritten(path):
+		return errors.New(errHTTPEscapedPath)
 	}
 	for _, segment := range strings.Split(path[1:], "/") {
 		if segment == "." || segment == ".." {
@@ -238,7 +244,8 @@ func httpPathProblem(path string) error {
 
 // httpEndpointPathProblem holds the path of an endpoint of the endpoint
 // form to what adapter-http sends as written: the adapter sends the path
-// decoded and escaped again, so a percent sign is refused, as in paths;
+// decoded and escaped again, so a percent sign is refused, as in paths,
+// and so is any other character that escaping would send percent-escaped;
 // and a dot segment or an empty segment, which a server or a proxy may
 // resolve or merge, is refused but for the one "/" that may end the
 // endpoint, which the adapter drops before the request's path.
@@ -247,6 +254,9 @@ func httpEndpointPathProblem(endpoint string) error {
 	_, path, _ := strings.Cut(rest, "/")
 	if strings.Contains(path, "%") {
 		return errors.New("carries a percent sign")
+	}
+	if !httpSentAsWritten("/" + path) {
+		return errors.New(errHTTPEscapedPath)
 	}
 	segments := strings.Split(path, "/")
 	for i, segment := range segments {
@@ -258,6 +268,21 @@ func httpEndpointPathProblem(endpoint string) error {
 		}
 	}
 	return nil
+}
+
+// errHTTPEscapedPath is the refusal of a path, or an endpoint's path, that
+// httpSentAsWritten does not hold.
+const errHTTPEscapedPath = "carries a character adapter-http would send percent-escaped, not as written"
+
+// httpSentAsWritten is whether adapter-http sends path as written. The
+// adapter sets a request's path, the endpoint's decoded path followed by
+// the request's, and leaves its escaping to the URL package, which sends
+// some printable characters percent-escaped: a path holding one is sent as
+// other bytes than the binding states and the operator reviewed. The set
+// is the URL package's, read here from the same escaping the adapter's
+// request is formed with, not written out a second time.
+func httpSentAsWritten(path string) bool {
+	return (&url.URL{Path: path}).EscapedPath() == path
 }
 
 // visibleASCII is whether s is of U+0021 to U+007E alone; printableASCII

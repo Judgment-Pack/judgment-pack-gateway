@@ -760,7 +760,10 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   host only, since a credential sent in the clear is a credential given away. It carries no
   user, no query and no fragment; a base path is allowed and a request's path follows it.
 - `--paths` names the only paths a request may name, each exactly as it will be sent under
-  the endpoint; a request outside them is refused before any connection is made. `--methods`
+  the endpoint; a request outside them is refused before any connection is made. A path, here,
+  in `--check-path` or in a request, that carries a query, a fragment, a backslash, a dot or empty
+  segment, or a character Go's URL escaping would send percent-escaped (a `%` among them) is
+  refused, so no path is sent as other bytes than were written. `--methods`
   names the methods, `GET` and `POST`, and is `POST` alone by default.
 - `--credentials` is a JSON object of strings, a file the adapter's identity can read and the
   signer's cannot ([SECURITY.md](../SECURITY.md)); it is at most 1 MiB and held to exact member

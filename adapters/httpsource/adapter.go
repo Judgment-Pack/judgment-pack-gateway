@@ -205,7 +205,11 @@ func ParseRequest(r io.Reader) (Request, error) {
 
 // pathProblem is why a request path is not one to send, or nil: it names
 // a resource under the endpoint and nothing else -- no query, no fragment,
-// no dot segment, no empty segment, nothing a header line could carry.
+// no dot segment, no empty segment, nothing a header line could carry --
+// and is sent as written: build leaves the path's escaping to the URL
+// package, so a path holding a character that escaping would send
+// percent-escaped (a percent sign among them) is refused, not sent as
+// other bytes than the operator wrote.
 func pathProblem(path string) error {
 	switch {
 	case path == "" || path[0] != '/':
@@ -227,6 +231,9 @@ func pathProblem(path string) error {
 		if r < 0x20 || r == 0x7f {
 			return errors.New(`"path" carries a control character`)
 		}
+	}
+	if (&url.URL{Path: path}).EscapedPath() != path {
+		return errors.New(`"path" carries a character that would be sent percent-escaped, not as written`)
 	}
 	return nil
 }
