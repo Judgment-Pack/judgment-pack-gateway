@@ -2477,7 +2477,7 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 	type expectation struct {
 		family, edit string
 		// want is the vectors that disagree, each once, in words says
-		// accepts.
+		// accepts; with no says, none disagrees.
 		want names
 		says func(name, failure string) bool
 	}
@@ -2554,7 +2554,7 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 					t.Fatalf("a failure of no %s vector, or a second: %s", c.family, failure)
 				}
 				disagreeing[name] = true
-				if !c.says(name, failure) {
+				if c.says == nil || !c.says(name, failure) {
 					t.Errorf("failure: %q", failure)
 				}
 			}
