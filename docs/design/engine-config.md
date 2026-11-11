@@ -343,7 +343,9 @@ verification requires their retained evidence (SPEC.md §9).
   a kept record beside the seed, which `rotate-key --resume` finishes; it looks beside the
   seed's configured name, the one `rotate-key --seed` is given, and beside the name it
   resolves to, every link followed, where that is another, so neither hides a rotation. The engine holds a lock
-  on its registry while it runs, and `rotate-key` refuses while it is held. A witness under the configuration goes on under the
+  on its registry while it runs, and `rotate-key` refuses while it is held; so does a second
+  engine on the same registry, which is why a roll-out stops the old engine before it starts
+  the new ([README.md](../../README.md), "One gateway per store and registry"). A witness under the configuration goes on under the
   next key, its log held to the keys the registry's rotations reached.
 - `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve an
   action receipt's `decision.recordDigest` ([receipt-v3.md](receipt-v3.md)). The engine refuses
@@ -1134,6 +1136,40 @@ mode now differ, or when the reported backend cannot be used: a bubblewrap that
 fails at launch does not fall back to Landlock. A changed policy therefore takes
 effect only after a restart measures it, and posture never reports a selection a
 launch does not use.
+
+**When the sandbox cannot be had, in a container or elsewhere.** The backends, their fixed
+launcher locations and their limits are in [adapters/README.md](../../adapters/README.md#customer-bindings)
+and [SECURITY.md](../../SECURITY.md); what follows is what each needs of the kernel, which a
+container can withhold. The probe and every launch run as the source's user, and a source that
+runs as a user of its own is started under `no_new_privs`, so a set-user-id bubblewrap gains no
+privilege there. bubblewrap is started with `--unshare-user` and `--unshare-pid`: it needs to
+make a user namespace and a PID namespace as that user. Before it is used it is checked by
+running `/bin/true` under the same options, which bubblewrap finds on the root filesystem it
+binds read-only, so that program must be there; a bubblewrap that fails the check when a
+source is measured is passed over for Landlock. Landlock needs the kernel to answer
+`landlock_create_ruleset` with ABI 3 or newer, and the helper then calls `landlock_add_rule`
+and `landlock_restrict_self`. A container's syscall filter that refuses making those namespaces, or refuses the Landlock calls,
+takes that backend away; a profile that permits what a backend needs is what enforcement needs
+in a container, and loosening the profile is the operator's trade-off. The engine image carries
+`adapter-sandbox` and no bubblewrap ([engine-image.md](engine-image.md)).
+
+With neither backend, the engine still starts: the start holds the helper and each policy
+file, as above, and measures nothing, so it prints nothing about the sandbox. `gateway posture
+--config <engine.json>`, run as the user the engine runs as, is the check. Each affected
+`programs` entry reads state `not-enforced`, with a reason that begins `sandbox-not-enforced`:
+`sandbox-not-enforced: no usable filesystem sandbox backend`, backend `none`, when neither
+backend could be prepared; `sandbox-not-enforced: restricted probe could not execute`, under
+the backend prepared, when the probe then failed to run under it; or
+`sandbox-not-enforced: source-user backend check did not complete successfully`, backend
+`none`, when the helper itself gave no report. `operator-program-confinement` is then
+`not-enforced` unless another entry is `enforced` or `partial`. `/posture` answers a fixed
+sentence in place of the helper's reason. Every launch of such a source under a restricted mode
+refuses before anything is started, with `sandbox-not-enforced: the source's sandbox probe
+measured that the <mode> boundary does not hold under <backend>, so the source is not launched;
+gateway posture says why`, or, where the probe did not complete,
+`sandbox-not-enforced: the source's sandbox posture could not be measured before its launch:`
+and the cause. A source whose policy selects `danger-full-access` launches unrestricted, as it
+does on every host.
 
 ## Delegated authority (engine version 15)
 

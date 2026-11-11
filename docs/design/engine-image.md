@@ -94,6 +94,17 @@ no refusal of its own is reached; the supported minimum is `--cap-drop ALL --cap
 capabilities: it holds whatever the container runtime gives root, which is a deployment outside
 this note's claim.
 
+**The source sandbox.** The image carries `adapter-sandbox`, through which an engine
+configuration of version 13 or later launches every source, and no bubblewrap: the `Dockerfile`
+copies none into it. A restricted source in a container made from the image is therefore
+confined by Landlock or not at all, as the kernel and the container's syscall filter allow, and
+an image derived to add bubblewrap needs `/bin/true` too, which bubblewrap's start check
+runs. Where no backend can be had the engine starts and serves, `gateway posture --config`
+reports each such source `not-enforced`, and each of its restricted launches refuses with
+`sandbox-not-enforced`. What each backend needs of the kernel is in
+[engine-config.md](engine-config.md#source-sandbox-policy-engine-version-13), "When the sandbox
+cannot be had".
+
 **What is pinned is the inputs, not the bytes.** Two clean builds of the same commit are the
 same in content and differ in digest: built files, the account files and the homes carry the
 build's timestamps, and the image metadata is not normalised. A release publishes the digest of
