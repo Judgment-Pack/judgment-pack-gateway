@@ -14,7 +14,7 @@ import (
 // its write operation when the platform allows writes.
 func enabledMCPOperations(p platformConfig, b binding) map[string]*operation {
 	ops := map[string]*operation{}
-	if b.live != nil && b.live.shape == "mcp" {
+	if b.live != nil && b.live.http == nil {
 		ops["live"] = b.live
 	}
 	if p.write && b.write != nil {
