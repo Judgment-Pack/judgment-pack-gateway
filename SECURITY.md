@@ -179,14 +179,17 @@ where the gateway writes as a vulnerability in this class, not as a configuratio
 otherwise.** `gateway serve <store> <seed> <authority> <registry>` has no `identity`: every request
 is admitted and no caller is recorded, so whoever reaches its listener can run any source it is
 configured with, with arguments of their choosing, have receipts signed under its key, seal any
-session it holds and read `/verify`; `/act` is refused, since nobody is a requester. It listens on
+session it holds and read `/verify` and `/posture`; `/registry` and `/publickey` are open to every
+caller in every form, by design; `/act` is refused, since nobody is a requester. It listens on
 `127.0.0.1` unless `--listen` names another address, which is an IP address written out: a name is
 refused, so no resolver decides where it listens, and every address of a family is bound only when
 `0.0.0.0` or `::` is written out. An address that is not loopback is taken only with
 `--accept-unauthenticated-callers` beside it, and the start then writes a line on stderr saying that
 other hosts can reach the gateway and that it authenticates no caller. Such a listener needs
 something in front of it that decides who reaches it: an authenticating proxy that terminates TLS,
-or a private network that admits only the intended callers. The transport is plain HTTP, so on the
+or a private network that admits only the intended callers. The gateway limits neither the rate of
+requests nor the number of connections, so what is in front should limit them too. The transport is
+plain HTTP, so on the
 network between a caller and the listener every result and a version 3 response's salts can be read,
 and a request changed. `serve --config` takes no `--listen`: an engine configuration's `listen` is a
 loopback address whatever else it configures, `identity` included (below).

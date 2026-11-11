@@ -67,7 +67,9 @@ func (o serveOptions) listenAt() (network, address string) {
 }
 
 // serveListen binds. A test stands in for it, to see what the start writes
-// for an address the test must not bind.
+// for an address the test must not bind. It is a package variable, so a
+// test that replaces it must not run in parallel with another that
+// starts serve, and must put it back.
 var serveListen = net.Listen
 
 // listenForServe binds where serve from the command line listens. When

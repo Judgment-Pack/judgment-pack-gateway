@@ -163,7 +163,9 @@ Any other address needs `--accept-unauthenticated-callers` beside it, because th
 `serve` authenticates no caller: whoever reaches the listener can run its sources with arguments
 of their choosing, have receipts signed under its key and seal its sessions, and the transport
 is plain HTTP. Put in front of such a listener what decides who reaches it: an authenticating
-proxy that terminates TLS, or a private network that admits only the intended callers. In a
+proxy that terminates TLS, or a private network that admits only the intended callers. The
+gateway limits neither the rate of requests nor the number of connections, so what is in front
+should limit them too. In a
 container, for example, `--listen 0.0.0.0 --accept-unauthenticated-callers` is what makes the
 gateway answer on the container's published port, and that port is then published only to the
 network those callers are on. When the address bound is not loopback the gateway writes, on
