@@ -44,7 +44,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | journal | mcp | posture | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | seal-open | journal | mcp | posture | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -70,6 +70,8 @@ func main() {
 		os.Exit(cmdKeygen(os.Args[2:]))
 	case "rotate-key":
 		os.Exit(cmdRotateKey(os.Args[2:], os.Stdout, os.Stderr))
+	case "seal-open":
+		os.Exit(cmdSealOpen(os.Args[2:], os.Stdout, os.Stderr))
 	case "journal":
 		os.Exit(cmdJournal(os.Args[2:], os.Stdout, os.Stderr))
 	case "mcp":
@@ -129,7 +131,24 @@ func cmdCanon() int {
 }
 
 func cmdVerify(args []string) int {
-	const usage = "usage: gateway verify <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
+	const usage = "usage: gateway verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
+	// --ordinary-seals-only, first or not at all: a session a seal made
+	// after an interruption anchors is then a finding, not an observation
+	// (SPEC.md §4 step 3). The option in any later place is a usage error,
+	// never taken as an argument and the plain verdict run in its stead; a
+	// directory of that spelling, in any place, is given as
+	// ./--ordinary-seals-only.
+	for i, a := range args {
+		if i > 0 && a == "--ordinary-seals-only" {
+			fmt.Fprintln(os.Stderr, "gateway verify: --ordinary-seals-only goes first, before the store root; a directory so named is given as ./--ordinary-seals-only")
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+	}
+	verify := verifyWithRegistryAndRecords
+	if len(args) > 0 && args[0] == "--ordinary-seals-only" {
+		verify, args = verifyOrdinarySealsOnly, args[1:]
+	}
 	if len(args) < 3 || len(args) > 5 {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
@@ -170,7 +189,7 @@ func cmdVerify(args []string) int {
 		return 1
 	}
 
-	report, err := verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords, publicKey)
+	report, err := verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
 	if err != nil {
 		// Could not produce a verdict at all.
 		fmt.Fprintln(os.Stderr, "verify:", err)
@@ -427,6 +446,13 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	defer registryHold.Close()
+	// under the hold, before anything is served (SPEC.md §3c)
+	if cfg.sealOpenAtStart {
+		if err := sealOpenAtStart(service, os.Stderr, nowStamp); err != nil {
+			fmt.Fprintln(os.Stderr, "start:", err)
+			return 1
+		}
+	}
 	service.witness = witness
 	service.attachDelegation(delegation)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -520,6 +546,10 @@ type serveOptions struct {
 	// seedPath is the seed file the command line or the configuration
 	// names, which /posture judges.
 	seedPath string
+	// sealOpenAtStart seals, at the start, each session an earlier process
+	// left open, after the interruption (--seal-open-at-start; serve
+	// --config reads the configuration's sealOpenAtStart; SPEC.md §3c).
+	sealOpenAtStart bool
 }
 
 // validateEnvKey accepts what an environment variable name can be on the
@@ -562,7 +592,7 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 		return serveOptions{}, "usage: gateway serve --config <engine.json> | gateway serve <store> <seedfile> <authority> <registry> " +
 			"[--source NAME=CMD ...] [--source-env NAME=KEY[=VALUE] ...] [--source-user NAME=USER ...] " +
 			"[--source-shape NAME=airbyte|mcp|http] [--source-max-output BYTES] [--source-timeout NAME=SECONDS ...] " +
-			"[--max-request BYTES] [--receipt-version 2|3] [--witnessed-by TRAIL=ORIGIN,PUBLICKEY ...] [--port N]", false
+			"[--max-request BYTES] [--receipt-version 2|3] [--witnessed-by TRAIL=ORIGIN,PUBLICKEY ...] [--seal-open-at-start] [--port N]", false
 	}
 
 	opts := serveOptions{
@@ -749,6 +779,11 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 			opts.port = rest[i+1]
 			portSeen = true
 			i++
+		case rest[i] == "--seal-open-at-start":
+			if opts.sealOpenAtStart {
+				return opts, "duplicate --seal-open-at-start option", false
+			}
+			opts.sealOpenAtStart = true
 		case strings.HasPrefix(rest[i], "--"):
 			return opts, fmt.Sprintf("unknown option %q", rest[i]), false
 		default:
@@ -855,6 +890,13 @@ func cmdServe(args []string) int {
 		return 1
 	}
 	defer registryHold.Close()
+	// under the hold, before anything is served (SPEC.md §3c)
+	if opts.sealOpenAtStart {
+		if err := sealOpenAtStart(service, os.Stderr, nowStamp); err != nil {
+			fmt.Fprintln(os.Stderr, "start:", err)
+			return 1
+		}
+	}
 	// Sources run in their own process groups, so the terminal's interrupt
 	// no longer reaches them; the gateway's does, and it is carried to every
 	// source in flight through the service's context.

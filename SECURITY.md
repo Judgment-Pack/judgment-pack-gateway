@@ -629,6 +629,16 @@ of the witness but its origin and key identifier.
 registry over the store.** The anchor must be fetched from the key holder, not from the store being
 checked. A verifier that reads both from the same untrusted place gets no guarantee.
 
+**A seal made after an interruption does not establish that the session was never sealed.**
+`gateway seal-open` and the start switch seal a session no seal closes (SPEC.md §3c), and
+neither can tell a session that was never sealed from one whose seal line was taken out of the
+registry. One who can write to the store and the registry, without the key, can therefore shorten
+a sealed session, take its seal line away, and have the shortened session sealed by a key
+holder; with `sealOpenAtStart` on, that happens at the next start without an operator looking.
+The seal says the key holder sealed what the store held then, not that it was all the minting
+process wrote. A consumer that needs to rule this out verifies with `--ordinary-seals-only`,
+under which such a session is a finding.
+
 **Not in scope for this reference:** availability or HA, authenticated transport, access control
 beyond a checkpoint witness's registrations and named operators, multi-tenancy, key rotation or custody, rate limiting
 beyond a witness's bounds on its submitters, and resistance to a local attacker who can

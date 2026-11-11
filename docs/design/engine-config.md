@@ -54,18 +54,19 @@ The file is read through the same strict parser the gateway uses for everything 
 duplicate member names refused, integers only, unknown members refused by name. A misspelled
 key is an error, never an intention silently dropped. `engineVersion`, `authority`, `seed`,
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
-`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox` and `delegation` are optional; within a
+`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox`, `delegation` and `sealOpenAtStart` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
 `descriptors`, `operationDescriptors`, `descriptorStatements`, `decisionPolicy`,
 `parameters` and `grant` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"16"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"17"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
   `operationDescriptors`, version 12 `descriptorStatements`, version 13 `sandbox`, version
-  14 a required `actionKey`, version 15 `delegation`, and version 16 a platform's `grant`. A file of
+  14 a required `actionKey`, version 15 `delegation`, version 16 a platform's `grant`, and
+  version 17 `sealOpenAtStart`. A file of
   an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -1167,6 +1168,19 @@ What it changes for callers, all in SPEC.md §11:
 - `/posture` adds `delegation-narrowing` and `delegation-sender-constraint`.
 
 A file without the member, and every call made under no delegation, behave as before.
+
+## Sealing at the start what was left open (engine version 17)
+
+Version 17 adds the optional `sealOpenAtStart` member, `true` or `false` and nothing else
+(SPEC.md §3c, gateway #395). With it `true`, the engine's start, once it holds its registry
+and before it serves, seals each session an earlier process left open whose receipts are
+whole with a seal made after an interruption, `sealedVia` `"start"`, and writes each seal on
+stderr as `start: sealed after an interruption: <registry line>`. A session that is not
+whole, and a directory no session id names, is named on stderr and stays open, and the engine
+serves; a session that cannot be read stops the start, nothing sealed. Absent or `false`, the
+start does what it did before. `gateway serve` from the command line takes
+`--seal-open-at-start` for the same switch, and `gateway seal-open --config <engine.json>`
+seals by hand, the engine stopped.
 
 ## A platform's grant (engine version 16)
 

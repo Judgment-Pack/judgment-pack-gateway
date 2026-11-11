@@ -265,6 +265,47 @@ func newRegistryWriterOn(log appendLog, name string, seed []byte, history func()
 // missing -- seals nothing, here as for /acquire (§6), and the new seal is
 // appended beside it.
 func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt string) (*vObject, error) {
+	return w.appendSeal(sessionID, func() *vObject {
+		signature := ed25519.Sign(w.priv, sealSigningInput(sessionID, finalCount, sealedAt, w.keyID))
+		record := newObject()
+		record.set("sessionId", vString(sessionID))
+		record.set("finalCount", vInt(finalCount))
+		record.set("sealedAt", vString(sealedAt))
+		record.set("keyId", vString(w.keyID))
+		record.set("signature", vString(hex.EncodeToString(signature)))
+		return record
+	})
+}
+
+// sealAfterInterruption appends a seal made after an interruption (SPEC.md
+// §3c): the count of the receipts the store holds in a session an earlier
+// process left open, the signature of the last of them, when, and by which
+// path -- the operator's command or the gateway's start. It is refused as
+// seal refuses, for a session the registry holds a seal of either kind for;
+// what it seals, its caller has found whole.
+func (w *registryWriter) sealAfterInterruption(sessionID string, finalCount int64, head, sealedAt, via string) (*vObject, error) {
+	// what a reader would not load is not written (SPEC.md §3c)
+	if finalCount < 1 || finalCount > maxSafeInteger || !isLowerHexOfLen(head, 128) ||
+		!witnessTimeForm.MatchString(sealedAt) || (via != sealedViaCommand && via != sealedViaStart) {
+		return nil, fmt.Errorf("a seal after an interruption counts from 1 to 2^53-1 receipts, names the last one's signature in lowercase hexadecimal, is stamped YYYY-MM-DDThh:mm:ssZ, and is made by the command or the start")
+	}
+	return w.appendSeal(sessionID, func() *vObject {
+		record := newObject()
+		record.set("finalCount", vInt(finalCount))
+		record.set("headSignature", vString(head))
+		record.set("keyId", vString(w.keyID))
+		record.set("kind", vString(sealKindInterruption))
+		record.set("sealedAt", vString(sealedAt))
+		record.set("sealedVia", vString(via))
+		record.set("sessionId", vString(sessionID))
+		record.set("signature", vString(hex.EncodeToString(ed25519.Sign(w.priv, interruptionSealSigningInput(record)))))
+		return record
+	})
+}
+
+// appendSeal appends the record a session's seal is, once the registry,
+// read as the verifier reads it, holds no seal for the session.
+func (w *registryWriter) appendSeal(sessionID string, build func() *vObject) (*vObject, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, err
 	}
@@ -293,14 +334,7 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 	if _, sealed := walk.seals[sessionID]; sealed {
 		return nil, fmt.Errorf("session already sealed: %s", sessionID)
 	}
-
-	signature := ed25519.Sign(w.priv, sealSigningInput(sessionID, finalCount, sealedAt, w.keyID))
-	record := newObject()
-	record.set("sessionId", vString(sessionID))
-	record.set("finalCount", vInt(finalCount))
-	record.set("sealedAt", vString(sealedAt))
-	record.set("keyId", vString(w.keyID))
-	record.set("signature", vString(hex.EncodeToString(signature)))
+	record := build()
 
 	// A record starts on a line of its own. A registry whose last line is
 	// unterminated -- an earlier seal written in part, or whole but for its

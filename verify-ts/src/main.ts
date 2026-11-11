@@ -5,10 +5,15 @@
 //   main.ts canon      stdin: one JSON document; stdout: its canonical
 //                      bytes; exit 0 inside the domain, 1 refused, 2
 //                      past what this implementation reads
-//   main.ts verify <store-root> <registry-path> <authority> [<decision-records-dir>]
+//   main.ts verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [<decision-records-dir>]
 //                      stdin: the 32-byte Ed25519 public key; stdout:
 //                      {"ok": bool, "findings": [...]}; exit 0 whenever a
-//                      verdict was reached, 2 when none could be
+//                      verdict was reached, 2 when none could be; with
+//                      the option, first or not at all, a session a seal
+//                      made after an interruption anchors is a finding
+//                      (SPEC.md §4 step 3); the option in a later place
+//                      is a usage error, exit 64, and a directory so
+//                      spelled is given as ./--ordinary-seals-only
 //   main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]
 //                      a reading of a chain of witness statements
 //                      (SPEC.md §8.6); stdout: the answer, a refusal
@@ -171,14 +176,19 @@ function main(args: string[]): number {
     process.stdout.write(bytes);
     return 0;
   }
-  if (command === "verify" && (rest.length === 3 || rest.length === 4)) {
+  const ordinarySealsOnly = command === "verify" && rest[0] === "--ordinary-seals-only";
+  const positional = ordinarySealsOnly ? rest.slice(1) : rest;
+  // The option in any later place is a usage error, never taken as an
+  // argument and the plain verdict run in its stead.
+  const misplaced = command === "verify" && rest.slice(1).includes("--ordinary-seals-only");
+  if (command === "verify" && !misplaced && (positional.length === 3 || positional.length === 4)) {
     try {
-      const [root, registry, authority, decisionRecords] = exactArguments(rest) as [string, string, string, string | undefined];
+      const [root, registry, authority, decisionRecords] = exactArguments(positional) as [string, string, string, string | undefined];
       const key = readInput(32);
       if (key === null) {
         throw new NoVerdict("the public key on standard input is more than 32 bytes");
       }
-      const verdict = verifyStore(root, registry, authority, decisionRecords, key);
+      const verdict = verifyStore(root, registry, authority, decisionRecords, key, { ordinarySealsOnly });
       const output = new Output();
       writeVerdict(verdict, (text) => output.write(text));
       output.flush();
@@ -194,8 +204,11 @@ function main(args: string[]): number {
   if (command === "witness") {
     return witness(rest);
   }
+  if (misplaced) {
+    process.stderr.write("verify: --ordinary-seals-only goes first, before the store root; a directory so named is given as ./--ordinary-seals-only\n");
+  }
   process.stderr.write(
-    "usage: main.ts canon | main.ts verify <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n",
+    "usage: main.ts canon | main.ts verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n",
   );
   return 64;
 }

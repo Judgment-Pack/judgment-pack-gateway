@@ -307,8 +307,11 @@ last receipts may have been taken away in between (SPEC.md §2). So an acquisiti
 refused before any source runs, and so is its seal, each as a session an earlier process
 left open (gateway #381); a client acquires into a new session. A store holding it reads
 `unregistered-session` under `gateway verify`, with the observation `session-open` beside it
-while its receipts are whole, until the operator resolves it; a consumer's verdict is
-store-wide and fails closed (§5a.1), which is the point.
+while its receipts are whole, until the operator resolves it — with the signer stopped,
+`gateway seal-open` seals it as a seal made after an interruption, and the engine's start
+does so with `sealOpenAtStart` (SPEC.md §3c), after which the store verifies with the
+observation `sealed-after-interruption`; a consumer's verdict is store-wide and fails closed
+(§5a.1), which is the point.
 
 ## Transport profile
 

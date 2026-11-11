@@ -19,8 +19,8 @@ import (
 
 // The refusals as an answer carries them, byte for byte.
 const (
-	leftOpenAnswer = `{"error":"session left was left open by an earlier process: the store holds receipts in it that this process did not mint, and no seal closes it; its chain is not continued from an empty memory, nor is it sealed from a count on disk, so acquire into a new session (gateway verify reports this one unregistered-session, and observes it session-open while its receipts are whole)"}`
-	leftOpenText   = "session %s was left open by an earlier process: the store holds receipts in it that this process did not mint, and no seal closes it; its chain is not continued from an empty memory, nor is it sealed from a count on disk, so acquire into a new session (gateway verify reports this one unregistered-session, and observes it session-open while its receipts are whole)"
+	leftOpenAnswer = `{"error":"session left was left open by an earlier process: the store holds receipts in it that this process did not mint, and no seal closes it; its chain is not continued from an empty memory, nor is it sealed here from a count on disk, so acquire into a new session (gateway verify reports this one unregistered-session, and observes it session-open while its receipts are whole; gateway seal-open, with the gateway stopped, seals it as sealed after an interruption)"}`
+	leftOpenText   = "session %s was left open by an earlier process: the store holds receipts in it that this process did not mint, and no seal closes it; its chain is not continued from an empty memory, nor is it sealed here from a count on disk, so acquire into a new session (gateway verify reports this one unregistered-session, and observes it session-open while its receipts are whole; gateway seal-open, with the gateway stopped, seals it as sealed after an interruption)"
 	notADirText    = "session %s is in the store as something other than a session directory, which this process did not make; nothing is taken up there"
 	unreadText     = "session %s could not be read in the store, so whether an earlier process left receipts in it is not known; it is refused rather than taken for empty"
 )
@@ -360,7 +360,7 @@ func TestADelegatedAcquisitionIntoASessionLeftOpenIsRefusedFirst(t *testing.T) {
 	held := sessionEntries(t, h.g.storeRoot, "before")
 	hostReads, counted, custody := h.host.readCount(), h.host.counted(), len(grantCalls(t, h.root))
 	status, raw := h.presentRaw(t, "/acquire", h.acquireBody("before", "query"), cred)
-	const want = `{"error":"session before was left open by an earlier process: the store holds receipts in it that this process did not mint, and no seal closes it; its chain is not continued from an empty memory, nor is it sealed from a count on disk, so acquire into a new session (gateway verify reports this one unregistered-session, and observes it session-open while its receipts are whole)"}`
+	const want = `{"error":"session before was left open by an earlier process: the store holds receipts in it that this process did not mint, and no seal closes it; its chain is not continued from an empty memory, nor is it sealed here from a count on disk, so acquire into a new session (gateway verify reports this one unregistered-session, and observes it session-open while its receipts are whole; gateway seal-open, with the gateway stopped, seals it as sealed after an interruption)"}`
 	if status != http.StatusBadRequest || raw != want {
 		t.Fatalf("a delegated acquisition into a session left open: %d %s", status, raw)
 	}

@@ -22,12 +22,13 @@ package main
 // source ran, and its stamp then found receipt 0 in place, or, in a session
 // that had lost receipt 0, made a new one beside the old chain.
 //
-// A seal made after an interruption needs a record of its own that says so,
-// in the registry, under the gateway's signature: a seal of today's form
-// would say the same of a count read from the store as of one this process
-// kept, and nothing else of the format can carry the difference
-// (SPEC.md §3). Until the format has one, such a session stays open and the
-// verdict over its store stays false.
+// A seal made after an interruption is a record of its own that says so, in
+// the registry, under the gateway's signature (SPEC.md §3c): a seal of §3's
+// form would say the same of a count read from the store as of one this
+// process kept. /seal never makes one. gateway seal-open makes it, with the
+// gateway stopped, and the start makes it with the switch on
+// (seal_open.go), over a session whose receipts are whole; such a session
+// is then sealed in the registry, never continued, and its store verifies.
 
 import (
 	"fmt"
@@ -41,7 +42,7 @@ import (
 // for a read's admission and for a seal: the same words for both, since the
 // session's state is the same.
 const (
-	refusalLeftOpen = "session %s was left open by an earlier process: the store holds receipts in it that this process did not mint, and no seal closes it; its chain is not continued from an empty memory, nor is it sealed from a count on disk, so acquire into a new session (gateway verify reports this one unregistered-session, and observes it session-open while its receipts are whole)"
+	refusalLeftOpen = "session %s was left open by an earlier process: the store holds receipts in it that this process did not mint, and no seal closes it; its chain is not continued from an empty memory, nor is it sealed here from a count on disk, so acquire into a new session (gateway verify reports this one unregistered-session, and observes it session-open while its receipts are whole; gateway seal-open, with the gateway stopped, seals it as sealed after an interruption)"
 	refusalNotADir  = "session %s is in the store as something other than a session directory, which this process did not make; nothing is taken up there"
 	refusalUnread   = "session %s could not be read in the store, so whether an earlier process left receipts in it is not known; it is refused rather than taken for empty"
 )

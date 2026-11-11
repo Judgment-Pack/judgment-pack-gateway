@@ -63,7 +63,7 @@ surrogate, and neither survives being written into a document each language
 re-parses with its own defaults. Accepting vectors carry `expectedHex`; refusing
 vectors carry `reject: true`.
 
-**`stores/*.json`** — 33 vectors, each a complete store (a `path → text` map plus
+**`stores/*.json`** — 46 vectors, each a complete store (a `path → text` map plus
 the registry text) and its expected `(ok, findings)`. There is one per status an
 implementation can emit. Two of them, `key-mismatch` and `unsupported-version`,
 exist because a second implementation pointed out that those statuses were
@@ -120,6 +120,32 @@ sign nothing real and must never be used by a deployment. A vector whose walk
 followed a rotation gives `rotations` in `expected`, `{"count", "keyId"}`, and a
 runner compares it whole with the implementation's; a vector without the member
 expects none, and an implementation that followed none leaves the member out.
+
+Thirteen, each named `interruption-seal*`, hold the seal made after an
+interruption (`SPEC.md` §3c; issue #395), each over the three receipts of
+`valid-sealed`: the seal the operator's command makes, which anchors the session
+and verifies `ok` (`interruption-seal`), and the one the gateway's start makes
+(`interruption-seal-by-the-start`); one another key signed, which loads nothing
+(`interruption-seal-forged`); a line of that kind carrying the signature a seal of
+§3's form would carry, which loads nothing either, since a line of that kind is
+read as that seal and as nothing else (`interruption-seal-is-not-an-ordinary-seal`
+— a reader from before §3c grades it `ok`); one with a member its form does not
+hold (`interruption-seal-member-more`); one naming another receipt as the last,
+`seal-head-mismatch` (`interruption-seal-head-mismatch`); one counting fewer
+receipts than the store holds, `count-exceeds-seal`, and one counting more,
+`tail-rollback` (`interruption-seal-counts-fewer`, `interruption-seal-counts-more`);
+one beside a seal of §3's form for the same session, and two for one session,
+each `seal-conflict` (`interruption-seal-beside-an-ordinary-seal`,
+`interruption-seal-twice`); one for a session the store does not hold,
+`sealed-session-missing` (`interruption-seal-session-missing`); and, after the
+first rotation of `rotation-followed-twice`, one the key rotated to signed over
+receipts the key rotated from signed, `ok`, and one the key rotated from signed,
+which loads nothing (`interruption-seal-after-rotation`,
+`interruption-seal-old-key-after-rotation`). The session such a seal anchors is
+observed `sealed-after-interruption`, and is that finding under
+`--ordinary-seals-only`; the runner reads neither, so the rows of
+[`../testdata/interruption-seal/cases.json`](../testdata/interruption-seal/cases.json),
+which both implementations run, compare them over these vectors.
 
 **`witness/*.json`** — the checkpoint witness's vectors, below.
 
