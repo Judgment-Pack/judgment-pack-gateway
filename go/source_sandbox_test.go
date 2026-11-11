@@ -413,3 +413,41 @@ func TestPublicPostureReasonsNameNoPathOrAccount(t *testing.T) {
 		t.Fatal("the operator's report lost the helper's detail")
 	}
 }
+
+// A wrapped source whose helper gave no report is not told apart by its
+// mode, so /posture must not answer the sentence of a source with no wrapper.
+func TestPublicPostureTellsUnmeasuredFromUnwrapped(t *testing.T) {
+	calls := stubSandboxProbe(t, "", errors.New("helper failed at "+filepath.Join("/", "home", "someone", "bin", "helper")))
+	sources := map[string]sourceSpec{
+		"a/live": {sandbox: &sourceSandbox{classes: []string{"adapter"}}},
+		"b/live": {},
+	}
+	reasons := func(public bool) map[string]string {
+		parsed, err := parseJSON(hostPosture(postureInput{configured: true, sources: sources, public: public}).canonical())
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		list, _ := parsed.(*vObject).byName["programs"].(vArray)
+		for _, entry := range list {
+			o := entry.(*vObject)
+			out[string(o.byName["source"].(vString))] = string(o.byName["reason"].(vString))
+		}
+		return out
+	}
+	const unwrapped = "this source configuration does not select the adapter sandbox wrapper"
+	public := reasons(true)
+	if public["a/live"] != publicUnmeasuredReason || strings.Contains(public["a/live"], "does not select") || strings.Contains(public["a/live"], "someone") {
+		t.Fatalf("wrapped, unmeasured source: %q", public["a/live"])
+	}
+	if public["b/live"] != unwrapped {
+		t.Fatalf("unwrapped source changed: %q", public["b/live"])
+	}
+	operator := reasons(false)
+	if operator["a/live"] != "sandbox-not-enforced: source-user backend check did not complete successfully" || operator["b/live"] != unwrapped {
+		t.Fatalf("operator report changed: %+v", operator)
+	}
+	if *calls != 2 {
+		t.Fatalf("probe calls: %d", *calls)
+	}
+}
