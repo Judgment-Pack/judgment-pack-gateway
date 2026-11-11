@@ -43,16 +43,18 @@ import (
 // version 14 a required action key, version 15 the optional `delegation`
 // (SPEC.md §11.2), version 16 a platform's optional `grant`, the
 // connection grant its delegated calls are admitted under (SPEC.md §10,
-// rule 3; grant_gate.go), and version 17 the optional `sealOpenAtStart`,
+// rule 3; grant_gate.go), version 17 the optional `sealOpenAtStart`,
 // which seals at the start each session an earlier process left open
-// (SPEC.md §3c; seal_open.go):
+// (SPEC.md §3c; seal_open.go), and version 18 a platform's optional
+// `writeRequesters`, the requesters each write tool admits a write from
+// (SPEC.md §6; write_requesters.go):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "17"
+const engineVersion = "18"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -165,6 +167,10 @@ type platformConfig struct {
 	// acquisitions and the read-backs of its delegated keys; nil when it
 	// names none, and then no delegated call is admitted.
 	grant *platformGrant
+	// requesters are who may ask for a write through each write tool
+	// (engineVersion 18, write_requesters.go); nil when the platform gives
+	// no writeRequesters, and then every authenticated requester may.
+	requesters *writeRequesters
 }
 
 // identitySpec is the identity member as written: the token issuer, the
@@ -289,7 +295,7 @@ var engineMembers = map[string]bool{
 var platformMembers = map[string]bool{
 	"binding": true, "credentials": true, "user": true,
 	"endpoint": false, "environment": false, "write": false, "descriptors": false, "operationDescriptors": false, "descriptorStatements": false,
-	"decisionPolicy": false, "parameters": false, "grant": false,
+	"decisionPolicy": false, "parameters": false, "grant": false, "writeRequesters": false,
 }
 
 // parseEngineConfig holds the file to the shape the design note states.
@@ -614,6 +620,23 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			// so a platform that allows no write may name one too.
 			if pc.grant, err = parsePlatformGrant(grantValue); err != nil {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: %v", name, err)
+			}
+		}
+		if requestersValue, present := p.get("writeRequesters"); present {
+			if !versionAtLeast(version, "18") {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: writeRequesters is a version-18 member; engineVersion %s has no writeRequesters", name, version)
+			}
+			// The lists say who may ask for a write: a platform that allows
+			// none has no write to hold, and a gateway that authenticates
+			// nobody has no requester to hold one to.
+			if !pc.write {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: writeRequesters holds write tools to their requesters, and the platform does not set write: true", name)
+			}
+			if cfg.identity == nil {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: writeRequesters needs identity: a requester is who a bearer token or a delegation authenticates, and with no identity nobody is", name)
+			}
+			if pc.requesters, err = parseWriteRequesters(requestersValue, name, cfg.identity.issuer, cfg.delegation != nil); err != nil {
+				return engineConfig{}, err
 			}
 		}
 		cfg.platforms = append(cfg.platforms, pc)
@@ -1274,7 +1297,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.write.url != "" {
 				endpoint, transport = b.write.url, "http"
 			}
-			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.write), grant: grant}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.write), grant: grant, requesters: p.requesters}
 		}
 	}
 	if cfg.sandbox != nil {
@@ -2304,6 +2327,9 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 			return nil, fmt.Errorf("platform %s: descriptors pins a snapshot of a live MCP operation, or of the write operation of a binding with no live one, and binding %s offers the platform neither", p.name, p.binding)
 		}
 		if err := policiesMatch(*p, b); err != nil {
+			return nil, fmt.Errorf("platform %s: %v", p.name, err)
+		}
+		if err := requestersMatch(*p, b); err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
 		if err := operationPinsMatch(*p, b); err != nil {

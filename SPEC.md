@@ -1425,7 +1425,8 @@ not itself a finding.
 - Scope not claimed: no availability/HA guarantees, no authenticated transport
   (binds a loopback address unless `gateway serve --listen` names another), no
   access control on the HTTP surface beyond a witness's
-  registrations (§6, "Witness endpoints"). This is a reference for
+  registrations (§6, "Witness endpoints") and a platform's `writeRequesters`
+  (§6, "Who may ask for a write"). This is a reference for
   self-hosting a trust root and for demonstrating the mechanism, not a hardened
   public deployment.
 - Version 3's `caller` and `requester` record who asked, as a token verified at
@@ -1559,7 +1560,9 @@ names", below). `POST /act` mints one of kind `"action"` (the engine of
 `docs/adr/0001-one-engine-four-processes.md`, described in
 `docs/design/executor.md`): from an authenticated request naming a platform's
 write tool, the decision record the write relies on and the receipts that
-record relied on, after the engine has found the cited receipts in its own
+record relied on — from a requester the platform's `writeRequesters` names for
+that tool, where the configuration gives the member ("Who may ask for a write",
+below) — after the engine has found the cited receipts in its own
 store under a key its own reading of its registry reached (§3b) — its own, or
 one it rotated from — and the record under its decision-record directory —
 the standard §4 applies — and, for a tool its operator holds to a decision
@@ -1583,6 +1586,76 @@ A `source` is an operator-configured subprocess that reads the canonical argumen
 stdin and emits a JSON result on stdout. The gateway attaches no transport of its own
 — it attests whatever bytes a configured source returns, which is exactly the inline
 core's boundary: **proof of the bytes, not proof of their truth.**
+
+### Who may ask for a write
+
+A platform's configuration may give `writeRequesters` (engine configuration version 18,
+`docs/design/engine-config.md`): the requesters `POST /act` takes a write from, for each of
+the platform's write tools.
+
+```json
+"writeRequesters": {
+  "platform": [{"issuer": "https://issuer.example", "subject": "user-17"}],
+  "tools": {"update_ticket": [{"issuer": "https://issuer.example", "subject": "user-42"}]}
+}
+```
+
+- **Which list holds a tool.** A tool named under `tools` is held to its own list, which
+  replaces the `platform` list for that tool; every other write tool is held to the `platform`
+  list; a tool with neither is held to no list. A list admits only the requesters it names, and
+  a list that is present and empty names none, so the member only ever narrows who may ask.
+  Without the member no tool is held to a list, and `/act` behaves exactly as it did before the
+  member existed.
+- **Who the requester is.** The one the action receipt names as `action.requester` (§1.2a), by
+  `issuer` and `subject`: for a bearer token, the configured issuer and the token's `sub`; for a
+  delegation credential (§11.4), the chain's `sub`, the person or service the run acts for,
+  never the agent that presents the credential or the host that bound it; for a request naming a
+  `reservation` (§11.8), the reservation's `sub`, never the subject of the token that sends it,
+  whether the subject's own, the issuing host's or an operator's. The member restricts
+  requesters; nothing in it names a sender.
+- **How they are compared.** An entry admits a requester whose `issuer` and `subject` are the
+  entry's, each compared as a string byte for byte: no case folding, no Unicode normalization,
+  no trimming. Every entry is bound to its issuer, so a subject of one issuer never matches an
+  entry naming the same subject of another. Under a delegation (§11) the `issuer` and `subject`
+  compared are the chain's `sub` as its issuing host signed it: nothing ties an issuing host to
+  an issuer, so an entry admits a chain that any configured issuing host signs naming that
+  `sub`, of any issuer, the configured identity's included.
+- **Where it is held.** Once the requester is authenticated (a delegation credential presented,
+  a reservation's sender authenticated against the reservation, which for the subject's own
+  token includes the read of its standing at the issuing host) and the session, platform and
+  tool steps have passed, and before anything else in the request is read: the arguments, the
+  action key and its members, the decision, the cites and the decision policy. A requester the
+  tool's list does not name is refused `403` with exactly the body
+  `{"error":"the requester is not one the configuration's writeRequesters names for this tool","refusedAt":"write-requesters"}`,
+  the same sentence for everyone, naming no requester and no list. Nothing is sent to a target,
+  no read-back runs, nothing is journaled and nothing is minted. The refusal is recorded nowhere,
+  as no refusal of the action ladder is.
+- **What it covers.** Every request on `/act`: a first dispatch, a replay of a key, a
+  reconciliation (§1.2b), the read-back of an uncertain key, a delegated actor's request and a
+  reservation's. A requester the list no longer names is refused on a key it reserved while it
+  was named, and is not given that key's retained evidence. `/acquire` runs no write source and
+  is not held.
+- **What it does not establish.** It restricts who may ask; it is no approval and no decision.
+  A requester it admits is still held to every later step, the decision policy (§1.2a,
+  `policy`) included, and the target system's own authorization is unchanged. The session,
+  platform and tool steps answer a requester it would refuse exactly as they answer anyone.
+- **Loading.** A file of a version before 18 that carries the member is refused by name. The
+  member is also refused:
+  - on a platform that does not set `write: true`;
+  - in a configuration with no `identity`;
+  - with a member other than `platform` and `tools`, or with neither;
+  - with a `tools` that names no tool, names a tool by the empty string, or names a tool the
+    binding's write operation does not name;
+  - with an entry that is not exactly `{issuer, subject}`, each a non-empty string;
+  - with a requester named twice in one list;
+  - in a configuration with no `delegation`, with an entry whose issuer is not
+    `identity.issuer`, since no requester of another issuer can then reach `/act`.
+
+  Each refusal names the entry by its place and repeats no requester.
+- **Posture.** `/posture` and `gateway posture` add a `write-requesters` line where some
+  platform gives the member, and no line where none does. It is `enforced` when every write tool
+  is held to a list and `not-enforced` otherwise, and its reason counts the write tools held,
+  never naming a requester.
 
 ### Adapter sources
 

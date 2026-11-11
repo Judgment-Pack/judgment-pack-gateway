@@ -319,6 +319,19 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 			return out, fmt.Errorf("platform %s carries a decisionPolicy, which --replace keeps: %v", req.platform, err)
 		}
 	}
+	// So is writeRequesters (engineVersion 18): an entry written without
+	// it would admit every requester to the writes it restricted, so the
+	// entry replaced keeps it, and a replacement it would no longer fit is
+	// refused, never written without it.
+	if previous != nil && previous.requesters != nil {
+		if !entry.write {
+			return out, fmt.Errorf("platform %s carries writeRequesters, which --replace keeps, and the entry replacing it does not set --write; remove writeRequesters from the file first, or give --write", req.platform)
+		}
+		entry.requesters = previous.requesters
+		if err := requestersMatch(entry, b); err != nil {
+			return out, fmt.Errorf("platform %s carries writeRequesters, which --replace keeps: %v", req.platform, err)
+		}
+	}
 	// The entry as it is written, kept apart: judging the configuration
 	// below replaces each credentials path in the entry with the path it
 	// resolves to, which is not what the file will say.
@@ -800,9 +813,10 @@ func describeCheck(shape string, report []byte, url string) (string, error) {
 // pin, and parameters are a version-8 member, so it is raised to version 8
 // exactly when the entry carries them; otherwise its version stays as it
 // was found, and a later one is never lowered. The entry replaced keeps its
-// decisionPolicy as written, which connect has no flag for (ADR-0011);
-// parameters are the ones connect resolved the binding with, the entry's
-// own on --replace when none were given.
+// decisionPolicy and its writeRequesters as written, which connect has no
+// flag for (ADR-0011; write_requesters.go); parameters are the ones
+// connect resolved the binding with, the entry's own on --replace when
+// none were given.
 func renderPlatformEntry(data []byte, req connectRequest, ref, pin string, parameters map[string]string) ([]byte, error) {
 	v, err := parseJSON(data)
 	if err != nil {
@@ -871,6 +885,9 @@ func renderPlatformEntry(data []byte, req connectRequest, ref, pin string, param
 		if replacedObj, ok := replaced.(*vObject); ok {
 			if policy, ok := replacedObj.get("decisionPolicy"); ok {
 				entry.set("decisionPolicy", policy)
+			}
+			if requesters, ok := replacedObj.get("writeRequesters"); ok {
+				entry.set("writeRequesters", requesters)
 			}
 		}
 	}

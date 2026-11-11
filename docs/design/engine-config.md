@@ -57,16 +57,16 @@ key is an error, never an intention silently dropped. `engineVersion`, `authorit
 `runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox`, `delegation` and `sealOpenAtStart` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
 `descriptors`, `operationDescriptors`, `descriptorStatements`, `decisionPolicy`,
-`parameters` and `grant` optional. Every path is absolute.
+`parameters`, `grant` and `writeRequesters` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"17"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"18"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
   `operationDescriptors`, version 12 `descriptorStatements`, version 13 `sandbox`, version
-  14 a required `actionKey`, version 15 `delegation`, version 16 a platform's `grant`, and
-  version 17 `sealOpenAtStart`. A file of
+  14 a required `actionKey`, version 15 `delegation`, version 16 a platform's `grant`,
+  version 17 `sealOpenAtStart`, and version 18 a platform's `writeRequesters`. A file of
   an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -616,6 +616,10 @@ managed gateway's posture beside the gateway's status. The answer is canonical J
   completed successful boundary check. With version 13 sources it aggregates the
   per-program entries below: `enforced` only when every entry is enforced, otherwise
   `partial` when any entry is enforced or partial.
+- After the five, a configuration with `delegation` adds its two lines (SPEC.md §11.9), and one
+  where some platform gives `writeRequesters` adds `write-requesters`: `enforced` when every
+  write tool is held to a requester list, `not-enforced` otherwise, the tools counted and no
+  requester named.
 
 Windows has no shipped restricted-command backend. Engine versions 13 and later
 wrap every configured source adapter, including adapters for remote and container
@@ -972,8 +976,10 @@ and the rule; the flag is never silently ignored.
 - **Not an authorization.** `write: true` says an executor may be pointed at the platform; a
   write still happens only on an authenticated request that cites a decision record and receipts
   the engine finds where it looks ([executor.md](executor.md)), and, for a tool held to a
-  `decisionPolicy`, whose record meets it. That a person approved the write is not established
-  by anything here: the receipt says who asked.
+  `decisionPolicy`, whose record meets it. A platform's `writeRequesters` narrows who may ask
+  for a write through each tool, and only that: it says nothing of what the requester may ask
+  for. That a person approved the write is not established by anything here: the receipt says
+  who asked.
 - **Not portable across engines.** It names local paths and local secrets; the receipts are
   what travel.
 
@@ -1215,8 +1221,78 @@ reason `tool`) and never asks the custody. No undelegated call is. A delegated c
 `grant-unknown`. The engine image ships no `gateway-connections` and no custody user, so a file
 that names a grant is refused at start there.
 
-`connect --replace` keeps a platform's `decisionPolicy` and drops its `grant`: the replaced entry's
-delegated calls are refused until the member is written again.
+`connect --replace` keeps a platform's `decisionPolicy` and `writeRequesters` and drops its
+`grant`: the replaced entry's delegated calls are refused until the member is written again.
+
+## Who may ask for a write (engine version 18)
+
+Version 18 adds a platform's optional `writeRequesters` member (SPEC.md §6, "Who may ask for a
+write", gateway #383): the requesters `/act` takes a write from, for each of the platform's
+write tools. Without it, any requester the identity, or a delegation, authenticates may ask
+for a write through any write tool, as before.
+
+```json
+"tickets": {
+  "binding": "tickets@sha256:…",
+  "credentials": {"write": "/run/secrets/tickets-write"},
+  "user": "engine-tickets",
+  "write": true,
+  "writeRequesters": {
+    "platform": [
+      {"issuer": "https://issuer.example", "subject": "user-17"},
+      {"issuer": "https://issuer.example", "subject": "user-42"}
+    ],
+    "tools": {
+      "delete_ticket": [{"issuer": "https://issuer.example", "subject": "user-42"}],
+      "close_ticket": []
+    }
+  }
+}
+```
+
+Here `user-17` and `user-42` may ask for a write through every tool but two:
+`delete_ticket`, which `user-42` alone may ask for, and `close_ticket`, which nobody may.
+
+- **The lists.** `platform` is the list every write tool of the platform inherits; a tool named
+  under `tools` is held to its own list instead, never to both. Either may be left out, not both.
+  A list that is present and empty names nobody: the member only ever narrows who may ask.
+- **The requester** is the one the action receipt names: the configured issuer and a bearer
+  token's subject; under a delegation, the delegation's subject (the person or service on whose
+  behalf the agent acts), never the agent and never the host that bound the credential; on a
+  request naming a reservation, the reservation's subject, never the token subject of the host
+  or operator that sends it. The member's name says which one it restricts: who asks for the
+  write.
+- **Comparison** is exact, issuer and subject each, byte for byte: no case folding, no Unicode
+  normalization, no trimming. Each entry names its issuer, so a subject of one issuer never
+  matches an entry for another. Without `delegation`, every entry's `issuer` must be
+  `identity.issuer`, since nothing else can reach `/act`; with one, a delegation's subject may
+  be of another issuer, and an entry may name it.
+- **When the file is loaded** (`serve`, `connect`, `connect --replace`, `posture`), the member
+  is refused at a version before 18, on a platform without `write: true`, in a file without
+  `identity`, with any member but `platform` and `tools` or with neither, with a `tools` that
+  names no tool or names one by the empty string or one the binding's write operation does not
+  name, with an entry that is not exactly `{issuer, subject}` of non-empty strings, and with a
+  requester named twice in a list. The refusal names the entry by its place, as
+  `platform tickets: writeRequesters.platform[1]`, and repeats no requester. A tool
+  named twice, like any member, is a duplicate name the parser refuses.
+- **At `/act`**, a requester a tool's list does not name is refused `403`, `refusedAt`
+  `write-requesters`, with one fixed sentence that names nobody and no list, once the session,
+  platform and tool are known and before the arguments, the key, the decision, the cites and the
+  policy are read. Nothing is sent, read back, journaled or minted. A first send, a replay, a
+  reconciliation and a read-back are held alike.
+- **`connect --replace`** keeps the member as written, since an entry written without it would
+  admit everyone, and refuses a replacement it no longer fits: one without `--write`, or a
+  binding whose write operation no longer names a tool the member lists. A replacement whose
+  binding names a new write tool holds it to the `platform` list; with only `tools` given, the
+  new tool is held to no list. Give a `platform` list, an empty one if need be, so that a tool
+  added later is refused until it is named.
+- **`/posture`** adds a `write-requesters` line where some platform gives the member: `enforced`
+  when every write tool is held to a list, `not-enforced` otherwise, its reason counting the
+  tools held and never naming a requester. A file without the member reports no such line.
+
+It establishes that whoever asked was on the operator's list for the tool, and nothing more: a
+requester it admits is held to every later step, the decision policy included, and the target
+system's own authorization is unchanged.
 
 ## Keyed actions (engine version 14 and later)
 

@@ -39,6 +39,9 @@ const (
 	// §11.9); a gateway without one reports neither.
 	protectionDelegationNarrowing = "delegation-narrowing"
 	protectionDelegationSender    = "delegation-sender-constraint"
+	// The line a configuration that gives some platform writeRequesters
+	// adds (write_requesters.go); one that gives none reports no such line.
+	protectionWriteRequesters = "write-requesters"
 )
 
 // envPostureProbe and the two probe arguments together select the probe
@@ -126,7 +129,9 @@ var postureStatements = map[string]map[string]postureLine{
 	},
 }
 
-// hostPosture judges every protection under the configuration given.
+// hostPosture judges every protection under the configuration given: the
+// lines every report gives, then a delegation's, then writeRequesters', each
+// only where the configuration carries it.
 func hostPosture(in postureInput) postureReport {
 	programs := sourceProgramPosture(in.sources)
 	if in.public {
@@ -140,7 +145,7 @@ func hostPosture(in postureInput) postureReport {
 		custodyPosture(in.public),
 		seedPosture(in),
 		programConfinementPosture(programs),
-	}, delegationLines(in.delegation)...)}
+	}, append(delegationLines(in.delegation), writeRequestersLines(in.sources)...)...)}
 }
 
 // sourceUserPosture is whether every source runs as a user of its own
