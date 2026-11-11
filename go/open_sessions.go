@@ -62,9 +62,15 @@ const (
 //
 // Called under the service's lock, by a read's admission and by a seal, for
 // a session not in its map: a session this process has minted into stays
-// in the map (release), so what the store holds in one that is not there
+// in the map (release) -- but for one whose first receipt's write reported an
+// error although the file landed, which is refused here too -- so what the store holds in one that is not there
 // is another process's. The directory is read only as far as its first
 // receipt.
+// leftInStoreBatch is how many directory entries one read of the look takes.
+// A variable so a test can make a receipt fall past the first read on any
+// file system, whatever order it lists entries in.
+var leftInStoreBatch = 64
+
 func (g *gatewayService) leftInStore(sessionID string) string {
 	refused := func(why string) string { return fmt.Sprintf(why, sessionID) }
 	path := filepath.Join(g.storeRoot, "receipts", sessionID)
@@ -83,7 +89,7 @@ func (g *gatewayService) leftInStore(sessionID string) string {
 	}
 	defer dir.Close()
 	for {
-		entries, err := dir.ReadDir(64)
+		entries, err := dir.ReadDir(leftInStoreBatch)
 		for _, e := range entries {
 			if strings.HasSuffix(e.Name(), ".json") {
 				return refused(refusalLeftOpen)

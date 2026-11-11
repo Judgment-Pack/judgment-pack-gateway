@@ -236,11 +236,31 @@ func TestWhatTheStoreHoldsInASessionDecidesWhetherItIsTakenUp(t *testing.T) {
 		{"a receipt at another index", func(t *testing.T, dir string) { write(t, filepath.Join(dir, "7.json"), receipt) }, leftOpenText},
 		{"an empty file named as a receipt", func(t *testing.T, dir string) { write(t, filepath.Join(dir, "0.json"), "") }, leftOpenText},
 		{"a directory named as a receipt", func(t *testing.T, dir string) { mkdir(t, filepath.Join(dir, "0.json")) }, leftOpenText},
-		{"a receipt among more entries than one batch", func(t *testing.T, dir string) {
-			for n := 0; n < 2000; n++ {
-				write(t, filepath.Join(dir, fmt.Sprintf("0.json.%d.000000000000.tmp", n)), "")
-			}
+		{"a receipt past the first read of the directory", func(t *testing.T, dir string) {
+			// One entry a read, and staging files added until the directory
+			// lists one of them first: the receipt is then past the first
+			// read on any file system, whatever order it lists in.
+			leftInStoreBatch = 1
+			t.Cleanup(func() { leftInStoreBatch = 64 })
 			write(t, filepath.Join(dir, "0.json"), receipt)
+			for n := 0; ; n++ {
+				if n == 500 {
+					t.Fatal("the directory lists the receipt first however many entries it holds")
+				}
+				write(t, filepath.Join(dir, fmt.Sprintf("0.json.%d.000000000000.tmp", n)), "")
+				f, err := os.Open(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				first, err := f.ReadDir(1)
+				f.Close()
+				if err != nil || len(first) != 1 {
+					t.Fatalf("first entry: %v %v", first, err)
+				}
+				if first[0].Name() != "0.json" {
+					break
+				}
+			}
 		}, leftOpenText},
 		{"a file where the directory would be", func(t *testing.T, dir string) { write(t, dir, receipt) }, notADirText},
 	} {

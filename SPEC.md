@@ -1058,8 +1058,8 @@ as `sealedAt` is.
    `tail-rollback`:
    - not in the loaded seals → **`unregistered-session`** (whole-session replay, or
      a session forged without the key — or one still open: not yet sealed by the
-     gateway writing it, or left unsealed by a gateway process that stopped, which
-     no later process continues or seals (§6)). Where every one of the session's
+     gateway writing it, or left unsealed, holding a receipt, by a gateway process that
+     stopped, which no later process continues or seals (§6)). Where every one of the session's
      receipts has ladder status `ok` and their sequence and chain hold (§1.4), the
      report carries beside the finding the **observation** `session-open` on its
      last receipt, whose `callIndex` is the count less one (below). The finding
