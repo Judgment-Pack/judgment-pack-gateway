@@ -229,7 +229,10 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 				signed.lines = append(signed.lines, lines...)
 			}
 		}
-		if err := holdToPolicy(recorded, decision, cites, arguments, policy, signed); err != nil {
+		// The arguments held are those that will be sent: applyKey above has
+		// set the idempotency argument, and a closed policy reaches that one
+		// member, holding the key, as the gateway's.
+		if err := holdToPolicy(recorded, decision, cites, arguments, policy, signed, recovery.supplied(key)); err != nil {
 			return nil, err
 		}
 	}

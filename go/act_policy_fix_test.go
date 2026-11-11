@@ -224,7 +224,7 @@ func TestAClosedPolicyReachesArgumentsByTheirPointers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, found := unreachedArgument(v, tc.named, nil)
+		got, found := unreachedArgument(v, tc.named, nil, nil)
 		if found != (tc.want != "") || got != tc.want {
 			t.Fatalf("%q over %s: got %q (%v), want %q", tc.named, tc.arguments, got, found, tc.want)
 		}

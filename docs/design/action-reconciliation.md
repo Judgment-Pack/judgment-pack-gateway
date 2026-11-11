@@ -214,7 +214,12 @@ contract or explicit null for unsupported recovery. A write binding declares rec
 idempotency argument is an exact argument member carrying the action key; the
 gateway inserts it before the effect-policy check and refuses a conflicting
 caller value. It does not place a generic header on unrelated services and assume
-the service honors it. A closed argument policy must admit the inserted member.
+the service honors it. A closed decision policy reaches the inserted member as the
+gateway's: that one top-level member while it holds the key, and nothing else by it;
+a request with no action key is given no member, and one it sends is refused as any
+other unreached argument. A policy of the tool that binds, fixes or shapes the member,
+or a value under it, is refused when the configuration is read, since the member holds
+the action key, which no policy decides.
 
 A read-back declaration names an allowed read tool from the platform's live
 operation, its argument mapping, and the result members that report the action key

@@ -138,6 +138,46 @@ func (r *actionRecovery) applyKey(arguments *vObject, key string) error {
 	arguments.set(r.idempotencyArgument, vString(key))
 	return nil
 }
+
+// gatewayArgument is the one argument the gateway itself puts in a write's
+// arguments: the tool's idempotency argument, which applyKey sets to the
+// request's action key. A closed decision policy reaches it as the gateway's
+// (holdToPolicy), exactly that top-level member holding exactly the key.
+type gatewayArgument struct {
+	pointer string // the member's RFC 6901 pointer
+	key     string
+}
+
+// supplied is the argument the gateway supplies to a request keyed by key,
+// or nil when it supplies none: for a tool with no recovery, one whose
+// recovery names no idempotency argument, and a request with no key, which
+// applyKey is never asked to fill.
+func (r *actionRecovery) supplied(key string) *gatewayArgument {
+	if r == nil || r.idempotencyArgument == "" || key == "" {
+		return nil
+	}
+	return &gatewayArgument{pointer: r.argumentPointer(), key: key}
+}
+
+// argumentPointer is the RFC 6901 pointer of the tool's idempotency argument,
+// a top-level member, or "" when its recovery names none.
+func (r *actionRecovery) argumentPointer() string {
+	if r == nil || r.idempotencyArgument == "" {
+		return ""
+	}
+	return "/" + pointerToken(r.idempotencyArgument)
+}
+
+// holds reports whether the value v at the pointer at is the argument the
+// gateway supplied: its member, and the key in it. A member of that name
+// holding anything else is the caller's.
+func (s *gatewayArgument) holds(at string, v value) bool {
+	if s == nil || at != s.pointer {
+		return false
+	}
+	key, ok := v.(vString)
+	return ok && string(key) == s.key
+}
 func (r *actionReadBack) request(key string, arguments value) (*vObject, error) {
 	mapped := newObject()
 	for _, name := range r.arguments.names {
