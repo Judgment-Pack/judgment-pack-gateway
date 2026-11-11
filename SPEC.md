@@ -1423,7 +1423,8 @@ not itself a finding.
   compromised gateway (key disclosure forges anything), and it is a single-identity,
   single-operator reference — not a multi-tenant or federated trust root.
 - Scope not claimed: no availability/HA guarantees, no authenticated transport
-  (binds localhost), no access control on the HTTP surface beyond a witness's
+  (binds a loopback address unless `gateway serve --listen` names another), no
+  access control on the HTTP surface beyond a witness's
   registrations (§6, "Witness endpoints"). This is a reference for
   self-hosting a trust root and for demonstrating the mechanism, not a hardened
   public deployment.
@@ -1528,7 +1529,11 @@ byte-lineage never becomes truth on the way through (§5).
 
 ## 6. HTTP surface (reference)
 
-Localhost, JSON, standard library only.
+Loopback by default, JSON, standard library only. `gateway serve` from the command line,
+which authenticates no caller, listens on another address only where `--listen` names it,
+and on one that is not loopback only with `--accept-unauthenticated-callers` beside it
+(README.md, SECURITY.md); `serve --config` listens on its configuration's `listen`, a
+loopback address.
 
 | Method | Path        | Body / result |
 |--------|-------------|---------------|

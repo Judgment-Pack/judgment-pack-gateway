@@ -74,7 +74,8 @@ in Gateway; search hits remain distinct from fetched page evidence. See
 
 ## Run it
 
-One Go binary, standard library only, binds localhost. Build it as below, or take it
+One Go binary, standard library only, listening on a loopback address unless `--listen` names
+another (below). Build it as below, or take it
 built: a release made by the release workflow carries the gateway and the adapters for
 Linux, macOS and Windows, with checksums and a provenance attestation
 ([docs/releasing.md](docs/releasing.md#verifying-a-download)). Releases up to `v0.4.0`
@@ -149,6 +150,30 @@ curl -s localhost:8787/publickey           # consistency only: a real verifier u
 curl -s localhost:8787/posture             # which isolation protections this host enforces, as gateway posture --json
 ```
 
+**Listening off loopback.** `serve` listens on `127.0.0.1` at `--port` (8787 unless given).
+`--listen ADDRESS` names another address, the address alone, the port staying `--port`'s. The
+address is an IP address written as the gateway prints it: IPv4 in dotted decimal, or IPv6
+compressed and in lowercase, bare or in brackets (`::1`, `[::1]`). A name, `localhost` included,
+is refused, so no resolver decides where the gateway listens; so are a zone, a port and an empty
+value, and every address of a family is bound only when written out: `0.0.0.0` every IPv4
+address and no IPv6 one, `::` every IPv6 address and no IPv4 one. A loopback address
+(`127.0.0.0/8`, `::1`) needs nothing more.
+
+Any other address needs `--accept-unauthenticated-callers` beside it, because this form of
+`serve` authenticates no caller: whoever reaches the listener can run its sources with arguments
+of their choosing, have receipts signed under its key and seal its sessions, and the transport
+is plain HTTP. Put in front of such a listener what decides who reaches it: an authenticating
+proxy that terminates TLS, or a private network that admits only the intended callers. The
+gateway limits neither the rate of requests nor the number of connections, so what is in front
+should limit them too. In a
+container, for example, `--listen 0.0.0.0 --accept-unauthenticated-callers` is what makes the
+gateway answer on the container's published port, and that port is then published only to the
+network those callers are on. When the address bound is not loopback the gateway writes, on
+stderr and before its `gateway on http://…` line, a `start:` line saying that other hosts can
+reach it and that it authenticates no caller. `serve --config` does not take `--listen`: an
+engine configuration's `listen` is a loopback address
+([docs/design/engine-config.md](docs/design/engine-config.md)).
+
 `./gateway posture` says which of the isolation protections in [`SECURITY.md`](SECURITY.md)
 this host enforces — the user switch for sources, the reaping of a source's descendants, the
 engine image's custody, the seed file's owner and mode, the confinement of the programs the
@@ -163,7 +188,8 @@ The gateway mints version 3 receipts (SPEC.md §1.2a): `/acquire` answers
 `{result, receipt, salts}`, where `salts.args` is the 32-byte salt behind the receipt's
 arguments commitment, returned here and retained nowhere. Revealing the arguments to an
 auditor takes the salt, so whoever holds it can, and nobody else; this reference hands it
-over plaintext localhost HTTP, so the holder is whoever can read that exchange. A bare
+over plaintext HTTP, on localhost unless `--listen` names another address, so the holder is
+whoever can read that exchange. A bare
 `--source` command is the `"command"` shape: its acquisition record names the command
 and the digest of the file its first word resolved to, read just before the source is
 started, and says nothing else was known — a directly executed script is digested as the
@@ -423,7 +449,8 @@ Stated plainly because the whole line is about being exact where proof stops:
 - The registry closes replay and rollback **relative to a verifier that trusts the
   gateway's registry over the store**. It does not defend a compromised gateway: key
   disclosure forges everything.
-- This is a **single-identity, single-operator reference**, localhost, no authentication
+- This is a **single-identity, single-operator reference**, on a loopback address unless
+  `serve --listen` names another, no authentication
   on the HTTP surface unless an `identity` is configured — and that decides who may call,
   never from where — no authorization, no HA. It is for self-hosting a trust root and demonstrating the
   mechanism — not a hardened public deployment.
