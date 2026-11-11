@@ -356,7 +356,8 @@ generator for them is kept here.
 not read — a file or directory at the top it has no rule for, anything but vectors among
 the vectors — a witness vector with a member it does not know or of a family it does not
 read, one whose `name` is not its file's, and one whose `expected` holds a member its form
-does not, at any depth. Every file of every family is read as exactly one JSON value, with
+does not, at any depth, and a store vector, of `stores/` or `v3/stores/`, with a member it
+does not know, at the top or in `expected`. Every file of every family is read as exactly one JSON value, with
 nothing after it and no member given twice in one object at any depth, and a recovery vector
 whose run never reaches a fault it declares disagrees. It also refuses a corpus whose counts
 this README misstates: the

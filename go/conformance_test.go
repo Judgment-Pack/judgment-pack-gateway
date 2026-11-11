@@ -198,6 +198,33 @@ func TestTheCorpusHoldsNothingUnread(t *testing.T) {
 			t.Errorf("%s: the run was not refused", what)
 		}
 	}
+	// A store vector, of either directory, holds no member the runner does
+	// not read: at the top, an input no run is given, and in expected, an
+	// answer no runner compares.
+	if err := os.WriteFile(vector, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ what, rel, from, to string }{
+		{"a store vector's member no runner reads", "stores/valid-sealed.json", `"authority": `, `"options": {}, "authority": `},
+		{"a store vector's expected member no runner compares", "stores/valid-sealed.json", `"expected": {`, `"expected": {"unread-claim": true,`},
+		{"a version 3 store vector's member no runner reads", "v3/stores/v3-action-valid.json", `"authority": `, `"decisionRecord": {}, "authority": `},
+		{"a version 3 store vector's expected member no runner compares", "v3/stores/v3-action-valid.json", `"expected": {`, `"expected": {"witness": [],`},
+	} {
+		path := filepath.Join(dir, filepath.FromSlash(c.rel))
+		original, err := os.ReadFile(path)
+		if err != nil || !bytes.Contains(original, []byte(c.from)) {
+			t.Fatalf("%s: %v, or no %q", c.what, err, c.from)
+		}
+		if err := os.WriteFile(path, bytes.Replace(original, []byte(c.from), []byte(c.to), 1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := runCorpus(dir, inProcess{}); err == nil || !strings.Contains(err.Error(), "unknown field") {
+			t.Errorf("%s: the run was not refused: %v", c.what, err)
+		}
+		if err := os.WriteFile(path, original, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // TestWitnessRecoveryVectors holds this implementation's witness to every

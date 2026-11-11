@@ -430,8 +430,11 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 		if err != nil {
 			return nil, counts, err
 		}
+		// Strictly: a member storeVector does not name, at the top or in
+		// expected, is an input no run is given or an answer no runner
+		// compares, so it refuses the run rather than being passed over.
 		var vector storeVector
-		if err := decodeVectorFile(raw, &vector, false); err != nil {
+		if err := decodeVectorFile(raw, &vector, true); err != nil {
 			return nil, counts, fmt.Errorf("%s: %v", path, err)
 		}
 		root, storeRoot, registryPath, decisionRecords, err := materializeVector(vector)
