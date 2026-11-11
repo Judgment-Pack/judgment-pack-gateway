@@ -118,7 +118,7 @@ func TestEngineConfigDrivesTheHTTPAdapterEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	sources := deriveSources(cfg, bindings)
-	if sources["records/live"].user != "engine-records" || sources["records/live"].argv[0] != adapter {
+	if sources["records/live"].user != "engine-records" || sources["records/live"].argv[0] != filepath.Join(bin, "adapter-http") {
 		t.Fatalf("records/live is adapter-http as the platform's user: %+v", sources["records/live"])
 	}
 	if _, write := sources["records/write"]; write {
