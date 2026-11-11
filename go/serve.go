@@ -113,6 +113,11 @@ type sourceSpec struct {
 	// of a delegated key (SPEC.md §10, rule 3; grant_gate.go); nil where the
 	// platform names none, which refuses every delegated call.
 	grant *grantGate
+	// requesters are who may ask for a write through each of a write
+	// source's tools (engineVersion 18, write_requesters.go), held in /act
+	// before the arguments are read; nil where the platform gives no
+	// writeRequesters, and then every authenticated requester may.
+	requesters *writeRequesters
 }
 
 // adapterShapes are the shapes --source-shape may declare: every shape of
@@ -1934,9 +1939,15 @@ func (g *gatewayService) handler() http.Handler {
 				// configured nobody is, and the answer is the one a missing
 				// token gets.
 				status := http.StatusBadRequest
-				if refusal.step == "requester" {
+				switch refusal.step {
+				case "requester":
 					status = http.StatusUnauthorized
 					w.Header().Set("WWW-Authenticate", "Bearer")
+				case writeRequestersStep:
+					// Authenticated, and not one the tool's list names:
+					// asking again, however the request is put, gets the
+					// same answer.
+					status = http.StatusForbidden
 				}
 				writeJSON(w, status, map[string]any{"error": refusal.reason, "refusedAt": refusal.step})
 				return

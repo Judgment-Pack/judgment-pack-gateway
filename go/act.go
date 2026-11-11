@@ -80,6 +80,14 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	if !contains(spec.tools, tool) {
 		return nil, actRefusal{"tool", fmt.Sprintf("tool %q is not one the platform's write binding names", requestText(tool))}
 	}
+	// Who may ask for a write through this tool (writeRequesters,
+	// engineVersion 18): held to the requester the receipt would name, as
+	// soon as the tool is known and before anything else of the request is
+	// read, so a requester the tool's list does not name learns nothing of
+	// the policy, the record or the key.
+	if err := spec.requesters.refusal(tool, who); err != nil {
+		return nil, err
+	}
 	// The executor is started for this tool alone (executor.md): a binding
 	// naming several write tools offers each request one of them.
 	spec = narrowTools(spec, tool)
