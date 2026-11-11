@@ -30,6 +30,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -275,9 +276,36 @@ func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords s
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
+		var exited *exec.ExitError
+		if errors.As(err, &exited) {
+			return contractVerdict{}, noVerdict{stderr: stderr.String()}
+		}
 		return contractVerdict{}, fmt.Errorf("verify produced no verdict: %s", stderr.String())
 	}
 	return decodeVerdict(stdout.Bytes())
+}
+
+// noVerdict is an implementation's verify that ran and exited non-zero: by
+// the process contract it gave no verdict (corpus/README.md). Under
+// --ordinary-seals-only that is its answer to the vector; otherwise it stops
+// the run (SPEC.md §7).
+type noVerdict struct{ stderr string }
+
+func (e noVerdict) Error() string { return "verify produced no verdict: " + e.stderr }
+
+// stderrBound is how much of an implementation's standard error a
+// disagreement quotes.
+const stderrBound = 256
+
+// boundedStderr is an implementation's standard error as a disagreement
+// quotes it: trimmed of surrounding white space, at most stderrBound bytes
+// of it, and quoted, so what it wrote reaches the report only as text.
+func boundedStderr(stderr string) string {
+	s := strings.TrimSpace(stderr)
+	if len(s) <= stderrBound {
+		return strconv.Quote(s)
+	}
+	return fmt.Sprintf("%s and %d bytes more", strconv.Quote(s[:stderrBound]), len(s)-stderrBound)
 }
 
 // witnessArgs is the process contract's `witness` command line
@@ -544,6 +572,16 @@ func runStoreVectors(corpusDir string, impl implementation) ([]string, int, erro
 		}
 		verdict, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, vector.OrdinarySealsOnly, publicKey)
 		os.RemoveAll(root)
+		var refused noVerdict
+		if err != nil && vector.OrdinarySealsOnly && errors.As(err, &refused) {
+			// A verifier written before the option refuses one it does not
+			// know: that is its answer to this vector, a disagreement, and
+			// the run goes on (SPEC.md §7). No verdict for a vector run
+			// without the option still stops it.
+			failures = append(failures, fmt.Sprintf("store %s: no verdict under --ordinary-seals-only: %s",
+				vector.Name, boundedStderr(refused.stderr)))
+			continue
+		}
 		if err != nil {
 			return nil, 0, err
 		}

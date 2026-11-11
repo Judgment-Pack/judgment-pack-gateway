@@ -1932,6 +1932,9 @@ func TestCmdConformExitStatus(t *testing.T) {
 	}
 }
 
+// conformStubUsage is what the stub's refusals write on standard error.
+const conformStubUsage = "usage: verify <store-root> <registry-path> <authority> [<decision-records-dir>]"
+
 // conformStub answers the process contract as an implementation that agrees
 // with every vector written before observations were compared and the option
 // carried (#398), but for the mode's one difference in verify:
@@ -1944,7 +1947,12 @@ func TestCmdConformExitStatus(t *testing.T) {
 //   - older: both of those;
 //   - observations-twice: each observation reported twice;
 //   - observations-malformed: an observations member that is no array, on
-//     every verdict.
+//     every verdict;
+//   - rejects-option: --ordinary-seals-only refused as an option it does not
+//     know, the usage on standard error, nothing on standard output, and
+//     exit 64, as a verifier written before the option that refuses what it
+//     does not know;
+//   - no-verdict: every verify refused so, the option or not.
 func conformStub(mode string, args []string) int {
 	if len(args) == 0 {
 		return 2
@@ -1966,6 +1974,13 @@ func conformStub(mode string, args []string) int {
 	}
 	args = args[1:]
 	if mode == "faithful" {
+		return cmdVerify(args)
+	}
+	if mode == "rejects-option" || mode == "no-verdict" {
+		if mode == "no-verdict" || (len(args) > 0 && args[0] == "--ordinary-seals-only") {
+			fmt.Fprintln(os.Stderr, conformStubUsage)
+			return 64
+		}
 		return cmdVerify(args)
 	}
 	option := len(args) > 0 && args[0] == "--ordinary-seals-only"
@@ -2029,29 +2044,41 @@ func conformStub(mode string, args []string) int {
 // by those alone (SPEC.md §7); so is one that reports an observation twice,
 // since they are compared as a multiset. One whose observations member is no
 // array disagrees with every vector that states observations and with no
-// other: the member is not read where a vector does not state it. Each is
-// the test binary driven through the process contract, as
-// `gateway conform --impl` drives one, and the faithful one, which takes the
-// option, agrees with every vector.
+// other: the member is not read where a vector does not state it. One that
+// refuses the option, giving no verdict, disagrees with each vector run
+// under it, and the run goes on; one that gives no verdict for a vector run
+// without the option stops the run. Each is the test binary driven through
+// the process contract, as `gateway conform --impl` drives one, and the
+// faithful one, which takes the option, agrees with every vector.
 func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *testing.T) {
 	stating := []string{
 		"observations-interruption-seal", "ordinary-seals-only-interruption-seal",
 		"ordinary-seals-only-interruption-seal-forged", "ordinary-seals-only-interruption-seal-twice",
 		"ordinary-seals-only-valid-sealed",
 	}
+	underTheOption := []string{
+		"ordinary-seals-only-interruption-seal", "ordinary-seals-only-interruption-seal-forged",
+		"ordinary-seals-only-interruption-seal-twice", "ordinary-seals-only-valid-sealed",
+	}
+	refusal := func(name string) string {
+		return "store " + name + ": no verdict under --ordinary-seals-only: " + strconv.Quote(conformStubUsage)
+	}
 	for _, c := range []struct {
 		mode string
 		want []string
+		// exact, when set, is each failure's whole text, by vector.
+		exact func(name string) string
 	}{
-		{"faithful", nil},
-		{"no-observations", []string{"observations-interruption-seal", "ordinary-seals-only-interruption-seal-forged"}},
-		{"ignore-option", []string{"ordinary-seals-only-interruption-seal", "ordinary-seals-only-interruption-seal-twice"}},
+		{"faithful", nil, nil},
+		{"no-observations", []string{"observations-interruption-seal", "ordinary-seals-only-interruption-seal-forged"}, nil},
+		{"ignore-option", []string{"ordinary-seals-only-interruption-seal", "ordinary-seals-only-interruption-seal-twice"}, nil},
 		{"older", []string{
 			"observations-interruption-seal", "ordinary-seals-only-interruption-seal",
 			"ordinary-seals-only-interruption-seal-forged", "ordinary-seals-only-interruption-seal-twice",
-		}},
-		{"observations-twice", []string{"observations-interruption-seal", "ordinary-seals-only-interruption-seal-forged"}},
-		{"observations-malformed", stating},
+		}, nil},
+		{"observations-twice", []string{"observations-interruption-seal", "ordinary-seals-only-interruption-seal-forged"}, nil},
+		{"observations-malformed", stating, nil},
+		{"rejects-option", underTheOption, refusal},
 	} {
 		t.Run(c.mode, func(t *testing.T) {
 			t.Setenv(envConformStub, c.mode)
@@ -2069,20 +2096,56 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 					t.Fatalf("a failure of no store vector: %s", failure)
 				}
 				disagreeing[name] = true
+				if c.exact != nil && failure != c.exact(name) {
+					t.Fatalf("failure:\n got %q\nwant %q", failure, c.exact(name))
+				}
+			}
+			if c.exact != nil && len(failures) != len(disagreeing) {
+				t.Fatalf("%d failures for %d vectors:\n%s", len(failures), len(disagreeing), strings.Join(failures, "\n"))
 			}
 			got := slices.Sorted(maps.Keys(disagreeing))
 			if want := slices.Sorted(slices.Values(c.want)); !slices.Equal(got, want) {
 				t.Fatalf("vectors disagreeing:\n got %v\nwant %v\n%s", got, want, strings.Join(failures, "\n"))
 			}
 			// Through the command itself, the whole corpus: the faithful
-			// stub agrees, and the older verifier gets the disagreement
-			// exit, never no run.
-			if want, run := map[string]int{"faithful": 0, "older": 1}[c.mode]; run {
+			// stub agrees, and the older verifier, and the one refusing the
+			// option, get the disagreement exit, never no run.
+			if want, run := map[string]int{"faithful": 0, "older": 1, "rejects-option": 1}[c.mode]; run {
 				if rc := cmdConform([]string{"--impl", os.Args[0], "--corpus", corpusDir}); rc != want {
 					t.Fatalf("gateway conform --impl, the %s stub: exit %d, want %d", c.mode, rc, want)
 				}
 			}
 		})
+	}
+	// No verdict for a vector run without the option is no answer to it: the
+	// run stops, exit 2, as before the option.
+	t.Run("no-verdict", func(t *testing.T) {
+		t.Setenv(envConformStub, "no-verdict")
+		_, _, err := runStoreVectors(corpusDir, subprocess{argv: []string{os.Args[0]}})
+		if want := "verify produced no verdict: " + conformStubUsage + "\n"; err == nil || err.Error() != want {
+			t.Fatalf("no verdict for a plain vector: %v, want the run stopped with %q", err, want)
+		}
+		if rc := cmdConform([]string{"--impl", os.Args[0], "--corpus", corpusDir}); rc != 2 {
+			t.Fatalf("gateway conform --impl, no verdict for a plain vector: exit %d, want 2", rc)
+		}
+	})
+}
+
+// What a disagreement quotes of an implementation's standard error: trimmed,
+// quoted, and no more than stderrBound bytes of it, whatever it wrote.
+func TestBoundedStderrQuotesAtMostTheBound(t *testing.T) {
+	for _, c := range []struct{ stderr, want string }{
+		{"", `""`},
+		{"  usage: verify\n", `"usage: verify"`},
+		{"line one\nline two\x1b[31m", `"line one\nline two\x1b[31m"`},
+		{strings.Repeat("a", stderrBound), strconv.Quote(strings.Repeat("a", stderrBound))},
+		{strings.Repeat("a", stderrBound+5), strconv.Quote(strings.Repeat("a", stderrBound)) + " and 5 bytes more"},
+		// cut inside a character: the bytes kept are quoted, never invalid text
+		{strings.Repeat("a", stderrBound-1) + "é", strconv.Quote(strings.Repeat("a", stderrBound-1)+"\xc3") + " and 1 bytes more"},
+	} {
+		if got := boundedStderr(c.stderr); got != c.want {
+			t.Errorf("boundedStderr(%q):\n got %s\nwant %s", c.stderr, got, c.want)
+		}
 	}
 }
 

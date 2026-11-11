@@ -2018,9 +2018,11 @@ conforming verifier:
 or what verification finds: a verifier that conformed before verifies every store as it
 did. What changes is what it must report to answer to the corpus. One that reports no
 observations, or that takes the option and ignores it, can disagree only with vectors that
-state observations or run under the option; one that refuses the option gives no verdict
-for a vector run under it, and the run stops there, as it does for any vector an
-implementation gives no verdict for (`corpus/README.md`).
+state observations or run under the option. One that gives no verdict for a vector run
+under the option, exiting non-zero as a verifier written before it does when it refuses an
+option it does not know, disagrees with that vector, and the run goes on to the next. No
+verdict for a vector run without the option is not an answer to it: the run stops there, as
+it did before the option (`corpus/README.md`).
 
 The rows of `testdata/interruption-seal/cases.json`, which both readers in this repository
 read, hold more of §3c over the same stores — a receipt taken away or torn after the seal,

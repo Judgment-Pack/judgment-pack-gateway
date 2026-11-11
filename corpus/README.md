@@ -159,7 +159,9 @@ whole, observed `session-open` on its last
 option changes nothing, `ok` and observed nothing (`ordinary-seals-only-valid-sealed`). A
 verifier that reports no observations disagrees with the first and the fourth, and one that
 takes the option and ignores it with the second and the third, and each agrees with every
-other vector; the last holds the option to changing nothing for a seal of §3's form. The
+other vector; one that refuses the option, giving no verdict, disagrees with the four run
+under it and with no other. The last holds the option to changing nothing for a seal of §3's
+form. The
 rows of
 [`../testdata/interruption-seal/cases.json`](../testdata/interruption-seal/cases.json),
 which both implementations run, hold more over these stores — a receipt taken away or torn
@@ -519,9 +521,12 @@ this one:
   `--ordinary-seals-only` is the option of `SPEC.md` §4, given first, before the
   store root, as `gateway verify` and verify-ts take it; the runner passes it
   exactly when the vector gives `"ordinarySealsOnly": true`, and nothing in its
-  place otherwise. An implementation that does not take the option and refuses
-  it gives no verdict, and the run stops there, as it does for any vector given
-  no verdict.
+  place otherwise. An implementation that gives no verdict for a vector run
+  under the option, exiting non-zero as one that does not take the option does
+  when it refuses it, disagrees with that vector, `store <name>: no verdict
+  under --ordinary-seals-only:` and at most 256 bytes of its standard error,
+  quoted; the run goes on, and exits 1. No verdict for a vector run without the
+  option still stops the run, exit 2.
 - `CMD witness --trail <hex> --witness-key <file>... [--witness <file>]...
   [--witness-head <file>]` — the flags of the runtime's `audit verify`: the trail being
   verified; each key a file holding its 64 lowercase hexadecimal characters and a
