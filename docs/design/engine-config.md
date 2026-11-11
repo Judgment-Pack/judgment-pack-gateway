@@ -1244,8 +1244,10 @@ and both are always partial. A `customer-command` entry's reason also says what
 runs as the exact approved bytes and what is re-checked by path before the start.
 
 The reasons `/posture` answers for program entries are fixed sentences chosen by
-mode, backend, state and class. They name no launcher location, masked path, home
-directory or uid; `gateway posture`, run by the operator, keeps the helper's own
+whether the source's helper gave a report and, where it gave none, whether the report's
+own time budget (below) ended its check or left it no time to start, then by mode,
+backend, state and class. They name no launcher location, masked path, home directory or
+uid; `gateway posture`, run by the operator, keeps the helper's own
 words.
 
 A completed probe is cached for the resolved source until restart, and every

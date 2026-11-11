@@ -168,7 +168,10 @@ const publicUnmeasuredReason = "the source configuration selects the adapter san
 const publicUnprobedReason = "the source configuration selects the adapter sandbox wrapper, and this report's time for backend checks ran out before this source's check gave a report, so nothing was measured for this source in this report"
 
 // publicProgramReason is a program entry's reason as /posture answers it: a
-// fixed sentence chosen by its mode, backend, state and class, never the
+// fixed sentence chosen by whether its helper gave a report and, where it
+// gave none, whether the report's budget ended its check or left it no
+// time to start (unprobed, unmeasured), then by its mode, backend, state
+// and class, never the
 // helper's own words, which name launcher locations, masked paths below a
 // user's home or runtime directory, and so accounts and uids. gateway
 // posture, run by the operator, keeps the helper's words.
