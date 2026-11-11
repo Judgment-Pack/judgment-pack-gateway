@@ -31,6 +31,10 @@ type sandboxProbeReport struct {
 type postureProgram struct {
 	source, class string
 	report        sandboxProbeReport
+	// unmeasured is true for a source the configuration wraps whose helper
+	// gave no report: its entry reads like an unwrapped source's, and
+	// /posture's fixed sentence must not say the wrapper is not selected.
+	unmeasured bool
 }
 
 var sandboxPostureProbe = probeSourceSandbox
@@ -48,6 +52,7 @@ func sourceProgramPosture(sources map[string]sourceSpec) []postureProgram {
 		spec := sources[name]
 		classes := []string{"adapter"}
 		var report sandboxProbeReport
+		unmeasured := false
 		report.Preset = "custom"
 		report.Protection.Mode, report.Settings.Mode = "unconfigured", "unconfigured"
 		report.Protection.Backend, report.Protection.State = "none", postureNotEnforced
@@ -58,6 +63,7 @@ func sourceProgramPosture(sources map[string]sourceSpec) []postureProgram {
 			if err == nil {
 				report = probed
 			} else {
+				unmeasured = true
 				report.Protection.Reason = "sandbox-not-enforced: source-user backend check did not complete successfully"
 			}
 		}
@@ -72,7 +78,7 @@ func sourceProgramPosture(sources map[string]sourceSpec) []postureProgram {
 			case "customer-command":
 				entry.Protection.Reason += "; " + customerExecutionNote()
 			}
-			programs = append(programs, postureProgram{name, class, entry})
+			programs = append(programs, postureProgram{name, class, entry, unmeasured})
 		}
 	}
 	return programs
@@ -119,6 +125,10 @@ func probeSourceSandbox(ctx context.Context, spec sourceSpec) (sandboxProbeRepor
 	return runSourceSandboxProbe(ctx, spec)
 }
 
+// publicUnmeasuredReason is /posture's sentence for a wrapped source whose
+// sandbox helper gave no report.
+const publicUnmeasuredReason = "the source configuration selects the adapter sandbox wrapper, and its backend check gave no report, so nothing was measured for this source and its restricted launches refuse; gateway posture, given the configuration, says why"
+
 // publicProgramReason is a program entry's reason as /posture answers it: a
 // fixed sentence chosen by its mode, backend, state and class, never the
 // helper's own words, which name launcher locations, masked paths below a
@@ -128,6 +138,8 @@ func publicProgramReason(p postureProgram) string {
 	protection := p.report.Protection
 	var reason string
 	switch {
+	case p.unmeasured:
+		reason = publicUnmeasuredReason
 	case protection.Mode == "unconfigured":
 		reason = "this source configuration does not select the adapter sandbox wrapper"
 	case protection.Mode == "danger-full-access":

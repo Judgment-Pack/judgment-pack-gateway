@@ -1283,7 +1283,9 @@ the backend prepared, when the probe then failed to run under it; or
 `sandbox-not-enforced: source-user backend check did not complete successfully`, backend
 `none`, when the helper itself gave no report. `operator-program-confinement` is then
 `not-enforced` unless another entry is `enforced` or `partial`. `/posture` answers a fixed
-sentence in place of the helper's reason. Every launch of such a source under a restricted mode
+sentence in place of the helper's reason; where the helper itself gave no report, that sentence
+says the source is wrapped and nothing was measured, and is not the sentence of a source with no
+wrapper. Every launch of such a source under a restricted mode
 refuses before anything is started, with `sandbox-not-enforced: the source's sandbox probe
 measured that the <mode> boundary does not hold under <backend>, so the source is not launched;
 gateway posture says why`, or, where the probe did not complete,
