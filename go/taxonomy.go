@@ -162,6 +162,13 @@ func parseTaxonomyOperation(raw *vObject, name string) (operation, error) {
 	if err != nil {
 		return op, err
 	}
+	// No owner taxonomy is defined for an http operation, whose
+	// acquisitions name no tool (ADR-0024): it is a bindingVersion 1
+	// operation alone, and an empty toolTaxonomies must not stand in for
+	// a declaration.
+	if op.shape == "http" {
+		return op, fmt.Errorf("operation %s: the http shape is a bindingVersion 1 operation; no owner taxonomy is defined for it", name)
+	}
 	if op.shape == "airbyte" {
 		if _, present := raw.get("toolTaxonomies"); present {
 			return op, fmt.Errorf("history accepts taxonomy, not toolTaxonomies")

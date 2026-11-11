@@ -233,6 +233,9 @@ type operation struct {
 	// as ordinary text.
 	probeFailure string
 	licence      string
+	// http is a live operation's of the http shape (ADR-0024): what
+	// adapter-http is started with; nil for every other shape.
+	http *httpOperation
 }
 
 // engineHost is what the engine asks the operating system while it holds
@@ -957,8 +960,8 @@ func parseBinding(data []byte) (binding, error) {
 			}
 			b.history = &parsed
 		case "live":
-			if parsed.shape != "mcp" {
-				return binding{}, fmt.Errorf("operation live is served by the mcp shape, not %q", parsed.shape)
+			if parsed.shape != "mcp" && parsed.shape != "http" {
+				return binding{}, fmt.Errorf("operation live is served by the mcp or the http shape, not %q", parsed.shape)
 			}
 			b.live = &parsed
 		case "write":
@@ -980,6 +983,13 @@ func parseBinding(data []byte) (binding, error) {
 	// are a connection's, and whose writes go through the executor.
 	if b.history == nil && b.live == nil && b.write == nil {
 		return binding{}, errors.New("no operation")
+	}
+	// An http live operation is its binding's only one (ADR-0024): a
+	// platform that reads by it acts elsewhere, through another platform's
+	// write, and /act reads a write platform's live operation as an MCP
+	// server's.
+	if b.live != nil && b.live.http != nil && (b.history != nil || b.write != nil) {
+		return binding{}, errors.New("operation live of the http shape is its binding's only operation")
 	}
 	if raw, present := obj.get("actionRecovery"); present {
 		if version != "3" {
@@ -1131,7 +1141,9 @@ func parseOperation(op *vObject, name string) (operation, error) {
 			}
 		}
 	case "http":
-		return o, fmt.Errorf("operation %s: the http shape is not shipped by this release", name)
+		if err := parseHTTPOperation(op, name, &o); err != nil {
+			return o, err
+		}
 	default:
 		return o, fmt.Errorf("operation %s: unknown shape %q", name, o.shape)
 	}
@@ -1254,7 +1266,18 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			}
 			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte", grant: grant}
 		}
-		if b.live != nil {
+		if b.live != nil && b.live.http != nil {
+			// adapter-http as `serve --source-shape NAME=http` runs it, as
+			// the platform's user with its live credentials file
+			// (ADR-0024): no tools, no descriptors, no grant, since an
+			// http acquisition names no tool; the check GETs the check
+			// path, when the binding names one.
+			var check []string
+			if b.live.http.checkPath != "" {
+				check = []string{"--check-path=" + b.live.http.checkPath}
+			}
+			sources[p.name+"/live"] = sourceSpec{argv: httpSourceArgv(adapter("adapter-http"), *b.live.http, p.credentials["live"]), env: env, user: p.user, shape: "http", binding: p.binding, check: check}
+		} else if b.live != nil {
 			argv := mcpServerArgv(adapter("adapter-mcp"), *b.live, p.credentials["live"], cfg.runtime, p.endpoint, p.name+"/"+b.live.name, append(ownerFileArguments(cfg, p, b.live), approvedArguments(cfg, p, b.live)...)...)
 			// Each as one word, flag=value: a value of "--" as its own word
 			// would be the delimiter the adapter splits its line at.
@@ -2311,6 +2334,9 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		if err := credentialsMatch(p.credentials, b, p.write); err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
+		if err := httpPlatformMatch(*p, b); err != nil {
+			return nil, fmt.Errorf("platform %s: %v", p.name, err)
+		}
 		// write: true says an executor may be pointed at the platform; a
 		// binding with no write operation has none to point it at, and the
 		// flag would read as a write the operator had enabled (#260: the
@@ -2359,9 +2385,13 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 // describedOperation is the operation whose check captures a platform's
 // tool descriptors (docs/design/tool-descriptors.md): the live operation;
 // or, for a binding with no live operation, its write operation, when the
-// platform allows writes; nil when there is neither.
+// platform allows writes; nil when there is neither, and for a live
+// operation of the http shape, which has no tool to describe.
 func describedOperation(b binding, write bool) *operation {
 	if b.live != nil {
+		if b.live.http != nil {
+			return nil
+		}
 		return b.live
 	}
 	if b.write != nil && write {

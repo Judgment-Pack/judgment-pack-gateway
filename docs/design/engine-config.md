@@ -408,6 +408,7 @@ way:
 | `<platform>/history` | `adapter-airbyte` | `--image=<history.image> --credentials=<credentials.history.file> --runtime=<runtime> [--endpoint=<endpoint>]` |
 | `<platform>/live` | `adapter-mcp` | `--image=<live.server.image> --credentials=<credentials.live.file> --runtime=<runtime> --tools=<live.tools, comma-joined> [--endpoint=<endpoint>] [-- <live.server.args>]` |
 | `<platform>/write` | `adapter-mcp` | `--image=<write.server.image> --credentials=<credentials.write.file> --runtime=<runtime> --tools=<write.tools, comma-joined> --error-results [--endpoint=<endpoint>] [-- <write.server.args>]` — derived only for a platform whose configuration sets `write: true`; it is what the executor runs ([executor.md](executor.md)) and never a source `/acquire` may name |
+| `<platform>/live` of an `http` binding | `adapter-http` | `--endpoint=<live.endpoint> --paths=<live.paths, comma-joined> --methods=<live.methods, comma-joined> --credentials=<credentials.live.file> (--bearer=<live.bearer> \| --credential-header=<live.credentialHeader>) [--header=<NAME=VALUE>]...` — no runtime, no tools and no platform endpoint ([below](#an-http-api-as-a-platforms-live-operation)) |
 
 For an operation whose binding names a remote server (below), `live` and `write` are derived
 as `--url=<server.url> --credentials=<credentials.<operation>.file> --bearer=<server.bearer>
@@ -727,10 +728,10 @@ establishes the connection — and `failure`, when present, is the text such an 
 with for a server that catches its own failure and answers it as ordinary text, `isError`
 false; the result is discarded either way. A restriction of streams for the history operation is not yet
 applied at acquisition, so a binding may not declare one: a restriction accepted and not
-applied would read as applied. `history` is served by the `airbyte` shape and `live`
-and `write` by the `mcp` shape; the `http` shape is served by `adapter-http` as a standalone
-`--source` ([adapters/README.md](../../adapters/README.md)) and not yet by any binding operation,
-so a binding naming it is refused. The file is `catalog/<platform>.json`, it must name that platform, and
+applied would read as applied. `history` is served by the `airbyte` shape, `write` by the
+`mcp` shape, and `live` by the `mcp` shape or, in a binding of no other operation, by the `http`
+shape ([below](#an-http-api-as-a-platforms-live-operation)); a binding naming another shape for an
+operation is refused. The file is `catalog/<platform>.json`, it must name that platform, and
 the configuration pins it as `<platform>@sha256:<digest of the file's bytes>`; a file that
 does not digest to its pin is refused, since the catalog changed under the configuration. A
 binding with an unpinned image is refused when the engine starts. A binding without a
@@ -744,6 +745,122 @@ Two shapes per platform is the norm, not a duplication: history comes through th
 protocol because it pages and bookmarks, live reads and writes come through MCP because the
 vendor maintains them. What the two must agree on is the facts: a golden record per platform
 is fetched both ways and must derive to byte-identical canonical facts.
+
+## An HTTP API as a platform's live operation
+
+A platform with a plain HTTP API and neither a connector image nor an MCP server of its own is
+read in the engine by the program the plain form runs for `--source-shape NAME=http`,
+`adapter-http` ([adapters/README.md](../../adapters/README.md#adapter-http)), named by a binding
+whose one operation is `live` of the `http` shape (gateway #384,
+[ADR-0024](../adr/0024-an-http-source-in-the-engine.md)):
+
+```json
+{
+  "bindingVersion": "1",
+  "platform": "records",
+  "operations": {
+    "live": {
+      "shape": "http",
+      "endpoint": "https://records.example/api",
+      "paths": ["/search", "/health"],
+      "methods": ["GET", "POST"],
+      "headers": ["Accept=application/json"],
+      "bearer": "API_TOKEN",
+      "checkPath": "/health",
+      "licence": "Apache-2.0"
+    }
+  }
+}
+```
+
+The members are exactly these, `methods`, `headers` and `checkPath` optional, and exactly one of
+`bearer` and `credentialHeader`:
+
+- `endpoint` is the base URL every request goes under, held to the endpoint form SPEC.md §1.2a
+  gives a remote server — `https`, or `http` at a loopback address written as one, `localhost`
+  not among them; no user, query or fragment — with no placeholder, since no platform parameter
+  fills one here, and a path the adapter sends as written: no percent sign, which the adapter
+  would send decoded and escaped again, no dot segment and no empty segment, but for one `/` at
+  the end, which the adapter drops before the request's path. The binding's digest pins it, and
+  the receipt names the URL the adapter sent to under it;
+- `paths` are the only paths an acquisition may name, 1 to 128, each sent as written under the
+  endpoint: it begins with `/`, is printable ASCII without a space, and carries no query,
+  fragment, backslash, dot segment or empty segment — what `adapter-http` accepts — and no comma,
+  percent sign or brace, which the engine's command line would split into two paths, the adapter
+  would send escaped, or a reader would take for a placeholder. A path given twice is refused, and
+  so are paths that, comma-joined after `--paths=`, make a word of 128 KiB or more: the one
+  argument of the adapter's command line they are passed in, which Linux would refuse to start a
+  program with;
+- `methods` are the methods an acquisition may name, `GET` and `POST`, each once; `POST` alone
+  when the member is absent, as the adapter's own default;
+- `headers` are `NAME=VALUE` pairs sent on every request, 1 to 32 when present, the value
+  printable ASCII with no space at either end: a credential's header (`Authorization`,
+  `Proxy-Authorization`, `Cookie`), a header the adapter writes itself (`Content-Type`,
+  `Content-Length`, `User-Agent`, `Accept-Encoding`, `Host`, `Transfer-Encoding`, `Connection`)
+  and a name given twice, or given as the credential's, are refused;
+- `bearer` is the member of the platform's live credentials file sent as
+  `Authorization: Bearer`; `credentialHeader`, `NAME=MEMBER`, sends that member under `NAME`
+  instead, which is neither `Proxy-Authorization` — a proxy reads it, not the endpoint — nor a
+  header the adapter writes. One of them is required, since the platform names a credentials file
+  for `live` as for every operation, and the adapter reads that member of it and sends nothing
+  else;
+- `checkPath` is the path a check GETs: one of `paths`, with `GET` among `methods`, so a check
+  asks for nothing an acquisition could not. Without it a check is the TLS handshake, or, to
+  plaintext loopback, the connection alone.
+
+The source is `<platform>/live` (the table above): `adapter-http`, started as every engine
+source is — as the platform's OS user, with `no_new_privs`, under the source sandbox as an
+adapter from engine version 13, in an environment of that user's `HOME`, the engine's `PATH` and
+the platform's `environment` — with the platform's live credentials file, resolved as the
+refusals above resolve every credentials path. It is that process, and no other, that reads the
+credential and makes the request; the signer reads the envelope it writes and mints the receipt
+the plain form mints for shape `http` (SPEC.md §1.2a): `shape` `http`, the adapter named by its own
+digest, the URL sent to as `endpoint`, the request's commitment as `statement`, the answer's
+`ETag` or `Last-Modified` as `snapshot`, and the TLS peer's certificate as `peerIdentity`. The
+adapter's own bounds, a 1 MiB envelope and twenty seconds, lie inside the engine's on every
+source. The 1 MiB is on the adapter's whole answer, the envelope: an answer the endpoint did not
+say is JSON is carried in base64, which is four bytes for every three, so such an answer is
+refused above roughly three quarters of a mebibyte. No `--ca-file`, `--max-output` or `--timeout`
+is passed, so the endpoint's certificate chains to the system's roots, as a remote MCP server's
+does.
+
+An endpoint under a private certificate authority is reached only through the platform's
+`environment`: on Linux, `SSL_CERT_FILE` replaces the file the adapter reads the system's roots
+from and `SSL_CERT_DIR` the directories, so both are set to trust that authority alone. This
+changes the roots of that platform's adapter only, since the environment is the platform's. The
+binding's digest does not cover it: the environment is the engine configuration's, not the
+binding's, so what the binding pins is the endpoint and not the authority its certificate chains
+to. The file must be readable by the platform's OS user, and lie outside that user's runtime
+directories (`XDG_RUNTIME_DIR`, `/run/user/<uid>`), which the source sandbox hides under
+bubblewrap; the sandbox restricts writes, not reads, elsewhere. What a verifier can hold to is
+the receipt's `peerIdentity`, the digest of the certificate the endpoint presented.
+
+An acquisition's arguments are the adapter's request, `{"path", "method"?, "query"?, "body"?}`:
+the path one of `paths`, the method one of `methods`; anything else is refused by the adapter
+before a connection is made.
+
+An `http` live operation is its binding's only operation, and the binding's version is 1: no
+owner taxonomy is defined for an operation whose acquisitions name no tool, so a
+`bindingVersion` 2 or 3 binding naming the shape is refused, and the current admission's
+owner-declaration requirement, which is of MCP operations, does not reach it. A platform that
+reads by it acts elsewhere: `/act` names another platform's `write`, citing the acquisition, and
+takes no write for this one, which derives no write source. The engine refuses, at start and at
+`connect`, what such a platform would leave unused and so read as in force — `write: true`, and
+with it a `decisionPolicy` or `writeRequesters`; a `grant`, since an acquisition names no tool, so
+a delegation's own scope check (SPEC.md §11.5) would refuse every one under the grant as
+`out-of-scope` — reason `source` when no scope entry names the source, `tool` when one does — and
+a grant would admit nothing; an `endpoint`, since the binding fixes the endpoint; `parameters`,
+since nothing names a placeholder; and `descriptors`, `operationDescriptors` or
+`descriptorStatements`, since there is no tool to describe. Since the platform names no grant, a
+delegated acquisition of it, with a delegation credential presented or not, is refused as
+`grant-unknown` (SPEC.md §10, rule 3) before the scope check, the custody, the issuing host or the
+adapter is reached. The MCP server lists no tool of the platform; a client reaches it through
+`/acquire`, authenticated as every source is.
+
+No engine version is added: the configuration's members are unchanged, and every release before
+this one refuses a binding that names the `http` shape by name, when it loads the binding and
+before any source is derived — so an older gateway refuses a configuration that pins one, and a
+binding that names no `http` operation derives exactly the sources it did.
 
 ## `connect`
 
@@ -776,7 +893,10 @@ the environment `serve` would give it: `adapter-airbyte --check` runs the connec
 `check` with the credentials; `adapter-mcp --check` starts the server, completes the handshake
 and lists its tools, failing when a tool the binding names is not offered, and calls the
 binding's `probe` once when a live operation names one; a write operation accepts no probe,
-and its check calls no tool. What each answered
+and its check calls no tool; `adapter-http --check` reaches the binding's endpoint and GETs its
+`checkPath`, when it names one, which must answer 2xx — the line names the endpoint, the TLS
+peer's identity and what the check path answered, the endpoint the adapter reports must be the
+binding's, and nothing is captured. What each answered
 is printed, one line per operation, a remote server's line naming the URL it was given as the
 parameters resolved it — and the endpoint the adapter reports must be that URL, or the connect
 ends and nothing it captured is kept; the first that cannot answer ends the connect with the

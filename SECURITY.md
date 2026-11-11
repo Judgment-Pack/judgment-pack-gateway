@@ -257,6 +257,32 @@ the same form (#268); a write over stdio names no transport, and its endpoint, t
 held to nothing more. A verifier written before the member holds no endpoint of an action to the
 form.
 
+**An HTTP API read in the engine is reached by `adapter-http`, as the platform's user, with that
+platform's credential, at the endpoint its binding fixes** (gateway #384,
+[ADR-0024](docs/adr/0024-an-http-source-in-the-engine.md)). For a platform whose binding's `live`
+operation is of the `http` shape, the process that makes the request is `adapter-http`, a program
+of the adapters module the signer is never linked with, which the signer starts for each
+acquisition as it starts every engine source: as the platform's OS user — never root, the
+signer's own, the MCP server's or another platform's — with `no_new_privs`, under the source
+sandbox from engine version 13. It reads the platform's live credentials file, owned by that user
+at mode `0600` under a path the signer walked and resolved, sends the one member `bearer` or
+`credentialHeader` names and nothing else of the file to the endpoint the pinned binding fixes —
+of the endpoint form above — under a path and by a method the binding names, follows no redirect,
+and refuses an answer that repeats a credential. No request steers the host: the endpoint, the
+paths, the methods and the headers are the binding's, a path carrying a comma is refused since the
+command line would read it as two, a credential may not be sent under `Proxy-Authorization`,
+which a proxy reads, and the platform may name no endpoint, parameter or grant beside the binding.
+The signer never reads the credential: it reads the envelope from the adapter's stdout, within the
+engine's one mebibyte and thirty seconds, and signs what it attests. This is stricter than the
+plain form, whose `--source NAME='adapter-http …'` runs as the gateway's own user unless
+`--source-user` names another. The receipt names the URL sent to, the TLS identity the answer came
+under and the answer's validator; it does not say the API is honest, that the answer is current, or
+that the request read rather than wrote — a `POST` the binding allows is one the API may treat as a
+write, so the binding's paths and methods, and a credential the API holds to reading, are what keep
+the source to reads. An `http` source is never a write tool: its platform derives no write source,
+`/act` takes no write for it, the MCP server lists no tool of it, and a delegated acquisition of it
+names no tool and is refused.
+
 **A write-back platform writes as the credential its operator configured, under a decision
 policy, and its receipt names the URL it wrote to** (issue #248;
 [executor.md](docs/design/executor.md), "The write-back platforms"). The `azure-devops` and

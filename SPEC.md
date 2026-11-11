@@ -1701,6 +1701,21 @@ is the session id the server issues: both are the adapter's alone. An envelope
 whose `transport` and `server` depart from §1.2a's forms, or that carries them from a
 source declared with another shape, is refused like any other departure.
 
+**In the engine.** `serve --config` declares its sources from its platforms' bindings
+(`docs/design/engine-config.md`) rather than from `--source-shape`: `<platform>/history`
+of shape `airbyte`; `<platform>/live` of shape `mcp`, or of shape `http` for a binding whose
+one operation is `live` of that shape, run by the program the plain form runs for it,
+`adapter-http` (`docs/adr/0024-an-http-source-in-the-engine.md`); and `<platform>/write` of
+shape `mcp`, the executor's alone and never named by `/acquire`. A source is held to this
+contract whichever form declared it: the envelope of an `http` source in the engine is the
+plain form's and is refused as any other departs, and the receipt minted from it is the
+plain form's, member for member. A platform whose `live` is of shape `http` names no
+connection grant, so a call under a delegation, with a delegation credential presented or
+not, is refused `grant-unknown` (§10, rule 3) before the scope check or the source; a grant
+would admit nothing, since an `http` acquisition names no tool and the scope check (§11.5)
+refuses it `out-of-scope`, reason `source` when no scope entry names the source and `tool`
+when one does.
+
 The gateway refuses an envelope that departs from this in any way — not an object,
 a member missing or unlisted at either level, a member of another type or form,
 `page` other than `true`, a page whose result is not an array — and the acquisition

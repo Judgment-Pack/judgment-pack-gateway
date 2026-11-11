@@ -69,7 +69,7 @@ func previewDescriptors(configPath string, cfg engineConfig, bindings map[string
 	}
 	described := describedOperation(b, entry.write)
 	if described == nil {
-		return "", fmt.Errorf("platform %s has no live operation, so the MCP server lists no tool of it", platform)
+		return "", fmt.Errorf("platform %s has no live MCP operation, so the MCP server lists no tool of it", platform)
 	}
 	if b.live == nil {
 		return previewWriteDescriptors(configPath, cfg, bindings, *entry, described)

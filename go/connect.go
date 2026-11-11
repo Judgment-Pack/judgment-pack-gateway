@@ -442,7 +442,7 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		if err != nil {
 			return out, fmt.Errorf("%s: %v", name, err)
 		}
-		answer, err := describeCheck(spec.shape, report, remoteURL(spec.argv))
+		answer, err := describeSourceCheck(spec, report)
 		if err != nil {
 			return out, fmt.Errorf("%s: %v", name, err)
 		}
@@ -589,6 +589,9 @@ func newPlatformEntry(req connectRequest, ref string, b binding, account func(na
 	if err := credentialsMatch(p.credentials, b, p.write); err != nil {
 		return p, fmt.Errorf("platform %s: %v", req.platform, err)
 	}
+	if err := httpPlatformMatch(p, b); err != nil {
+		return p, fmt.Errorf("platform %s: %v", req.platform, err)
+	}
 	if req.user == "" {
 		return p, errors.New("user must name the OS user the platform's adapters run as")
 	}
@@ -726,16 +729,11 @@ func remoteURL(argv []string) string {
 // compares by their roles and repeats neither: a URL may carry, by
 // mistake, what is never to be shown.
 func describeCheck(shape string, report []byte, url string) (string, error) {
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(report, &top); err != nil || len(top) != 1 || len(top["check"]) == 0 {
-		return "", errors.New("the adapter's report is not a check report")
+	who, raw, err := checkedAdapter(report)
+	if err != nil {
+		return "", err
 	}
 	var check struct {
-		Adapter struct {
-			Name    string `json:"name"`
-			Version string `json:"version"`
-			Digest  string `json:"digest"`
-		} `json:"adapter"`
 		Status  string `json:"status"`
 		Message string `json:"message"`
 		Server  struct {
@@ -757,17 +755,9 @@ func describeCheck(shape string, report []byte, url string) (string, error) {
 			State   string `json:"state"`
 		} `json:"sandbox"`
 	}
-	if err := json.Unmarshal(top["check"], &check); err != nil || check.Adapter.Name == "" || check.Adapter.Digest == "" {
+	if err := json.Unmarshal(raw, &check); err != nil {
 		return "", errors.New("the adapter's report is not a check report")
 	}
-	if check.Status != "succeeded" {
-		return "", fmt.Errorf("the adapter reported %q, not a success", check.Status)
-	}
-	who := check.Adapter.Name
-	if check.Adapter.Version != "" {
-		who += ":" + check.Adapter.Version
-	}
-	who += " (" + check.Adapter.Digest + ")"
 	switch shape {
 	case "airbyte":
 		return who + " answered " + check.Status + ": " + check.Message, nil
@@ -802,6 +792,36 @@ func describeCheck(shape string, report []byte, url string) (string, error) {
 		return line, nil
 	}
 	return "", fmt.Errorf("no check for shape %q", shape)
+}
+
+// checkedAdapter reads what every check report carries: one member, check,
+// naming the adapter by its name and digest, its version where it has one,
+// and the status succeeded. It returns the adapter as a line names it, and
+// the check member for the shape's own reading.
+func checkedAdapter(report []byte) (string, json.RawMessage, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(report, &top); err != nil || len(top) != 1 || len(top["check"]) == 0 {
+		return "", nil, errors.New("the adapter's report is not a check report")
+	}
+	var check struct {
+		Adapter struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+			Digest  string `json:"digest"`
+		} `json:"adapter"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(top["check"], &check); err != nil || check.Adapter.Name == "" || check.Adapter.Digest == "" {
+		return "", nil, errors.New("the adapter's report is not a check report")
+	}
+	if check.Status != "succeeded" {
+		return "", nil, fmt.Errorf("the adapter reported %q, not a success", check.Status)
+	}
+	who := check.Adapter.Name
+	if check.Adapter.Version != "" {
+		who += ":" + check.Adapter.Version
+	}
+	return who + " (" + check.Adapter.Digest + ")", top["check"], nil
 }
 
 // renderPlatformEntry is the configuration with the entry in it, as the

@@ -414,7 +414,11 @@ engine.json <platform> --binding <name> --credentials-file <operation>=<path>...
 writes a platform entry: it holds the configuration that would result to the same refusals, runs each
 of the platform's adapters once in check mode as the platform's user, prints what the platform
 answered, and writes only then — nothing is acquired and no receipt is minted. The bindings
-the engine ships, with their pins and licences, are in [catalog/](catalog/README.md). With an
+the engine ships, with their pins and licences, are in [catalog/](catalog/README.md). A binding
+may also name a plain HTTP API as a platform's `live` operation, of the `http` shape: the engine
+runs `adapter-http` for it as the platform's user with the platform's credential, at the endpoint
+and paths the binding fixes, and its receipt is the one `--source-shape NAME=http` gives
+([ADR-0024](docs/adr/0024-an-http-source-in-the-engine.md)). With an
 `identity` in the configuration — an issuer, the audience the engine is named as, and a file of
 the issuer's public keys — every request that acquires, seals or verifies carries a bearer token
 the issuer signed, and the receipt names the caller it proved; without one, every receipt carries
