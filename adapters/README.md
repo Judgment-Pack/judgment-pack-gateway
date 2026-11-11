@@ -97,7 +97,8 @@ after `--` as given. `--shape` is required: it is the shape you will declare wit
 `--env KEY` hands the adapter that variable from this process's environment and `--env KEY=VALUE`
 that value, as `--source-env` does, and nothing else reaches it but `PATH`; `--timeout SECONDS` and
 `--max-output BYTES` are the source's `--source-timeout` and `--source-max-output`. Each case is a
-`*.json` file of the directory, taken in the order of their names, of exactly two members:
+`*.json` file of the directory, taken in the order of their names, of exactly two members,
+each given once under its exact name:
 
 ```json
 {"request": {"path": "/read", "body": {"id": 101}}, "expect": "accepted"}

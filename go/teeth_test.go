@@ -1955,8 +1955,15 @@ const conformStubUsage = "usage: verify <store-root> <registry-path> <authority>
 //   - no-verdict: every verify refused so, the option or not;
 //   - observation-kept-under-option: under --ordinary-seals-only, the
 //     finding sealed-after-interruption and, beside it, the observation the
-//     verdict without the option carries, which the option takes away.
+//     verdict without the option carries, which the option takes away;
+//   - edit: the reference's verdict and witness answer, the option taken,
+//     with the edit the first argument names made to the text
+//     (editedAnswer), the contract's arguments after it.
 func conformStub(mode string, args []string) int {
+	edit := ""
+	if mode == "edit" && len(args) > 0 {
+		edit, args = args[0], args[1:]
+	}
 	if len(args) == 0 {
 		return 2
 	}
@@ -1970,7 +1977,14 @@ func conformStub(mode string, args []string) int {
 		os.Stdout.Write(out)
 		return 0
 	case "witness":
-		return witnessContract(args[1:], os.Stdout, os.Stderr)
+		if mode != "edit" {
+			return witnessContract(args[1:], os.Stdout, os.Stderr)
+		}
+		var answer bytes.Buffer
+		if rc := witnessContract(args[1:], &answer, os.Stderr); rc != 0 {
+			return rc
+		}
+		return writeEdited(answer.Bytes(), edit)
 	case "verify":
 	default:
 		return 2
@@ -2014,7 +2028,7 @@ func conformStub(mode string, args []string) int {
 		return 1
 	}
 	switch mode {
-	case "ignore-option":
+	case "ignore-option", "edit":
 	case "no-observations", "older":
 		rep.Observations = nil
 	case "observations-twice":
@@ -2050,8 +2064,167 @@ func conformStub(mode string, args []string) int {
 			return 1
 		}
 	}
+	if mode == "edit" {
+		return writeEdited(out, edit)
+	}
 	os.Stdout.Write(out)
 	return 0
+}
+
+// writeEdited writes an answer with the edit made (editedAnswer).
+func writeEdited(answer []byte, edit string) int {
+	edited, err := editedAnswer(answer, edit)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "edit:", err)
+		return 2
+	}
+	os.Stdout.Write(edited)
+	return 0
+}
+
+// editedAnswer is an answer, a JSON object, with one of its members written
+// otherwise, the edit "how:member" -- or "how:member.inner", a member of the
+// object the member is, or of the first object in the array it is. Where
+// the answer gives no such member, or it holds no object, the answer is
+// unchanged. How:
+//
+//   - alone: the member under its name in capitals (OK, FINDINGS), its value
+//     as it was;
+//   - beside: the member as it was, between its name capitalized (Ok,
+//     Findings) and its name in capitals, each holding a wrong value
+//     (wrongValue), so a reader that took either for the member disagrees;
+//   - twice: the member, then the member again, its value the same;
+//   - wrong-first: the member with a wrong value, then as it was, which is
+//     what a reader keeping the last occurrence reads;
+//   - right-first: the member as it was, then with a wrong value;
+//   - cut, naming no member: the answer without its last byte, no JSON
+//     value.
+func editedAnswer(answer []byte, edit string) ([]byte, error) {
+	how, path, _ := strings.Cut(edit, ":")
+	if how == "cut" {
+		whole := bytes.TrimSpace(answer)
+		return whole[:len(whole)-1], nil
+	}
+	outer, inner, nested := strings.Cut(path, ".")
+	object := reflect.TypeFor[map[string]any]()
+	members, err := objectMembers(answer, object)
+	if err != nil {
+		return nil, err
+	}
+	if !nested {
+		return objectText(editMember(members, outer, how)), nil
+	}
+	i := slices.IndexFunc(members, func(m jsonMember) bool { return m.name == outer })
+	if i < 0 {
+		return answer, nil
+	}
+	if inside, err := objectMembers(members[i].value, object); err == nil {
+		members[i].value = objectText(editMember(inside, inner, how))
+		return objectText(members), nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(members[i].value, &items); err != nil || len(items) == 0 {
+		return answer, nil
+	}
+	first, err := objectMembers(items[0], object)
+	if err != nil {
+		return answer, nil
+	}
+	items[0] = objectText(editMember(first, inner, how))
+	var array bytes.Buffer
+	array.WriteByte('[')
+	for j, item := range items {
+		if j > 0 {
+			array.WriteByte(',')
+		}
+		array.Write(item)
+	}
+	array.WriteByte(']')
+	members[i].value = array.Bytes()
+	return objectText(members), nil
+}
+
+// editMember is the members with the one named written as how says
+// (editedAnswer).
+func editMember(members []jsonMember, name, how string) []jsonMember {
+	i := slices.IndexFunc(members, func(m jsonMember) bool { return m.name == name })
+	if i < 0 {
+		return members
+	}
+	right := members[i].value
+	wrong := wrongValue(name, right)
+	capitalized := strings.ToUpper(name[:1]) + name[1:]
+	var with []jsonMember
+	switch how {
+	case "alone":
+		with = []jsonMember{{strings.ToUpper(name), right}}
+	case "beside":
+		with = []jsonMember{{capitalized, wrong}, {name, right}, {strings.ToUpper(name), wrong}}
+	case "twice":
+		with = []jsonMember{{name, right}, {name, right}}
+	case "wrong-first":
+		with = []jsonMember{{name, wrong}, {name, right}}
+	case "right-first":
+		with = []jsonMember{{name, right}, {name, wrong}}
+	default:
+		panic("no edit " + how)
+	}
+	return slices.Concat(members[:i], with, members[i+1:])
+}
+
+// wrongValue is a value of the member other than right, and other than any
+// a vector expects: true for false and false for true, and otherwise one
+// no vector holds.
+func wrongValue(name string, right json.RawMessage) json.RawMessage {
+	switch string(right) {
+	case "true":
+		return json.RawMessage("false")
+	case "false":
+		return json.RawMessage("true")
+	}
+	wrong, known := map[string]string{
+		// a verdict's
+		"findings":     `[{"status":"not-a-finding"}]`,
+		"observations": `[{"observation":"not-an-observation"}]`,
+		"witnesses":    `[{"trail":"not-a-trail","origin":"","keyId":""}]`,
+		"rotations":    `{"count":-1,"keyId":""}`,
+		"status":       `"not-a-status"`,
+		"observation":  `"not-an-observation"`,
+		"trail":        `"not-a-trail"`,
+		"count":        `-1`,
+		// a witness answer's
+		"refused":          `"not-a-reason"`,
+		"reading":          `"not-a-reading"`,
+		"headIndex":        `-1`,
+		"highestIndex":     `-1`,
+		"latestCheckpoint": `{"index":-1,"sequence":-1,"witnessedAt":""}`,
+		"conflicts":        `[-1]`,
+		"index":            `-1`,
+		"sequence":         `-1`,
+		"witnessedAt":      `""`,
+	}[name]
+	if !known {
+		panic("no wrong value of " + name)
+	}
+	return json.RawMessage(wrong)
+}
+
+// objectText is an object of the members, in order, a name given twice
+// written twice.
+func objectText(members []jsonMember) json.RawMessage {
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, m := range members {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		name, _ := json.Marshal(m.name)
+		b.Write(name)
+		b.WriteByte(':')
+		b.Write(m.value)
+	}
+	b.WriteByte('}')
+	return b.Bytes()
 }
 
 // A verifier that agrees with every vector written before #398 and reports no
@@ -2177,21 +2350,432 @@ func TestNoVerdictIsAnImplementationThatRanAndExitedNonZero(t *testing.T) {
 }
 
 // What a disagreement quotes of an implementation's standard error: trimmed,
-// quoted, and no more than stderrBound bytes of it, whatever it wrote.
+// quoted, and no more than quotedBound bytes of it, whatever it wrote.
 func TestBoundedStderrQuotesAtMostTheBound(t *testing.T) {
 	for _, c := range []struct{ stderr, want string }{
 		{"", `""`},
 		{"  usage: verify\n", `"usage: verify"`},
 		{"line one\nline two\x1b[31m", `"line one\nline two\x1b[31m"`},
-		{strings.Repeat("a", stderrBound), strconv.Quote(strings.Repeat("a", stderrBound))},
-		{strings.Repeat("a", stderrBound+5), strconv.Quote(strings.Repeat("a", stderrBound)) + " and 5 bytes more"},
+		{strings.Repeat("a", quotedBound), strconv.Quote(strings.Repeat("a", quotedBound))},
+		{strings.Repeat("a", quotedBound+5), strconv.Quote(strings.Repeat("a", quotedBound)) + " and 5 bytes more"},
 		// cut inside a character: the bytes kept are quoted, never invalid text
-		{strings.Repeat("a", stderrBound-1) + "é", strconv.Quote(strings.Repeat("a", stderrBound-1)+"\xc3") + " and 1 bytes more"},
+		{strings.Repeat("a", quotedBound-1) + "é", strconv.Quote(strings.Repeat("a", quotedBound-1)+"\xc3") + " and 1 bytes more"},
 	} {
 		if got := boundedStderr(c.stderr); got != c.want {
 			t.Errorf("boundedStderr(%q):\n got %s\nwant %s", c.stderr, got, c.want)
 		}
 	}
+}
+
+// The members of a verdict, and of a witness answer, are read by their
+// exact names, and an answer that gives a member twice in one object is no
+// conforming answer (SPEC.md §7). For every member the runner compares, of
+// both families, the reference answers as it does but for one edit of its
+// answer's text (editedAnswer), read as a subprocess's answer is read
+// (editing); a few cases, and gateway conform itself, drive the test binary
+// so answering through the process contract, as `gateway conform --impl`
+// drives an implementation:
+//
+//   - the member under another case alone is a member the runner does not
+//     read: the vectors the member matters to disagree, as they do with an
+//     answer that leaves it out, where encoding/json, matching names
+//     ignoring case, reads it as the member and agrees;
+//   - beside the member, under two other cases holding wrong values, it is
+//     passed over and no vector disagrees, where encoding/json keeps the
+//     last of the three -- but for a witness refusal, which is compared
+//     whole, so that any member more disagrees;
+//   - the member twice, with one value or two, in either order, disagrees
+//     with every vector whose answer gives it, once each and in the same
+//     words, the run going on: neither occurrence is read as the answer;
+//   - and so does a member twice inside what is compared whole: a finding,
+//     an observation, a witness, the rotations, a witness reading's
+//     latestCheckpoint.
+//
+// Which vectors' answers give a member is read from the vectors, which the
+// reference agrees with, but for observations, which a vector that does not
+// state them leaves unread: those are the vectors the reference observes
+// something in.
+func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
+	publicKey, err := corpusPublicKey(corpusDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := storeVectorPaths(corpusDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type names = map[string]bool
+	stores, okTrue, withFindings, withWitnesses, withRotations, stating, observed := names{}, names{}, names{}, names{}, names{}, names{}, names{}
+	for _, path := range paths {
+		var vector storeVector
+		if err := decodeVectorFile([]byte(readFile(t, path)), &vector, true); err != nil {
+			t.Fatal(err)
+		}
+		stated, _, err := vector.expectedObservations()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for set, holds := range map[*names]bool{
+			&stores: true, &okTrue: vector.Expected.OK, &withFindings: len(vector.Expected.Findings) > 0,
+			&withWitnesses: len(vector.Expected.Witnesses) > 0, &withRotations: vector.Expected.Rotations != nil,
+			&stating: len(stated) > 0,
+		} {
+			if holds {
+				(*set)[vector.Name] = true
+			}
+		}
+		root, storeRoot, registryPath, decisionRecords, err := materializeVector(vector)
+		if err != nil {
+			t.Fatal(err)
+		}
+		verdict, err := inProcess{}.verify(storeRoot, registryPath, vector.Authority, decisionRecords, vector.OrdinarySealsOnly, publicKey)
+		os.RemoveAll(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if verdict.Observations != nil {
+			observed[vector.Name] = true
+		}
+	}
+	witnessPaths, err := witnessVectorPaths(corpusDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	witnesses, refusals, readings, okReadings, withHead := names{}, names{}, names{}, names{}, names{}
+	for _, path := range witnessPaths {
+		vector, err := readWitnessVector(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		witnesses[vector.Name] = true
+		if _, refused := vector.Expected["refused"]; refused {
+			refusals[vector.Name] = true
+			continue
+		}
+		readings[vector.Name] = true
+		if vector.Expected["ok"] == true {
+			okReadings[vector.Name] = true
+			if vector.Expected["headIndex"] != nil {
+				withHead[vector.Name] = true
+			}
+		}
+	}
+	// What the sets are, by count, so that none of them is empty by
+	// accident; and every vector stating observations is one the reference
+	// observes in.
+	if got, want := []int{len(stores), len(okTrue), len(withFindings), len(withWitnesses), len(withRotations), len(stating),
+		len(witnesses), len(refusals), len(readings), len(okReadings), len(withHead)},
+		[]int{131, 28, 131, 3, 9, 2, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
+		t.Fatalf("the corpus's vectors, by what their answers give: %v, want %v", got, want)
+	}
+	for name := range stating {
+		if !observed[name] {
+			t.Fatalf("%s states observations the reference does not report", name)
+		}
+	}
+
+	exactly := func(text string) func(name, failure string) bool {
+		return func(name, failure string) bool { return failure == name+": "+text }
+	}
+	shaped := func(prefix, suffix string) func(name, failure string) bool {
+		return func(name, failure string) bool {
+			return strings.HasPrefix(failure, name+": "+prefix) && strings.HasSuffix(failure, suffix)
+		}
+	}
+	type expectation struct {
+		family, edit string
+		// want is the vectors that disagree, each once, in words says
+		// accepts; with no says, none disagrees.
+		want names
+		says func(name, failure string) bool
+	}
+	var cases []expectation
+	for _, m := range []struct {
+		family, member string
+		// given is the vectors whose answers give the member, and alone
+		// those disagreeing when it is given only under another case.
+		given, alone names
+		says         func(name, failure string) bool
+		// besideWant, besideSays: the vectors disagreeing when it is given
+		// beside its name in other cases; none but for a refusal.
+		besideWant names
+		besideSays func(name, failure string) bool
+	}{
+		{"store", "ok", stores, okTrue, exactly("expected ok=true, got ok=false"), nil, nil},
+		{"store", "findings", stores, withFindings, shaped("findings disagree\n    expected: [", "]\n    produced: []"), nil, nil},
+		{"store", "observations", observed, stating, shaped("observations disagree\n    expected: [", "]\n    produced: []"), nil, nil},
+		{"store", "witnesses", withWitnesses, withWitnesses, shaped("witnesses disagree\n    expected: [", "]\n    produced: []"), nil, nil},
+		{"store", "rotations", withRotations, withRotations, shaped("rotations disagree\n    expected: {", "}\n    produced: none"), nil, nil},
+		{"witness", "refused", refusals, refusals, shaped(`expected {"refused":`, "}"), refusals, shaped(`expected {"refused":`, "}")},
+		{"witness", "ok", readings, readings, shaped("expected ok=", "}"), nil, nil},
+		{"witness", "findings", readings, readings, exactly("findings are not an array: <nil>"), nil, nil},
+		{"witness", "reading", okReadings, okReadings, shaped("reading: expected ", ", produced <nil>"), nil, nil},
+		// headIndex is null without a head, and a member not given is
+		// compared as null (compareWitness)
+		{"witness", "headIndex", okReadings, withHead, shaped("headIndex: expected ", ", produced <nil>"), nil, nil},
+		{"witness", "highestIndex", okReadings, okReadings, shaped("highestIndex: expected ", ", produced <nil>"), nil, nil},
+		{"witness", "latestCheckpoint", okReadings, okReadings, shaped("latestCheckpoint: expected map[", "], produced <nil>"), nil, nil},
+		{"witness", "conflicts", okReadings, okReadings, shaped("conflicts: expected [", "], produced <nil>"), nil, nil},
+		{"witness", "retired", okReadings, okReadings, shaped("retired: expected ", ", produced <nil>"), nil, nil},
+	} {
+		twice := exactly(map[string]string{"store": "the verdict", "witness": "the answer"}[m.family] + " gives a member twice in one object: " + strconv.Quote(m.member))
+		cases = append(cases,
+			expectation{m.family, "alone:" + m.member, m.alone, m.says},
+			expectation{m.family, "beside:" + m.member, m.besideWant, m.besideSays},
+			expectation{m.family, "twice:" + m.member, m.given, twice},
+			expectation{m.family, "wrong-first:" + m.member, m.given, twice},
+			expectation{m.family, "right-first:" + m.member, m.given, twice},
+		)
+	}
+	for _, n := range []struct {
+		family, outer, inner string
+		given                names
+	}{
+		{"store", "findings", "status", withFindings},
+		{"store", "observations", "observation", observed},
+		{"store", "witnesses", "trail", withWitnesses},
+		{"store", "rotations", "count", withRotations},
+		{"witness", "latestCheckpoint", "index", okReadings},
+		{"witness", "latestCheckpoint", "sequence", okReadings},
+		{"witness", "latestCheckpoint", "witnessedAt", okReadings},
+	} {
+		twice := exactly(map[string]string{"store": "the verdict", "witness": "the answer"}[n.family] + " gives a member twice in one object: " + strconv.Quote(n.inner))
+		for _, how := range []string{"twice", "wrong-first"} {
+			cases = append(cases, expectation{n.family, how + ":" + n.outer + "." + n.inner, n.given, twice})
+		}
+	}
+
+	check := func(t *testing.T, c expectation, impl implementation) {
+		t.Helper()
+		run := map[string]func(string, implementation) ([]string, int, error){"store": runStoreVectors, "witness": runWitnessVectors}[c.family]
+		failures, _, err := run(corpusDir, impl)
+		if err != nil {
+			t.Fatalf("no run: %v", err)
+		}
+		disagreeing := names{}
+		for _, failure := range failures {
+			name, _, found := strings.Cut(failure, ": ")
+			if !strings.HasPrefix(name, c.family+" ") || !found || disagreeing[name] {
+				t.Fatalf("a failure of no %s vector, or a second: %s", c.family, failure)
+			}
+			disagreeing[name] = true
+			if c.says == nil || !c.says(name, failure) {
+				t.Errorf("failure: %q", failure)
+			}
+		}
+		var want []string
+		for name := range c.want {
+			want = append(want, c.family+" "+name)
+		}
+		if got := slices.Sorted(maps.Keys(disagreeing)); !slices.Equal(got, slices.Sorted(slices.Values(want))) {
+			t.Fatalf("%d vectors disagreeing, want %d:\n got %v\nwant %v", len(got), len(want), got, slices.Sorted(slices.Values(want)))
+		}
+	}
+	for _, c := range cases {
+		t.Run(c.family+"/"+c.edit, func(t *testing.T) {
+			t.Parallel()
+			check(t, c, editing{edit: c.edit})
+		})
+	}
+	// Through the process contract: the test binary answering so, read as
+	// any implementation's answer is, a store and a witness case each.
+	t.Setenv(envConformStub, "edit")
+	t.Run("process contract", func(t *testing.T) {
+		for _, c := range cases {
+			if c.edit == "twice:ok" || c.family == "store" && c.edit == "alone:ok" {
+				check(t, c, subprocess{argv: []string{os.Args[0], c.edit}})
+			}
+		}
+	})
+	// Through the command itself, the whole corpus: a verdict and an
+	// answer giving a member twice are disagreements, exit 1, never no
+	// run; ones carrying other cases of a member beside it agree, exit 0;
+	// and an answer that is no JSON value is no answer, exit 2, a witness's
+	// as a verdict's.
+	t.Run("gateway conform", func(t *testing.T) {
+		for edit, want := range map[string]int{"twice:ok": 1, "beside:ok": 0, "beside:findings": 0, "cut:": 2} {
+			if rc := cmdConform([]string{"--impl", os.Args[0] + " " + edit, "--corpus", corpusDir}); rc != want {
+				t.Errorf("gateway conform --impl, %s: exit %d, want %d", edit, rc, want)
+			}
+		}
+		// each family stopping on its own: the exit alone would be the
+		// witness's, were the verdict cut short read as one
+		_, _, err := runStoreVectors(corpusDir, subprocess{argv: []string{os.Args[0], "cut:"}})
+		if want := "unexpected end of JSON input"; err == nil || err.Error() != want {
+			t.Errorf("a verdict cut short: %v, want %s", err, want)
+		}
+		_, _, err = runWitnessVectors(corpusDir, subprocess{argv: []string{os.Args[0], "cut:"}})
+		if want := "witness begins-late-index-one: witness answered with no JSON object: unexpected end of JSON input"; err == nil || err.Error() != want {
+			t.Errorf("a witness answer cut short: %v, want %s", err, want)
+		}
+	})
+}
+
+// decodeVerdict reads a member by its name exactly, not as Unicode's
+// simple folding matches it: the Kelvin sign and the long s, which
+// encoding/json reads as k and s, are other names. A name given twice is
+// the same name however it is escaped. What a disagreement says of a
+// member given twice quotes its name, bounded as standard error is. And
+// what is no reading of an answer, a text that is not one JSON value, a
+// verdict that is not an object, a member the runner reads of the wrong
+// type, refuses it as such, never as a member given twice: the run stops.
+// A member given twice is found first, before any member is read, so
+// beside a member of the wrong type it is still a disagreement.
+func TestAVerdictsMembersAreItsNamesExactly(t *testing.T) {
+	for _, c := range []struct {
+		what, verdict string
+		ok            bool
+		observations  string
+		twice         string
+	}{
+		{"ok, exactly", `{"ok":true,"findings":[]}`, true, "", ""},
+		{"ok with the Kelvin sign", "{\"o\u212a\":true,\"findings\":[]}", false, "", ""},
+		{"ok with the Kelvin sign, escaped", `{"o\u212a":true,"findings":[]}`, false, "", ""},
+		{"observations with the long s", "{\"ok\":true,\"findings\":[],\"ob\u017fervations\":[{\"observation\":\"session-open\"}]}", true, "", ""},
+		{"OBSERVATIONS", `{"ok":true,"findings":[],"OBSERVATIONS":[]}`, true, "", ""},
+		{"observations", `{"ok":true,"findings":[],"observations":[]}`, true, "[]", ""},
+		{"ok twice, once escaped", `{"ok":true,"findings":[],"\u006fk":true}`, false, "", "ok"},
+		{"a member twice inside a finding", `{"ok":true,"findings":[{"status":"ok","status":"ok"}]}`, false, "", "status"},
+		{"a member twice in a member no runner reads", `{"ok":true,"findings":[],"more":{"a":1,"a":1}}`, false, "", "a"},
+	} {
+		verdict, err := decodeVerdict([]byte(c.verdict))
+		var twice memberTwice
+		switch {
+		case c.twice != "":
+			if !errors.As(err, &twice) || twice.name != c.twice {
+				t.Errorf("%s: %v, want %q given twice", c.what, err, c.twice)
+			}
+		case err != nil:
+			t.Errorf("%s: %v", c.what, err)
+		case verdict.OK != c.ok || string(verdict.Observations) != c.observations:
+			t.Errorf("%s: ok=%v observations=%s, want ok=%v observations=%s", c.what, verdict.OK, verdict.Observations, c.ok, c.observations)
+		}
+	}
+	long := strings.Repeat("a", quotedBound+44)
+	failures, count, err := runStoreVectors(corpusDir, answering{verdict: `{"ok":true,"findings":[],"` + long + `":1,"` + long + `":1}`})
+	if err != nil || len(failures) != count || count == 0 {
+		t.Fatalf("a member of %d bytes twice: %v, %d failures of %d vectors", len(long), err, len(failures), count)
+	}
+	if want := `store absent-registry: the verdict gives a member twice in one object: "` + long[:quotedBound] + `" and 44 bytes more`; failures[0] != want {
+		t.Errorf("failure:\n got %q\nwant %q", failures[0], want)
+	}
+	failures, count, err = runWitnessVectors(corpusDir, answering{answer: `{"refused":"x","\u001b[2J":1,"\u001b[2J":1}`})
+	if err != nil || len(failures) != count || count == 0 {
+		t.Fatalf("a witness answer's member twice: %v, %d failures of %d vectors", err, len(failures), count)
+	}
+	if want := `witness begins-late-index-one: the answer gives a member twice in one object: "\x1b[2J"`; failures[0] != want {
+		t.Errorf("failure:\n got %q\nwant %q", failures[0], want)
+	}
+
+	for _, c := range []struct{ verdict, refused string }{
+		{`{"ok":true`, "unexpected end of JSON input"},
+		{`{"ok":true} {}`, "invalid character '{' after top-level value"},
+		{`{"ok":true}x`, "invalid character 'x' after top-level value"},
+		{`[]`, "json: cannot unmarshal array into Go value of type main.contractVerdict"},
+		{`"x"`, "json: cannot unmarshal string into Go value of type main.contractVerdict"},
+		{`1`, "json: cannot unmarshal number into Go value of type main.contractVerdict"},
+		{`["ok",true,"findings",[]]`, "json: cannot unmarshal array into Go value of type main.contractVerdict"},
+		{`{"ok":"x"}`, "json: cannot unmarshal string into Go struct field contractVerdict.ok of type bool"},
+	} {
+		verdict, err := decodeVerdict([]byte(c.verdict))
+		var twice memberTwice
+		if err == nil || errors.As(err, &twice) || err.Error() != c.refused {
+			t.Errorf("%s: %v (ok=%v), want %s", c.verdict, err, verdict.OK, c.refused)
+		}
+	}
+	var twice memberTwice
+	if _, err := decodeVerdict([]byte(`{"ok":"x","a":1,"a":1}`)); !errors.As(err, &twice) || twice.name != "a" {
+		t.Errorf("a member twice beside a member of the wrong type: %v", err)
+	}
+	// and through the runner, of either family
+	for what, run := range map[string]struct {
+		run     func(string, implementation) ([]string, int, error)
+		answer  answering
+		refused string
+	}{
+		"a verdict cut short":           {runStoreVectors, answering{verdict: `{"ok":true`}, "unexpected end of JSON input"},
+		"a verdict and more":            {runStoreVectors, answering{verdict: `{"ok":true,"findings":[]} {}`}, "invalid character '{' after top-level value"},
+		"a verdict that is no object":   {runStoreVectors, answering{verdict: `["ok",true,"findings",[]]`}, "json: cannot unmarshal array into Go value of type main.contractVerdict"},
+		"a verdict's ok of no type":     {runStoreVectors, answering{verdict: `{"ok":"x","findings":[]}`}, "json: cannot unmarshal string into Go struct field contractVerdict.ok of type bool"},
+		"a witness answer cut short":    {runWitnessVectors, answering{answer: `{"refused":"x"`}, "witness begins-late-index-one: unexpected end of JSON input"},
+		"a witness answer and more":     {runWitnessVectors, answering{answer: `{"refused":"x"}x`}, "witness begins-late-index-one: invalid character 'x' after top-level value"},
+		"a witness answer of no object": {runWitnessVectors, answering{answer: `[]`}, "witness begins-late-index-one: json: cannot unmarshal array into Go value of type map[string]interface {}"},
+	} {
+		if failures, _, err := run.run(corpusDir, run.answer); err == nil || err.Error() != run.refused {
+			t.Errorf("%s: %v, %d failures, want %s", what, err, len(failures), run.refused)
+		}
+	}
+	failures, count, err = runStoreVectors(corpusDir, answering{verdict: `{"ok":"x","findings":[],"a":1,"a":1}`})
+	if err != nil || len(failures) != count || count == 0 {
+		t.Fatalf("a member twice beside a member of the wrong type: %v, %d failures of %d vectors", err, len(failures), count)
+	}
+	if want := `store absent-registry: the verdict gives a member twice in one object: "a"`; failures[0] != want {
+		t.Errorf("failure:\n got %q\nwant %q", failures[0], want)
+	}
+}
+
+// editing is the reference answering in process, with the edit made to the
+// text of each answer (editedAnswer), read as a subprocess's answer is: the
+// verdict and witness answer the conform stub's "edit" mode writes, without
+// a process for each.
+type editing struct {
+	inProcess
+	edit string
+}
+
+func (e editing) verify(storeRoot, registryPath, authority, decisionRecords string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
+	rep, err := verifierFor(ordinarySealsOnly)(storeRoot, registryPath, authority, decisionRecords, publicKey)
+	if err != nil {
+		return contractVerdict{}, err
+	}
+	raw, err := rep.marshal()
+	if err != nil {
+		return contractVerdict{}, err
+	}
+	edited, err := editedAnswer(raw, e.edit)
+	if err != nil {
+		return contractVerdict{}, err
+	}
+	return decodeVerdict(edited)
+}
+
+func (e editing) witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error) {
+	verdict, err := readWitnessFiles(trail, keyPaths, statementPaths, headPath)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := verdict.marshal()
+	if err != nil {
+		return nil, err
+	}
+	edited, err := editedAnswer(raw, e.edit)
+	if err != nil {
+		return nil, err
+	}
+	var decoded map[string]any
+	if err := decodeAnswer(edited, &decoded); err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
+// answering is an implementation that answers every vector with the same
+// text, read as a subprocess's would be.
+type answering struct {
+	inProcess
+	verdict, answer string
+}
+
+func (a answering) verify(string, string, string, string, bool, []byte) (contractVerdict, error) {
+	return decodeVerdict([]byte(a.verdict))
+}
+
+func (a answering) witness(string, []string, []string, string) (map[string]any, error) {
+	var decoded map[string]any
+	if err := decodeAnswer([]byte(a.answer), &decoded); err != nil {
+		return nil, err
+	}
+	return decoded, nil
 }
 
 // --- source isolation (ADR-0001) --------------------------------------------

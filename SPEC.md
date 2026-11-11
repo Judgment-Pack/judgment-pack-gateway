@@ -1992,6 +1992,28 @@ refusal and finding §8 names.
 through a small process contract, so an implementation in any language can answer
 to the corpus without depending on this one. Findings are compared as a multiset: **order is not normative.** Witnesses (§4) are compared as a set, and rotations (§4) whole, in every store vector, a vector that gives neither expecting none.
 
+**Member names, and a member given twice.** An answer through the process contract, a
+verdict or a witness answer (§8.6), is read by its members' exact names: JSON compares
+names as strings, so a member whose name differs from one the runner reads, if only in
+case, is a member the runner does not read. A vector that member would have answered
+disagrees as it does with an answer that leaves the member out. Where an object is compared
+whole (a finding, an observation, a witness, the rotations, a witness answer's refusal and
+its `latestCheckpoint`), such a member is one more member, and the object disagrees. An
+answer in which an object, at any depth, gives one name twice is not a conforming answer,
+whichever of the two would agree: it disagrees with that vector, the disagreement naming
+the member, and the run goes on to the next. A name given twice is looked for once the
+answer is read as one JSON value and before any member is read, so such an answer
+disagrees even where it also gives a member of the wrong type. An answer the runner cannot
+read, one that is not a single JSON value, is not an object, or gives a member it reads
+with the wrong type, still stops the run (`corpus/README.md`). The vectors are read the
+same way. Each file is one JSON
+value in which no object gives a name twice, its members read by their exact names. In a
+store vector, a witness vector and a witness recovery vector, a member of any other name,
+another case included, refuses the run as any member no runner reads does. `canon.json`'s
+vectors may carry members no runner reads, so there such a member is passed over. None of
+this changes a receipt, the registry, or what verification finds: a verifier that writes
+each member of its answer once, under its name, answers to the corpus as it did.
+
 **Observations, and ordinary seals only.** Observations (§4) are compared where a store
 vector states them, and only there. A vector that gives `observations` in its expected
 answer is compared with the observations the implementation reports, as a multiset: order

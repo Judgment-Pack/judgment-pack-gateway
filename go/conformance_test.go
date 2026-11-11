@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -350,6 +351,114 @@ func TestTheCorpusHoldsNothingUnread(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// A vector's members are read by their exact names (SPEC.md §7), as a
+// verdict's are: a member under another case is a member no reader reads.
+// In a vector of a family read strictly, stores of both versions, witness
+// and witness recovery, it refuses the run as any other such member does,
+// where encoding/json, matching names ignoring case, would read it as the
+// member it folds to, the last one given winning; at the top, in expected,
+// in a file's parts and in a recovery step, and so does a member whose
+// value is no object where the runner reads one. canon.json's vectors,
+// which may carry members no runner reads, pass it over: a vector read by
+// the names it gives exactly agrees.
+func TestAVectorsMembersAreItsNamesExactly(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS(corpusPath())); err != nil {
+		t.Fatal(err)
+	}
+	// answering is quick to agree or disagree with every vector: what is
+	// pinned here is what the runner reads, not what any verifier answers
+	quick := answering{verdict: `{"ok":true,"findings":[]}`, answer: `{"refused":"x"}`}
+	edit := func(t *testing.T, rel, from, to string) func() {
+		t.Helper()
+		path := filepath.Join(dir, filepath.FromSlash(rel))
+		original, err := os.ReadFile(path)
+		if err != nil || !bytes.Contains(original, []byte(from)) {
+			t.Fatalf("%s: %v, or no %q", rel, err, from)
+		}
+		if err := os.WriteFile(path, bytes.Replace(original, []byte(from), []byte(to), 1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return func() {
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, c := range []struct {
+		what, rel, from, to string
+		// refused is what the run is refused with, after the vector's path
+		refused string
+	}{
+		{"a store vector's member", "stores/valid-sealed.json", `"authority": `, `"Authority": `, `json: unknown field "Authority"`},
+		{"a store vector's option", "stores/valid-sealed.json", `"authority": `, `"OrdinarySealsOnly": true, "authority": `, `json: unknown field "OrdinarySealsOnly"`},
+		{"a store vector's expected member beside itself", "stores/valid-sealed.json", `"ok": true,`, `"ok": true, "OK": false,`, `json: unknown field "OK"`},
+		{"a version 3 store vector's member", "v3/stores/v3-action-valid.json", `"decisionRecords": {`, `"DecisionRecords": {`, `json: unknown field "DecisionRecords"`},
+		{"a witness vector's member", "witness/valid-one-statement.json", `"trail": `, `"Trail": `, `json: unknown field "Trail"`},
+		{"a witness file's part's member", "witness/bound-statements-at-limit.json", `"times": `, `"Times": `, `json: unknown field "Times"`},
+		{"a witness vector's expected member beside itself", "witness/valid-one-statement.json", `"reading": `, `"Reading": "", "reading": `, `expected: a member "Reading" no runner compares`},
+		{"a recovery vector's member", "witness-recovery/mark-a-whole-unmarked-last-statement.json", `"clock": `, `"Clock": `, `json: unknown field "Clock"`},
+		{"a recovery step's action", "witness-recovery/mark-a-whole-unmarked-last-statement.json", `"open": {`, `"Open": {`, `json: unknown field "Open"`},
+		{"a recovery step's expected member", "witness-recovery/mark-a-whole-unmarked-last-statement.json", `"outcome": "start"`, `"Outcome": "start"`, `json: unknown field "Outcome"`},
+	} {
+		restore := edit(t, c.rel, c.from, c.to)
+		_, _, err := runCorpus(dir, quick)
+		if want := filepath.Join(dir, filepath.FromSlash(c.rel)) + ": " + c.refused; err == nil || err.Error() != want {
+			t.Errorf("%s: %v\nwant %s", c.what, err, want)
+		}
+		restore()
+	}
+	// A member whose value is no object where the runner reads one refuses
+	// the run too: a store vector's expected given as an array, as its
+	// last member.
+	sealed := filepath.Join(dir, "stores", "valid-sealed.json")
+	original, err := os.ReadFile(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := bytes.LastIndex(original, []byte(`"expected": {`))
+	if at < 0 {
+		t.Fatal("valid-sealed.json gives no expected")
+	}
+	if err := os.WriteFile(sealed, append(original[:at:at], "\"expected\": []\n}\n"...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = runCorpus(dir, quick)
+	if want := sealed + ": json: cannot unmarshal array into Go struct field storeVector.expected of type struct {"; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("a store vector's expected given as an array: %v\nwant %s...", err, want)
+	}
+	if err := os.WriteFile(sealed, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// canon.json: each of a vector's members under another case, beside the
+	// member, giving what would disagree were it read
+	canonFailures := func() []string {
+		failures, _, err := runCorpus(dir, quick)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return slices.DeleteFunc(failures, func(f string) bool { return !strings.HasPrefix(f, "canon ") })
+	}
+	for what, to := range map[string]string{
+		"inputJson":   `"inputJson": "{}", "InputJson": "[]",`,
+		"expectedHex": `"inputJson": "{}", "EXPECTEDHEX": "5b5d",`,
+		"reject":      `"inputJson": "{}", "Reject": true,`,
+	} {
+		restore := edit(t, "canon.json", `"inputJson": "{}",`, to)
+		if failures := canonFailures(); len(failures) != 0 {
+			t.Errorf("canon.json, %s under another case: %q", what, failures)
+		}
+		restore()
+	}
+	// and read under its own name, the same edit disagrees: the run reads
+	// the vector edited
+	restore := edit(t, "canon.json", `"inputJson": "{}",`, `"inputJson": "[]",`)
+	if failures := canonFailures(); len(failures) != 1 || !strings.HasPrefix(failures[0], "canon []: expected ") {
+		t.Errorf("canon.json, a vector edited: %q", failures)
+	}
+	restore()
 }
 
 // TestWitnessRecoveryVectors holds this implementation's witness to every

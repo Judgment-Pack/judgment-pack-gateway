@@ -12,7 +12,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 
 import { verifyStore } from "../src/verify.ts";
-import { corpus, materialize, publicKey, verdictText } from "./support.ts";
+import { corpus, materialize, publicKey, readStoreVector, verdictText } from "./support.ts";
 import type { StoreVector } from "./support.ts";
 
 type Row = {
@@ -30,7 +30,7 @@ type Row = {
 const main = path.join(import.meta.dirname, "..", "src", "main.ts");
 
 function vector(name: string): StoreVector {
-  return JSON.parse(fs.readFileSync(path.join(corpus, ...name.split("/")), "utf8"));
+  return readStoreVector(path.join(corpus, ...name.split("/")));
 }
 
 // lines is a verdict's findings, a line each and sorted, as the Go reader's

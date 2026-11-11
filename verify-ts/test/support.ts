@@ -8,6 +8,7 @@ import * as path from "node:path";
 
 import { canonical } from "../src/canon.ts";
 import { parse } from "../src/json.ts";
+import type { Value } from "../src/json.ts";
 import { writeVerdict } from "../src/verify.ts";
 import type { Verdict } from "../src/verify.ts";
 
@@ -45,11 +46,84 @@ export type StoreVector = {
   };
 };
 
+// readVector is a corpus file read as gateway conform reads one (SPEC.md
+// §7, corpus/README.md): exactly one JSON value, in which no object gives a
+// member twice, its members read by their exact names. A file that is not
+// one value, or gives a member twice, refuses the read: of two members,
+// neither is the vector's.
+export function readVector(file: string): unknown {
+  const bytes = fs.readFileSync(file);
+  const value = parse(bytes);
+  if (value === null) {
+    throw new Error(`${file}: not exactly one JSON value`);
+  }
+  const twice = givenTwice(value);
+  if (twice !== undefined) {
+    throw new Error(`${file}: the member ${JSON.stringify(twice)} is given twice in one object`);
+  }
+  return JSON.parse(bytes.toString("utf8"));
+}
+
+// givenTwice is the first name, in the order written, that an object in the
+// value gives a second time.
+function givenTwice(v: Value): string | undefined {
+  type Frame = { readonly values: readonly Value[]; readonly names: readonly string[] | null; at: number; readonly seen: Set<string> };
+  const stack: Frame[] = [];
+  const enter = (w: Value) => {
+    if (w.type === "array") {
+      stack.push({ values: w.items, names: null, at: 0, seen: new Set() });
+    } else if (w.type === "object") {
+      stack.push({ values: w.members.map((m) => m.value), names: w.members.map((m) => m.name), at: 0, seen: new Set() });
+    }
+  };
+  enter(v);
+  for (let top = stack.at(-1); top !== undefined; top = stack.at(-1)) {
+    if (top.at === top.values.length) {
+      stack.pop();
+      continue;
+    }
+    const i = top.at++;
+    if (top.names !== null) {
+      const name = top.names[i]!;
+      if (top.seen.has(name)) {
+        return name;
+      }
+      top.seen.add(name);
+    }
+    enter(top.values[i]!);
+  }
+  return undefined;
+}
+
+// only refuses a member of an object the runner reads strictly that is none
+// of the names it reads there: a name in another case is such a member, as
+// it is to gateway conform (SPEC.md §7). What is not an object is left to
+// the reader of the member.
+function only(file: string, o: unknown, ...names: string[]): void {
+  if (typeof o !== "object" || o === null || Array.isArray(o)) {
+    return;
+  }
+  for (const name of Object.keys(o)) {
+    if (!names.includes(name)) {
+      throw new Error(`${file}: unknown member ${JSON.stringify(name)}`);
+    }
+  }
+}
+
+// readStoreVector is one store vector, refusing a member the runner does
+// not read, at the top or in expected.
+export function readStoreVector(file: string): StoreVector {
+  const v = readVector(file) as StoreVector;
+  only(file, v, "name", "note", "authority", "files", "registry", "decisionRecords", "absentRegistry", "emptySessions", "ordinarySealsOnly", "expected");
+  only(file, v.expected, "ok", "findings", "witnesses", "rotations", "observations");
+  return v;
+}
+
 export function storeVectors(): StoreVector[] {
   const vectors: StoreVector[] = [];
   for (const dir of [path.join(corpus, "stores"), path.join(corpus, "v3", "stores")]) {
     for (const name of fs.readdirSync(dir).sort()) {
-      vectors.push(JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")));
+      vectors.push(readStoreVector(path.join(dir, name)));
     }
   }
   return vectors;
@@ -229,12 +303,38 @@ export type WitnessVector = {
   expected: Record<string, unknown>;
 };
 
+// readWitnessVector is one witness vector, refusing a member the runner
+// does not read: at the top, in a file's parts form, and in the expected
+// answer, whose members are those of its form (corpus/README.md).
+export function readWitnessVector(file: string): WitnessVector {
+  const v = readVector(file) as WitnessVector;
+  only(file, v, "name", "family", "note", "trail", "keys", "witness", "head", "expected");
+  for (const f of [...(Array.isArray(v.witness) ? v.witness : []), v.head]) {
+    only(file, f, "parts");
+    if (typeof f === "object" && f !== null && Array.isArray(f.parts)) {
+      for (const part of f.parts) {
+        only(file, part, "text", "times");
+      }
+    }
+  }
+  const e = v.expected;
+  if (typeof e === "object" && e !== null && "refused" in e) {
+    only(file, e, "refused");
+  } else if (e?.["ok"] === true) {
+    only(file, e, "ok", "findings", "reading", "headIndex", "highestIndex", "latestCheckpoint", "conflicts", "retired");
+    only(file, e["latestCheckpoint"], "index", "sequence", "witnessedAt");
+  } else {
+    only(file, e, "ok", "findings");
+  }
+  return v;
+}
+
 export function witnessVectors(): WitnessVector[] {
   const dir = path.join(corpus, "witness");
   return fs
     .readdirSync(dir)
     .sort()
-    .map((name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")));
+    .map((name) => readWitnessVector(path.join(dir, name)));
 }
 
 function writeWitnessFile(at: string, file: WitnessFile): void {
@@ -275,8 +375,8 @@ export function materializeWitness(v: WitnessVector): { keys: string[]; files: s
 }
 
 // sameWitnessAnswer is whether an answer is the one a vector expects, as
-// the runner compares them: a refusal by its reason, findings as a set,
-// and every member of a reading with none.
+// the runner compares them: a refusal whole, findings as a set, and every
+// member of a reading with none.
 export function sameWitnessAnswer(expected: Record<string, unknown>, produced: Record<string, unknown>): boolean {
   const set = (v: unknown) => [...new Set(v as string[])].sort();
   if ("refused" in expected || "refused" in produced) {

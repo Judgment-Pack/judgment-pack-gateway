@@ -326,6 +326,8 @@ func TestAdapterConformRefusesBeforeRunning(t *testing.T) {
 		{"a refusal of no class", map[string]string{"a.json": `{"request":{},"expect":"refused"}`}, "", "", `a.json: member "expect" is neither`},
 		{"a refusal of a class there is not", map[string]string{"a.json": `{"request":{},"expect":"refused: crashed"}`}, "", "", `a.json: member "expect" is neither`},
 		{"an unknown member", map[string]string{"a.json": `{"request":{},"expect":"accepted","about":"x"}`}, "", "", `a.json: json: unknown field "about"`},
+		{"a member under another case", map[string]string{"a.json": `{"Request":{},"expect":"accepted"}`}, "", "", `a.json: json: unknown field "Request"`},
+		{"a member beside itself under another case", map[string]string{"a.json": `{"request":{},"expect":"accepted","EXPECT":"refused: timeout"}`}, "", "", `a.json: json: unknown field "EXPECT"`},
 		{"a member twice", map[string]string{"a.json": `{"request":{},"request":[],"expect":"accepted"}`}, "", "", `a.json: the member "request" is given twice in one object`},
 		{"two values", map[string]string{"a.json": `{"request":{},"expect":"accepted"} {}`}, "", "", "a.json: data follows"},
 		{"a request outside the domain", map[string]string{"a.json": `{"request":{"n":1e3},"expect":"accepted"}`}, "", "", "a.json: the request is not one an acquire request carries"},

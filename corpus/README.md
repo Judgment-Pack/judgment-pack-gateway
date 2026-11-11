@@ -357,7 +357,8 @@ order (`keys`, each 64 lowercase hexadecimal characters), the statements files
 | `chain` | 10 | the chain rule of §8.6: a hole, and one whose next statement names the signature before it; a previous signature not the one before; index 0 naming a previous and index 1 naming none; a checkpoint sequence not increasing; a conflict above the latest checkpoint and one with none before it; a retirement not last and one repeating an earlier checkpoint: `witness-chain-broken` |
 | `bound` | 7 | the bounds of §8.7, at and one past each: 16 keys, 67108864 bytes, 110000 statements; and 4194304 one-byte lines, far over the statement bound within the byte bound, refused without keeping every line |
 
-**The answer.** A refusal is `{"refused": <reason>}`, compared by its reason. A reading is
+**The answer.** A refusal is `{"refused": <reason>}`, compared whole: its reason, and no
+other member. A reading is
 `{"ok": false, "findings": [...]}`, its findings compared as a **set** of names — how many
 times, and where, a reader reports one is not normative here — or, with no finding,
 `{"ok": true, "findings": [], "reading", "headIndex", "highestIndex", "latestCheckpoint":
@@ -396,8 +397,13 @@ does not, at any depth, and a store vector, of `stores/` or `v3/stores/`, with a
 does not know, at the top or in `expected`. Store, witness and witness recovery vectors are
 held to that: a member the runner does not read refuses the corpus. `canon.json` is not:
 read for its vectors' `inputJson`, `expectedHex` and `reject`, it passes over any other
-member, such as a vector's `expectedUtf8`. In every family `note` is the member for commentary, read
-by no comparison. Every file of every family is read as exactly one JSON value, with
+member, such as a vector's `expectedUtf8`. A member is read by its exact name, in every
+family (`SPEC.md` §7): one whose name differs from a member the runner reads, if only in
+case, such as `Authority` beside or in place of `authority`, is a member it does not read,
+refused in a store, witness or witness recovery vector and passed over in `canon.json`.
+Every file is UTF-8, and a name is compared as decoded, its escapes read: `"\u006fk"` is
+`ok`, so an object giving both gives one name twice. In every family `note` is the member
+for commentary, read by no comparison. Every file of every family is read as exactly one JSON value, with
 nothing after it and no member given twice in one object at any depth, and a recovery vector
 whose run never reaches a fault it declares disagrees. It also refuses a corpus whose counts
 this README misstates: the
@@ -545,6 +551,19 @@ this one:
 Findings are compared as a **multiset**: order is not normative. Observations are
 compared as a multiset too, and only for a vector that states them; witnesses are
 compared as a set, and rotations whole.
+
+An answer, a verdict or a witness answer, is read by its members' exact names, as decoded
+(`SPEC.md` §7). A member whose name differs from one the runner reads, if only in case, is not read:
+the answer is compared as one without that member, and an object compared whole (a finding,
+an observation, a witness, the rotations, a witness answer's refusal and its
+`latestCheckpoint`) holding it disagrees. An answer in which an object, at any depth, gives
+one name twice disagrees with that vector, `store <name>: the verdict gives a member twice
+in one object:` or `witness <name>: the answer gives a member twice in one object:` and the
+name, quoted, at most 256 bytes of it; the run goes on, and exits 1. A name given twice is
+looked for once the answer is read as one JSON value and before any member is read, so an
+answer giving one beside a member of the wrong type disagrees too. An answer that is not
+one JSON value, is not an object, or gives a member the runner reads with the wrong type
+still stops the run, exit 2.
 
 ## Two implementations again
 

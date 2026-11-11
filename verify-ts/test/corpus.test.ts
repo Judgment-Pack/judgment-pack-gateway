@@ -14,7 +14,20 @@ import { test } from "node:test";
 import { canonical } from "../src/canon.ts";
 import { maxValues, parse } from "../src/json.ts";
 import { verifyStore } from "../src/verify.ts";
-import { corpus, materialize, multiset, newStore, publicKey, sealLine, storeVectors, verdictText } from "./support.ts";
+import {
+  corpus,
+  materialize,
+  multiset,
+  newStore,
+  publicKey,
+  readStoreVector,
+  readVector,
+  readWitnessVector,
+  sealLine,
+  storeVectors,
+  tempDir,
+  verdictText,
+} from "./support.ts";
 
 const main = path.join(import.meta.dirname, "..", "src", "main.ts");
 
@@ -25,7 +38,9 @@ const main = path.join(import.meta.dirname, "..", "src", "main.ts");
 const escapes = (n: number): Buffer => Buffer.concat([Buffer.from('"'), Buffer.alloc(2 * n, "\\n"), Buffer.from('"')]);
 
 test("every canon vector", () => {
-  const vectors = JSON.parse(fs.readFileSync(path.join(corpus, "canon.json"), "utf8")).vectors;
+  // read as gateway conform reads it, a member by its exact name; a member
+  // no reader reads is passed over (SPEC.md §7)
+  const vectors = (readVector(path.join(corpus, "canon.json")) as { vectors: { note: string; inputJson: string; expectedHex?: string; reject?: boolean }[] }).vectors;
   assert.ok(vectors.length >= 30);
   for (const v of vectors) {
     const value = parse(Buffer.from(v.inputJson, "utf8"));
@@ -69,6 +84,50 @@ test("every store vector", () => {
     // the witnesses the receipts name, as a set (ADR-0014); absent is none
     assert.deepEqual([...new Set(multiset(verdict.witnesses ?? []))], [...new Set(multiset(v.expected.witnesses ?? []))], v.name);
   }
+});
+
+// A vector's members are read by their exact names, as gateway conform
+// reads them (SPEC.md §7): in a store vector and a witness vector, a member
+// under another case is one the runner does not read, and refuses the
+// read, at the top, in expected and in a file's parts form; canon.json's
+// vectors pass it over. A member given twice refuses any vector file, as
+// does a file that is not one JSON value.
+test("a vector's members are read by their exact names", () => {
+  const at = tempDir();
+  const edited = (rel: string, from: string, to: string): string => {
+    const text = fs.readFileSync(path.join(corpus, ...rel.split("/")), "utf8");
+    assert.ok(text.includes(from), `${rel}: no ${from}`);
+    const file = path.join(at, `${rel.replaceAll("/", "-")}-${crypto.randomUUID()}.json`);
+    fs.writeFileSync(file, text.replace(from, to));
+    return file;
+  };
+  for (const [rel, from, to, read, refused] of [
+    ["stores/valid-sealed.json", '"authority": ', '"Authority": ', readStoreVector, 'unknown member "Authority"'],
+    ["stores/valid-sealed.json", '"authority": ', '"OrdinarySealsOnly": true, "authority": ', readStoreVector, 'unknown member "OrdinarySealsOnly"'],
+    ["stores/valid-sealed.json", '"ok": true,', '"ok": true, "OK": false,', readStoreVector, 'unknown member "OK"'],
+    ["v3/stores/v3-action-valid.json", '"decisionRecords": {', '"DecisionRecords": {', readStoreVector, 'unknown member "DecisionRecords"'],
+    ["stores/valid-sealed.json", '"ok": true,', '"ok": true, "ok": true,', readStoreVector, 'the member "ok" is given twice in one object'],
+    ["stores/valid-sealed.json", '"ok": true,', '"ok": true, "findings": [{"status": "ok", "status": "ok"}],', readStoreVector, 'the member "status" is given twice in one object'],
+    ["witness/valid-one-statement.json", '"trail": ', '"Trail": ', readWitnessVector, 'unknown member "Trail"'],
+    ["witness/bound-statements-at-limit.json", '"times": ', '"Times": ', readWitnessVector, 'unknown member "Times"'],
+    ["witness/valid-one-statement.json", '"reading": ', '"Reading": "", "reading": ', readWitnessVector, 'unknown member "Reading"'],
+    ["witness/valid-one-statement.json", '"latestCheckpoint": {', '"latestCheckpoint": {"Index": 0, ', readWitnessVector, 'unknown member "Index"'],
+    ["witness/valid-one-statement.json", '"trail": ', '"keys": [], "trail": ', readWitnessVector, 'the member "keys" is given twice in one object'],
+    ["canon.json", '"inputJson": "{}",', '"inputJson": "{}" "x",', readVector, "not exactly one JSON value"],
+    ["canon.json", '"inputJson": "{}",', '"inputJson": "{}", "note": "",', readVector, 'the member "note" is given twice in one object'],
+  ] as const) {
+    const file = edited(rel, from, to);
+    assert.throws(() => read(file), { message: `${file}: ${refused}` }, `${rel}: ${to}`);
+  }
+  // in document order: a member twice inside a member's value, before
+  // that member is given again
+  const nested = edited("stores/valid-sealed.json", '"ok": true,', '"ok": {"a": 1, "a": 1}, "ok": true,');
+  assert.throws(() => readStoreVector(nested), { message: `${nested}: the member "a" is given twice in one object` });
+  const canon = readVector(edited("canon.json", '"inputJson": "{}",', '"inputJson": "{}", "InputJson": "[]", "Reject": true,')) as {
+    vectors: Record<string, unknown>[];
+  };
+  assert.equal(canon.vectors[0]!["inputJson"], "{}");
+  assert.equal(canon.vectors[0]!["reject"], undefined);
 });
 
 test("the process contract, end to end", () => {
