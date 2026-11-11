@@ -36,7 +36,13 @@ export type StoreVector = {
   absentRegistry?: boolean;
   emptySessions?: string[];
   decisionRecords?: Record<string, string>;
-  expected: { ok: boolean; findings: Record<string, unknown>[]; witnesses?: Record<string, unknown>[] };
+  ordinarySealsOnly?: boolean;
+  expected: {
+    ok: boolean;
+    findings: Record<string, unknown>[];
+    observations?: Record<string, unknown>[];
+    witnesses?: Record<string, unknown>[];
+  };
 };
 
 export function storeVectors(): StoreVector[] {

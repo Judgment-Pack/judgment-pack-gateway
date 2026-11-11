@@ -98,7 +98,7 @@ func TestStoreVectors(t *testing.T) {
 		}
 		defer os.RemoveAll(tmp)
 
-		rep, err := verifyWithRegistryAndRecords(root, registryPath, vec.Authority, decisionRecords, publicKey)
+		rep, err := verifierFor(vec.OrdinarySealsOnly)(root, registryPath, vec.Authority, decisionRecords, publicKey)
 		if err != nil {
 			t.Errorf("%s: no verdict: %v", vec.Name, err)
 			continue
@@ -114,11 +114,123 @@ func TestStoreVectors(t *testing.T) {
 			t.Errorf("%s: findings\n got %v\nwant %v", vec.Name, got, want)
 			ok = false
 		}
+		// The observations, as a multiset, where the vector states them
+		// (SPEC.md §7); a vector without the member is not compared on them.
+		if stated, compared, err := vec.expectedObservations(); err != nil {
+			t.Errorf("%s: %v", vec.Name, err)
+			ok = false
+		} else if compared {
+			if got, want := normalizeFindings(t, rep.Observations), normalizeFindingMaps(stated); !equalMultiset(got, want) {
+				t.Errorf("%s: observations\n got %v\nwant %v", vec.Name, got, want)
+				ok = false
+			}
+		}
 		if ok {
 			passed++
 		}
 	}
 	t.Logf("%d/%d store vectors", passed, len(names))
+}
+
+// Observations a vector states are compared as a multiset (SPEC.md §7):
+// the same observations in another order agree, one given twice or one
+// missing does not, a report that leaves the member out reports none, and a
+// member that is no array of objects agrees with nothing.
+func TestObservationsAreComparedAsAMultiset(t *testing.T) {
+	observed := func(session string, index int, name string) map[string]any {
+		return map[string]any{"sessionId": session, "callIndex": float64(index), "observation": name}
+	}
+	stated := []map[string]any{observed("s1", 2, "sealed-after-interruption"), observed("s2", 0, "session-open")}
+	for _, c := range []struct {
+		what     string
+		produced string
+		agree    bool
+	}{
+		{"the same, in order", `[{"sessionId":"s1","callIndex":2,"observation":"sealed-after-interruption"},{"sessionId":"s2","callIndex":0,"observation":"session-open"}]`, true},
+		{"the same, in another order and spelling", `[{"observation":"session-open","callIndex":0,"sessionId":"s2"},{"callIndex":2,"sessionId":"s1","observation":"sealed-after-interruption"}]`, true},
+		{"one given twice", `[{"sessionId":"s1","callIndex":2,"observation":"sealed-after-interruption"},{"sessionId":"s2","callIndex":0,"observation":"session-open"},{"sessionId":"s2","callIndex":0,"observation":"session-open"}]`, false},
+		{"one missing", `[{"sessionId":"s2","callIndex":0,"observation":"session-open"}]`, false},
+		{"one on another receipt", `[{"sessionId":"s1","callIndex":1,"observation":"sealed-after-interruption"},{"sessionId":"s2","callIndex":0,"observation":"session-open"}]`, false},
+		{"one with a member more", `[{"sessionId":"s1","callIndex":2,"observation":"sealed-after-interruption","more":true},{"sessionId":"s2","callIndex":0,"observation":"session-open"}]`, false},
+		{"none", `[]`, false},
+		{"no array", `{"sessionId":"s1"}`, false},
+	} {
+		if agree := observationsDisagree(stated, json.RawMessage(c.produced)) == ""; agree != c.agree {
+			t.Errorf("%s: agree=%v, want %v", c.what, agree, c.agree)
+		}
+	}
+	if disagreement := observationsDisagree([]map[string]any{}, nil); disagreement != "" {
+		t.Errorf("none stated, the member left out: %s", disagreement)
+	}
+	if disagreement := observationsDisagree([]map[string]any{}, json.RawMessage(`[]`)); disagreement != "" {
+		t.Errorf("none stated, none reported: %s", disagreement)
+	}
+	if disagreement := observationsDisagree(stated, nil); disagreement == "" {
+		t.Error("two stated, the member left out: agreed")
+	}
+}
+
+// A vector's expected observations are stated or not, and stated as an
+// array of objects or not at all: the member absent is no comparison, [] is
+// a comparison expecting none, and null or a member that is no array of
+// objects refuses the run, where read as absent it would compare nothing.
+func TestExpectedObservationsAreStatedOrNot(t *testing.T) {
+	read := func(expected string) (storeVector, error) {
+		var vector storeVector
+		err := decodeVectorFile([]byte(`{"name": "x", "expected": `+expected+`}`), &vector, true)
+		return vector, err
+	}
+	for _, c := range []struct {
+		expected string
+		stated   bool
+		count    int
+		refused  bool
+	}{
+		{`{"ok": true, "findings": []}`, false, 0, false},
+		{`{"ok": true, "findings": [], "observations": []}`, true, 0, false},
+		{`{"ok": true, "findings": [], "observations": [{"sessionId": "s1", "callIndex": 0, "observation": "session-open"}]}`, true, 1, false},
+		{`{"ok": true, "findings": [], "observations": null}`, false, 0, true},
+		{`{"ok": true, "findings": [], "observations": {}}`, false, 0, true},
+		{`{"ok": true, "findings": [], "observations": ["session-open"]}`, false, 0, true},
+	} {
+		vector, err := read(c.expected)
+		if err != nil {
+			t.Fatalf("%s: %v", c.expected, err)
+		}
+		observations, stated, err := vector.expectedObservations()
+		if (err != nil) != c.refused || stated != c.stated || len(observations) != c.count {
+			t.Errorf("%s: stated=%v, %d, %v; want stated=%v, %d, refused=%v", c.expected, stated, len(observations), err, c.stated, c.count, c.refused)
+		}
+	}
+	// and the runner refuses such a vector rather than compare nothing
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS(corpusPath())); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "stores", "observations-interruption-seal.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	expected, _ := doc["expected"].(map[string]any)
+	if _, there := expected["observations"]; !there {
+		t.Fatal("the vector states no observations")
+	}
+	expected["observations"] = nil
+	edited, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, edited, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runStoreVectors(dir, inProcess{}); err == nil || !strings.Contains(err.Error(), "expected observations are not an array of objects") {
+		t.Errorf("expected observations given as null: the run was not refused: %v", err)
+	}
 }
 
 // TestWitnessVectors holds this reader to every witness vector, through the
@@ -486,7 +598,7 @@ func TestREADMEVectorCounts(t *testing.T) {
 	}
 	for _, edit := range []struct{ what, from, to string }{
 		{"the canon count", "**`canon.json`** — 30 vectors", "**`canon.json`** — 31 vectors"},
-		{"the store count", "**`stores/*.json`** — 46 vectors", "**`stores/*.json`** — 45 vectors"},
+		{"the store count", "**`stores/*.json`** — 51 vectors", "**`stores/*.json`** — 50 vectors"},
 		{"the version 3 count", "**`v3/stores/*.json`** — 80 vectors", "**`v3/stores/*.json`** — 81 vectors"},
 		{"the witness count", "**`witness/*.json`** — 54 vectors", "**`witness/*.json`** — 55 vectors"},
 		{"a family's row", "| `chain` | 10 |", "| `chain` | 11 |"},

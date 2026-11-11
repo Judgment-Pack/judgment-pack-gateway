@@ -124,7 +124,10 @@ type storeVector struct {
 	// Optional, for cases the files map cannot express (SPEC.md §4.1).
 	AbsentRegistry bool     `json:"absentRegistry"`
 	EmptySessions  []string `json:"emptySessions"`
-	Expected       struct {
+	// OrdinarySealsOnly runs the vector under --ordinary-seals-only
+	// (SPEC.md §4, §7): the process contract passes the option first.
+	OrdinarySealsOnly bool `json:"ordinarySealsOnly"`
+	Expected          struct {
 		OK       bool             `json:"ok"`
 		Findings []map[string]any `json:"findings"`
 		// Witnesses are SPEC.md §4's witnesses, compared as a set; absent
@@ -133,15 +136,51 @@ type storeVector struct {
 		// Rotations are SPEC.md §4's rotations, compared whole; absent
 		// means the walk of the registry followed none (§3b).
 		Rotations map[string]any `json:"rotations"`
+		// Observations are SPEC.md §4's observations, compared as a
+		// multiset where a vector states them; unlike witnesses and
+		// rotations, absent means the vector is not compared on them at
+		// all (§7). Kept as written, so a member given as null is told
+		// from one not given (expectedObservations).
+		Observations json.RawMessage `json:"observations"`
 	} `json:"expected"`
+}
+
+// expectedObservations is the observations a vector states, and whether it
+// states the member at all: without it, the vector is not compared on
+// observations (SPEC.md §7). A member that is not an array of objects --
+// null among them -- states nothing a runner could compare, and refuses
+// the run.
+func (v storeVector) expectedObservations() ([]map[string]any, bool, error) {
+	if v.Expected.Observations == nil {
+		return nil, false, nil
+	}
+	var stated []map[string]any
+	if err := json.Unmarshal(v.Expected.Observations, &stated); err != nil || stated == nil {
+		return nil, false, errors.New("expected observations are not an array of objects")
+	}
+	return stated, true, nil
+}
+
+// contractVerdict is a verdict as the process contract gives it
+// (corpus/README.md): ok, the findings, the observations, the witnesses,
+// absent when none, and the rotations, absent when none was followed.
+type contractVerdict struct {
+	OK       bool             `json:"ok"`
+	Findings []map[string]any `json:"findings"`
+	// Observations are kept as written and read only for a vector that
+	// states them, so what an implementation writes there is not read for
+	// any other vector (SPEC.md §7).
+	Observations json.RawMessage  `json:"observations"`
+	Witnesses    []map[string]any `json:"witnesses"`
+	Rotations    map[string]any   `json:"rotations"`
 }
 
 // implementation is either this binary's own code or another process.
 type implementation interface {
 	canon(source string) ([]byte, bool)
-	// verify answers ok, the findings, the witnesses the report names and
-	// the rotations it followed (SPEC.md §4).
-	verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, []map[string]any, map[string]any, error)
+	// verify answers the verdict the process contract gives (SPEC.md §4),
+	// under --ordinary-seals-only when ordinarySealsOnly is set.
+	verify(storeRoot, registryPath, authority, decisionRecords string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error)
 	// witness reads one chain of witness statements (SPEC.md §8.6) from
 	// files, and answers with the verdict the process contract gives.
 	witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error)
@@ -160,32 +199,34 @@ func (inProcess) canon(source string) ([]byte, bool) {
 	return out, true
 }
 
-func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, []map[string]any, map[string]any, error) {
-	rep, err := verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords, publicKey)
+func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
+	rep, err := verifierFor(ordinarySealsOnly)(storeRoot, registryPath, authority, decisionRecords, publicKey)
 	if err != nil {
-		return false, nil, nil, nil, err
+		return contractVerdict{}, err
 	}
 	raw, err := rep.marshal()
 	if err != nil {
-		return false, nil, nil, nil, err
+		return contractVerdict{}, err
 	}
 	return decodeVerdict(raw)
 }
 
-// decodeVerdict reads a verdict as the process contract gives it: ok, the
-// findings, the witnesses, absent when none, and the rotations, absent when
-// none was followed.
-func decodeVerdict(raw []byte) (bool, []map[string]any, []map[string]any, map[string]any, error) {
-	var decoded struct {
-		OK        bool             `json:"ok"`
-		Findings  []map[string]any `json:"findings"`
-		Witnesses []map[string]any `json:"witnesses"`
-		Rotations map[string]any   `json:"rotations"`
+// verifierFor is the verdict gateway verify gives, plain or under
+// --ordinary-seals-only (SPEC.md §4).
+func verifierFor(ordinarySealsOnly bool) func(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
+	if ordinarySealsOnly {
+		return verifyOrdinarySealsOnly
 	}
+	return verifyWithRegistryAndRecords
+}
+
+// decodeVerdict reads a verdict as the process contract gives it.
+func decodeVerdict(raw []byte) (contractVerdict, error) {
+	var decoded contractVerdict
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return false, nil, nil, nil, err
+		return contractVerdict{}, err
 	}
-	return decoded.OK, decoded.Findings, decoded.Witnesses, decoded.Rotations, nil
+	return decoded, nil
 }
 
 func (inProcess) witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error) {
@@ -216,8 +257,14 @@ func (s subprocess) canon(source string) ([]byte, bool) {
 	return stdout.Bytes(), true
 }
 
-func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, []map[string]any, map[string]any, error) {
-	args := append(s.argv[1:], "verify", storeRoot, registryPath, authority)
+func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
+	args := append(append([]string{}, s.argv[1:]...), "verify")
+	if ordinarySealsOnly {
+		// The option first, before the store root, as gateway verify takes
+		// it (corpus/README.md): passed exactly when the vector says so.
+		args = append(args, "--ordinary-seals-only")
+	}
+	args = append(args, storeRoot, registryPath, authority)
 	if decisionRecords != "" {
 		// The process contract's optional fourth argument (corpus/README.md):
 		// passed exactly when the vector carries decision records.
@@ -228,7 +275,7 @@ func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords s
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return false, nil, nil, nil, fmt.Errorf("verify produced no verdict: %s", stderr.String())
+		return contractVerdict{}, fmt.Errorf("verify produced no verdict: %s", stderr.String())
 	}
 	return decodeVerdict(stdout.Bytes())
 }
@@ -289,6 +336,25 @@ func witnessSet(witnesses []map[string]any) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// observationsDisagree is how the observations an implementation reported
+// differ from those a vector states, compared as a multiset (SPEC.md §7):
+// order aside, and how many counted. A report that leaves the member out
+// reports none; one whose member is not an array of objects disagrees.
+// Empty when they agree.
+func observationsDisagree(stated []map[string]any, produced json.RawMessage) string {
+	var reported []map[string]any
+	if produced != nil {
+		if err := json.Unmarshal(produced, &reported); err != nil {
+			return fmt.Sprintf("    expected: %v\n    produced: no array of observations: %s", sortedFindings(stated), produced)
+		}
+	}
+	want, have := sortedFindings(stated), sortedFindings(reported)
+	if strings.Join(want, "|") == strings.Join(have, "|") {
+		return ""
+	}
+	return fmt.Sprintf("    expected: %v\n    produced: %v", want, have)
 }
 
 // rotationsText renders the rotations a report names for comparison, whole
@@ -415,59 +481,12 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 		}
 	}
 
-	publicKey, err := corpusPublicKey(corpusDir)
+	storeFailures, storeCount, err := runStoreVectors(corpusDir, impl)
 	if err != nil {
 		return nil, counts, err
 	}
-	// Both directories arbitrate: the version 2 vectors and, since the
-	// version 3 verifier, the version 3 vectors staged beside them.
-	paths, err := storeVectorPaths(corpusDir)
-	if err != nil {
-		return nil, counts, err
-	}
-	for _, path := range paths {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil, counts, err
-		}
-		// Strictly: a member storeVector does not name, at the top or in
-		// expected, is an input no run is given or an answer no runner
-		// compares, so it refuses the run rather than being passed over.
-		var vector storeVector
-		if err := decodeVectorFile(raw, &vector, true); err != nil {
-			return nil, counts, fmt.Errorf("%s: %v", path, err)
-		}
-		root, storeRoot, registryPath, decisionRecords, err := materializeVector(vector)
-		if err != nil {
-			return nil, counts, err
-		}
-		ok, findings, witnesses, rotations, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, publicKey)
-		os.RemoveAll(root)
-		if err != nil {
-			return nil, counts, err
-		}
-		if want, have := witnessSet(vector.Expected.Witnesses), witnessSet(witnesses); strings.Join(want, "|") != strings.Join(have, "|") {
-			failures = append(failures, fmt.Sprintf(
-				"store %s: witnesses disagree\n    expected: %v\n    produced: %v",
-				vector.Name, want, have))
-		}
-		if want, have := rotationsText(vector.Expected.Rotations), rotationsText(rotations); want != have {
-			failures = append(failures, fmt.Sprintf(
-				"store %s: rotations disagree\n    expected: %s\n    produced: %s",
-				vector.Name, want, have))
-		}
-		if ok != vector.Expected.OK {
-			failures = append(failures, fmt.Sprintf("store %s: expected ok=%v, got ok=%v",
-				vector.Name, vector.Expected.OK, ok))
-		}
-		want, have := sortedFindings(vector.Expected.Findings), sortedFindings(findings)
-		if strings.Join(want, "|") != strings.Join(have, "|") {
-			failures = append(failures, fmt.Sprintf(
-				"store %s: findings disagree\n    expected: %v\n    produced: %v",
-				vector.Name, want, have))
-		}
-	}
-	counts.canon, counts.stores = len(canonFile.Vectors), len(paths)
+	failures = append(failures, storeFailures...)
+	counts.canon, counts.stores = len(canonFile.Vectors), storeCount
 
 	witnessFailures, witnessCount, err := runWitnessVectors(corpusDir, impl)
 	if err != nil {
@@ -487,6 +506,76 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 	}
 	counts.recovery = recoveryCount
 	return append(failures, recoveryFailures...), counts, nil
+}
+
+// runStoreVectors holds an implementation to every store vector, of both
+// directories, and answers the disagreements and how many vectors it read.
+func runStoreVectors(corpusDir string, impl implementation) ([]string, int, error) {
+	var failures []string
+	publicKey, err := corpusPublicKey(corpusDir)
+	if err != nil {
+		return nil, 0, err
+	}
+	// Both directories arbitrate: the version 2 vectors and, since the
+	// version 3 verifier, the version 3 vectors staged beside them.
+	paths, err := storeVectorPaths(corpusDir)
+	if err != nil {
+		return nil, 0, err
+	}
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, 0, err
+		}
+		// Strictly: a member storeVector does not name, at the top or in
+		// expected, is an input no run is given or an answer no runner
+		// compares, so it refuses the run rather than being passed over.
+		var vector storeVector
+		if err := decodeVectorFile(raw, &vector, true); err != nil {
+			return nil, 0, fmt.Errorf("%s: %v", path, err)
+		}
+		observations, compareObservations, err := vector.expectedObservations()
+		if err != nil {
+			return nil, 0, fmt.Errorf("%s: %v", path, err)
+		}
+		root, storeRoot, registryPath, decisionRecords, err := materializeVector(vector)
+		if err != nil {
+			return nil, 0, err
+		}
+		verdict, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, vector.OrdinarySealsOnly, publicKey)
+		os.RemoveAll(root)
+		if err != nil {
+			return nil, 0, err
+		}
+		if want, have := witnessSet(vector.Expected.Witnesses), witnessSet(verdict.Witnesses); strings.Join(want, "|") != strings.Join(have, "|") {
+			failures = append(failures, fmt.Sprintf(
+				"store %s: witnesses disagree\n    expected: %v\n    produced: %v",
+				vector.Name, want, have))
+		}
+		if want, have := rotationsText(vector.Expected.Rotations), rotationsText(verdict.Rotations); want != have {
+			failures = append(failures, fmt.Sprintf(
+				"store %s: rotations disagree\n    expected: %s\n    produced: %s",
+				vector.Name, want, have))
+		}
+		// Only where the vector states them (SPEC.md §7): a vector without
+		// the member reads nothing of what the implementation observed.
+		if compareObservations {
+			if disagreement := observationsDisagree(observations, verdict.Observations); disagreement != "" {
+				failures = append(failures, fmt.Sprintf("store %s: observations disagree\n%s", vector.Name, disagreement))
+			}
+		}
+		if verdict.OK != vector.Expected.OK {
+			failures = append(failures, fmt.Sprintf("store %s: expected ok=%v, got ok=%v",
+				vector.Name, vector.Expected.OK, verdict.OK))
+		}
+		want, have := sortedFindings(vector.Expected.Findings), sortedFindings(verdict.Findings)
+		if strings.Join(want, "|") != strings.Join(have, "|") {
+			failures = append(failures, fmt.Sprintf(
+				"store %s: findings disagree\n    expected: %v\n    produced: %v",
+				vector.Name, want, have))
+		}
+	}
+	return failures, len(paths), nil
 }
 
 // storeVectorPaths lists every store vector the runner answers to, in a fixed
