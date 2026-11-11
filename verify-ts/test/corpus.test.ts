@@ -1,7 +1,7 @@
 // The frozen corpus, read here as the process contract hands it to any
 // implementation: every canon vector, and every store vector materialized
 // as a store, a registry and a decision-record directory, with findings
-// compared as a multiset. `gateway conform --impl` holds the process to
+// compared as a multiset, and observations too where a vector states them. `gateway conform --impl` holds the process to
 // the same corpus in CI; this holds the module to it without the gateway.
 
 import * as assert from "node:assert/strict";
@@ -57,9 +57,15 @@ test("every store vector", () => {
   assert.ok(vectors.length >= 39);
   for (const v of vectors) {
     const { root, registry, decisionRecords } = materialize(v);
-    const verdict = JSON.parse(verdictText(verifyStore(root, registry, v.authority, decisionRecords, publicKey)));
+    const options = { ordinarySealsOnly: v.ordinarySealsOnly === true };
+    const verdict = JSON.parse(verdictText(verifyStore(root, registry, v.authority, decisionRecords, publicKey, options)));
     assert.equal(verdict.ok, v.expected.ok, v.name);
     assert.deepEqual(multiset(verdict.findings), multiset(v.expected.findings), v.name);
+    // the observations, as a multiset, only where the vector states them
+    // (SPEC.md §7); left out of a verdict is none
+    if (v.expected.observations !== undefined) {
+      assert.deepEqual(multiset(verdict.observations ?? []), multiset(v.expected.observations), v.name);
+    }
     // the witnesses the receipts name, as a set (ADR-0014); absent is none
     assert.deepEqual([...new Set(multiset(verdict.witnesses ?? []))], [...new Set(multiset(v.expected.witnesses ?? []))], v.name);
   }

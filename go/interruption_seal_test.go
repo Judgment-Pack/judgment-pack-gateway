@@ -355,8 +355,9 @@ func TestVerifyOrdinarySealsOnlyOnTheCommandLine(t *testing.T) {
 // (testdata/interruption-seal/cases.json): a corpus vector, edited as the
 // row says, verified plain or with --ordinary-seals-only, and its ok, its
 // findings as sorted lines, and its session-open and
-// sealed-after-interruption observations, in the order given -- the
-// observations the corpus runner does not read.
+// sealed-after-interruption observations, in the order given. The corpus
+// runner compares observations only where a vector states them (SPEC.md
+// §7); these rows hold more of the same stores than a vector does.
 func TestInterruptionSealSharedRows(t *testing.T) {
 	publicKey := mustHex(t, strings.TrimSpace(readFile(t, corpusPath("TEST-PUBLIC-KEY"))))
 	var rows []struct {

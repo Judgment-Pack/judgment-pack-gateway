@@ -1285,13 +1285,15 @@ step 3's `session-open` and `sealed-after-interruption`, step 8's
 `decision-record-not-compared`, and §1.2b's
 `action-uncertain`, `action-committed` and `action-mismatch`. An observation is
 not a finding: it never makes `ok` false, a consumer's verdict (§5a) does not
-read it, and a report with none may leave the member out.
+read it, and a report with none may leave the member out. The corpus compares
+observations where a store vector states them, and only there (§7).
 
 **Witnesses.** A report carries, beside them, a member `witnesses` when a
 receipt whose ladder status is `ok` carries `witness` (§1.2a): an array of the
 distinct `{trail, origin, keyId}` those receipts name, each once, whatever
 receipts name it; absent when none does. Like an observation it is never part of
-`ok`, and unlike one the corpus compares it, as a set (§7). It is what the
+`ok`; the corpus compares it, as a set, in every store vector, its absence
+expecting none (§7). It is what the
 receipts' signer named, not a reading of any witness: a reader takes it only from
 a verdict it acts on (§5a.1), and reads a chain from it as §6 says ("Reading the
 witness a receipt names").
@@ -1980,20 +1982,51 @@ corpus is **frozen**: hand-maintained normative data, not output regenerated fro
 whichever implementation exists. Changing a vector is a specification change and
 needs the same justification as changing this document. Three families:
 **canon vectors** (a value → its exact canonical bytes, or a refusal); **store
-vectors** (a complete store and registry → the expected `(ok, findings)`), with one
+vectors** (a complete store and registry, verified plain or under `--ordinary-seals-only`
+→ the expected `(ok, findings)`, and what else §4 reports, below), with one
 store vector per status this document names; and **witness vectors** (a trail, keys
 and witness statements → a refusal or a reading, §8.6), with one vector or more per
 refusal and finding §8 names.
 
 `gateway conform` runs them, and `--impl CMD` drives any other implementation
 through a small process contract, so an implementation in any language can answer
-to the corpus without depending on this one. Findings are compared as a multiset: **order is not normative.** Observations (§4) are not compared; witnesses (§4) are, as a set; rotations (§4) are, whole.
+to the corpus without depending on this one. Findings are compared as a multiset: **order is not normative.** Witnesses (§4) are compared as a set, and rotations (§4) whole, in every store vector, a vector that gives neither expecting none.
 
-The store vectors of §3c are compared by `ok` and findings, as every store vector is.
-What they observe, and what `--ordinary-seals-only` makes of them, are held by
-`testdata/interruption-seal/cases.json`, rows both readers in this repository read; for
-`gateway conform` to hold them, the process contract would need to carry the
-observations, or the option, and the corpus to compare them (`corpus/README.md`).
+**Observations, and ordinary seals only.** Observations (§4) are compared where a store
+vector states them, and only there. A vector that gives `observations` in its expected
+answer is compared with the observations the implementation reports, as a multiset: order
+is not normative, and how many is, since each observation §4 and §1.2b name is carried
+once, on the one receipt they name for it. `[]` expects none, and a report that leaves the
+member out reports none. A vector that does not give the member is not compared on observations
+at all, and what an implementation reports of them there is not read. A store vector may
+be run under `--ordinary-seals-only` (§4), and then says so (`"ordinarySealsOnly": true`):
+the process contract passes the option to the implementation's `verify` first, before the
+store root, as `gateway verify` takes it, and passes nothing in its place otherwise. A
+conforming verifier:
+
+- reports a session a seal made after an interruption anchors (§3c), its count and its last
+  receipt holding, with the observation `sealed-after-interruption` on the receipt at
+  `finalCount − 1` and no finding of its own; under `--ordinary-seals-only`, with the
+  finding `sealed-after-interruption`, `{sessionId, status}`, `ok` false, and that
+  observation not carried; and changes nothing else for the option, so a session a seal of
+  §3's form anchors, and one no seal anchors, are reported as without it;
+- reports, wherever a vector states observations, those §4 names, each once on the receipt
+  it names: among them `session-open` on the last receipt of a session no seal closes whose
+  receipts are whole, beside its `unregistered-session`.
+
+`corpus/README.md` names the vectors that hold each. Neither changes what a receipt means
+or what verification finds: a verifier that conformed before verifies every store as it
+did. What changes is what it must report to answer to the corpus. One that reports no
+observations, or that takes the option and ignores it, can disagree only with vectors that
+state observations or run under the option. One that gives no verdict for a vector run
+under the option, exiting non-zero as a verifier written before it does when it refuses an
+option it does not know, disagrees with that vector, and the run goes on to the next. No
+verdict for a vector run without the option is not an answer to it: the run stops there, as
+it did before the option (`corpus/README.md`).
+
+The rows of `testdata/interruption-seal/cases.json`, which both readers in this repository
+read, hold more of §3c over the same stores — a receipt taken away or torn after the seal,
+a registry edited beside it — and are tests of those readers, not conformance.
 
 The store vectors of §3b's walk are signed under the test seed and under two further
 keys, the keys rotated to, whose seeds `corpus/README.md` states as it states the
