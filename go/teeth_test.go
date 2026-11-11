@@ -2370,9 +2370,11 @@ func TestBoundedStderrQuotesAtMostTheBound(t *testing.T) {
 // The members of a verdict, and of a witness answer, are read by their
 // exact names, and an answer that gives a member twice in one object is no
 // conforming answer (SPEC.md §7). For every member the runner compares, of
-// both families, the test binary is driven through the process contract,
-// as `gateway conform --impl` drives an implementation, answering as the
-// reference does but for one edit of its answer's text (editedAnswer):
+// both families, the reference answers as it does but for one edit of its
+// answer's text (editedAnswer), read as a subprocess's answer is read
+// (editing); a few cases, and gateway conform itself, drive the test binary
+// so answering through the process contract, as `gateway conform --impl`
+// drives an implementation:
 //
 //   - the member under another case alone is a member the runner does not
 //     read: the vectors the member matters to disagree, as they do with an
@@ -2543,36 +2545,48 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 		}
 	}
 
-	t.Setenv(envConformStub, "edit")
+	check := func(t *testing.T, c expectation, impl implementation) {
+		t.Helper()
+		run := map[string]func(string, implementation) ([]string, int, error){"store": runStoreVectors, "witness": runWitnessVectors}[c.family]
+		failures, _, err := run(corpusDir, impl)
+		if err != nil {
+			t.Fatalf("no run: %v", err)
+		}
+		disagreeing := names{}
+		for _, failure := range failures {
+			name, _, found := strings.Cut(failure, ": ")
+			if !strings.HasPrefix(name, c.family+" ") || !found || disagreeing[name] {
+				t.Fatalf("a failure of no %s vector, or a second: %s", c.family, failure)
+			}
+			disagreeing[name] = true
+			if c.says == nil || !c.says(name, failure) {
+				t.Errorf("failure: %q", failure)
+			}
+		}
+		var want []string
+		for name := range c.want {
+			want = append(want, c.family+" "+name)
+		}
+		if got := slices.Sorted(maps.Keys(disagreeing)); !slices.Equal(got, slices.Sorted(slices.Values(want))) {
+			t.Fatalf("%d vectors disagreeing, want %d:\n got %v\nwant %v", len(got), len(want), got, slices.Sorted(slices.Values(want)))
+		}
+	}
 	for _, c := range cases {
 		t.Run(c.family+"/"+c.edit, func(t *testing.T) {
 			t.Parallel()
-			impl := subprocess{argv: []string{os.Args[0], c.edit}}
-			run := map[string]func(string, implementation) ([]string, int, error){"store": runStoreVectors, "witness": runWitnessVectors}[c.family]
-			failures, _, err := run(corpusDir, impl)
-			if err != nil {
-				t.Fatalf("no run: %v", err)
-			}
-			disagreeing := names{}
-			for _, failure := range failures {
-				name, _, found := strings.Cut(failure, ": ")
-				if !strings.HasPrefix(name, c.family+" ") || !found || disagreeing[name] {
-					t.Fatalf("a failure of no %s vector, or a second: %s", c.family, failure)
-				}
-				disagreeing[name] = true
-				if c.says == nil || !c.says(name, failure) {
-					t.Errorf("failure: %q", failure)
-				}
-			}
-			var want []string
-			for name := range c.want {
-				want = append(want, c.family+" "+name)
-			}
-			if got := slices.Sorted(maps.Keys(disagreeing)); !slices.Equal(got, slices.Sorted(slices.Values(want))) {
-				t.Fatalf("%d vectors disagreeing, want %d:\n got %v\nwant %v", len(got), len(want), got, slices.Sorted(slices.Values(want)))
-			}
+			check(t, c, editing{edit: c.edit})
 		})
 	}
+	// Through the process contract: the test binary answering so, read as
+	// any implementation's answer is, a store and a witness case each.
+	t.Setenv(envConformStub, "edit")
+	t.Run("process contract", func(t *testing.T) {
+		for _, c := range cases {
+			if c.edit == "twice:ok" || c.family == "store" && c.edit == "alone:ok" {
+				check(t, c, subprocess{argv: []string{os.Args[0], c.edit}})
+			}
+		}
+	})
 	// Through the command itself, the whole corpus: a verdict and an
 	// answer giving a member twice are disagreements, exit 1, never no
 	// run; ones carrying other cases of a member beside it agree, exit 0;
@@ -2698,6 +2712,51 @@ func TestAVerdictsMembersAreItsNamesExactly(t *testing.T) {
 	if want := `store absent-registry: the verdict gives a member twice in one object: "a"`; failures[0] != want {
 		t.Errorf("failure:\n got %q\nwant %q", failures[0], want)
 	}
+}
+
+// editing is the reference answering in process, with the edit made to the
+// text of each answer (editedAnswer), read as a subprocess's answer is: the
+// verdict and witness answer the conform stub's "edit" mode writes, without
+// a process for each.
+type editing struct {
+	inProcess
+	edit string
+}
+
+func (e editing) verify(storeRoot, registryPath, authority, decisionRecords string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
+	rep, err := verifierFor(ordinarySealsOnly)(storeRoot, registryPath, authority, decisionRecords, publicKey)
+	if err != nil {
+		return contractVerdict{}, err
+	}
+	raw, err := rep.marshal()
+	if err != nil {
+		return contractVerdict{}, err
+	}
+	edited, err := editedAnswer(raw, e.edit)
+	if err != nil {
+		return contractVerdict{}, err
+	}
+	return decodeVerdict(edited)
+}
+
+func (e editing) witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error) {
+	verdict, err := readWitnessFiles(trail, keyPaths, statementPaths, headPath)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := verdict.marshal()
+	if err != nil {
+		return nil, err
+	}
+	edited, err := editedAnswer(raw, e.edit)
+	if err != nil {
+		return nil, err
+	}
+	var decoded map[string]any
+	if err := decodeAnswer(edited, &decoded); err != nil {
+		return nil, err
+	}
+	return decoded, nil
 }
 
 // answering is an implementation that answers every vector with the same
