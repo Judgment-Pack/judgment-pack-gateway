@@ -425,6 +425,14 @@ func runWitnessVectors(corpusDir string, impl implementation) ([]string, int, er
 		}
 		produced, err := impl.witness(vector.Trail, keyPaths, statementPaths, headPath)
 		os.RemoveAll(root)
+		var twice memberTwice
+		if errors.As(err, &twice) {
+			// an answer that is no conforming one, as a verdict giving a
+			// member twice is (runStoreVectors): a disagreement
+			failures = append(failures, fmt.Sprintf("witness %s: the answer gives a member twice in one object: %s",
+				vector.Name, boundedQuote(twice.name)))
+			continue
+		}
 		if err != nil {
 			return nil, 0, fmt.Errorf("witness %s: %w", vector.Name, err)
 		}
@@ -436,9 +444,10 @@ func runWitnessVectors(corpusDir string, impl implementation) ([]string, int, er
 }
 
 // compareWitness says how an answer disagrees with the one expected, or "".
-// A refusal is compared by its reason; findings as a set of names, how many
-// times and where a reader reports one not being normative; and, for a
-// reading with no finding, every member of what the chain read says.
+// A refusal is compared whole, its reason and no other member; findings as
+// a set of names, how many times and where a reader reports one not being
+// normative; and, for a reading with no finding, every member of what the
+// chain read says.
 func compareWitness(expected, produced map[string]any) string {
 	show := func(v map[string]any) string {
 		encoded, _ := json.Marshal(v)

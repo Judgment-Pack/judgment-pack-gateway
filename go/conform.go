@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,9 +58,224 @@ func decodeVectorFile(raw []byte, dst any, strict bool) error {
 	return nil
 }
 
+// decodeAnswer reads an implementation's answer -- a verdict, or a witness
+// answer -- into dst: one JSON value, each member read by its exact name and
+// any other passed over (decodeExactly), as a verdict may carry members no
+// runner reads. An answer that gives a member twice in one object, at any
+// depth, is answered memberTwice, a malformed answer and no reading of
+// either occurrence; one that is no JSON value, as before, an error.
+func decodeAnswer(raw []byte, dst any) error {
+	var value json.RawMessage
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
+	}
+	if err := noMemberTwice(value); err != nil {
+		return err
+	}
+	return decodeExactly(value, reflect.ValueOf(dst).Elem(), false)
+}
+
+// memberTwice is a JSON text giving one member twice in an object: the
+// member's name, as written.
+type memberTwice struct{ name string }
+
+func (e memberTwice) Error() string {
+	return fmt.Sprintf("the member %q is given twice in one object", e.name)
+}
+
+// jsonMember is one member of a JSON object: its name and its value's bytes.
+type jsonMember struct {
+	name  string
+	value json.RawMessage
+}
+
+// objectMembers is a JSON object's members in the order written, a name
+// given twice kept twice, or why raw, one JSON value, is no object.
+func objectMembers(raw json.RawMessage, t reflect.Type) ([]jsonMember, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if token != json.Delim('{') {
+		return nil, notOfType(raw, t)
+	}
+	var members []jsonMember
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, _ := token.(string)
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		members = append(members, jsonMember{name, value})
+	}
+	return members, nil
+}
+
+// notOfType is encoding/json's refusal of a value that is not of type t.
+func notOfType(raw json.RawMessage, t reflect.Type) error {
+	kind := "number"
+	if trimmed := bytes.TrimSpace(raw); len(trimmed) > 0 {
+		switch trimmed[0] {
+		case '{':
+			kind = "object"
+		case '[':
+			kind = "array"
+		case '"':
+			kind = "string"
+		case 't', 'f':
+			kind = "bool"
+		}
+	}
+	return &json.UnmarshalTypeError{Value: kind, Type: t}
+}
+
+var unmarshalerType = reflect.TypeFor[json.Unmarshaler]()
+
+// readsMembers is whether encoding/json would read a struct's members by
+// name to decode a value of type t: t is a struct, or a pointer, slice,
+// array or map whose elements hold one, and reads no JSON of its own (a
+// json.Unmarshaler reads its own).
+func readsMembers(t reflect.Type) bool {
+	if t.Implements(unmarshalerType) || reflect.PointerTo(t).Implements(unmarshalerType) {
+		return false
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		return true
+	case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
+		return readsMembers(t.Elem())
+	}
+	return false
+}
+
+// decodeExactly decodes raw, one JSON value, into v as encoding/json does,
+// with one difference: a struct's member is read only under the name its
+// field gives, exactly. encoding/json matches a name ignoring case, by
+// Unicode's simple folding ("OK", and "o" and the Kelvin sign, are read as
+// "ok"), and keeps the last of the members so matched. Here a member named
+// otherwise is one the struct does not name: refused with strict set, as
+// json.Decoder.DisallowUnknownFields refuses one, and passed over without.
+// A map's keys and a json.Unmarshaler's own reading are encoding/json's,
+// which are already exact.
+func decodeExactly(raw json.RawMessage, v reflect.Value, strict bool) error {
+	t := v.Type()
+	if !readsMembers(t) {
+		return json.Unmarshal(raw, v.Addr().Interface())
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		// As encoding/json: null makes a pointer, slice or map nil, and
+		// leaves a struct as it is.
+		if t.Kind() != reflect.Struct {
+			v.SetZero()
+		}
+		return nil
+	}
+	switch t.Kind() {
+	case reflect.Pointer:
+		if v.IsNil() {
+			v.Set(reflect.New(t.Elem()))
+		}
+		return decodeExactly(raw, v.Elem(), strict)
+	case reflect.Slice:
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return notOfType(raw, t)
+		}
+		out := reflect.MakeSlice(t, len(items), len(items))
+		for i, item := range items {
+			if err := decodeExactly(item, out.Index(i), strict); err != nil {
+				return err
+			}
+		}
+		v.Set(out)
+		return nil
+	case reflect.Map:
+		if t.Key().Kind() != reflect.String {
+			return fmt.Errorf("no exact reading of %s", t)
+		}
+		members, err := objectMembers(raw, t)
+		if err != nil {
+			return err
+		}
+		if v.IsNil() {
+			v.Set(reflect.MakeMapWithSize(t, len(members)))
+		}
+		for _, m := range members {
+			elem := reflect.New(t.Elem()).Elem()
+			if err := decodeExactly(m.value, elem, strict); err != nil {
+				return err
+			}
+			v.SetMapIndex(reflect.ValueOf(m.name).Convert(t.Key()), elem)
+		}
+		return nil
+	case reflect.Struct:
+		members, err := objectMembers(raw, t)
+		if err != nil {
+			return err
+		}
+		for _, m := range members {
+			i, named, err := fieldNamed(t, m.name)
+			if err != nil {
+				return err
+			}
+			if !named {
+				if strict {
+					return fmt.Errorf("json: unknown field %q", m.name)
+				}
+				continue
+			}
+			if err := decodeExactly(m.value, v.Field(i), strict); err != nil {
+				// Where it was, as encoding/json says it: the struct and
+				// the path of members down to the value refused.
+				var refused *json.UnmarshalTypeError
+				if errors.As(err, &refused) {
+					refused.Struct = t.Name()
+					refused.Field = strings.TrimSuffix(m.name+"."+refused.Field, ".")
+				}
+				return err
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("no exact reading of %s", t)
+}
+
+// fieldNamed is the index of t's field encoding/json reads the member name
+// into, matched exactly, and whether there is one. An embedded field, whose
+// members encoding/json promotes, refuses: no type read here has one, and
+// one added would not be read exactly unless this reads it.
+func fieldNamed(t reflect.Type, name string) (int, bool, error) {
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if f.Anonymous {
+			return 0, false, fmt.Errorf("no exact reading of %s: its field %s is embedded", t, f.Name)
+		}
+		if !f.IsExported() {
+			continue
+		}
+		tag, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if tag == "-" {
+			continue
+		}
+		if tag == "" {
+			tag = f.Name
+		}
+		if tag == name {
+			return i, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
 // noMemberTwice is why a JSON text gives one member twice in an object, at
-// any depth, or nil. encoding/json would keep the last of the two and pass
-// the first over unread.
+// any depth -- a memberTwice -- or why it is no JSON text, or nil.
+// encoding/json would keep the last of the two and pass the first over
+// unread.
 func noMemberTwice(raw []byte) error {
 	type frame struct {
 		object, key bool
@@ -97,7 +313,7 @@ func noMemberTwice(raw []byte) error {
 		if top.key {
 			name, _ := token.(string)
 			if top.names[name] {
-				return fmt.Errorf("the member %q is given twice in one object", name)
+				return memberTwice{name}
 			}
 			top.names[name] = true
 		}
@@ -229,10 +445,11 @@ func verifierFor(ordinarySealsOnly bool) func(storeRoot, registryPath, authority
 	return verifyWithRegistryAndRecords
 }
 
-// decodeVerdict reads a verdict as the process contract gives it.
+// decodeVerdict reads a verdict as the process contract gives it, its
+// members by their exact names (decodeAnswer).
 func decodeVerdict(raw []byte) (contractVerdict, error) {
 	var decoded contractVerdict
-	if err := json.Unmarshal(raw, &decoded); err != nil {
+	if err := decodeAnswer(raw, &decoded); err != nil {
 		return contractVerdict{}, err
 	}
 	return decoded, nil
@@ -248,7 +465,10 @@ func (inProcess) witness(trail string, keyPaths, statementPaths []string, headPa
 		return nil, err
 	}
 	var decoded map[string]any
-	return decoded, json.Unmarshal(raw, &decoded)
+	if err := decodeAnswer(raw, &decoded); err != nil {
+		return nil, err
+	}
+	return decoded, nil
 }
 
 type subprocess struct{ argv []string }
@@ -301,19 +521,25 @@ type noVerdict struct{ stderr string }
 
 func (e noVerdict) Error() string { return "verify produced no verdict: " + e.stderr }
 
-// stderrBound is how much of an implementation's standard error a
-// disagreement quotes.
-const stderrBound = 256
+// quotedBound is how much a disagreement quotes of what an implementation
+// wrote: of its standard error, or of the name of a member its answer gives
+// twice.
+const quotedBound = 256
 
-// boundedStderr is an implementation's standard error as a disagreement
-// quotes it: trimmed of surrounding white space, at most stderrBound bytes
-// of it, and quoted, so what it wrote reaches the report only as text.
-func boundedStderr(stderr string) string {
-	s := strings.TrimSpace(stderr)
-	if len(s) <= stderrBound {
+// boundedQuote is what an implementation wrote as a disagreement quotes it:
+// at most quotedBound bytes of it, and quoted, so it reaches the report only
+// as text.
+func boundedQuote(s string) string {
+	if len(s) <= quotedBound {
 		return strconv.Quote(s)
 	}
-	return fmt.Sprintf("%s and %d bytes more", strconv.Quote(s[:stderrBound]), len(s)-stderrBound)
+	return fmt.Sprintf("%s and %d bytes more", strconv.Quote(s[:quotedBound]), len(s)-quotedBound)
+}
+
+// boundedStderr is an implementation's standard error as a disagreement
+// quotes it: trimmed of surrounding white space, and bounded (boundedQuote).
+func boundedStderr(stderr string) string {
+	return boundedQuote(strings.TrimSpace(stderr))
 }
 
 // witnessArgs is the process contract's `witness` command line
@@ -340,7 +566,12 @@ func (s subprocess) witness(trail string, keyPaths, statementPaths []string, hea
 		return nil, fmt.Errorf("witness produced no answer: %v: %s", err, stderr.String())
 	}
 	var decoded map[string]any
-	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+	if err := decodeAnswer(stdout.Bytes(), &decoded); err != nil {
+		var twice memberTwice
+		if errors.As(err, &twice) {
+			// an answer, malformed: the runner's disagreement, not no answer
+			return nil, twice
+		}
 		return nil, fmt.Errorf("witness answered with no JSON object: %v", err)
 	}
 	return decoded, nil
@@ -588,6 +819,16 @@ func runStoreVectors(corpusDir string, impl implementation) ([]string, int, erro
 			// without the option still stops it.
 			failures = append(failures, fmt.Sprintf("store %s: no verdict under --ordinary-seals-only: %s",
 				vector.Name, boundedStderr(refused.stderr)))
+			continue
+		}
+		var twice memberTwice
+		if errors.As(err, &twice) {
+			// A verdict, from a verifier that ran, that is no conforming
+			// answer: which of the two a reader keeps is no reading of it,
+			// so it disagrees with this vector, and the run goes on
+			// (SPEC.md §7).
+			failures = append(failures, fmt.Sprintf("store %s: the verdict gives a member twice in one object: %s",
+				vector.Name, boundedQuote(twice.name)))
 			continue
 		}
 		if err != nil {
