@@ -747,11 +747,12 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 // action into a session the store already holds. Admission's own recheck
 // under the lock holds the in-memory state against a seal that lands
 // between here and the spawn. /acquire consults the registry's seals for a
-// session it does not hold (sealedElsewhere) and otherwise admits by its
-// memory, so a read may still continue an unsealed session from before
-// this start; an action is held to the disk too, since a write that ran
-// and could not be receipted is the one outcome this design exists to
-// refuse.
+// session it does not hold (sealedElsewhere) and then the store: a session
+// holding receipts this process did not mint is refused before its source
+// runs (leftInStore), and one whose directory holds none is taken up, never
+// as an action's; an action is held to the disk whatever it holds, since a
+// write that ran and could not be receipted is the one outcome this design
+// exists to refuse.
 func (g *gatewayService) sessionOpen(sessionID string) string {
 	if seals, err := loadEngineSeals(g.regPath, g.publicKey); err != nil {
 		return registryRefusal(err)
@@ -766,21 +767,23 @@ func (g *gatewayService) sessionOpen(sessionID string) string {
 // sessionMintedHere is why a session is not one this process may continue,
 // or "": under the lock, a session this process knows is one it owns only
 // if it found the store empty there when it first admitted into it -- a
-// receipt count says nothing, since a read into an old session can recreate
-// a receipt that session lost and count from there; a session it does not
-// know must have nothing in the store either. An entry there of any kind (a
-// directory, a link, a file) is a session this engine did not mint; a lookup
-// that fails for any reason but absence is refused as such, never taken for
-// absence, since a dangling link reports absent to a stat that follows it.
+// receipt count says nothing, since a read can take up an old session's
+// directory that holds no receipt and count from there; a session it does
+// not know must have nothing in the store either. An entry there of any
+// kind (a directory, a link, a file) is a session this engine did not mint;
+// a lookup that fails for any reason but absence is refused as such, never
+// taken for absence, since a dangling link reports absent to a stat that
+// follows it.
 // Called by the session step and again by admission, so a reservation made
 // between the two changes nothing.
 func (g *gatewayService) sessionMintedHere(sessionID string) string {
 	if state, seen := g.sessions[sessionID]; seen && state.created {
 		return ""
 	}
-	// Known but not made by this process -- an old session a read continued,
-	// or one reserved with nothing minted yet -- or not known at all: the
-	// store says whether something is there, and anything is a refusal.
+	// Known but not made by this process -- an old directory holding no
+	// receipt that a read took up, or one reserved with nothing minted yet
+	// -- or not known at all: the store says whether something is there,
+	// and anything is a refusal.
 	_, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", sessionID))
 	switch {
 	case err == nil:

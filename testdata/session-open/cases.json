@@ -1,0 +1,19 @@
+[
+  {"name": "three whole receipts and no seal", "vector": "stores/unregistered-session.json", "observations": ["s1/2/session-open"]},
+  {"name": "no registry at all", "vector": "stores/absent-registry.json", "observations": ["s1/2/session-open"]},
+  {"name": "the only seal is forged, and dropped", "vector": "stores/forged-seal-is-dropped.json", "observations": ["s1/2/session-open"]},
+  {"name": "a sealed session is not open", "vector": "stores/valid-sealed.json", "observations": []},
+  {"name": "the same session with its seal taken away", "vector": "stores/valid-sealed.json", "registry": "", "observations": ["s1/2/session-open"]},
+  {"name": "a version 3 session with its seal taken away", "vector": "v3/stores/v3-valid-sealed.json", "registry": "", "observations": ["s1/2/session-open"]},
+  {"name": "unsealed and its last receipt taken away: still whole, so still observed open", "vector": "stores/valid-sealed.json", "registry": "", "remove": ["receipts/s1/2.json"], "observations": ["s1/1/session-open"]},
+  {"name": "unsealed and its last receipt torn", "vector": "stores/valid-sealed.json", "registry": "", "tear": ["receipts/s1/2.json"], "observations": []},
+  {"name": "unsealed and its first receipt torn", "vector": "stores/valid-sealed.json", "registry": "", "tear": ["receipts/s1/0.json"], "observations": []},
+  {"name": "unsealed and malformed", "vector": "stores/malformed.json", "registry": "", "observations": []},
+  {"name": "unsealed with an artifact missing", "vector": "stores/artifact-missing.json", "registry": "", "observations": []},
+  {"name": "unsealed under another key", "vector": "stores/key-mismatch.json", "registry": "", "observations": []},
+  {"name": "unsealed with its chain broken", "vector": "stores/chain-broken.json", "registry": "", "observations": []},
+  {"name": "unsealed with its sequence broken", "vector": "stores/sequence-broken.json", "registry": "", "observations": []},
+  {"name": "a session directory holding no receipt", "vector": "stores/empty-session-directory.json", "observations": []},
+  {"name": "sealed, its tail rolled back", "vector": "stores/tail-rollback.json", "observations": []},
+  {"name": "sealed, its count past the seal", "vector": "stores/count-exceeds-seal.json", "observations": []}
+]

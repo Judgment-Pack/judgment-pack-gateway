@@ -43,8 +43,9 @@ type sessionState struct {
 	// is this process's own. An action is minted only into a session this
 	// process created (executor.md): absence at admission is not ownership,
 	// since another process could put the session there before the stamp,
-	// and a receipt count is not either, since a read can recreate a receipt
-	// an old session lost and count on from there. Made atomic by Mkdir:
+	// and a receipt count is not either, since a read can take up an old
+	// session's directory that holds no receipt (leftInStore) and count on
+	// from there. Made atomic by Mkdir:
 	// two makers cannot both succeed.
 	created bool
 }
@@ -1517,9 +1518,11 @@ func executableDigest(path string) (string, error) {
 // disk -- by an earlier process, since this one's own seals are in its
 // map -- or the registry could not be read, which is a refusal, never taken
 // for the absence of a seal. A session this process holds is judged by
-// its map alone, under admission's lock. Unlike an action (sessionOpen), a
-// read may still continue an unsealed session the store holds from before
-// this start: that is what it has always done, and it is unchanged.
+// its map alone, under admission's lock. A session the registry does not
+// seal is then judged by the store, under that lock (leftInStore): one an
+// earlier process left receipts in is refused there too, so a read, like an
+// action (sessionOpen), never continues the chain of a session from before
+// this start.
 func (g *gatewayService) sealedElsewhere(sessionID string) string {
 	g.mu.Lock()
 	_, held := g.sessions[sessionID]
@@ -1549,6 +1552,13 @@ func (g *gatewayService) admit(sessionID string) error {
 	}
 	state, seen := g.sessions[sessionID]
 	if !seen {
+		// A session this process does not hold is taken up only where the
+		// store holds no receipt in it: one an earlier process left open
+		// cannot be continued from an empty memory, and its source would
+		// run for a receipt that collides at the stamp (open_sessions.go).
+		if refusal := g.leftInStore(sessionID); refusal != "" {
+			return badRequest{errors.New(refusal)}
+		}
 		state = &sessionState{}
 		g.sessions[sessionID] = state
 	}
@@ -1590,10 +1600,21 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err}
 	}
+	// A session this process does not hold is not one it can seal: one
+	// sealed in the registry is said to be so, and one an earlier process
+	// left open in the store is said to be that, rather than "no such
+	// session" for either (open_sessions.go). The registry is read before
+	// the store, so a sealed session is never said to be left open.
+	if refusal := g.sealedElsewhere(sessionID); refusal != "" {
+		return nil, badRequest{errors.New(refusal)}
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	state, seen := g.sessions[sessionID]
 	if !seen {
+		if refusal := g.leftInStore(sessionID); refusal != "" {
+			return nil, badRequest{errors.New(refusal)}
+		}
 		return nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
 	}
 	// A seal must not overtake work the gateway already admitted, or that

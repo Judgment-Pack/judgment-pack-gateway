@@ -3287,9 +3287,11 @@ func TestAnActionIsHeldToTheRecordItNames(t *testing.T) {
 				got = append(got, f["status"].(string))
 			}
 		}
+		// v-1 is not sealed, and is observed session-open on its last
+		// receipt (#381): what is read here is the record's observation
 		var observed []finding
 		for _, o := range report.Observations {
-			if o["callIndex"] == int64(index) {
+			if o["callIndex"] == int64(index) && o["observation"] != "session-open" {
 				observed = append(observed, o)
 			}
 		}
@@ -3324,7 +3326,7 @@ func TestAnActionIsHeldToTheRecordItNames(t *testing.T) {
 		}
 		observed, mismatched := false, false
 		for _, o := range report.Observations {
-			observed = observed || o["callIndex"] == index
+			observed = observed || (o["callIndex"] == index && o["observation"] != "session-open")
 		}
 		for _, f := range report.Findings {
 			mismatched = mismatched || (f["callIndex"] == index && f["status"] == "decision-cites-mismatch")

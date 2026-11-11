@@ -20,7 +20,8 @@ cd go && go build -o gateway . && ./gateway conform --impl ../verify-ts/impl
 exiting 1 for a document outside the domain and 2 for one past what it reads;
 `impl verify <store-root> <registry-path> <authority> [<decision-records-dir>]`
 reads the 32-byte public key on stdin and writes `{"ok": …, "findings": […]}`,
-with `"observations": […]` after the findings when §4 step 8 has any, and
+with `"observations": […]` after the findings when §4 has any (step 3's
+`session-open`, step 8's `decision-record-not-compared`, §1.2b's of an action), and
 `"witnesses": […]` after them when a receipt that passed names a witness (§1.2a,
 §4; ADR-0014), and `"rotations": {…}` at the end when the walk of the registry's
 key rotations followed any (§3b), exiting 0 whenever it reached a verdict and 2 when

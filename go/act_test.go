@@ -279,26 +279,39 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	if restarted.started.Load() != 0 {
 		t.Fatal("an executor ran after a restart for a session the store already held")
 	}
-	// A reservation is not a minting: an acquisition admitted into that
-	// session after the restart, with nothing minted yet, leaves the
-	// session one this process did not mint, and the action is refused at
-	// admission as it was at the session step.
-	if err := restarted.admit("act-2"); err != nil {
+	// A reservation is not a minting: an acquisition admitted, after the
+	// restart, into a session an earlier process left in the store with no
+	// receipt in it -- a directory an action's admission made for an
+	// executor that never ran -- leaves the session one this process did
+	// not mint, and the action is refused at admission as it was at the
+	// session step. A session holding receipts this process did not mint
+	// is not admitted at all (gateway #381).
+	if err := restarted.admit("act-2"); err == nil || err.Error() != fmt.Sprintf(refusalLeftOpen, "act-2") {
+		t.Fatalf("a reservation of a session an earlier process left open: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(service.storeRoot, "receipts", "act-14"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if code, body := authed(t, restartedServer, "/act", predating, token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "predates this start") {
+	reserved := strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-14"`, 1)
+	if err := restarted.admit("act-14"); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := authed(t, restartedServer, "/act", reserved, token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "predates this start") {
 		t.Fatalf("a session reserved by an in-flight acquisition: %d %v", code, body)
 	}
-	if code, body := authed(t, restartedServer, "/act", noDecisionInto("act-2"), token); code != http.StatusBadRequest || body["refusedAt"] != "session" {
+	if code, body := authed(t, restartedServer, "/act", noDecisionInto("act-14"), token); code != http.StatusBadRequest || body["refusedAt"] != "session" {
 		t.Fatalf("a reserved session is named before a missing decision: %d %v", code, body)
 	}
-	restarted.release("act-2")
+	restarted.release("act-14")
 	if restarted.started.Load() != 0 {
 		t.Fatal("an executor ran into a session an acquisition had only reserved")
 	}
-	// An old session that lost its first receipt and kept its second: an
-	// acquisition into it after a restart recreates the first and counts
-	// on from there, and an action into it is still refused, since this
+	// An old session that lost its first receipt and kept its second: a
+	// read into it after a restart is refused before its source runs --
+	// before gateway #381 it made receipt 0 again beside the old chain, a
+	// second receipt at an index the session had used -- and an action into
+	// it is refused too. A read into an old session holding no receipt is
+	// taken up, and an action into that one is still refused, since this
 	// process did not find the store empty there when it first admitted --
 	// ownership is not a receipt count.
 	if code, body := authed(t, server, "/acquire", `{"session":"act-6","source":"screening","arguments":{"q":"a"}}`, token); code != http.StatusOK {
@@ -310,6 +323,9 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	if err := os.Remove(filepath.Join(service.storeRoot, "receipts", "act-6", "0.json")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Mkdir(filepath.Join(service.storeRoot, "receipts", "act-15"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	lost, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, service.sources)
 	if err != nil {
 		t.Fatal(err)
@@ -318,12 +334,24 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	lost.decisionRecords = records
 	lostServer := httptest.NewServer(lost.handler())
 	defer lostServer.Close()
-	if code, body := authed(t, lostServer, "/acquire", `{"session":"act-6","source":"screening","arguments":{"q":"c"}}`, token); code != http.StatusOK {
-		t.Fatalf("a read into the old session recreates its first receipt: %d %v", code, body)
+	if code, body := authed(t, lostServer, "/acquire", `{"session":"act-6","source":"screening","arguments":{"q":"c"}}`, token); code != http.StatusBadRequest || body["error"] != fmt.Sprintf(refusalLeftOpen, "act-6") {
+		t.Fatalf("a read into an old session that lost its first receipt: %d %v", code, body)
+	}
+	if _, err := os.Lstat(filepath.Join(service.storeRoot, "receipts", "act-6", "0.json")); !os.IsNotExist(err) {
+		t.Fatalf("a refused read made the lost receipt again: %v", err)
+	}
+	if lost.started.Load() != 0 {
+		t.Fatal("a source ran for a read into an old session that lost its first receipt")
+	}
+	if code, body := authed(t, lostServer, "/act", strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-6"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "did not mint") {
+		t.Fatalf("an action into an old session that lost its first receipt: %d %v", code, body)
+	}
+	if code, body := authed(t, lostServer, "/acquire", `{"session":"act-15","source":"screening","arguments":{"q":"c"}}`, token); code != http.StatusOK {
+		t.Fatalf("a read into an old session holding no receipt: %d %v", code, body)
 	}
 	lostBefore := lost.started.Load()
-	if code, body := authed(t, lostServer, "/act", strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-6"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "did not mint") {
-		t.Fatalf("an old session with a recreated receipt: %d %v", code, body)
+	if code, body := authed(t, lostServer, "/act", strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-15"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "did not mint") {
+		t.Fatalf("an old session whose receipt count a read raised: %d %v", code, body)
 	}
 	if lost.started.Load() != lostBefore {
 		t.Fatal("an executor ran into an old session whose receipt count a read had raised")

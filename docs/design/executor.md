@@ -63,15 +63,17 @@ with one it also compares them with the record they name (step 10).
    directory — an action's admission makes it, a read's stamp makes it, each by an exclusive
    `Mkdir` that finds a directory another process put there first, at any moment before it,
    rather than claims it — never by absence read at admission or before the stamp, which
-   another process can end in between, and never by a receipt count, since a read into an old session can recreate a receipt that session
-   lost and count on from there; an entry of any kind — a directory, a link, a file — is such a
-   session, and a lookup that fails for any reason but absence refuses rather than passes.
-   (`/acquire` differs: for a session it does not hold in memory it consults the registry's
-   seals first and refuses one sealed there, or a registry it cannot read, before its source
-   runs; otherwise it admits by memory, runs its source, and then stamps a receipt where none
-   collides — continuing an old unsealed session, recreating a receipt it lost — or fails at
-   the stamp where one does; either way it is a read, and a read's session is never an
-   action's unless this process created it.) Admission itself — the atomic reservation
+   another process can end in between, and never by a receipt count, since a read can take up
+   an old session's directory that holds no receipt and count on from there; an entry of any
+   kind — a directory, a link, a file — is such a session, and a lookup that fails for any
+   reason but absence refuses rather than passes.
+   (`/acquire` differs in what it takes up, not in what it continues: for a session it does
+   not hold in memory it consults the registry's seals first and refuses one sealed there, or a
+   registry it cannot read, and then the store, refusing a session that holds any receipt, an
+   entry of another kind or one it cannot look at — all before its source runs, so an old
+   unsealed session is never continued and a receipt it lost is never made again (gateway
+   #381). A directory that holds no receipt it takes up, as a read, and a read's session is
+   never an action's unless this process created it.) Admission itself — the atomic reservation
    against sealing — happens once the evidence below is held, as it does for a read, judges the
    session on disk once more under the same lock, and takes the session's directory for this
    process by `Mkdir` before any executor runs: two makers cannot both succeed, so a session
