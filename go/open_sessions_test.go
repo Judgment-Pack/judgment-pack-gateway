@@ -247,7 +247,9 @@ func TestWhatTheStoreHoldsInASessionDecidesWhetherItIsTakenUp(t *testing.T) {
 				if n == 500 {
 					t.Fatal("the directory lists the receipt first however many entries it holds")
 				}
-				write(t, filepath.Join(dir, fmt.Sprintf("0.json.%d.000000000000.tmp", n)), "")
+				// Named to sort before the receipt as well, for a file system
+				// that lists by name.
+				write(t, filepath.Join(dir, fmt.Sprintf("!%d.0.json.000000000000.tmp", n)), "")
 				f, err := os.Open(dir)
 				if err != nil {
 					t.Fatal(err)
