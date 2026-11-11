@@ -141,6 +141,39 @@ gateway seals into. The store then verifies, with the observation `sealed-after-
 consumer that accepts only counts the minting process sealed (in a later place the option is
 a usage error). A session that is not whole is named and left as it is.
 
+**One gateway per store and registry.** Run one gateway on a store and its registry at a time.
+On Unix a running gateway holds an exclusive `flock(2)` lock on its registry file, taken at the
+start once the registry is there and held until the gateway exits. A second gateway on the same
+registry does not wait for it: its start ends with exit status 1 and
+
+```
+start: the registry is held by a running gateway, or by a rotation under way: <registry>
+```
+
+and `rotate-key` and `seal-open` refuse the same way while it is held. The lock is on the
+registry, not the store: the store's own lock is shared, and keeps out a journal compaction,
+not another gateway, so nothing refuses a second gateway that names the same store with
+another registry. Elsewhere than Unix the registry is not locked: a second gateway is not
+refused and the start says nothing of it, while `rotate-key` and `seal-open` say on stderr that
+the platform locks no registry.
+
+A roll-out therefore replaces the gateway: stop the old instance, wait for its process to exit,
+then start the new one. A new instance started while the old one runs is refused as above, and
+the old one goes on serving. An orchestrator that runs the gateway is configured to replace
+rather than surge, so that no instance on a store and registry starts before the last one has
+exited. Each session the stopped instance had not sealed stays open in the store, and the new
+instance neither continues nor seals it: seal those sessions with `gateway seal-open` between
+the stop and the start, or start the new instance with `--seal-open-at-start`
+(`sealOpenAtStart` in an engine configuration), which seals them under the registry lock before
+it serves and does not start if a session cannot be read. Either way the seal is a
+`seal-after-interruption` record (SPEC.md §3c), and SECURITY.md says what such a seal does not
+establish.
+
+The lock is advisory: it keeps out the processes that take it, a gateway, `rotate-key` and
+`seal-open`, and stops no write. No test in this repository takes it on a network filesystem,
+so its behaviour there is not established; keep the store and the registry on a local
+filesystem.
+
 ```
 curl -s localhost:8787/acquire -d '{"session":"s1","source":"screening","arguments":{"subject":"acme"}}'
 curl -s localhost:8787/seal    -d '{"session":"s1"}'
