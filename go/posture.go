@@ -119,10 +119,18 @@ const delegationGrantsNamed = 5
 // names no grant refuses every delegated call (grant-unknown), so it is not
 // an open boundary but one the delegation does not serve. Where no platform
 // reached names one, the delegation serves no call, which is not-applicable;
-// where some do, the line is enforced and names the rest.
+// where some do, the line is enforced and names the rest. A platform names a
+// grant only where every source it is reached through does; the sources are
+// read in name order, so the line never rests on a map's order.
 func delegationGrantsLine(sources map[string]sourceSpec) postureLine {
+	names := make([]string, 0, len(sources))
+	for name := range sources {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	granted := map[string]bool{}
-	for name, spec := range sources {
+	for _, name := range names {
+		spec := sources[name]
 		if spec.shape != "mcp" && !strings.HasSuffix(name, "/write") {
 			continue
 		}

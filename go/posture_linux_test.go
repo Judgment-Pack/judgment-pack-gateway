@@ -199,8 +199,9 @@ func TestPostureCustodyFlips(t *testing.T) {
 		if line := judgeCustody(facts, false); line.state != postureNotEnforced || !strings.Contains(line.reason, tc.reason) {
 			t.Fatalf("%s: %+v", tc.name, line)
 		}
-		// /posture's form of the same line: as not enforced, naming no path
-		if line := judgeCustody(facts, true); line.state != postureNotEnforced || strings.Contains(line.reason, "/") {
+		// /posture's form of the same line: as not enforced, naming no path,
+		// no uid and no mode the host has
+		if line := judgeCustody(facts, true); line.state != postureNotEnforced || strings.Contains(line.reason, "/") || strings.Contains(line.reason, "uid") || strings.Contains(line.reason, "65532") || strings.Contains(line.reason, "0755") {
 			t.Fatalf("%s, as /posture says it: %+v", tc.name, line)
 		}
 	}

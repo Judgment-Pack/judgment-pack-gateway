@@ -35,9 +35,27 @@ type postureProgram struct {
 	// gave no report: its entry reads like an unwrapped source's, and
 	// /posture's fixed sentence must not say the wrapper is not selected.
 	unmeasured bool
+	// unprobed is true for an unmeasured source whose check this report's
+	// budget (sandboxPostureReportBudget) ended, or left no time to start:
+	// nothing is said of what its helper would report.
+	unprobed bool
 }
 
 var sandboxPostureProbe = probeSourceSandbox
+
+// A posture report probes its wrapped sources one at a time, each under a
+// budget of its own -- a launch's (sandboxLaunchProbeTimeout) -- so one
+// helper that hangs does not leave the next unmeasured, and all of them
+// under one budget for the whole report, which /posture answers over HTTP.
+// A test shortens both.
+var (
+	sandboxPostureSourceBudget = sandboxLaunchProbeTimeout
+	sandboxPostureReportBudget = 30 * time.Second
+)
+
+// unprobedReason is the reason of a wrapped source whose check this
+// report's budget ended or left no time to start.
+const unprobedReason = "sandbox-not-enforced: this report's time for backend checks ran out before this source's check gave a report"
 
 func sourceProgramPosture(sources map[string]sourceSpec) []postureProgram {
 	names := make([]string, 0, len(sources))
@@ -45,26 +63,37 @@ func sourceProgramPosture(sources map[string]sourceSpec) []postureProgram {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
+	reportCtx, cancelReport := context.WithTimeout(context.Background(), sandboxPostureReportBudget)
+	defer cancelReport()
 	var programs []postureProgram
 	for _, name := range names {
 		spec := sources[name]
 		classes := []string{"adapter"}
 		var report sandboxProbeReport
-		unmeasured := false
+		unmeasured, unprobed := false, false
 		report.Preset = "custom"
 		report.Protection.Mode, report.Settings.Mode = "unconfigured", "unconfigured"
 		report.Protection.Backend, report.Protection.State = "none", postureNotEnforced
 		report.Protection.Reason = "this source configuration does not select the adapter sandbox wrapper"
 		if spec.sandbox != nil {
 			classes = spec.sandbox.classes
+			// A probe already kept for the source is answered whatever is
+			// left of the budget; one still to run returns at once when
+			// nothing is.
+			ctx, cancel := context.WithTimeout(reportCtx, sandboxPostureSourceBudget)
 			probed, err := sandboxPostureProbe(ctx, spec)
-			if err == nil {
+			cancel()
+			switch {
+			case err == nil:
 				report = probed
-			} else {
+			case reportCtx.Err() != nil:
+				unmeasured, unprobed = true, true
+				report.Protection.Reason = unprobedReason
+			default:
+				// the cause, as a launch's refusal gives it, without the
+				// path an *os.PathError carries
 				unmeasured = true
-				report.Protection.Reason = "sandbox-not-enforced: source-user backend check did not complete successfully"
+				report.Protection.Reason = "sandbox-not-enforced: source-user backend check did not complete successfully: " + pathless(err)
 			}
 		}
 		for _, class := range classes {
@@ -78,7 +107,7 @@ func sourceProgramPosture(sources map[string]sourceSpec) []postureProgram {
 			case "customer-command":
 				entry.Protection.Reason += "; " + customerExecutionNote()
 			}
-			programs = append(programs, postureProgram{name, class, entry, unmeasured})
+			programs = append(programs, postureProgram{name, class, entry, unmeasured, unprobed})
 		}
 	}
 	return programs
@@ -127,10 +156,22 @@ func probeSourceSandbox(ctx context.Context, spec sourceSpec) (sandboxProbeRepor
 
 // publicUnmeasuredReason is /posture's sentence for a wrapped source whose
 // sandbox helper gave no report.
-const publicUnmeasuredReason = "the source configuration selects the adapter sandbox wrapper, and its backend check gave no report, so nothing was measured for this source and its restricted launches refuse; gateway posture, given the configuration, says why"
+// A launch of such a source probes again, and refuses before any mode is
+// known unless that probe completes (sandboxSourceCommand), so the sentence
+// speaks of every launch, danger-full-access included.
+const publicUnmeasuredReason = "the source configuration selects the adapter sandbox wrapper, and its backend check gave no report, so nothing was measured for this source; a launch checks again before it starts and is refused, whatever its mode, unless that check completes; gateway posture, given the configuration, names the cause"
+
+// publicUnprobedReason is /posture's sentence for a wrapped source whose
+// check this report's budget ended or left no time to start: it says
+// nothing of what the helper would report, or of a launch, which probes
+// under a budget of its own.
+const publicUnprobedReason = "the source configuration selects the adapter sandbox wrapper, and this report's time for backend checks ran out before this source's check gave a report, so nothing was measured for this source in this report"
 
 // publicProgramReason is a program entry's reason as /posture answers it: a
-// fixed sentence chosen by its mode, backend, state and class, never the
+// fixed sentence chosen by whether its helper gave a report and, where it
+// gave none, whether the report's budget ended its check or left it no
+// time to start (unprobed, unmeasured), then by its mode, backend, state
+// and class, never the
 // helper's own words, which name launcher locations, masked paths below a
 // user's home or runtime directory, and so accounts and uids. gateway
 // posture, run by the operator, keeps the helper's words.
@@ -138,6 +179,8 @@ func publicProgramReason(p postureProgram) string {
 	protection := p.report.Protection
 	var reason string
 	switch {
+	case p.unprobed:
+		reason = publicUnprobedReason
 	case p.unmeasured:
 		reason = publicUnmeasuredReason
 	case protection.Mode == "unconfigured":

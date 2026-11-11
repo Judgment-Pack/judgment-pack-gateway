@@ -4,6 +4,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -132,5 +134,67 @@ func TestPostureCommandJudgesTheSeedArgument(t *testing.T) {
 		if !strings.Contains(stdout.String(), "\n"+protectionSeedFile+" ") || !regexp.MustCompile(`(?m)^`+protectionSeedFile+` +enforced `).MatchString(stdout.String()) {
 			t.Fatalf("%q: the seed serve would load is judged:\n%s", typed, stdout.String())
 		}
+	}
+}
+
+// /posture's seed line names no owner, uid or mode: a seed serve refuses
+// is answered a fixed sentence by what was refused -- the wrong owner, a
+// mode group or other can read, not a regular file -- while gateway
+// posture, run by the operator, keeps the uids and the mode.
+func TestPublicSeedReasonsNameNoAccountOrMode(t *testing.T) {
+	dir := t.TempDir()
+	seed := filepath.Join(dir, "gateway.seed")
+	if err := os.WriteFile(seed, []byte(strings.Repeat("ab", 32)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(dir, "fifo.seed")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	euid := os.Geteuid()
+	other := euid + 4242
+	digits := regexp.MustCompile(`[0-9]`)
+	for _, c := range []struct {
+		name, path string
+		mode       os.FileMode
+		euid       int
+		public     string
+		operator   string
+	}{
+		{"wrong owner", seed, 0o600, other, "serve refuses this seed: it is not owned by the gateway's own user",
+			fmt.Sprintf("(owner uid %d, gateway uid %d)", euid, other)},
+		{"wrong mode", seed, 0o644, euid, "serve refuses this seed: it is readable by group or other", "(mode 0644)"},
+		{"a directory", dir, 0, euid, "serve refuses this seed: it is not a regular file", "seed must be a regular file"},
+		{"a FIFO", fifo, 0, euid, "serve refuses this seed: it is not a regular file", "seed must be a regular file"},
+	} {
+		if c.mode != 0 {
+			if err := os.Chmod(c.path, c.mode); err != nil {
+				t.Fatal(err)
+			}
+		}
+		public := judgeSeed(c.path, os.Stat, c.euid, true)
+		if public.state != postureNotEnforced || public.reason != c.public || digits.MatchString(public.reason) || strings.Contains(public.reason, dir) {
+			t.Fatalf("%s, as /posture says it: %+v", c.name, public)
+		}
+		operator := judgeSeed(c.path, os.Stat, c.euid, false)
+		if operator.state != postureNotEnforced || !strings.Contains(operator.reason, c.operator) {
+			t.Fatalf("%s, as the operator's report says it: %+v", c.name, operator)
+		}
+	}
+	// The report /posture answers carries the same sentence, and no uid.
+	if err := os.Chmod(seed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range hostPosture(postureInput{configured: true, seed: seed, public: true}).lines {
+		if strings.Contains(l.reason, "uid") || strings.Contains(l.reason, "0644") {
+			t.Fatalf("a /posture line names an account or a mode: %+v", l)
+		}
+		if l.name == protectionSeedFile && l.reason != "serve refuses this seed: it is readable by group or other" {
+			t.Fatalf("the seed line as /posture answers it: %+v", l)
+		}
+	}
+	// A refusal verifySeedInfo gives no sentinel for is answered without its text.
+	if got := publicSeedRefusal(errors.New("seed file ownership could not be determined")); got != "serve refuses this seed; gateway posture, given the configuration, says why" {
+		t.Fatalf("an unnamed refusal: %q", got)
 	}
 }

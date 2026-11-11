@@ -610,11 +610,14 @@ managed gateway's posture beside the gateway's status. The answer is canonical J
   `CAP_KILL` in effect and nothing more — no capability that reads past permissions, nothing
   ambient or inheritable, as `serve --config` holds a signer — beside
   `/usr/share/engine/catalog` and `/usr/share/engine/corpus`, directories of root's that nobody
-  else may write. Elsewhere `not-applicable`.
+  else may write. Where the binary is not the signer's own at `0700`, `/posture` says so
+  without the uids and the mode, which `gateway posture` names. Elsewhere `not-applicable`.
 - `seed-file-protection`: on Unix, the seed as `serve` judges it at start, read through a link
   as `serve` opens it — a regular file owned by the signer, readable by nobody else by its mode
-  bits; an access-control list is not seen.
-  On Windows it is stated as `not-enforced`.
+  bits; an access-control list is not seen. For a seed `serve` refuses, `/posture` says which
+  of the three fails (or, where its owner cannot be read, that `gateway posture` says why),
+  naming no uid and no mode; `gateway posture` names the file's owner, the signer's uid and the
+  mode. On Windows it is stated as `not-enforced`.
 - `operator-program-confinement`: `not-enforced` without a selected wrapper or a
   completed successful boundary check. With version 13 sources it aggregates the
   per-program entries below: `enforced` only when every entry is enforced, otherwise
@@ -1241,8 +1244,10 @@ and both are always partial. A `customer-command` entry's reason also says what
 runs as the exact approved bytes and what is re-checked by path before the start.
 
 The reasons `/posture` answers for program entries are fixed sentences chosen by
-mode, backend, state and class. They name no launcher location, masked path, home
-directory or uid; `gateway posture`, run by the operator, keeps the helper's own
+whether the source's helper gave a report and, where it gave none, whether the report's
+own time budget (below) ended its check or left it no time to start, then by mode,
+backend, state and class. They name no launcher location, masked path, home directory or
+uid; `gateway posture`, run by the operator, keeps the helper's own
 words.
 
 A completed probe is cached for the resolved source until restart, and every
@@ -1256,6 +1261,15 @@ mode now differ, or when the reported backend cannot be used: a bubblewrap that
 fails at launch does not fall back to Landlock. A changed policy therefore takes
 effect only after a restart measures it, and posture never reports a selection a
 launch does not use.
+
+A posture report probes its wrapped sources one at a time, each under twelve seconds of its
+own, as a launch's probe is, so one helper that hangs leaves only its own source unmeasured,
+and all of them within thirty seconds for the whole report, which `/posture` answers over
+HTTP. A probe already kept is answered whatever is left. A source whose check the report's
+thirty seconds ended, or left no time to start, is reported `not-enforced`, backend `none`,
+with `sandbox-not-enforced: this report's time for backend checks ran out before this source's
+check gave a report`; that says nothing of its launch, which probes under its own twelve
+seconds.
 
 **When the sandbox cannot be had, in a container or elsewhere.** The backends, their fixed
 launcher locations and their limits are in [adapters/README.md](../../adapters/README.md#customer-bindings)
@@ -1280,18 +1294,21 @@ file, as above, and measures nothing, so it prints nothing about the sandbox. `g
 `sandbox-not-enforced: no usable filesystem sandbox backend`, backend `none`, when neither
 backend could be prepared; `sandbox-not-enforced: restricted probe could not execute`, under
 the backend prepared, when the probe then failed to run under it; or
-`sandbox-not-enforced: source-user backend check did not complete successfully`, backend
-`none`, when the helper itself gave no report. `operator-program-confinement` is then
+`sandbox-not-enforced: source-user backend check did not complete successfully: ` and the
+cause, the path an operating-system error carries left out, backend `none`, when the helper
+itself gave no report. `operator-program-confinement` is then
 `not-enforced` unless another entry is `enforced` or `partial`. `/posture` answers a fixed
 sentence in place of the helper's reason; where the helper itself gave no report, that sentence
 says the source is wrapped and nothing was measured, and is not the sentence of a source with no
-wrapper. Every launch of such a source under a restricted mode
-refuses before anything is started, with `sandbox-not-enforced: the source's sandbox probe
-measured that the <mode> boundary does not hold under <backend>, so the source is not launched;
-gateway posture says why`, or, where the probe did not complete,
-`sandbox-not-enforced: the source's sandbox posture could not be measured before its launch:`
-and the cause. A source whose policy selects `danger-full-access` launches unrestricted, as it
-does on every host.
+wrapper. A launch of a source whose probe completed and measured the boundary as not holding
+under a restricted mode refuses before anything is started, with `sandbox-not-enforced: the
+source's sandbox probe measured that the <mode> boundary does not hold under <backend>, so the
+source is not launched; gateway posture says why`. A launch of a source with no completed probe
+probes again first, and where that probe does not complete it refuses whatever the mode,
+`danger-full-access` included, before anything is started, with `sandbox-not-enforced: the
+source's sandbox posture could not be measured before its launch:` and the cause. A source whose
+policy selects `danger-full-access` and whose probe completed launches unrestricted, as it does
+on every host.
 
 ## Delegated authority (engine version 15)
 
