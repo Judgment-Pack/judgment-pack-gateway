@@ -301,9 +301,14 @@ exiting seals nothing, and a client that wants a verdict seals first. What the s
 
 What a crash means is what it means today. If this server dies, its sessions are known to
 the signer and any authenticated caller who knows the name can seal them by `/seal`. If the
-signer restarts, a session it had not sealed cannot be sealed from its count on disk, and a
-store holding it reads `unregistered-session` under `gateway verify` until the operator
-resolves it; a consumer's verdict is store-wide and fails closed (§5a.1), which is the point.
+signer restarts, a session it had not sealed is one the process that starts next does not
+hold: its chain was in memory, and its count on disk is not one a seal may anchor, since the
+last receipts may have been taken away in between (SPEC.md §2). So an acquisition into it is
+refused before any source runs, and so is its seal, each as a session an earlier process
+left open (gateway #381); a client acquires into a new session. A store holding it reads
+`unregistered-session` under `gateway verify`, with the observation `session-open` beside it
+while its receipts are whole, until the operator resolves it; a consumer's verdict is
+store-wide and fails closed (§5a.1), which is the point.
 
 ## Transport profile
 

@@ -1057,7 +1057,15 @@ as `sealedAt` is.
    rejected either way, but the diagnosis then reads `malformed` rather than
    `tail-rollback`:
    - not in the loaded seals → **`unregistered-session`** (whole-session replay, or
-     a session forged without the key).
+     a session forged without the key — or one still open: not yet sealed by the
+     gateway writing it, or left unsealed by a gateway process that stopped, which
+     no later process continues or seals (§6)). Where every one of the session's
+     receipts has ladder status `ok` and their sequence and chain hold (§1.4), the
+     report carries beside the finding the **observation** `session-open` on its
+     last receipt, whose `callIndex` is the count less one (below). The finding
+     stands: the observation tells an open session from a damaged one, and is no
+     evidence that the session is whole to its end — one whose last receipts were
+     taken away reads the same, which is what a seal anchors against (§2).
    - store count `<` sealed count → **`tail-rollback`**.
    - store count `>` sealed count → **`count-exceeds-seal`** (receipts beyond the
      seal; a seal is a high-water mark).
@@ -1153,10 +1161,10 @@ of every other finding and of whether any action receipt names that record.
 `observations` when there is anything the verifier says of a receipt without
 failing it: an array of `{sessionId, callIndex, observation}`, with the
 receipt's own session and index. The observations this document names are
-step 8's `decision-record-not-compared`, and §1.2b's `action-uncertain`,
-`action-committed` and `action-mismatch`. An observation is not a finding: it
-never makes `ok` false, a consumer's verdict (§5a) does not read it, and a
-report with none may leave the member out.
+step 3's `session-open`, step 8's `decision-record-not-compared`, and §1.2b's
+`action-uncertain`, `action-committed` and `action-mismatch`. An observation is
+not a finding: it never makes `ok` false, a consumer's verdict (§5a) does not
+read it, and a report with none may leave the member out.
 
 **Witnesses.** A report carries, beside them, a member `witnesses` when a
 receipt whose ladder status is `ok` carries `witness` (§1.2a): an array of the
@@ -1393,8 +1401,8 @@ Localhost, JSON, standard library only.
 
 | Method | Path        | Body / result |
 |--------|-------------|---------------|
-| POST   | `/acquire`  | `{session, source, arguments, trail}`, `trail` optional → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, an empty registry and any discarded line establishing no seal — so a seal stays final across a restart. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal — and so is a registry that is not there, since the gateway made it when it started (§3); a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. |
-| POST   | `/seal`     | `{session}` → seals the session's final count; returns the seal record. |
+| POST   | `/acquire`  | `{session, source, arguments, trail}`, `trail` optional → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, an empty registry and any discarded line establishing no seal — so a seal stays final across a restart. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal — and so is a registry that is not there, since the gateway made it when it started (§3); a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. A session this process does not hold and the registry does not seal is then looked up in the store, and is refused `400` before the source runs where the store holds a receipt in it — any entry of its directory whose name ends in `.json`, whatever it holds — where the store holds it as anything but a directory, a link included, and where the store cannot show it, which is never taken for empty: a gateway keeps a session's chain in memory, so one an earlier process left open is not continued from the store, whose last receipts may have been taken away (§2), and stays `unregistered-session` (§4 step 3). A session directory that holds no receipt is taken up. |
+| POST   | `/seal`     | `{session}` → seals the session's final count; returns the seal record. A session this process does not hold is refused `400`: one sealed in the registry as sealed, the registry read as for `/acquire` (one that cannot be read refuses), one the store holds receipts in, or holds as anything but a directory, or cannot show, as `/acquire` refuses it — its count is not sealed from the store, for the reason `/acquire` does not continue it — and any other as no such session. |
 
 A gateway minting version 3 receipts answers `/acquire` with `{result, receipt,
 salts}`: `salts` is an object with one member per commitment the receipt
@@ -1431,7 +1439,7 @@ written then verifies what is minted now. `gateway verify` takes
 `--decision-records <dir>` for §4 steps 5 to 8.
 | POST   | `/delegation/credential` | from an issuing host: binds a credential to a delegation chain's leaf (§11.3). Answered only where the configuration has `delegation`. |
 | POST   | `/delegation/revoke` | from an issuing host: ends live delegation credentials (§11.6). Answered only where the configuration has `delegation`. |
-| GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`, and `observations` when §4 step 8 has any and `rotations` when the walk of §3b followed any, against the registry the gateway made when it started (§3): a registry that is not there is no verdict here, never the absent registry of §4.1 that loads no seals. The key it verifies from is the one its own reading of §3b starts at, taken from its registry — a reason more that this answer is not evidence (§5a.3). |
+| GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`, and `observations` when §4 has any (§4, "Observations") and `rotations` when the walk of §3b followed any, against the registry the gateway made when it started (§3): a registry that is not there is no verdict here, never the absent registry of §4.1 that loads no seals. The key it verifies from is the one its own reading of §3b starts at, taken from its registry — a reason more that this answer is not evidence (§5a.3). |
 | GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. A registry that cannot be read (§4.1), or that is not there — the gateway made it when it started (§3) — is answered `500`, never as the empty body a verifier reads as no seals. |
 | GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |
 
