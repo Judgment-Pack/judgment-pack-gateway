@@ -39,23 +39,23 @@ import (
 // dst: anything after that value but whitespace -- a second object, a stray
 // byte -- refuses the file, and so does a member given twice in one object
 // at any depth, so no corpus file holds material no runner reads. Every
-// family's loader reads through it; with strict set, a member dst does not
-// name refuses it too.
+// family's loader reads through it. A member is read by its exact name
+// (decodeExactly); with strict set, a member dst does not name -- one named
+// in another case included -- refuses the file too, and without, it is
+// passed over.
 func decodeVectorFile(raw []byte, dst any, strict bool) error {
 	if err := noMemberTwice(raw); err != nil {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
-	if strict {
-		decoder.DisallowUnknownFields()
-	}
-	if err := decoder.Decode(dst); err != nil {
+	var value json.RawMessage
+	if err := decoder.Decode(&value); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); err != io.EOF {
 		return errors.New("data follows the file's one JSON value")
 	}
-	return nil
+	return decodeExactly(value, reflect.ValueOf(dst).Elem(), strict)
 }
 
 // decodeAnswer reads an implementation's answer -- a verdict, or a witness

@@ -58,9 +58,9 @@ func (f *witnessFile) UnmarshalJSON(raw []byte) error {
 	var form struct {
 		Parts []witnessPart `json:"parts"`
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&form); err != nil {
+	// strictly, each member by its exact name, as every vector is read
+	// (decodeVectorFile)
+	if err := decodeExactly(raw, reflect.ValueOf(&form).Elem(), true); err != nil {
 		return err
 	}
 	for _, part := range form.Parts {
