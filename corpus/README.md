@@ -400,8 +400,10 @@ read for its vectors' `inputJson`, `expectedHex` and `reject`, it passes over an
 member, such as a vector's `expectedUtf8`. A member is read by its exact name, in every
 family (`SPEC.md` §7): one whose name differs from a member the runner reads, if only in
 case, such as `Authority` beside or in place of `authority`, is a member it does not read,
-refused in a store, witness or witness recovery vector and passed over in `canon.json`. In every family `note` is the member for commentary, read
-by no comparison. Every file of every family is read as exactly one JSON value, with
+refused in a store, witness or witness recovery vector and passed over in `canon.json`.
+Every file is UTF-8, and a name is compared as decoded, its escapes read: `"\u006fk"` is
+`ok`, so an object giving both gives one name twice. In every family `note` is the member
+for commentary, read by no comparison. Every file of every family is read as exactly one JSON value, with
 nothing after it and no member given twice in one object at any depth, and a recovery vector
 whose run never reaches a fault it declares disagrees. It also refuses a corpus whose counts
 this README misstates: the
@@ -550,16 +552,18 @@ Findings are compared as a **multiset**: order is not normative. Observations ar
 compared as a multiset too, and only for a vector that states them; witnesses are
 compared as a set, and rotations whole.
 
-An answer, a verdict or a witness answer, is read by its members' exact names (`SPEC.md`
-§7). A member whose name differs from one the runner reads, if only in case, is not read:
+An answer, a verdict or a witness answer, is read by its members' exact names, as decoded
+(`SPEC.md` §7). A member whose name differs from one the runner reads, if only in case, is not read:
 the answer is compared as one without that member, and an object compared whole (a finding,
 an observation, a witness, the rotations, a witness answer's refusal and its
 `latestCheckpoint`) holding it disagrees. An answer in which an object, at any depth, gives
 one name twice disagrees with that vector, `store <name>: the verdict gives a member twice
 in one object:` or `witness <name>: the answer gives a member twice in one object:` and the
-name, quoted, at most 256 bytes of it; the run goes on, and exits 1. An answer that is not
-one JSON value, or that gives a member the runner reads with the wrong type, still stops
-the run, exit 2.
+name, quoted, at most 256 bytes of it; the run goes on, and exits 1. A name given twice is
+looked for once the answer is read as one JSON value and before any member is read, so an
+answer giving one beside a member of the wrong type disagrees too. An answer that is not
+one JSON value, is not an object, or gives a member the runner reads with the wrong type
+still stops the run, exit 2.
 
 ## Two implementations again
 

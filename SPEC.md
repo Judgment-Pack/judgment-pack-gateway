@@ -2001,9 +2001,12 @@ whole (a finding, an observation, a witness, the rotations, a witness answer's r
 its `latestCheckpoint`), such a member is one more member, and the object disagrees. An
 answer in which an object, at any depth, gives one name twice is not a conforming answer,
 whichever of the two would agree: it disagrees with that vector, the disagreement naming
-the member, and the run goes on to the next. An answer the runner cannot read, one that is
-not a single JSON value or that gives a member it reads with the wrong type, still stops
-the run (`corpus/README.md`). The vectors are read the same way. Each file is one JSON
+the member, and the run goes on to the next. A name given twice is looked for once the
+answer is read as one JSON value and before any member is read, so such an answer
+disagrees even where it also gives a member of the wrong type. An answer the runner cannot
+read, one that is not a single JSON value, is not an object, or gives a member it reads
+with the wrong type, still stops the run (`corpus/README.md`). The vectors are read the
+same way. Each file is one JSON
 value in which no object gives a name twice, its members read by their exact names. In a
 store vector, a witness vector and a witness recovery vector, a member of any other name,
 another case included, refuses the run as any member no runner reads does. `canon.json`'s
