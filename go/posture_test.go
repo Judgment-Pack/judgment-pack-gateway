@@ -6,8 +6,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,7 +20,7 @@ import (
 	"time"
 )
 
-var postureOrder = []string{protectionSourceUser, protectionDescendants, protectionContainerCustody, protectionSeedFile, protectionOperatorPrograms}
+var postureOrder = []string{protectionSourceUser, protectionDescendants, protectionContainerCustody, protectionSeedFile, protectionOperatorPrograms, protectionListenerReach}
 
 // A report is canonical JSON (SPEC.md §1.1): members in code-point order,
 // strings as raw UTF-8 with the short escapes. The vector is written by
@@ -146,8 +148,8 @@ func TestPostureSourceUserFlips(t *testing.T) {
 	}
 }
 
-// The seed line with no seed to judge, and the operator programs' line,
-// which is the same everywhere.
+// The seed line with no seed to judge, the operator programs' line, which
+// is the same everywhere, and the listener line with no gateway to judge.
 func TestPostureLinesWithNothingToJudge(t *testing.T) {
 	report := hostPosture(postureInput{})
 	for i, line := range report.lines {
@@ -164,6 +166,9 @@ func TestPostureLinesWithNothingToJudge(t *testing.T) {
 	if programs := report.lines[4]; programs != operatorProgramsLine || programs.state != postureNotEnforced {
 		t.Fatalf("operator programs are never confined: %+v", programs)
 	}
+	if listener := report.lines[5]; listener != (postureLine{protectionListenerReach, postureNotApplicable, "no configuration was named, so there is no listener to judge"}) {
+		t.Fatalf("no configuration, no listener: %+v", listener)
+	}
 }
 
 // The command: the report on stdout and exit 0 whatever it says; a
@@ -178,6 +183,11 @@ func TestPostureCommand(t *testing.T) {
 	code, out, _ := run()
 	if code != 0 || strings.Count(out, "\n") != len(postureOrder) || !strings.HasPrefix(out, protectionSourceUser+" ") {
 		t.Fatalf("text report: %d %q", code, out)
+	}
+	// The text form carries the listener line too, in these bytes: with no
+	// configuration the command starts nothing and has no listener to judge.
+	if !strings.HasSuffix(out, "\nlistener-reach                not-applicable no configuration was named, so there is no listener to judge\n") {
+		t.Fatalf("the text report's listener line: %q", out)
 	}
 	code, out, _ = run("--json")
 	if code != 0 || out != string(hostPosture(postureInput{}).canonical()) {
@@ -194,6 +204,25 @@ func TestPostureCommand(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "store")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("the posture of a command line makes nothing it names")
+	}
+	// serve's command line is judged by the class of the address it would
+	// bind, from the IP address --listen writes out or 127.0.0.1 where it
+	// names none; nothing is bound, and the address is not named.
+	for _, tc := range []struct {
+		name   string
+		listen []string
+		state  string
+	}{
+		{"no --listen", nil, postureEnforced},
+		{"another loopback address", []string{"--listen", "::1"}, postureEnforced},
+		{"an address other hosts reach", []string{"--listen", "192.0.2.10", "--accept-unauthenticated-callers"}, postureNotEnforced},
+	} {
+		args := append([]string{"--json", filepath.Join(dir, "store"), seed, "gateway:test", filepath.Join(dir, "registry.jsonl")}, tc.listen...)
+		code, out, _ := run(args...)
+		state, _ := postureLineIn(t, []byte(out), protectionListenerReach)
+		if code != 0 || state != tc.state || strings.Contains(out, "192.0.2.10") {
+			t.Fatalf("%s: %d %s", tc.name, code, out)
+		}
 	}
 	for _, args := range [][]string{{"--bogus"}, {"--config"}, {"--config", "a", "b"}, {"--json", "--json"}, {"a", "b"}} {
 		if code, _, stderr := run(args...); code != 2 || stderr == "" {
@@ -231,9 +260,18 @@ func TestPostureEndpoint(t *testing.T) {
 	if code != http.StatusOK || !bytes.Equal(body, want) {
 		t.Fatalf("/posture: %d\n got %s\nwant %s", code, body, want)
 	}
+	// A handler served other than by serveOn knows no listener, and takes
+	// it as one other hosts can reach, never as loopback.
+	if state, _ := postureLineIn(t, body, protectionListenerReach); state != postureNotEnforced {
+		t.Fatalf("a listener not known is judged as loopback: %s", body)
+	}
 	service.seedPath = filepath.Join(t.TempDir(), "absent.seed")
 	if _, body := get(""); bytes.Equal(body, want) || !bytes.Contains(body, []byte(`"name":"seed-file-protection"`)) {
 		t.Fatalf("the seed serve was started with is judged at each request: %s", body)
+	}
+	service.listening = server.Listener.Addr()
+	if _, body := get(""); !bytes.Contains(body, []byte(`{"name":"listener-reach","reason":"the gateway listens on a loopback address, which other hosts cannot reach","state":"enforced"}`)) {
+		t.Fatalf("the listener is judged by the address it is bound to: %s", body)
 	}
 	issuer := newIssuer(t)
 	id := identityFor(t, issuer)
@@ -375,6 +413,19 @@ func TestPostureOfConfig(t *testing.T) {
 	if line := sourceUserPosture(in, func(map[string]sourceSpec) error { return nil }, func(string) bool { return false }); line.state != postureEnforced {
 		t.Fatalf("every derived source has a user of its own: %+v", line)
 	}
+	// The listen address serve --config would bind, which the configuration
+	// holds to loopback, and callers authenticated where it has an identity.
+	if in.listener != (listenerReach{loopback: true}) || listenerPosture(in).state != postureEnforced {
+		t.Fatalf("the configuration's listener: %+v", in.listener)
+	}
+	withIdentity := filepath.Join(t.TempDir(), "engine.json")
+	identity := `,"identity":{"issuer":"https://login.example","audience":"gateway:acme","keys":"` + abs(t, t.TempDir(), "keys.json") + `"}`
+	if err := os.WriteFile(withIdentity, []byte(engineJSON(t, catalog, identity, platformJSON(t, "warehouse", "postgres@"+digestOf(postgresBinding), "engine-warehouse", ""))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if in, err := postureOfConfig(withIdentity, stubAccounts(stubUsers)); err != nil || in.listener != (listenerReach{loopback: true, authenticated: true}) {
+		t.Fatalf("a configuration with an identity authenticates its callers: %+v %v", in.listener, err)
+	}
 	if _, err := postureOfConfig(filepath.Join(t.TempDir(), "absent.json"), stubAccounts(stubUsers)); err == nil {
 		t.Fatal("an absent configuration is an error")
 	}
@@ -415,4 +466,190 @@ func TestPostureEndpointNamesNoPathNorAccount(t *testing.T) {
 	if !strings.Contains(report.lines[0].reason, account) {
 		t.Fatalf("the command names the user: %+v", report.lines[0])
 	}
+}
+
+// The listener line is a function of two facts alone, whether the address
+// is loopback and whether callers are authenticated, defined for all four
+// pairs, in these bytes: loopback is enforced whoever is authenticated; off
+// loopback, not-enforced when no caller is authenticated, and partial when
+// callers are, which no form of serve can start yet (#400). No reason names
+// an address, a port or any number.
+func TestListenerReachLineJudgesTheTwoFacts(t *testing.T) {
+	const (
+		onLoopback    = "the gateway listens on a loopback address, which other hosts cannot reach"
+		offNoCaller   = "the gateway listens on an address that is not loopback, which other hosts can reach, and it authenticates no caller, so whoever reaches it can run its sources and have receipts and seals signed under its key"
+		offWithTokens = "the gateway listens on an address that is not loopback, which other hosts can reach, and it authenticates its callers by a bearer token, which over plain HTTP can be read and replayed on the network between"
+	)
+	for _, tc := range []struct {
+		loopback, authenticated bool
+		state, reason           string
+	}{
+		{true, false, postureEnforced, onLoopback},
+		{true, true, postureEnforced, onLoopback},
+		{false, false, postureNotEnforced, offNoCaller},
+		{false, true, posturePartial, offWithTokens},
+	} {
+		want := postureLine{protectionListenerReach, tc.state, tc.reason}
+		if got := listenerReachLine(tc.loopback, tc.authenticated); got != want {
+			t.Fatalf("loopback %v, authenticated %v:\n got %+v\nwant %+v", tc.loopback, tc.authenticated, got, want)
+		}
+		in := postureInput{configured: true, listener: listenerReach{tc.loopback, tc.authenticated}}
+		if got := listenerPosture(in); got != want {
+			t.Fatalf("a configuration's listener, loopback %v, authenticated %v: %+v", tc.loopback, tc.authenticated, got)
+		}
+		if strings.ContainsAny(tc.reason, "0123456789") || strings.HasSuffix(tc.reason, ".") || strings.Contains(tc.reason, ". ") {
+			t.Fatalf("a listener reason names a number or is more than one sentence: %q", tc.reason)
+		}
+	}
+	// An input that does not say where the gateway listens is not loopback.
+	if got := listenerPosture(postureInput{configured: true}); got.state != postureNotEnforced {
+		t.Fatalf("a listener not described is judged as loopback: %+v", got)
+	}
+}
+
+// An engine configuration's listen is judged by its IP address: loopback
+// for 127.0.0.0/8 and ::1, and not for any other address, nor for a name
+// or a value that is not host:port, which the configuration refuses anyway.
+func TestPostureListenIsLoopbackByAddress(t *testing.T) {
+	for listen, want := range map[string]bool{
+		"127.0.0.1:8787": true, "127.0.0.2:8787": true, "[::1]:8787": true,
+		"0.0.0.0:8787": false, "[::]:8787": false, "192.0.2.10:8787": false, "[2001:db8::1]:8787": false,
+		"localhost:8787": false, "127.0.0.1": false, "": false,
+	} {
+		if got := listenIsLoopback(listen); got != want {
+			t.Fatalf("listenIsLoopback(%q) = %v, want %v", listen, got, want)
+		}
+	}
+}
+
+// claimed is a listener bound to a loopback port of the test's own that
+// says it holds addr, so the gateway serves on it as it would on addr while
+// the test binds no address the host may lack.
+type claimed struct {
+	net.Listener
+	addr net.Addr
+}
+
+func (c claimed) Addr() net.Addr { return c.addr }
+
+// servedPosture starts serve from the command line extra completes, as
+// cmdServe does from the parsed options to the listener served, and reads
+// /posture with authorization where it is not empty. serveListen stands in
+// for the bind: it records the network and address serve asks for and binds
+// a loopback port, which says it holds claim where claim is not nil. It is
+// a package variable, so a test calling this does not run in parallel, and
+// it is put back. configure, where not nil, changes the service before it
+// serves. It gives the answer, what was asked for, and the start's stderr.
+func servedPosture(t *testing.T, extra []string, claim net.Addr, configure func(*gatewayService), authorization string) (body []byte, network, address, stderr string) {
+	t.Helper()
+	dir := t.TempDir()
+	args := append([]string{filepath.Join(dir, "store"), filepath.Join(dir, "gateway.seed"), "gateway:test", filepath.Join(dir, "registry.jsonl")}, extra...)
+	opts, msg, ok := parseServeOptions(args)
+	if !ok {
+		t.Fatal(msg)
+	}
+	service, err := buildService(args[0], testSeed, args[2], args[3], opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configure != nil {
+		configure(service)
+	}
+	var bound net.Listener
+	serveListen = func(n, a string) (net.Listener, error) {
+		network, address = n, a
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, err
+		}
+		bound = l
+		if claim == nil {
+			return l, nil
+		}
+		return claimed{l, claim}, nil
+	}
+	t.Cleanup(func() { serveListen = net.Listen })
+	var written bytes.Buffer
+	listener, err := listenForServe(opts, &written)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	service.bindLifetime(ctx)
+	served := make(chan error, 1)
+	go func() { served <- service.serveOn(listener) }()
+	defer func() {
+		cancel()
+		if err := <-served; err != nil {
+			t.Errorf("serveOn: %v", err)
+		}
+	}()
+	req, err := http.NewRequest(http.MethodGet, "http://"+bound.Addr().String()+"/posture", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ = io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/posture: %d %s", resp.StatusCode, body)
+	}
+	return body, network, address, written.String()
+}
+
+// /posture judges the listener serve bound (#401): a default start's is
+// loopback; one --listen names off loopback is reported so, naming neither
+// the address nor the port; and, should an off-loopback gateway authenticate
+// its callers, the line says that in part. The off-loopback listeners are
+// stand-ins, so the test binds no address the host may lack.
+func TestPostureReportsTheListenerServeBound(t *testing.T) {
+	t.Run("a default start", func(t *testing.T) {
+		body, network, address, stderr := servedPosture(t, nil, nil, nil, "")
+		if network != "tcp" || address != "127.0.0.1:8787" || stderr != "" {
+			t.Fatalf("a default start binds %q %q and writes %q", network, address, stderr)
+		}
+		state, reason := postureLineIn(t, body, protectionListenerReach)
+		if state != postureEnforced || reason != "the gateway listens on a loopback address, which other hosts cannot reach" {
+			t.Fatalf("a default start: %s", body)
+		}
+	})
+	for _, tc := range []struct {
+		name, listen, network, address string
+		bound                          *net.TCPAddr
+	}{
+		{"every IPv4 address", "0.0.0.0", "tcp4", "0.0.0.0:8787", &net.TCPAddr{IP: net.IPv4zero, Port: 8787}},
+		{"every IPv6 address", "::", "tcp6", "[::]:8787", &net.TCPAddr{IP: net.IPv6unspecified, Port: 8787}},
+		{"one address of the host's", "192.0.2.10", "tcp4", "192.0.2.10:8787", &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 8787}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, network, address, stderr := servedPosture(t, []string{"--listen", tc.listen, "--accept-unauthenticated-callers"}, tc.bound, nil, "")
+			if network != tc.network || address != tc.address || !strings.Contains(stderr, "which is not a loopback address") {
+				t.Fatalf("bound %q %q, wrote %q", network, address, stderr)
+			}
+			state, reason := postureLineIn(t, body, protectionListenerReach)
+			if state != postureNotEnforced || reason != listenerReachLine(false, false).reason || !strings.Contains(reason, "authenticates no caller") {
+				t.Fatalf("a listener off loopback: %s", body)
+			}
+			if bytes.Contains(body, []byte(tc.bound.IP.String())) || bytes.Contains(body, []byte("8787")) {
+				t.Fatalf("/posture names the address it listens on: %s", body)
+			}
+		})
+	}
+	t.Run("off loopback, callers authenticated", func(t *testing.T) {
+		issuer := newIssuer(t)
+		id := identityFor(t, issuer)
+		token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
+		authenticate := func(g *gatewayService) { g.identity = &id }
+		bound := &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 8787}
+		body, _, _, _ := servedPosture(t, []string{"--listen", "192.0.2.10", "--accept-unauthenticated-callers"}, bound, authenticate, "Bearer "+token)
+		if state, _ := postureLineIn(t, body, protectionListenerReach); state != posturePartial || bytes.Contains(body, []byte("192.0.2.10")) {
+			t.Fatalf("an authenticating listener off loopback: %s", body)
+		}
+	})
 }

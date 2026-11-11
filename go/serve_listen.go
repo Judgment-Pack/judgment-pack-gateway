@@ -66,6 +66,14 @@ func (o serveOptions) listenAt() (network, address string) {
 	return network, net.JoinHostPort(o.listen.String(), o.port)
 }
 
+// listensOnLoopback is whether the address listenAt names is a loopback
+// address, which gateway posture reports for serve's command line without
+// binding it: 127.0.0.1 where --listen names none, and otherwise the IP
+// address --listen names, written out, so no resolver is asked.
+func (o serveOptions) listensOnLoopback() bool {
+	return !o.listen.IsValid() || o.listen.IsLoopback()
+}
+
 // serveListen binds. A test stands in for it, to see what the start writes
 // for an address the test must not bind. It is a package variable, so a
 // test that replaces it must not run in parallel with another that

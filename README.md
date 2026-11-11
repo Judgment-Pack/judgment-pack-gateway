@@ -203,14 +203,16 @@ container, for example, `--listen 0.0.0.0 --accept-unauthenticated-callers` is w
 gateway answer on the container's published port, and that port is then published only to the
 network those callers are on. When the address bound is not loopback the gateway writes, on
 stderr and before its `gateway on http://…` line, a `start:` line saying that other hosts can
-reach it and that it authenticates no caller. `serve --config` does not take `--listen`: an
-engine configuration's `listen` is a loopback address
+reach it and that it authenticates no caller, and `/posture` reports it in its `listener-reach`
+line as `not-enforced`, naming neither the address nor the port. `serve --config` does not take
+`--listen`: an engine configuration's `listen` is a loopback address
 ([docs/design/engine-config.md](docs/design/engine-config.md)).
 
 `./gateway posture` says which of the isolation protections in [`SECURITY.md`](SECURITY.md)
 this host enforces — the user switch for sources, the reaping of a source's descendants, the
 engine image's custody, the seed file's owner and mode, the confinement of the programs the
-gateway starts — one line each, `enforced`, `not-enforced` or `not-applicable`, with the reason.
+gateway starts, whether the gateway listens on a loopback address — one line each, `enforced`,
+`partial`, `not-enforced` or `not-applicable`, with the reason.
 Give it serve's own command line, with or without the word `serve`, or `--config engine.json`,
 to judge that configuration's seed and sources as well; `--json` prints the report in canonical
 JSON. It exits 0 whatever it reports, and a `not-enforced` line's reason says what is missing: a

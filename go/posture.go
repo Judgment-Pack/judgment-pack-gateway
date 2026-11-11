@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/user"
 	"runtime"
@@ -21,9 +22,11 @@ import (
 // not-applicable is a protection
 // with nothing to hold on this host or under this configuration -- no
 // source to switch, no seed named, an image this platform does not run --
-// never one that is merely absent, which is not-enforced.
+// never one that is merely absent, which is not-enforced. partial is a
+// protection that holds in part, its reason saying which part.
 const (
 	postureEnforced      = "enforced"
+	posturePartial       = "partial"
 	postureNotEnforced   = "not-enforced"
 	postureNotApplicable = "not-applicable"
 )
@@ -35,6 +38,9 @@ const (
 	protectionContainerCustody = "container-custody"
 	protectionSeedFile         = "seed-file-protection"
 	protectionOperatorPrograms = "operator-program-confinement"
+	// Whether the gateway listens on a loopback address (#401), the last of
+	// the lines every report gives.
+	protectionListenerReach = "listener-reach"
 	// The three lines a gateway configured with a delegation adds (SPEC.md
 	// §11.9); a gateway without one reports none of them.
 	protectionDelegationNarrowing = "delegation-narrowing"
@@ -79,7 +85,18 @@ type postureInput struct {
 	// delegation is the configuration's delegation, which adds its three
 	// lines; nil adds none.
 	delegation *delegationPosture
+	// listener is where the gateway listens, read where configured is true.
+	// Its zero value is a listener off loopback that authenticates no
+	// caller, so an input that does not say where the gateway listens is
+	// never judged to listen on loopback.
+	listener listenerReach
 }
+
+// listenerReach is what posture reads of the gateway's listener: whether
+// its address is a loopback address, and whether the gateway authenticates
+// its callers (an identity is configured). It is the class of the address,
+// never the address: no report names one.
+type listenerReach struct{ loopback, authenticated bool }
 
 // delegationPosture is what posture reads of a delegation: whether a bearer
 // credential is admitted for a read-only chain.
@@ -218,8 +235,9 @@ var postureStatements = map[string]map[string]postureLine{
 }
 
 // hostPosture judges every protection under the configuration given: the
-// lines every report gives, then a delegation's, then writeRequesters', each
-// only where the configuration carries it.
+// lines every report gives, the listener's last of them, then a
+// delegation's, then writeRequesters', each only where the configuration
+// carries it.
 func hostPosture(in postureInput) postureReport {
 	programs := sourceProgramPosture(in.sources)
 	if in.public {
@@ -233,6 +251,7 @@ func hostPosture(in postureInput) postureReport {
 		custodyPosture(in.public),
 		seedPosture(in),
 		programConfinementPosture(programs),
+		listenerPosture(in),
 	}, append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...)...)}
 }
 
@@ -272,6 +291,51 @@ func sourceUserPosture(in postureInput, switching func(map[string]sourceSpec) er
 		return line(postureNotEnforced, quotedSources(asRoot, "runs", "run")+" as root, which reads the seed whatever protects it")
 	}
 	return line(postureEnforced, "every source runs as a user of its own that is not the signer's, and this process can switch to each")
+}
+
+// listenerPosture is the listener line: not-applicable where no
+// configuration was named, since then there is no gateway whose listener
+// could be judged, and otherwise listenerReachLine of where the gateway
+// listens.
+func listenerPosture(in postureInput) postureLine {
+	if !in.configured {
+		return postureLine{protectionListenerReach, postureNotApplicable, "no configuration was named, so there is no listener to judge"}
+	}
+	return listenerReachLine(in.listener.loopback, in.listener.authenticated)
+}
+
+// listenerReachLine is whether only this host reaches the gateway, judged
+// from whether it listens on a loopback address and whether it
+// authenticates its callers, and from nothing else. On loopback the line is
+// enforced, whoever is authenticated. Off loopback with no caller
+// authenticated, the one such listener there is today (serve from the
+// command line with --listen and --accept-unauthenticated-callers,
+// ADR-0023), it is not-enforced. Off loopback with callers authenticated,
+// which no form of serve can start yet (#400), it is partial: a caller is
+// held to a bearer token, which plain HTTP lets the network between read and
+// replay. No reason names the address.
+func listenerReachLine(loopback, authenticated bool) postureLine {
+	line := func(state, reason string) postureLine { return postureLine{protectionListenerReach, state, reason} }
+	switch {
+	case loopback:
+		return line(postureEnforced, "the gateway listens on a loopback address, which other hosts cannot reach")
+	case authenticated:
+		return line(posturePartial, "the gateway listens on an address that is not loopback, which other hosts can reach, and it authenticates its callers by a bearer token, which over plain HTTP can be read and replayed on the network between")
+	}
+	return line(postureNotEnforced, "the gateway listens on an address that is not loopback, which other hosts can reach, and it authenticates no caller, so whoever reaches it can run its sources and have receipts and seals signed under its key")
+}
+
+// listenIsLoopback is whether an engine configuration's listen, host:port,
+// names a loopback IP address. The configuration is held to one when it is
+// read (loopbackAddress); one this cannot read as an IP address and a port
+// is taken as not loopback.
+func listenIsLoopback(listen string) bool {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // quotedSources is `source "a" <one>` or `sources "a", "b" <many>`.
@@ -378,7 +442,8 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, postureUsage)
 			return 2
 		}
-		in = postureInput{configured: true, seed: opts.seedPath, sources: opts.sources}
+		in = postureInput{configured: true, seed: opts.seedPath, sources: opts.sources,
+			listener: listenerReach{loopback: opts.listensOnLoopback(), authenticated: opts.identity != nil}}
 	}
 	report := hostPosture(in)
 	if asJSON {
@@ -391,14 +456,16 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 }
 
 // postureOfConfig is what an engine configuration gives the report: its
-// seed and the sources serve --config derives from it, each platform's
-// user theirs.
+// seed, the sources serve --config derives from it, each platform's user
+// theirs, and the listen address serve --config binds, with callers
+// authenticated where it configures an identity.
 func postureOfConfig(path string, account func(string) (int, string, error)) (postureInput, error) {
 	cfg, bindings, err := loadEngineConfig(path, account)
 	if err != nil {
 		return postureInput{}, err
 	}
-	in := postureInput{configured: true, seed: cfg.seed, sources: deriveSources(cfg, bindings)}
+	in := postureInput{configured: true, seed: cfg.seed, sources: deriveSources(cfg, bindings),
+		listener: listenerReach{loopback: listenIsLoopback(cfg.listen), authenticated: cfg.identity != nil}}
 	if cfg.delegation != nil {
 		in.delegation = &delegationPosture{bearerReadOnly: cfg.delegation.bearerReadOnly}
 	}

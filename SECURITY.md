@@ -185,8 +185,9 @@ caller in every form, by design; `/act` is refused, since nobody is a requester.
 refused, so no resolver decides where it listens, and every address of a family is bound only when
 `0.0.0.0` or `::` is written out. An address that is not loopback is taken only with
 `--accept-unauthenticated-callers` beside it, and the start then writes a line on stderr saying that
-other hosts can reach the gateway and that it authenticates no caller. Such a listener needs
-something in front of it that decides who reaches it: an authenticating proxy that terminates TLS,
+other hosts can reach the gateway and that it authenticates no caller; `/posture` says the same in
+its `listener-reach` line, `not-enforced`, naming neither the address nor the port. Such a listener
+needs something in front of it that decides who reaches it: an authenticating proxy that terminates TLS,
 or a private network that admits only the intended callers. The gateway limits neither the rate of
 requests nor the number of connections, so what is in front should limit them too. The transport is
 plain HTTP, so on the
@@ -582,8 +583,10 @@ are, and nothing is signed from it.
 
 **See `gateway posture`** for which of these protections the host it runs on enforces: the user
 switch for sources, the reaping of a source's descendants, the engine image's custody, the seed
-file's owner and mode, and the confinement of the programs the gateway starts — one
-line each, `enforced`, `partial`, `not-enforced` or `not-applicable`, with the reason.
+file's owner and mode, the confinement of the programs the gateway starts, and whether the
+gateway listens on a loopback address and, where it does not, whether it authenticates its
+callers — one line each, `enforced`, `partial`, `not-enforced` or `not-applicable`, with the
+reason.
 Version 13 adds per-source program-class entries backed by a fixed native write probe
 run as the source's user. The probe selects no customer code and emits no credentials;
 its result is cached for that resolved source until restart. The original descendant
