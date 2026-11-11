@@ -63,7 +63,7 @@ surrogate, and neither survives being written into a document each language
 re-parses with its own defaults. Accepting vectors carry `expectedHex`; refusing
 vectors carry `reject: true`.
 
-**`stores/*.json`** — 46 vectors, each a complete store (a `path → text` map plus
+**`stores/*.json`** — 51 vectors, each a complete store (a `path → text` map plus
 the registry text) and its expected `(ok, findings)`. There is one per status an
 implementation can emit. Two of them, `key-mismatch` and `unsupported-version`,
 exist because a second implementation pointed out that those statuses were
@@ -141,11 +141,46 @@ each `seal-conflict` (`interruption-seal-beside-an-ordinary-seal`,
 first rotation of `rotation-followed-twice`, one the key rotated to signed over
 receipts the key rotated from signed, `ok`, and one the key rotated from signed,
 which loads nothing (`interruption-seal-after-rotation`,
-`interruption-seal-old-key-after-rotation`). The session such a seal anchors is
-observed `sealed-after-interruption`, and is that finding under
-`--ordinary-seals-only`; the runner reads neither, so the rows of
+`interruption-seal-old-key-after-rotation`). They state no observations and are run
+without the option, so they hold what they held when they were written.
+
+Five hold what a verifier reports of such a session beyond `ok` and findings (`SPEC.md`
+§4, §7; issue #398), each over the store and registry of the vector its name ends in,
+unchanged, and each stating its observations: the session the operator's seal anchors,
+`ok`, observed `sealed-after-interruption` on receipt 2, the receipt at `finalCount − 1`
+(`observations-interruption-seal`); and four run under `--ordinary-seals-only`
+(`ordinarySealsOnly`, below): that session, now the finding `sealed-after-interruption`
+and observed nothing (`ordinary-seals-only-interruption-seal`); two such seals for it, the
+finding beside `seal-conflict`, once, and observed nothing
+(`ordinary-seals-only-interruption-seal-twice`); one another key signed, which anchors
+nothing, so the option finds no more — `unregistered-session`, and the session's receipts
+whole, observed `session-open` on its last
+(`ordinary-seals-only-interruption-seal-forged`); and a seal of §3's form, for which the
+option changes nothing, `ok` and observed nothing (`ordinary-seals-only-valid-sealed`). A
+verifier that reports no observations disagrees with the first and the fourth, and one that
+takes the option and ignores it with the second and the third, and each agrees with every
+other vector; one that refuses the option, giving no verdict, disagrees with the four run
+under it and with no other. The last holds the option to changing nothing for a seal of §3's
+form. The
+rows of
 [`../testdata/interruption-seal/cases.json`](../testdata/interruption-seal/cases.json),
-which both implementations run, compare them over these vectors.
+which both implementations run, hold more over these stores — a receipt taken away or torn
+after the seal, a registry edited beside it — and are not conformance.
+
+**`observations` and `ordinarySealsOnly`.** A vector that states observations gives them in
+`expected` as `observations`, each `{"sessionId", "callIndex", "observation"}` (`SPEC.md`
+§4), and a runner compares them with the implementation's as a **multiset**: order aside,
+and how many counted, since each observation is carried once, on the one receipt §4 names
+for it. `[]` expects none, and an implementation that reports none may leave the member
+out. A vector that states the member as `null`, or with an element that is `null` or no
+object, refuses the run: it states nothing a runner could compare. An implementation's
+`"observations": null` counts as none, as a left-out member does, and a member that is no
+array of objects disagrees with a vector that states observations. Unlike `witnesses` and `rotations`, a vector **without** the member is not compared on
+observations at all: what an implementation reports of them there is not read, so every
+vector written before the member holds what it held. A vector run under the option gives
+`"ordinarySealsOnly": true` beside `registry`, and the runner passes `--ordinary-seals-only`
+to the implementation's `verify` first (the process contract, below); a vector without the
+member is run without it.
 
 **`witness/*.json`** — the checkpoint witness's vectors, below.
 
@@ -291,8 +326,9 @@ that know the members to more.
 as `witnesses`, each `{"trail", "origin", "keyId"}`, and a runner compares them
 with the implementation's as a **set**, order and repetition aside; a vector
 without the member expects none, and an implementation that reports none leaves
-the member out. Unlike observations, they are compared: a verifier that does
-not read the member reports none, and those vectors catch it.
+the member out. They are compared in every vector, where observations are compared
+only in a vector that states them: a verifier that does not read the member
+reports none, and those vectors catch it.
 
 They are as frozen as the rest and were written against the specification, not
 against an implementation: no implementation answered them when they were
@@ -356,7 +392,12 @@ generator for them is kept here.
 not read — a file or directory at the top it has no rule for, anything but vectors among
 the vectors — a witness vector with a member it does not know or of a family it does not
 read, one whose `name` is not its file's, and one whose `expected` holds a member its form
-does not, at any depth. Every file of every family is read as exactly one JSON value, with
+does not, at any depth, and a store vector, of `stores/` or `v3/stores/`, with a member it
+does not know, at the top or in `expected`. Store, witness and witness recovery vectors are
+held to that: a member the runner does not read refuses the corpus. `canon.json` is not:
+read for its vectors' `inputJson`, `expectedHex` and `reject`, it passes over any other
+member, such as a vector's `expectedUtf8`. In every family `note` is the member for commentary, read
+by no comparison. Every file of every family is read as exactly one JSON value, with
 nothing after it and no member given twice in one object at any depth, and a recovery vector
 whose run never reaches a fault it declares disagrees. It also refuses a corpus whose counts
 this README misstates: the
@@ -472,10 +513,11 @@ this one:
 - `CMD canon` — stdin: one JSON document (the *text*). stdout: the canonical
   bytes, exactly, no trailing newline. Exit 0 if inside the domain, non-zero if
   refused.
-- `CMD verify <store-root> <registry-path> <authority> [<decision-records-dir>]`
+- `CMD verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [<decision-records-dir>]`
   — stdin: the 32-byte Ed25519 **public** key, raw bytes, never a secret.
   stdout: `{"ok": bool, "findings": [...]}`, and optionally the
-  `observations` member of `SPEC.md` §4, which the runner does not read, the
+  `observations` member of `SPEC.md` §4, which the runner compares as a multiset
+  for a vector that states them and does not read for any other (above), the
   `witnesses` member, which it compares as a set (above), and the `rotations`
   member, which it compares whole (above). Exit 0
   whenever a verdict was produced; a *failing* verdict is still exit 0. The fourth argument is the
@@ -483,6 +525,15 @@ this one:
   exactly when the vector carries a `decisionRecords` map, materialized with
   each key as a path under a fresh directory, and passes nothing when the map
   is absent, so an absent map means an absent directory and never an empty one.
+  `--ordinary-seals-only` is the option of `SPEC.md` §4, given first, before the
+  store root, as `gateway verify` and verify-ts take it; the runner passes it
+  exactly when the vector gives `"ordinarySealsOnly": true`, and nothing in its
+  place otherwise. An implementation that gives no verdict for a vector run
+  under the option, exiting non-zero as one that does not take the option does
+  when it refuses it, disagrees with that vector, `store <name>: no verdict
+  under --ordinary-seals-only:` and at most 256 bytes of its standard error,
+  quoted; the run goes on, and exits 1. No verdict for a vector run without the
+  option still stops the run, exit 2.
 - `CMD witness --trail <hex> --witness-key <file>... [--witness <file>]...
   [--witness-head <file>]` — the flags of the runtime's `audit verify`: the trail being
   verified; each key a file holding its 64 lowercase hexadecimal characters and a
@@ -491,7 +542,8 @@ this one:
   among them. Exit 0 whenever an answer was given; non-zero when none could be, which the
   runner reports as an implementation that could not answer, never as a refusal.
 
-Findings are compared as a **multiset**: order is not normative. Witnesses are
+Findings are compared as a **multiset**: order is not normative. Observations are
+compared as a multiset too, and only for a vector that states them; witnesses are
 compared as a set, and rotations whole.
 
 ## Two implementations again

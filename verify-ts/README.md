@@ -18,7 +18,7 @@ cd go && go build -o gateway . && ./gateway conform --impl ../verify-ts/impl
 
 `impl canon` reads one JSON document on stdin and writes its canonical bytes,
 exiting 1 for a document outside the domain and 2 for one past what it reads;
-`impl verify <store-root> <registry-path> <authority> [<decision-records-dir>]`
+`impl verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [<decision-records-dir>]`
 reads the 32-byte public key on stdin and writes `{"ok": …, "findings": […]}`,
 with `"observations": […]` after the findings when §4 has any (step 3's
 `session-open` and `sealed-after-interruption`, step 8's
