@@ -1555,7 +1555,11 @@ What this does not give: the gateway does not terminate TLS, so on the network b
 and the listener a bearer token can be read and replayed within its validity window, results and
 a version 3 response's salts read and a request changed; `/registry` and `/publickey` are open to
 whoever reaches the listener; and the gateway limits neither the rate of requests nor the number
-of connections. A front that terminates TLS and limits them still belongs in front of it.
+of connections. A front that terminates TLS and limits them still belongs in front of it. Such a
+listener does close a connection idle for a minute, bound a request's headers at 64 KiB, and give
+the answer of `/registry` and of `/publickey` 30 seconds each to be written, a per-answer deadline
+rather than a server-wide write timeout, since an `/acquire` or an `/act` has no fixed longest
+run.
 
 ## Keyed actions (engine version 14 and later)
 

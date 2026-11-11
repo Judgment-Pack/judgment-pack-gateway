@@ -1425,8 +1425,9 @@ not itself a finding.
   compromised gateway (key disclosure forges anything), and it is a single-identity,
   single-operator reference — not a multi-tenant or federated trust root.
 - Scope not claimed: no availability/HA guarantees, no authenticated transport
-  (binds a loopback address unless `gateway serve --listen`, or a version-19 engine
-  configuration's `listen` beside an `identity`, names another), no
+  (binds a loopback address unless `gateway serve --listen` names another, or a version-19
+  engine configuration's `listen` does, beside an `identity` and
+  `acceptOtherHostsOverPlainHTTP: true` and with neither a `witness` nor `mcp`), no
   access control on the HTTP surface beyond a witness's
   registrations (§6, "Witness endpoints") and a platform's `writeRequesters`
   (§6, "Who may ask for a write"). This is a reference for

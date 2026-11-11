@@ -102,10 +102,20 @@ that is a witness.
   token can be read and replayed within its validity window, every result and a version 3
   response's salts can be read, and a request changed.
 - Bad, because `/registry` and `/publickey` are readable by anyone who reaches the listener, as
-  they are on loopback, and the gateway limits neither the rate of requests nor the number of
-  connections, so what is in front should limit them.
-- Bad, because a witness or an MCP server cannot share such a signer: each keeps its signer on
-  loopback, behind a front.
+  they are on loopback: `/registry` discloses the whole registry log, every line it holds as
+  written, and `/publickey` the signer's algorithm, authority, key id and public key. A `/registry`
+  that cannot be served answers `500` with a fixed sentence naming no path, the reason on the
+  gateway's stderr. The gateway limits neither the rate of requests nor the number of connections,
+  so what is in front should limit them. Off loopback it does close a connection idle for a
+  minute, bound a request's headers at 64 KiB, and give the answer of each of the two open routes
+  30 seconds to be written. That bound is a per-answer write deadline, not a server-wide write
+  timeout, which would count a handler's run against its answer: an `/acquire` or an `/act` has
+  no fixed longest run, since a source runs to its timeout and requests under one action key wait
+  on each other. `/registry` still reads the whole log into memory for each request.
+- Bad, because the configuration refuses a `witness` or `mcp` beside such a `listen`: a witness
+  keeps its signer on loopback, behind a front, and the MCP server fronts a signer on loopback. A
+  separate process on the same host can still reach the signer, over loopback where `listen` is
+  `0.0.0.0` or `[::]`, and is held to a token like any caller.
 - Bad, because a launcher that reads the first line of stderr as the readiness line reads the
   `start:` line first when the address is not loopback.
 - Revisit when the gateway terminates TLS itself, when a witness or the MCP server is asked to

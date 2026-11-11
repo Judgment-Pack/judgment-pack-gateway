@@ -498,8 +498,9 @@ Stated plainly because the whole line is about being exact where proof stops:
   gateway's registry over the store**. It does not defend a compromised gateway: key
   disclosure forges everything.
 - This is a **single-identity, single-operator reference**, on a loopback address unless
-  `serve --listen`, or an engine configuration's `listen` beside an `identity`, names another, no
-  authentication
+  `serve --listen` names another, or an engine configuration's `listen` does — from version 19,
+  beside an `identity` and `acceptOtherHostsOverPlainHTTP: true`, and with neither a `witness` nor
+  `mcp` — no authentication
   on the HTTP surface unless an `identity` is configured — and that decides who may call,
   never from where — no HA, and no authorization beyond two checks the operator configures.
   A platform's `writeRequesters` (engine configuration version 18) narrows which authenticated

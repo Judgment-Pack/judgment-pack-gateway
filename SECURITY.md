@@ -95,8 +95,9 @@ only the mode and does not replace effect approval or source-user separation.
 
 This is a **reference gateway**, not a hardened deployment. It is pre-1.0, provides no security,
 compatibility, or support service-level guarantee, binds a loopback address unless `gateway serve
---listen`, or an engine configuration's `listen` beside an `identity` and an acknowledgement, names
-another ([Security boundary](#security-boundary)), has no authorization on its HTTP
+--listen` names another, or an engine configuration's `listen` does beside an `identity` and an
+acknowledgement and with neither a `witness` nor `mcp` ([Security boundary](#security-boundary)),
+has no authorization on its HTTP
 surface beyond a checkpoint witness's registrations, its named operators and a platform's `writeRequesters`, and no authentication unless an `identity` is configured (which decides who may call,
 never from where; a token presented off the machine can be replayed), and runs as a single operator holding a single signing identity.
 It must not be used as the sole control for consequential production decisions, and a `/verify` that
@@ -190,7 +191,12 @@ other hosts can reach the gateway and that it authenticates no caller; `/posture
 its `listener-reach` line, `not-enforced`, naming neither the address nor the port. Such a listener
 needs something in front of it that decides who reaches it: an authenticating proxy that terminates TLS,
 or a private network that admits only the intended callers. The gateway limits neither the rate of
-requests nor the number of connections, so what is in front should limit them too. The transport is
+requests nor the number of connections, so what is in front should limit them too. A listener that
+is not loopback, in either form of serve, closes a connection idle for a minute, bounds a request's
+headers at 64 KiB, and gives the answer of `/registry` and of `/publickey` 30 seconds each to be
+written; the bound is per answer, not a server-wide write timeout, since an `/acquire` or an `/act`
+has no fixed longest run (a source runs to its timeout, and requests under one action key wait on
+each other). The transport is
 plain HTTP, so on the
 network between a caller and the listener every result and a version 3 response's salts can be read,
 and a request changed. `serve --config` takes no `--listen`: an engine configuration's `listen` is a
@@ -626,7 +632,14 @@ and the listener a bearer token can be read and replayed within its validity win
 and a version 3 response's salts read, and a request changed; `/registry` and `/publickey` are
 readable by anyone who reaches the listener; and the gateway limits neither the rate of requests nor
 the number of connections. A front that terminates TLS and limits them still belongs in front of
-it.
+it. The two open routes disclose, to anyone who reaches the listener, the whole registry log
+(`/registry`: every line it holds, as written) and the signer's algorithm, authority, key id and
+public key (`/publickey`); a `/registry` that cannot be served answers `500` with a fixed sentence
+that names no path, and the reason goes to the gateway's stderr. Such a listener has the limits of
+any listener off loopback (above): a connection idle for a minute is closed, a request's headers
+are bounded at 64 KiB, and each answer of the two open routes has 30 seconds to be written. A
+separate process on the same host can still reach the signer, over loopback where `listen` is
+`0.0.0.0` or `[::]`, and is held to a token like any caller.
 
 **`writeRequesters` decides who may ask for a write, and nothing else.** A platform's member
 (engine configuration version 18; [`SPEC.md`](SPEC.md) §6, "Who may ask for a write") holds
