@@ -825,7 +825,7 @@ part, or whole but for its newline — ends that line before it writes the recor
 record joined to it would make one line that is no seal (§4 drops it) and lose both. Sealing a session that is already sealed is **refused** — a session's
 `finalCount` can never be re-sealed to a smaller value, so a seal cannot be walked
 backward to excuse a rollback. A session is already sealed when the registry holds a seal for
-it that §4 step 2 loads — a JSON object whose `keyId` is the gateway's own and whose signature
+it that §4 step 2 loads, of this form or the form of a seal made after an interruption (§3c) — a JSON object whose `keyId` is the gateway's own and whose signature
 verifies under its public key, or, in a registry holding rotation statements, the key current at
 its line in the gateway's own reading (§3b) — and a line that names the session and is no such seal (a
 signature that does not verify, a foreign `keyId`, a member missing) establishes no seal for
@@ -1031,6 +1031,87 @@ into any session, and only the seal's count bounds them (§2, §5). It stops tha
 from sealing, and from rotating, after the rotation. `rotatedAt` is the gateway's clock,
 as `sealedAt` is.
 
+## 3c. The seal made after an interruption
+
+A gateway keeps a session's count and chain in memory and seals from them (§3). A gateway
+process that stops by a signal or a crash leaves a session it minted into open: receipts in
+the store and no seal. No later process continues it or seals it by `/seal` (§6), since a
+count read from the store is not the count the minting process kept — its last receipts may
+have been taken away in between (§2) — and a seal of §3's form would say the same of either.
+The record that closes such a session is of a kind of its own:
+
+```
+{ "finalCount": <integer>, "headSignature": <hex>, "keyId": <hex>,
+  "kind": "seal-after-interruption", "sealedAt": <string>,
+  "sealedVia": "command" | "start", "sessionId": <string>, "signature": <hex> }
+```
+
+`signature` = Ed25519, under the gateway's signing seed, over
+`"judgment-pack-gateway/seal-after-interruption/1:" + canon(the record without signature)`,
+every other member retained. Its members:
+
+- `sessionId` — the session, a §3a identifier;
+- `finalCount` — the number of receipts the store held in the session when it was sealed,
+  an integer from 1 to 2^53−1;
+- `headSignature` — the `signature` member of the session's last receipt, the one at
+  `finalCount − 1`, as 128 lowercase hexadecimal characters;
+- `keyId` — the key id of the key that signed the seal, 32 lowercase hexadecimal
+  characters;
+- `sealedAt` — when, `YYYY-MM-DDThh:mm:ssZ` in UTC;
+- `sealedVia` — `"command"` when `gateway seal-open` made it, `"start"` when a gateway's
+  start made it with the switch on (below).
+
+It names no operator: the key signed it, and `sealedVia` says by which path.
+
+**Loading.** A registry line that is one JSON object whose `kind` is
+`"seal-after-interruption"` is read as such a seal and as nothing else — never as a seal of
+§3's form, whose signature covers four members under another prefix, so neither can be
+replayed as the other. It loads (§4 step 2) when it holds exactly the eight members above,
+no name twice, each of the form given, its `keyId` is the key current at its line in §3b's
+walk, and its signature verifies under that key. A line that is not so loads nothing.
+
+**What it anchors.** The first loadable seal of either kind anchors its session (§4 step
+2). A seal made after an interruption anchors it as a seal does — fewer receipts than its
+count is `tail-rollback`, more is `count-exceeds-seal` — and the receipt at `finalCount − 1`
+must carry `headSignature`, or the session is `seal-head-mismatch`: the seal names the
+receipt it was made over, so a last receipt put in that one's place after the seal is found.
+Where the count and the head hold, the report carries the observation
+`sealed-after-interruption` on that receipt, and the seal is no finding: a store whose only
+departure is such a session verifies `ok`. What the seal cannot say is whether receipts
+after its count were minted and lost before the interruption: the minting process's count
+went with it, and a session whose last receipts were taken away before the seal was made
+reads the same as one that never had them. A verifier run with `--ordinary-seals-only`
+(§4) reports such a session as the finding `sealed-after-interruption`, for a consumer that
+acts only on counts a minting process sealed.
+
+A session so sealed is sealed in the registry (§3): `/acquire`, `/seal` and an action into
+it are refused as for any sealed session (§6), and it is never continued. A gateway writes
+no seal of either kind for a session the registry holds a loadable seal of either kind for.
+Where a registry holds more than one loadable seal for a session anyway and either is a seal
+made after an interruption, the first still anchors and the verdict finds `seal-conflict`
+(§4 step 4); two seals of §3's form are read as they always were, the first anchoring and
+nothing found.
+
+**Who makes it.** `gateway seal-open --session <id>`, or `--all`, with the gateway stopped:
+the registry is held as a running gateway holds it, so a gateway serving it refuses the
+command, and a rotation under way beside the seed (§3b), or a registry whose walk ends at
+another key than the seed's, is refused under the lock. The seal is signed by the key in
+force; receipts signed by keys the walk reached before it verify through the walk. The
+command prints each seal it appends as its registry line. A gateway's start makes it too
+when the switch is on — `--seal-open-at-start` on `gateway serve`, or `sealOpenAtStart:
+true` in an engine configuration of version 17 — once it holds its registry and before it
+serves, each seal written on stderr as its line; the switch is off unless given.
+
+What may be sealed is what §4 step 3 observes `session-open`: a session no seal closes,
+holding receipts each of which has ladder status `ok`, in sequence and chained (§1.4). A
+session that is not so is refused, named with what verification finds of it, and left as it
+is; so is a directory no session id names; a session holding no receipt is nothing to seal.
+A receipt is staged to a file of its own and linked into place whole, so an interrupted
+write leaves a staging file whose name does not end in `.json`, never a torn receipt: it is
+no receipt, is not counted, and is left where it is. Nothing is changed or deleted. A
+session that cannot be read stops the command, and the start, with nothing sealed; at the
+start, a session that is not whole is named and stays open, and the gateway serves.
+
 ## 4. Registry-anchored verification
 
 `verify_with_registry(verify_store, store_root, key, registry_path, authority)`:
@@ -1048,9 +1129,12 @@ as `sealedAt` is.
    forged by someone without the seed is discarded either way, so a store cannot be
    excused by a forged registry.
 
+   A seal made after an interruption (§3c) loads by its own rule, under the same
+   key condition.
+
    Where a registry contains more than one loadable seal for one session — which
    §3's append-only rule forbids a conforming gateway from writing, but says
-   nothing about a verifier receiving — the **first** wins.
+   nothing about a verifier receiving — the **first** wins, of either kind.
 3. For each session present in the store, where its **count is the number of
    `.json` files present**, whether or not each verified — so a rollback can be
    disguised by dropping a junk file in place of a deleted receipt. The store is
@@ -1059,7 +1143,8 @@ as `sealedAt` is.
    - not in the loaded seals → **`unregistered-session`** (whole-session replay, or
      a session forged without the key — or one still open: not yet sealed by the
      gateway writing it, or left unsealed, holding a receipt, by a gateway process that
-     stopped, which no later process continues or seals (§6)). Where every one of the session's
+     stopped, which no later process continues or seals (§6) but by a seal made after
+     an interruption (§3c)). Where every one of the session's
      receipts has ladder status `ok` and their sequence and chain hold (§1.4), the
      report carries beside the finding the **observation** `session-open` on its
      last receipt, whose `callIndex` is the count less one (below). The finding
@@ -1069,8 +1154,20 @@ as `sealedAt` is.
    - store count `<` sealed count → **`tail-rollback`**.
    - store count `>` sealed count → **`count-exceeds-seal`** (receipts beyond the
      seal; a seal is a high-water mark).
+   - for a session the first loaded seal of which is a seal made after an
+     interruption (§3c), the counts equal: the `signature` member, as written, of
+     the file whose stem is `finalCount − 1` (as step 5 reads it) is not the seal's
+     `headSignature` → **`seal-head-mismatch`**, `{sessionId, status}`; otherwise,
+     under `--ordinary-seals-only`, → **`sealed-after-interruption`**,
+     `{sessionId, status}`; otherwise the report carries the **observation**
+     `sealed-after-interruption` on the receipt at `finalCount − 1`, and nothing is
+     found. The session's per-receipt, sequence and chain findings are its own and
+     stand beside either.
 4. For each sealed session **absent** from the store → **`sealed-session-missing`**
-   (a whole sealed session deleted).
+   (a whole sealed session deleted). Then, for each session for which more than one
+   seal loads, either of them a seal made after an interruption →
+   **`seal-conflict`**, `{sessionId, status}`, once, whether or not the store holds
+   the session (§3c).
 5. For each version 3 receipt of kind `"action"` whose ladder status is `ok`,
    each entry of `cites` must resolve: its `sessionId` must be **exactly** one
    of the session directory names the verifier enumerated (§4 step 3), its
@@ -1161,7 +1258,8 @@ of every other finding and of whether any action receipt names that record.
 `observations` when there is anything the verifier says of a receipt without
 failing it: an array of `{sessionId, callIndex, observation}`, with the
 receipt's own session and index. The observations this document names are
-step 3's `session-open`, step 8's `decision-record-not-compared`, and §1.2b's
+step 3's `session-open` and `sealed-after-interruption`, step 8's
+`decision-record-not-compared`, and §1.2b's
 `action-uncertain`, `action-committed` and `action-mismatch`. An observation is
 not a finding: it never makes `ok` false, a consumer's verdict (§5a) does not
 read it, and a report with none may leave the member out.
@@ -1180,6 +1278,13 @@ of §3b followed at least one rotation: `{"count": n, "keyId": k}`, `n` the
 rotations followed and `k` the key id of the last key reached; absent when it
 followed none. It is never part of `ok`, and the corpus compares it whole (§7). A
 verifier reports the rotations it followed before a rotation finding too.
+
+**Ordinary seals only.** A verifier may be run with the option
+`--ordinary-seals-only`, given to `gateway verify` and to verify-ts's `verify` as the
+first argument. Under it a session a seal made after an interruption anchors is the
+finding `sealed-after-interruption` of step 3, not the observation, and `ok` is then
+false; nothing else changes. A store root spelled so is given as
+`./--ordinary-seals-only`.
 
 `ok` is true only if the inline verify passed **and** no registry finding fired
 **and** no rotation finding fired (§3b) **and** no citation, decision-record,
@@ -1329,8 +1434,9 @@ session it acts on:
   session with no findings holds no accepted receipt (it is absent, or validly
   sealed at count zero, which §4.1 permits) and there is nothing in it to act on;
 - it is registered: no `unregistered-session` finding names it;
-- its seal holds: no `tail-rollback`, `count-exceeds-seal`, or
-  `sealed-session-missing` finding names it;
+- its seal holds: no `tail-rollback`, `count-exceeds-seal`, `seal-head-mismatch`,
+  `seal-conflict` or `sealed-session-missing` finding names it, and, for a consumer
+  run with `--ordinary-seals-only` (§4), no `sealed-after-interruption` finding;
 - its chain holds: no `sequence-broken` or `chain-broken` finding names it;
 - no decision record fails to cite: no `record-citation-unresolved` or
   `record-citation-malformed` finding fired **at all** (§4 step 7). A record
@@ -1401,8 +1507,8 @@ Localhost, JSON, standard library only.
 
 | Method | Path        | Body / result |
 |--------|-------------|---------------|
-| POST   | `/acquire`  | `{session, source, arguments, trail}`, `trail` optional → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, an empty registry and any discarded line establishing no seal — so a seal stays final across a restart. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal — and so is a registry that is not there, since the gateway made it when it started (§3); a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. A session this process does not hold and the registry does not seal is then looked up in the store, and is refused `400` before the source runs where the store holds a receipt in it — any entry of its directory whose name ends in `.json`, whatever it holds — where the store holds it as anything but a directory, a link included, and where the store cannot show it, which is never taken for empty: a gateway keeps a session's chain in memory, so one an earlier process left open is not continued from the store, whose last receipts may have been taken away (§2), and stays `unregistered-session` (§4 step 3). A session directory that holds no receipt is taken up. |
-| POST   | `/seal`     | `{session}` → seals the session's final count; returns the seal record. A session this process does not hold is refused `400`: one sealed in the registry as sealed, the registry read as for `/acquire` (one that cannot be read refuses), one the store holds receipts in, or holds as anything but a directory, or cannot show, as `/acquire` refuses it — its count is not sealed from the store, for the reason `/acquire` does not continue it — and any other as no such session. |
+| POST   | `/acquire`  | `{session, source, arguments, trail}`, `trail` optional → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, an empty registry and any discarded line establishing no seal — so a seal stays final across a restart; a seal made after an interruption (§3c) is such a seal. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal — and so is a registry that is not there, since the gateway made it when it started (§3); a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. A session this process does not hold and the registry does not seal is then looked up in the store, and is refused `400` before the source runs where the store holds a receipt in it — any entry of its directory whose name ends in `.json`, whatever it holds — where the store holds it as anything but a directory, a link included, and where the store cannot show it, which is never taken for empty: a gateway keeps a session's chain in memory, so one an earlier process left open is not continued from the store, whose last receipts may have been taken away (§2), and stays `unregistered-session` (§4 step 3). A session directory that holds no receipt is taken up. |
+| POST   | `/seal`     | `{session}` → seals the session's final count; returns the seal record. A session this process does not hold is refused `400`: one sealed in the registry as sealed, the registry read as for `/acquire` (one that cannot be read refuses), one the store holds receipts in, or holds as anything but a directory, or cannot show, as `/acquire` refuses it — its count is not sealed from the store, for the reason `/acquire` does not continue it; `gateway seal-open`, with the gateway stopped, seals it as a seal made after an interruption (§3c) — and any other as no such session. |
 
 A gateway minting version 3 receipts answers `/acquire` with `{result, receipt,
 salts}`: `salts` is an object with one member per commitment the receipt
@@ -1764,6 +1870,12 @@ refusal and finding §8 names.
 `gateway conform` runs them, and `--impl CMD` drives any other implementation
 through a small process contract, so an implementation in any language can answer
 to the corpus without depending on this one. Findings are compared as a multiset: **order is not normative.** Observations (§4) are not compared; witnesses (§4) are, as a set; rotations (§4) are, whole.
+
+The store vectors of §3c are compared by `ok` and findings, as every store vector is.
+What they observe, and what `--ordinary-seals-only` makes of them, are held by
+`testdata/interruption-seal/cases.json`, rows both readers in this repository read; for
+`gateway conform` to hold them, the process contract would need to carry the
+observations, or the option, and the corpus to compare them (`corpus/README.md`).
 
 The store vectors of §3b's walk are signed under the test seed and under two further
 keys, the keys rotated to, whose seeds `corpus/README.md` states as it states the
