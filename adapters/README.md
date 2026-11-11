@@ -851,10 +851,23 @@ usage, bounded but not redacted, since the credentials file is named by the flag
 failed to parse: the command line is the operator's own, and a credential does not belong on
 it.
 
+**In the engine.** `serve --config` runs this adapter for a platform whose catalog binding's
+one operation is `live` of the `http` shape (gateway #384,
+[ADR-0024](../docs/adr/0024-an-http-source-in-the-engine.md),
+[engine-config.md](../docs/design/engine-config.md#an-http-api-as-a-platforms-live-operation)):
+the binding fixes `endpoint`, `paths`, `methods`, `headers`, and `bearer` or `credentialHeader`,
+and an optional `checkPath`; the engine passes them as `--endpoint=`, `--paths=`, `--methods=`,
+`--header=`, `--bearer=` or `--credential-header=`, with `--credentials=` the platform's live
+credentials file and `--check-path=` for a check, and starts the adapter as the platform's OS
+user under the source sandbox, as every engine source. It passes no `--ca-file`, `--max-output`
+or `--timeout`: the endpoint chains to the system's roots, and the adapter's own bounds lie
+inside the engine's. The envelope and the receipt are the ones above.
+
 Tests run the adapter against a TLS server in the test process, with its certificate as the
 adapter's `--ca-file`, so no network is needed and none is used in CI; the gateway's own
-end-to-end test (`go/adapter_http_test.go`) spawns the built adapter as a declared source and
-verifies the store that results.
+end-to-end tests spawn the built adapter as a declared source (`go/adapter_http_test.go`) and as
+the engine's source of an `http` binding (`go/http_binding_e2e_test.go`, against a plaintext
+loopback stand-in) and verify the store that results.
 
 ## adapter-document
 

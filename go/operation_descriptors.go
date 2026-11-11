@@ -9,9 +9,12 @@ import (
 	"strings"
 )
 
+// enabledMCPOperations are the MCP operations a platform enables: its
+// binding's live operation, unless it is of the http shape (ADR-0024), and
+// its write operation when the platform allows writes.
 func enabledMCPOperations(p platformConfig, b binding) map[string]*operation {
 	ops := map[string]*operation{}
-	if b.live != nil {
+	if b.live != nil && b.live.shape == "mcp" {
 		ops["live"] = b.live
 	}
 	if p.write && b.write != nil {
@@ -130,7 +133,7 @@ func connectTaxonomyOperations(ctx context.Context, req connectRequest, file *co
 		if err != nil {
 			return out, fmt.Errorf("%s: %w", name, err)
 		}
-		answer, err := describeCheck(spec.shape, report, remoteURL(spec.argv))
+		answer, err := describeSourceCheck(spec, report)
 		if err != nil {
 			return out, fmt.Errorf("%s: %w", name, err)
 		}
