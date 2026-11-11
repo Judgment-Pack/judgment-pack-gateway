@@ -2041,18 +2041,26 @@ func (g *gatewayService) handler() http.Handler {
 		writeJSON(w, http.StatusOK, out)
 	})
 
+	// registryUnservable is /registry's answer when the registry cannot be
+	// served, whatever the reason.
+	const registryUnservable = "the registry could not be read; the gateway says why on its stderr"
 	mux.HandleFunc("/registry", func(w http.ResponseWriter, r *http.Request) {
 		// The registry's log, read through the same classifier the
 		// verifier uses. The engine made its registry at start, so an
 		// absent one is served as no registry at all, never as the empty
 		// body an external verifier reads as "no seals"; nor is a registry
-		// that is present and unreachable.
+		// that is present and unreachable. The caller needs no token, so the
+		// answer names neither the registry's path nor the platform's error:
+		// the reason is said on the engine's stderr, as a traffic line of its
+		// diagnostics, which drops a line rather than grow when stderr does
+		// not drain, since any caller can ask.
 		data, err := g.registry.log.readLog(0)
 		if faultOf(err) == faultAbsent {
 			err = fmt.Errorf("the registry the engine made at its start is not there: %s", g.regPath)
 		}
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			g.reports.trafficf("serve: /registry answered 500: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": registryUnservable})
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
