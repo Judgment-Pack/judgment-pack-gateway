@@ -308,11 +308,12 @@ func listenerPosture(in postureInput) postureLine {
 // from whether it listens on a loopback address and whether it
 // authenticates its callers, and from nothing else. On loopback the line is
 // enforced, whoever is authenticated. Off loopback with no caller
-// authenticated, the one such listener there is today (serve from the
-// command line with --listen and --accept-unauthenticated-callers,
-// ADR-0023), it is not-enforced. Off loopback with callers authenticated,
-// which no form of serve can start yet (#400), it is partial: a caller is
-// held to a bearer token, which plain HTTP lets the network between read and
+// authenticated (serve from the command line with --listen and
+// --accept-unauthenticated-callers, ADR-0023), it is not-enforced. Off
+// loopback with callers authenticated (serve --config with a version-19
+// listen that is not loopback, an identity and
+// acceptOtherHostsOverPlainHTTP, ADR-0025), it is partial: a caller is held
+// to a bearer token, which plain HTTP lets the network between read and
 // replay. No reason names the address.
 func listenerReachLine(loopback, authenticated bool) postureLine {
 	line := func(state, reason string) postureLine { return postureLine{protectionListenerReach, state, reason} }
@@ -327,8 +328,9 @@ func listenerReachLine(loopback, authenticated bool) postureLine {
 
 // listenIsLoopback is whether an engine configuration's listen, host:port,
 // names a loopback IP address. The configuration is held to one when it is
-// read (loopbackAddress); one this cannot read as an IP address and a port
-// is taken as not loopback.
+// read (loopbackAddress), unless, from engineVersion 19, it names another
+// beside an identity and acceptOtherHostsOverPlainHTTP (engineListen); one
+// this cannot read as an IP address and a port is taken as not loopback.
 func listenIsLoopback(listen string) bool {
 	host, _, err := net.SplitHostPort(listen)
 	if err != nil {

@@ -2041,18 +2041,26 @@ func (g *gatewayService) handler() http.Handler {
 		writeJSON(w, http.StatusOK, out)
 	})
 
+	// registryUnservable is /registry's answer when the registry cannot be
+	// served, whatever the reason.
+	const registryUnservable = "the registry could not be read; the gateway says why on its stderr"
 	mux.HandleFunc("/registry", func(w http.ResponseWriter, r *http.Request) {
 		// The registry's log, read through the same classifier the
 		// verifier uses. The engine made its registry at start, so an
 		// absent one is served as no registry at all, never as the empty
 		// body an external verifier reads as "no seals"; nor is a registry
-		// that is present and unreachable.
+		// that is present and unreachable. The caller needs no token, so the
+		// answer names neither the registry's path nor the platform's error:
+		// the reason is said on the engine's stderr, as a traffic line of its
+		// diagnostics, which drops a line rather than grow when stderr does
+		// not drain, since any caller can ask.
 		data, err := g.registry.log.readLog(0)
 		if faultOf(err) == faultAbsent {
 			err = fmt.Errorf("the registry the engine made at its start is not there: %s", g.regPath)
 		}
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			g.reports.trafficf("serve: /registry answered 500: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": registryUnservable})
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -2171,13 +2179,14 @@ func bearerCallerFor(id *identityConfig, audience, authorization string, now tim
 	return &who, nil
 }
 
-// listenAndServe binds address, serve --config's `listen`, which the
-// configuration holds to a loopback address, and serves on it. Serve from
-// the command line binds through listenForServe (serve_listen.go). This
-// reference has no access control; it is for self-hosting a trust root and
-// demonstrating the mechanism, not a hardened public deployment.
+// listenAndServe binds address, serve --config's `listen`, through
+// listenForConfig (serve_listen.go), and serves on it. Serve from the
+// command line binds through listenForServe. This reference authenticates
+// a caller only where an identity is configured; it is for self-hosting a
+// trust root and demonstrating the mechanism, not a hardened public
+// deployment.
 func (g *gatewayService) listenAndServe(address string) error {
-	listener, err := net.Listen("tcp", address)
+	listener, err := listenForConfig(address, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -2193,6 +2202,63 @@ func (g *gatewayService) announceAndServe(listener net.Listener) error {
 	return g.serveOn(listener)
 }
 
+// The limits a listener other hosts can reach is served under, beside the
+// read timeouts every listener has. An idle connection is closed after a
+// minute and a request's headers are bounded, as the MCP server's are
+// (mcp_http.go). The answers of /registry and /publickey, the two that need
+// no token, are each written within openRouteWriteTimeout. The bound is per
+// answer, never the server's WriteTimeout: that would count a handler's own
+// run against its answer, and an /acquire or /act has no fixed longest run
+// -- a source runs to its timeout, which --source-timeout sets up to
+// maxSourceTimeout, and requests under one action key wait on each other
+// without a bound (actionKeyLocks).
+const (
+	offLoopbackIdleTimeout    = 60 * time.Second
+	offLoopbackMaxHeaderBytes = 64 << 10
+	openRouteWriteTimeout     = 30 * time.Second
+)
+
+// openRoutes are the endpoints that answer a caller with no token.
+var openRoutes = map[string]bool{"/registry": true, "/publickey": true}
+
+// httpServer is serveOn's server for a listener bound at addr, which is
+// what /posture reports of the listener, from either form of serve. A
+// loopback listener is served as it always was; one that is not loopback
+// (boundToLoopback) is served under the limits above.
+func (g *gatewayService) httpServer(addr net.Addr) *http.Server {
+	g.listening = addr
+	server := &http.Server{
+		Handler:           g.handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+	}
+	if boundToLoopback(addr) {
+		return server
+	}
+	server.Handler = boundOpenWrites(server.Handler, openRouteWriteTimeout)
+	server.IdleTimeout = offLoopbackIdleTimeout
+	server.MaxHeaderBytes = offLoopbackMaxHeaderBytes
+	return server
+}
+
+// boundOpenWrites gives the answer to a request for an open route a write
+// deadline within the given time, and clears the deadline for every other
+// request: the server has no WriteTimeout to reset a connection's deadline
+// between requests, so one an open route set would otherwise hold over a
+// later request on the same connection. The path is the one the mux
+// routes, as it was received; an unclean spelling of an open route is
+// answered by the mux's redirect, and reaches the route on its own request.
+func boundOpenWrites(next http.Handler, within time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var deadline time.Time
+		if openRoutes[r.URL.Path] {
+			deadline = time.Now().Add(within)
+		}
+		_ = http.NewResponseController(w).SetWriteDeadline(deadline)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // serveOn serves until the service's lifetime ends -- the signal context
 // cmdServe bound -- or until Serve fails. Either way it ends the lifetime,
 // which kills every source in flight, then waits for every request in flight
@@ -2201,14 +2267,7 @@ func (g *gatewayService) announceAndServe(listener net.Listener) error {
 // written; a request still open when the grace expires is aborted, and the
 // error returned says so.
 func (g *gatewayService) serveOn(listener net.Listener) error {
-	// what /posture reports of the listener is what was bound, from either
-	// form of serve
-	g.listening = listener.Addr()
-	server := &http.Server{
-		Handler:           g.handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-	}
+	server := g.httpServer(listener.Addr())
 	shutdown := make(chan error, 1)
 	go func() {
 		<-g.ctx.Done()

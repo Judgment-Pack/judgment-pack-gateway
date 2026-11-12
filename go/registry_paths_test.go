@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // errorPrivilegeNotHeld is ERROR_PRIVILEGE_NOT_HELD: what Windows answers a
@@ -343,10 +344,8 @@ func TestAShareThatHasGoneAwayIsNotAbsence(t *testing.T) {
 			if _, _, err := readRegistryBytes(service.regPath); !errors.Is(err, badNetpath) {
 				t.Fatalf("the reader took an unreachable share for absence: %v", err)
 			}
-			rec := httptest.NewRecorder()
-			service.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/registry", nil))
-			if rec.Code != http.StatusInternalServerError {
-				t.Fatalf("/registry answered %d for an unreachable share: %q", rec.Code, rec.Body.String())
+			if said := unservedRegistry(t, service, service.handler()); !strings.Contains(said, "serve: /registry answered 500: ") {
+				t.Fatalf("/registry for an unreachable share: the engine said %q", said)
 			}
 			started := filepath.Join(t.TempDir(), "source-started")
 			t.Setenv(envSourceReady, started)
@@ -536,10 +535,8 @@ func TestTheEnginesVerifyRequiresItsRegistry(t *testing.T) {
 func TestAnEngineRegistryThatHasGoneIsARefusal(t *testing.T) {
 	refuses := func(t *testing.T, service *gatewayService) {
 		t.Helper()
-		rec := httptest.NewRecorder()
-		service.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/registry", nil))
-		if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "is not there") {
-			t.Fatalf("/registry answered %d: %q", rec.Code, rec.Body.String())
+		if said := unservedRegistry(t, service, service.handler()); said != "serve: /registry answered 500: the registry the engine made at its start is not there: "+service.regPath+"\n" {
+			t.Fatalf("/registry: the engine said %q", said)
 		}
 		started := filepath.Join(t.TempDir(), "source-started")
 		t.Setenv(envSourceReady, started)
@@ -717,4 +714,27 @@ func TestADecisionDirectoryUnderALinkToNothingIsNoVerdict(t *testing.T) {
 	if _, _, err := decisionCandidates(filepath.Join(above, "decisions"), nil, nil); err == nil || err.Error() != want {
 		t.Fatalf("a directory above it a link to nothing: got %v, want %q", err, want)
 	}
+}
+
+// unservedRegistry asks handler, service's, for /registry where the registry
+// cannot be served. Any caller may ask, a token or none, so the answer is
+// 500 in these exact bytes, whatever the reason, and names no path: the
+// reason is said on the engine's stderr, which this returns.
+func unservedRegistry(t *testing.T, service *gatewayService, handler http.Handler) string {
+	t.Helper()
+	said := &syncBuffer{}
+	service.reportsOut = said
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/registry", nil))
+	const want = `{"error":"the registry could not be read; the gateway says why on its stderr"}`
+	if rec.Code != http.StatusInternalServerError || rec.Body.String() != want || rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("/registry answered %d %q %v, want 500 %q", rec.Code, rec.Body.String(), rec.Header(), want)
+	}
+	if strings.ContainsAny(rec.Body.String(), `/\`) || strings.Contains(rec.Body.String(), filepath.Base(service.regPath)) {
+		t.Fatalf("/registry's answer names a path: %q", rec.Body.String())
+	}
+	if !service.reports.flush(5 * time.Second) {
+		t.Fatal("the engine's diagnostics did not drain")
+	}
+	return said.String()
 }

@@ -173,7 +173,9 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		tools:    map[string]mcpTool{},
 		identity: identity,
 		witness:  cfg.witness,
-		signer:   "http://" + cfg.listen,
+		// a loopback address: the configuration refuses mcp beside a
+		// listen that is not one (engineListen)
+		signer: "http://" + cfg.listen,
 		// the one destination is the configured signer: a redirect is not
 		// followed, and is answered as the status it is
 		client:   &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},

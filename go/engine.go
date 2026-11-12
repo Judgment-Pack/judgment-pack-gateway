@@ -45,16 +45,19 @@ import (
 // connection grant its delegated calls are admitted under (SPEC.md §10,
 // rule 3; grant_gate.go), version 17 the optional `sealOpenAtStart`,
 // which seals at the start each session an earlier process left open
-// (SPEC.md §3c; seal_open.go), and version 18 a platform's optional
+// (SPEC.md §3c; seal_open.go), version 18 a platform's optional
 // `writeRequesters`, the requesters each write tool admits a write from
-// (SPEC.md §6; write_requesters.go):
+// (SPEC.md §6; write_requesters.go), and version 19 the optional
+// `acceptOtherHostsOverPlainHTTP`, without which `listen` is a loopback
+// address (docs/adr/0025-serve-config-listens-off-loopback-with-an-identity-when-acknowledged.md;
+// engineListen):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "18"
+const engineVersion = "19"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -292,7 +295,7 @@ var engineMembers = map[string]bool{
 	"decisionRecords": true, "listen": true, "catalog": true, "platforms": true,
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
 	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
-	"sealOpenAtStart": false,
+	"sealOpenAtStart": false, "acceptOtherHostsOverPlainHTTP": false,
 }
 
 var platformMembers = map[string]bool{
@@ -451,7 +454,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	if err != nil {
 		return engineConfig{}, errors.New("engine configuration: listen must be a string")
 	}
-	if cfg.listen, err = loopbackAddress(listen); err != nil {
+	if cfg.listen, err = engineListen(obj, listen, version, cfg); err != nil {
 		return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 	}
 	if mcpValue, present := obj.get("mcp"); present {
@@ -828,11 +831,78 @@ func exactlyMembers(obj *vObject, members map[string]bool, what string) error {
 	return nil
 }
 
+// engineListen holds the configuration's listen (#400). A loopback
+// address, and under engineVersion 18 or earlier any address, is held to
+// loopbackAddress, as it always was; acceptOtherHostsOverPlainHTTP true
+// beside a loopback address is refused, so the acknowledgment never sits
+// in a file with nothing to acknowledge. From engineVersion 19 an address
+// that is not loopback is held to otherHostsListen's rule, and taken only
+// where the configuration has an identity -- so every endpoint but
+// /registry and /publickey holds its caller to a token -- and
+// acceptOtherHostsOverPlainHTTP true, which says that the tokens cross
+// plain HTTP unless TLS terminates in front: either alone is refused, as a
+// changed address alone must not expose the listener. Neither witness nor
+// mcp is taken beside it: a witness's two reads are open to anyone, and its
+// signer listens on loopback behind the front SPEC.md §6 describes; the MCP
+// server reaches the signer at listen and fronts a signer on loopback. The
+// address comes back as it is bound.
+func engineListen(obj *vObject, listen, version string, cfg engineConfig) (string, error) {
+	accept := false
+	if value, present := obj.get("acceptOtherHostsOverPlainHTTP"); present {
+		if !versionAtLeast(version, "19") {
+			return "", fmt.Errorf("acceptOtherHostsOverPlainHTTP is a version-19 member; engineVersion %s has no acceptOtherHostsOverPlainHTTP", version)
+		}
+		on, ok := value.(vBool)
+		if !ok {
+			return "", errors.New("acceptOtherHostsOverPlainHTTP, when present, is true or false")
+		}
+		accept = bool(on)
+	}
+	if listenIsLoopback(listen) || !versionAtLeast(version, "19") {
+		held, err := loopbackAddress(listen)
+		if err != nil {
+			return "", err
+		}
+		if accept {
+			return "", fmt.Errorf("acceptOtherHostsOverPlainHTTP is true, and listen %s is a loopback address: the member acknowledges a listen that is not loopback, and is true only beside one", held)
+		}
+		return held, nil
+	}
+	at, err := otherHostsListen(listen)
+	if err != nil {
+		return "", err
+	}
+	var missing string
+	switch {
+	case cfg.identity == nil && !accept:
+		missing = "this configuration has neither"
+	case cfg.identity == nil:
+		missing = "this configuration has no identity"
+	case !accept:
+		missing = "this configuration does not set acceptOtherHostsOverPlainHTTP to true"
+	}
+	if missing != "" {
+		return "", fmt.Errorf("listen %s is not a loopback address: other hosts can reach it, so the engine listens there only with identity, "+
+			"by which every endpoint but /registry and /publickey holds its caller to a token, and acceptOtherHostsOverPlainHTTP: true, "+
+			"which acknowledges that the tokens cross plain HTTP unless TLS terminates in front of the engine; %s", at, missing)
+	}
+	if cfg.witness != nil {
+		return "", fmt.Errorf("witness beside listen %s, which is not a loopback address: a witness's two reads are open to anyone, "+
+			"and its signer listens on a loopback address, behind a front that passes other parties the submission, the two reads and /publickey alone", at)
+	}
+	if _, present := obj.get("mcp"); present {
+		return "", fmt.Errorf("mcp beside listen %s, which is not a loopback address: the MCP server reaches the signer at listen, "+
+			"and fronts a signer that listens on a loopback address", at)
+	}
+	return at.String(), nil
+}
+
 // loopbackAddress holds listen to a literal loopback address with a valid
 // port: 127.0.0.1 or ::1, never a name that a resolver may map elsewhere.
-// The gateway speaks plain HTTP, and reaching it from another host is a
-// front the operator runs. The address comes back in one spelling: the
-// IP as the parser prints it, the port as a number.
+// It is the signer's rule for a loopback listen, and every listen's under
+// engineVersion 18 or earlier (engineListen), and the MCP server's
+// mcp.listen's rule whatever the version. The address comes back in one
+// spelling: the IP as the parser prints it, the port as a number.
 func loopbackAddress(listen string) (string, error) {
 	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
