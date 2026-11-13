@@ -144,15 +144,17 @@ func exportEngine(configPath, out string, observations []string) (*vObject, erro
 	}
 	var kind storeKind = newFsKind(fsLayout{store: cfg.store, registry: cfg.registry})
 	if cfg.storage != nil {
-		// the store's cut is the kind's own (pgKind.snapshot); it keeps no
-		// removal records, which gateway remove-artifact makes on disk
-		// alone, and storeRoot "" says so to writeExport
+		// the store's cut is the kind's own, of no scope and of every scope
+		// identifier it records (pgKind.exportCut), so an export holds what
+		// a store of the filesystem kind would; the kind keeps no removal
+		// records, which gateway remove-artifact makes on disk alone, and
+		// storeRoot "" says so to writeExport
 		pg, err := openStorageKind(cfg.storage)
 		if err != nil {
 			return nil, err
 		}
 		defer pg.close()
-		kind = pg
+		kind = pgEveryScope{pg}
 	}
 	return writeExport(exportInputs{
 		authority: cfg.authority, keyID: keyID, publicKey: publicKey, kind: kind, storeRoot: cfg.store,

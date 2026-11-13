@@ -115,10 +115,11 @@ func parseStorage(v value, version string) (*storageSpec, error) {
 
 // storageRefusals refuses, at the configuration's load, what the
 // configuration asks for that reads the filesystem store directly, while
-// the PostgreSQL kind keeps it. (A source's environment is its HOME, the
-// platform's own name=value pairs and PATH (deriveSources): it never takes
-// the connection string's variable from the engine's, which the start
-// removes besides.)
+// the PostgreSQL kind keeps it. A platform's scope is not among them: the
+// kind keeps each scope identifier's rows apart (ADR-0033). (A source's
+// environment is its HOME, the platform's own name=value pairs and PATH
+// (deriveSources): it never takes the connection string's variable from the
+// engine's, which the start removes besides.)
 func storageRefusals(cfg *engineConfig) error {
 	if cfg.storage == nil {
 		return nil
@@ -135,8 +136,6 @@ func storageRefusals(cfg *engineConfig) error {
 			return storageUnsupported(fmt.Sprintf("platform %s's write: true, whose actions keep their journal and evidence on disk,", p.name))
 		case len(p.descriptorStatements) > 0:
 			return storageUnsupported(fmt.Sprintf("platform %s's descriptorStatements, whose snapshot is read from the store on disk,", p.name))
-		case p.scope != "":
-			return storageUnsupported(fmt.Sprintf("platform %s's scope, since the kind is served as the view of no scope,", p.name))
 		}
 	}
 	return nil

@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,6 +50,12 @@ type sessionState struct {
 	// from there. Made atomic by Mkdir:
 	// two makers cannot both succeed.
 	created bool
+	// scope is the scope identifier of the source that first admitted an
+	// acquisition into the session ("" for none). On a kind that keeps each
+	// scope's rows apart (scopeKeeper) a session's receipts are of that one
+	// scope, and an acquisition of another is refused at its admission;
+	// on every other kind it decides nothing.
+	scope string
 }
 
 // sourceSpec is what the operator declared for one source: the command, the
@@ -198,7 +205,14 @@ type gatewayService struct {
 	// (engineVersion 24, storage_kind.go); nil for the filesystem kind at
 	// storeRoot and regPath, which are then the paths, and "" otherwise.
 	// What reads the filesystem store directly asks it first.
-	kind            storeKind
+	kind storeKind
+	// keeper is kind where it keeps each scope identifier's rows apart
+	// (scopeKeeper), and scoped is the store of each scope identifier a
+	// source is fixed to, kept through the kind's view of that scope
+	// (ADR-0033); both are nil on every other kind, whose one store holds
+	// every scope's receipts, as the filesystem kind's does.
+	keeper          scopeKeeper
+	scoped          map[string]*store
 	authority       string
 	publicKey       ed25519.PublicKey
 	keyID           string
@@ -362,10 +376,44 @@ func holdSourceForms(sources map[string]sourceSpec) error {
 // pgRegistryName names the registry the PostgreSQL kind keeps, in messages.
 const pgRegistryName = "the registry the PostgreSQL storage kind keeps"
 
+// scopeKeeper is a kind that keeps each scope identifier's rows apart, in
+// the database (the PostgreSQL kind, ADR-0033): a source fixed to a scope
+// identifier keeps its payloads and receipts through the kind's view of
+// that scope, which reads and writes that scope's rows alone, and a
+// session's receipts are of one scope.
+type scopeKeeper interface {
+	// scopeViews records each scope identifier and returns its view.
+	scopeViews(scopes []string) (map[string]storeKind, error)
+	// holdsAnySeries is whether a session is held, of no scope or of any.
+	holdsAnySeries() (bool, error)
+	// seriesHeld is whether a session of the name is held, of any scope;
+	// whether it is of scope ("" for none); and whether it holds a receipt.
+	seriesHeld(name, scope string) (held, ofScope, entries bool, err error)
+}
+
+// sourceScopes is every scope identifier a source is fixed to, once each,
+// in byte order.
+func sourceScopes(sources map[string]sourceSpec) []string {
+	seen := map[string]bool{}
+	var scopes []string
+	for _, spec := range sources {
+		if spec.scope != "" && !seen[spec.scope] {
+			seen[spec.scope] = true
+			scopes = append(scopes, spec.scope)
+		}
+	}
+	sort.Strings(scopes)
+	return scopes
+}
+
 // newGatewayServiceOn is the service over a kind other than the filesystem
 // one at a path (engineVersion 24): its store and its registry are the
 // kind's spaces, and a registry that is not there is made only for a kind
-// that holds no session, as at a path.
+// that holds no session, as at a path. On a kind that keeps each scope's
+// rows apart (scopeKeeper), the kind is asked whether it holds a session
+// in any scope, and once the registry is open a view is opened for each
+// scope identifier a source is fixed to: what the start then writes is the
+// record of each identifier, where it is not there (pgKind.scopeViews).
 func newGatewayServiceOn(kind storeKind, seed []byte, authority string, sources map[string]sourceSpec) (*gatewayService, error) {
 	if err := holdSourceForms(sources); err != nil {
 		return nil, err
@@ -381,16 +429,47 @@ func newGatewayServiceOn(kind storeKind, seed []byte, authority string, sources 
 	st := newStoreOn("", kind.artifacts(), kind.receipts(), seed, authority)
 	startHook()
 	receipts := kind.receipts()
-	reg, err := newRegistryWriterOn(kind.registry(), pgRegistryName, seed, func() (bool, error) {
+	history := func() (bool, error) {
 		held, err := receipts.listSeries()
 		return len(held) > 0, err
-	})
+	}
+	keeper, keeps := kind.(scopeKeeper)
+	if keeps {
+		history = keeper.holdsAnySeries
+	}
+	reg, err := newRegistryWriterOn(kind.registry(), pgRegistryName, seed, history)
 	if err != nil {
 		return nil, err
 	}
 	g := newServiceAround(st, reg, "", "", authority, sources)
 	g.kind = kind
+	if keeps {
+		views, err := keeper.scopeViews(sourceScopes(sources))
+		if err != nil {
+			return nil, err
+		}
+		g.keeper = keeper
+		g.scoped = map[string]*store{}
+		for scope, view := range views {
+			g.scoped[scope] = newStoreOn("", view.artifacts(), view.receipts(), seed, authority)
+		}
+	}
 	return g, nil
+}
+
+// storeFor is the store a source fixed to scope ("" for none) keeps its
+// payloads and receipts in: on a kind that keeps each scope's rows apart,
+// the store of the kind's view of that scope; on every other, the one.
+func (g *gatewayService) storeFor(scope string) (*store, error) {
+	if scope == "" || g.scoped == nil {
+		return g.store, nil
+	}
+	st, opened := g.scoped[scope]
+	if !opened {
+		// the views are opened at the start for every source's scope
+		return nil, errors.New("the store holds no view of the source's scope identifier")
+	}
+	return st, nil
 }
 
 // newServiceAround is the service around a store and a registry made.
@@ -1043,6 +1122,11 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 			return nil, errors.New(status)
 		}
 	}
+	// the store the source's scope keeps its payloads and receipts in
+	st, err := g.storeFor(spec.scope)
+	if err != nil {
+		return nil, err
+	}
 	canonicalArgs := canon(arguments)
 
 	// Admission happens BEFORE the source exists. Sources are slow, cost money
@@ -1063,7 +1147,7 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	if g.beforeReadAdmit != nil {
 		g.beforeReadAdmit()
 	}
-	admitted := g.admit(sessionID)
+	admitted := g.admit(sessionID, spec.scope)
 	if g.afterReadAdmit != nil {
 		g.afterReadAdmit(admitted)
 	}
@@ -1178,7 +1262,7 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	var resultDigest string
 	if spec.notRetained {
 		resultDigest = "sha256:" + digestOfBytes(canon(result))
-	} else if resultDigest, err = g.store.retain(canon(result)); err != nil {
+	} else if resultDigest, err = st.retain(canon(result)); err != nil {
 		return nil, err
 	}
 
@@ -1228,7 +1312,7 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	if g.beforeStamp != nil {
 		g.beforeStamp()
 	}
-	stored, signature, made, err := g.store.stampOwning(core)
+	stored, signature, made, err := st.stampOwning(core)
 	if err != nil {
 		return nil, err
 	}
@@ -1782,9 +1866,11 @@ func (g *gatewayService) sealedElsewhere(sessionID string) string {
 	return ""
 }
 
-// admit reserves an acquisition against a session, refusing a sealed one before
-// any source is constructed or started.
-func (g *gatewayService) admit(sessionID string) error {
+// admit reserves an acquisition of a source fixed to scope ("" for none)
+// against a session, refusing a sealed one before any source is
+// constructed or started; and, on a kind that keeps each scope's rows
+// apart, one whose receipts are of another scope.
+func (g *gatewayService) admit(sessionID, scope string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	// the gate first, before anything is made: a closed signer admits
@@ -1798,11 +1884,18 @@ func (g *gatewayService) admit(sessionID string) error {
 		// store holds no receipt in it: one an earlier process left open
 		// cannot be continued from an empty memory, and its source would
 		// run for a receipt that collides at the stamp (open_sessions.go).
-		if refusal := g.leftInStore(sessionID); refusal != "" {
+		if refusal := g.leftInStore(sessionID, scope, true); refusal != "" {
 			return badRequest{errors.New(refusal)}
 		}
-		state = &sessionState{}
+		state = &sessionState{scope: scope}
 		g.sessions[sessionID] = state
+	}
+	// The session's receipts are of one scope on such a kind: the view of
+	// another scope could not stamp into it (its series is the first
+	// scope's), and the source is not run for a receipt it cannot have.
+	// The refusal names neither scope.
+	if g.keeper != nil && state.scope != scope {
+		return badRequest{fmt.Errorf(refusalOtherScope, sessionID)}
 	}
 	if state.sealed {
 		return badRequest{fmt.Errorf("session is sealed: %s", sessionID)}
@@ -1854,7 +1947,7 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 	defer g.mu.Unlock()
 	state, seen := g.sessions[sessionID]
 	if !seen {
-		if refusal := g.leftInStore(sessionID); refusal != "" {
+		if refusal := g.leftInStore(sessionID, "", false); refusal != "" {
 			return nil, badRequest{errors.New(refusal)}
 		}
 		return nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
