@@ -2,7 +2,7 @@
 -- (docs/design/store-contract.md, docs/adr/0031-a-second-storage-kind-on-postgresql.md,
 -- docs/postgresql-store.md).
 --
--- `gateway store-migrate` runs this file once, as the migration login after
+-- The migration (migratePostgres) runs this file once, as the migration login after
 -- SET ROLE to the owner role, in the transaction that records its digest in
 -- gateway.schema_migrations. Every object it makes is the owner role's. It
 -- creates no role, grants nothing (grants.sql does, to the run-time role

@@ -4,7 +4,7 @@ package main
 // (docs/adr/0031-a-second-storage-kind-on-postgresql.md, docs/postgresql-store.md).
 //
 // The schema is the SQL files under store_pg/, carried in the binary and
-// recorded by digest in store_pg/SHA256SUMS. store-migrate applies them as
+// recorded by digest in store_pg/SHA256SUMS. The migration applies them as
 // the migration login, after SET ROLE to the owner role, in one transaction:
 // every version not applied yet, each recorded with its file's digest, and
 // then the run-time role's grants. A version applied with another digest,
@@ -427,7 +427,7 @@ func (k *pgKind) holdsItsConditions(set pgMigrationSet) error {
 			return err
 		}
 		if len(rows.rows) == 0 {
-			return errors.New("store: the database holds no schema gateway; run gateway store-migrate first")
+			return errors.New("store: the database holds no schema gateway; the store's migrations are applied first (docs/postgresql-store.md)")
 		}
 		row := rows.rows[0]
 		if over, _ := pgBool(row[0]); over {
@@ -450,7 +450,7 @@ func (k *pgKind) holdsItsConditions(set pgMigrationSet) error {
 			return err
 		}
 		if len(records) != len(set.versions) {
-			return fmt.Errorf("store: the database's schema is at version %d and this gateway's is %d; run gateway store-migrate", len(records), len(set.versions))
+			return fmt.Errorf("store: the database's schema is at version %d and this gateway's is %d; apply the store's migrations (docs/postgresql-store.md)", len(records), len(set.versions))
 		}
 		if err := pgPrivilegesHold(tx); err != nil {
 			return err
@@ -483,7 +483,7 @@ func pgPrivilegesHold(tx pgTx) error {
 			return fmt.Errorf("store: the run-time login holds %s on gateway.%s, which the store does not give it", privilege, table)
 		}
 		if want && (!onTable || columnar && !onColumn) {
-			return fmt.Errorf("store: the run-time login lacks %s on gateway.%s; run gateway store-migrate naming it", privilege, table)
+			return fmt.Errorf("store: the run-time login lacks %s on gateway.%s; apply the store's migrations naming it the run-time role", privilege, table)
 		}
 		seen[table]++
 	}

@@ -1,7 +1,7 @@
 -- The run-time role's privileges on the PostgreSQL storage kind's schema
 -- (docs/postgresql-store.md, "What the run-time login may do").
 --
--- `gateway store-migrate` runs this file on every run, after the schema's
+-- The migration (migratePostgres) runs this file on every run, after the schema's
 -- migrations, as the owner role, with the setting gateway.runtime_role
 -- naming the run-time role for this transaction alone. It first takes back
 -- what the owner granted that role, then grants exactly this, so a second

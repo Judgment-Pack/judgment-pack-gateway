@@ -2,7 +2,7 @@ package main
 
 // The PostgreSQL storage kind (docs/adr/0031-a-second-storage-kind-on-postgresql.md,
 // docs/postgresql-store.md): the store contract's spaces (store_contract.go)
-// kept in tables of the schema `gateway` that store-migrate makes
+// kept in tables of the schema `gateway` that its migration makes
 // (store_pg/migrations), reached through the client in pgwire.go.
 //
 // Every operation is one transaction. It sets, for that transaction alone,

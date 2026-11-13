@@ -207,12 +207,12 @@ func (s scramServer) run(f *pgFakeConn) bool {
 	return true
 }
 
-// The login holds the server to the protocol's proof that it holds the
+// The login holds the server to the protocol's signature that it holds the
 // password's verifier: a server that cannot make the signature, admits the
 // login without the exchange, asks for the password in the clear or by MD5,
 // or bends the exchange out of its bounds, is refused, and is sent no
 // password.
-func TestTheLoginHoldsTheServerToItsProof(t *testing.T) {
+func TestTheLoginHoldsTheServerToTheSCRAMExchange(t *testing.T) {
 	const password = "pw-of-the-test"
 	t.Run("a server that holds the verifier is admitted", func(t *testing.T) {
 		_, dsn := newPgFake(t, func(f *pgFakeConn) {
