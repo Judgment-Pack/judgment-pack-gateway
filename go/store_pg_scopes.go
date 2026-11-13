@@ -9,8 +9,9 @@ package main
 // writes anything. What must reach every scope's rows -- an export, the
 // start's question whether the store holds a session, a session's name --
 // reads that record and then each scope in its turn, within one transaction
-// whose every statement sees one scope's rows (everyScope): no statement is
-// ever admitted to the rows of two scopes, or of a scope and of none.
+// whose every statement sees one scope's rows (everyScope; a session's name
+// is asked of its own scope first, ownScopeFirst): no statement is ever
+// admitted to the rows of two scopes, or of a scope and of none.
 
 import (
 	"bytes"
@@ -117,27 +118,76 @@ func (k *pgKind) holdsAnySeries() (bool, error) {
 	return held, nil
 }
 
+// ownScopeFirst runs fn in one transaction of mode, first for the rows of
+// the scope own, the view's, which the transaction sets as every one of
+// that view's does; and then, unless fn answered done for own, for the rows
+// of no scope and of each scope identifier recorded but own, in byte order,
+// with gateway.scope set to each in its turn for the transaction alone, as
+// everyScope does, until fn answers done. Each statement fn makes sees the
+// rows of the one scope it is called for.
+func (k *pgKind) ownScopeFirst(mode pgMode, own *pgKind, fn func(tx pgTx, row string) (bool, error)) error {
+	return own.transact(mode, func(tx pgTx) error {
+		if done, err := fn(tx, own.row); done || err != nil {
+			return err
+		}
+		// the record is of no scope, and is read in a setting of no scope
+		if _, err := tx.exec(`SELECT pg_catalog.set_config('gateway.scope', $1, true)`, pgNoScope); err != nil {
+			return err
+		}
+		recorded, err := tx.exec(`SELECT identifier FROM gateway.scope_identifiers WHERE scope = $1 ORDER BY identifier`, pgNoScope)
+		if err != nil {
+			return err
+		}
+		if own.row != pgNoScope {
+			if done, err := fn(tx, pgNoScope); done || err != nil {
+				return err
+			}
+		}
+		for _, r := range recorded.rows {
+			row := string(r[0])
+			if row == own.row {
+				continue
+			}
+			if _, err := tx.exec(`SELECT pg_catalog.set_config('gateway.scope', $1, true)`, row); err != nil {
+				return err
+			}
+			if done, err := fn(tx, row); done || err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // seriesHeld is whether the kind holds a series of the name, of no scope or
 // of any scope identifier recorded; whether that series is of scope ("" for
 // no scope); and whether it holds an entry. A session's name is one across
 // scopes (gateway.series' key), so at most one scope holds it.
+//
+// The scope asked first is scope's own (ownScopeFirst): a session of that
+// scope is answered by one statement, however many identifiers are
+// recorded. Only a name that scope does not hold -- every new session's --
+// is looked for in no scope and in every other identifier recorded, since
+// the answer "held by another scope" needs them all.
 func (k *pgKind) seriesHeld(name, scope string) (held, ofScope, entries bool, err error) {
 	if !validListedSeries(name) {
 		return false, false, false, pgRefused("list-entries", "not a series' name")
 	}
-	want := pgRowScope(scope)
-	err = k.everyScope(pgReadSnapshot, func(tx pgTx, row string) error {
-		if held {
-			return nil
+	own := k.ofNoScope()
+	if scope != "" {
+		if own, err = k.inScope(scope); err != nil {
+			return false, false, false, pgRefused("list-entries", "not a scope identifier")
 		}
+	}
+	err = k.ownScopeFirst(pgReadSnapshot, own, func(tx pgTx, row string) (bool, error) {
 		rows, err := tx.exec(`SELECT EXISTS (SELECT 1 FROM gateway.entries e WHERE e.scope = s.scope AND e.series = s.name)
 			FROM gateway.series s WHERE s.scope = $1 AND s.name = $2`, row, name)
 		if err != nil || len(rows.rows) == 0 {
-			return err
+			return false, err
 		}
-		held, ofScope = true, row == want
+		held, ofScope = true, row == own.row
 		entries, _ = pgBool(rows.rows[0][0])
-		return nil
+		return true, nil
 	})
 	if err != nil {
 		return false, false, false, pgFailure("list-entries", false, err)

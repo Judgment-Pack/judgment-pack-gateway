@@ -63,6 +63,11 @@ since a session's name is one across scopes and a view sees only its own scope's
    question whether a session of its name is held in some scope run as the run-time login in one
    transaction: it reads the record in the transaction's setting of `none`, then for each
    identifier sets `gateway.scope` with `set_config(…, true)` and makes that scope's statements.
+   An acquisition's or a seal's question asks its own scope first (the source's, or no scope for a
+   seal), in that transaction's own setting, and reads the record and the other scopes only for a
+   name its scope does not hold (#446): a session of its own scope costs the same statements
+   however many identifiers are recorded, and a new session's still asks every scope, two
+   statements each (docs/postgresql-store.md, "Scope identifiers", gives the measured cost).
    The export's transaction is at REPEATABLE READ, so every scope is read in one snapshot. No
    statement is admitted to the rows of two scopes at once, and no login, policy or function
    admits every scope. An export reads every scope recorded, whatever the configuration names now.

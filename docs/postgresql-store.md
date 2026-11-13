@@ -344,15 +344,27 @@ with this kind yet").
   scope identifier, or none): with the PostgreSQL storage kind a session's receipts are of one
   scope, so acquire into a new session`. The refusal names neither scope. (The filesystem kind
   keeps one layout for every scope and takes such an acquisition.)
-- **The record of the scope identifiers** (`gateway.scope_identifiers`, schema version 3) holds
-  each scope identifier a start has opened a view for, written by that start before the view
-  writes anything, and never changed or removed. Its rows are of no scope, so no scope's
-  transaction reads another's identifier from it. What must reach every scope's rows reads it and
-  then each scope in its turn, in one transaction whose every statement is of one scope, the
-  setting changed between statements for the transaction alone: the export, the start's question
-  whether the store holds a session before it makes an empty registry, and an acquisition's or a
-  seal's question whether a session of its name is held in some scope. No statement is admitted
-  to the rows of two scopes at once, and no login, policy or function admits every scope.
+- **The record of the scope identifiers** (`gateway.scope_identifiers`, schema version 3) holds each
+  scope identifier a start has opened a view for, written by that start before the view writes
+  anything, and never changed or removed. Its rows are of no scope, so no scope's transaction reads
+  another's identifier from it. What must reach every scope's rows reads it and then each scope in
+  its turn, in one transaction whose every statement is of one scope, the setting changed between
+  statements for the transaction alone: the export, the start's question whether the store holds a
+  session before it makes an empty registry, and an acquisition's or a seal's question whether a
+  session of its name is held in some scope, which asks its own scope first (below). No statement is
+  admitted to the rows of two scopes at once, and no login, policy or function admits every scope.
+- **What a session this process does not hold costs.** An acquisition into such a session, and a
+  seal of one, ask the scope of the source first (of no scope for a seal), in one transaction of
+  four statements, its begin and commit among them: a session of that scope, with receipts or none,
+  is answered there, however many scope identifiers are recorded. A name that scope does not hold,
+  which is every new session's, is then looked for in no scope and in every other identifier
+  recorded, in the same transaction, two statements each (2N + 5 statements for an acquisition with
+  N identifiers recorded), so that a name another scope holds is refused. The question is asked
+  under the service's lock, so other acquisitions, releases and seals wait for it, and identifiers
+  are never removed from the record. Measured on the test container (PostgreSQL 16 on loopback, one
+  connection, 31 admissions each), a new session's admission took a median of about 100 ms with 100
+  identifiers recorded (205 statements) and about 1 s with 1,000 (2,005 statements); an admission
+  into a session of the source's own scope took about 2 ms at either.
 - **The registry** is one chain across scopes: its tables carry no scope column, and every view
   reads the whole registry. Its lines are seals (SPEC.md §3, §3c): a session's id, its count of
   receipts, its time, the key's identifier and a signature. None carries a receipt, a payload, an
