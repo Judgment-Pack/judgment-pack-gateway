@@ -33,7 +33,10 @@ A platform without an implemented backend refuses a
 restricted command with `sandbox-not-enforced`; full access is an explicit operator
 choice. Engine version 13 applies this boundary to the adapter itself and its
 descendants through `adapter-sandbox`, which the core holds as it holds an adapter;
-the launcher that helper runs comes only from the fixed locations below. Each
+the launcher that helper runs comes only from the fixed locations below. The engine
+image carries a static bubblewrap at the first of them, `/usr/bin/bwrap`, root's and
+with no set-user-id bit, so it confines only where the container's runtime lets the
+source's user make a user namespace ([docs/adr/0030](docs/adr/0030-the-engine-image-carries-the-sandbox-launcher.md)). Each
 launch is bound to the posture reported for its source: the probe's mode, backend
 and policy digest go to the helper, which refuses a changed policy or a backend
 that fails at launch rather than falling back, and a launch whose probe measured
@@ -643,7 +646,9 @@ grandchild, kept for the life of the process once it reaches a verdict and sayin
 macOS and Windows state the descendants' and the image's lines from this section and
 check the seed where the platform has an owner and a mode. `serve` answers the same report at `/posture`
 ([docs/design/engine-config.md](docs/design/engine-config.md)). The report is information, not a
-gate, and it judges as the user it runs as. Where the gateway is the container's first process
+gate, and it judges as the user it runs as; an engine configuration of version 23 with
+`measureSandboxAtStart` makes the sources' sandbox entries a gate at the start, which does not
+start where a source's launches would refuse. Where the gateway is the container's first process
 (PID 1) with no init, an orphaned descendant of a source is reparented to it and stays a zombie
 until the gateway exits; the probe waits for its own grandchild, and nothing else does, so run
 the image with an init (`docker run --init`, [docs/design/engine-image.md](docs/design/engine-image.md)).
