@@ -356,11 +356,14 @@ func descriptorDigests(all []*storedReceipt) map[string]bool {
 // receipt named judged, the records of those that may be removed appended,
 // and then their bytes removed.
 func removeArtifactsUnder(storeRoot, authority string, priv ed25519.PrivateKey, keys []reachedKey, o removeArtifactOptions, stamp func() string) (out removalOutcome, err error) {
-	existing, _, err := readRemovals(storeRoot)
+	// the records already there, read as a verifier reads them; but where
+	// something at the file's path is not a regular file -- a link,
+	// whatever it leads to -- nothing is written through it or beside it
+	existing, torn, err := readRemovals(storeRoot, keys)
 	if err != nil {
 		return out, fmt.Errorf("%v, and nothing was removed", err)
 	}
-	ret := &retention{removals: parseRemovals(existing, keys)}
+	ret := &retention{removals: existing}
 	all, err := readStoreReceipts(storeRoot, authority, keys, ret)
 	if err != nil {
 		return out, fmt.Errorf("the store's receipts could not be read, and nothing was removed: %v", err)
@@ -446,19 +449,19 @@ func removeArtifactsUnder(storeRoot, authority string, priv ed25519.PrivateKey, 
 		record.set("resultDigest", vString(s.r.resultDigest))
 		record.set("sessionId", vString(s.sessionID))
 		record.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, removalSigningInput(record)))))
-		line := string(canon(record))
+		line := append(canon(record), '\n')
 		// what a reader would not load, or would not take as naming this
-		// receipt, is not written
-		loaded, ok := removalOf(line, keys)
-		probe := &retention{removals: map[string][]removalRecord{loaded.receiptSignature: {loaded}}}
-		if !ok || !probe.namedBy(s.r, s.sessionID) {
+		// receipt, is not written: the line is read back as a verifier
+		// reads the file
+		loaded, _, _ := scanRemovals(bytes.NewReader(line), keys)
+		if probe := (&retention{removals: loaded}); !probe.namedBy(s.r, s.sessionID) {
 			return out, fmt.Errorf("receipt %s: a removal record for it would not name it as a verifier reads it, and nothing was removed", s.name())
 		}
-		lines = append(append(lines, line...), '\n')
+		lines = append(lines, line...)
 		out.appended = append(out.appended, record)
 	}
 	if len(lines) > 0 {
-		if err := appendRemovals(storeRoot, existing, lines); err != nil {
+		if err := appendRemovals(storeRoot, torn, lines); err != nil {
 			appended := out.appended
 			out.appended = nil
 			return out, fmt.Errorf("%v; the %d record(s) may be in the file, and nothing was removed; a second run completes it", err, len(appended))
@@ -492,31 +495,48 @@ func removalScopeHolds(r *receipt, o removeArtifactOptions) bool {
 }
 
 // appendRemovals appends the records to the store's removal file and makes
-// them durable, the file made where it is not there. A file whose last line
-// is unterminated -- an earlier append written in part -- is ended first,
-// so the records start on lines of their own and the torn line stays one
-// that loads nothing.
-func appendRemovals(storeRoot string, existing, lines []byte) error {
+// them durable, the file made where nothing is at its path. Nothing is
+// written through a link, nor to anything but a regular file: the entry
+// is judged and opened following no link (openRemovalEntry), and a file
+// made here is made exclusively, which fails on any entry at the name, a
+// link that leads nowhere included. A file whose last line is unterminated
+// -- an earlier append written in part, torn -- is ended first, so the
+// records start on lines of their own and the torn line stays one that
+// loads nothing.
+func appendRemovals(storeRoot string, torn bool, lines []byte) error {
 	path := filepath.Join(storeRoot, removalsFile)
-	log, err := openFsLog(path)
+	if err := requirePlainSpelling(path, true); err != nil {
+		return fmt.Errorf("removal records: %w", err)
+	}
+	root, err := os.OpenRoot(storeRoot)
 	if err != nil {
-		return err
+		return fmt.Errorf("removal records: %w", err)
 	}
-	if _, err := log.readLog(0); faultOf(err) == faultAbsent {
-		if err := log.createLog(); err != nil {
-			return err
-		}
+	defer root.Close()
+	made := false
+	file, err := openRemovalEntry(root, openAppendNoFollow)
+	if err != nil && absent(err) {
+		file, err = root.OpenFile(removalsFile, os.O_WRONLY|os.O_APPEND|os.O_CREATE|os.O_EXCL, 0o600)
+		made = true
+	}
+	if err != nil {
+		return fmt.Errorf("removal records: %s %w", path, err)
+	}
+	defer file.Close()
+	data := lines
+	if torn && !made {
+		data = append([]byte{'\n'}, lines...)
+	}
+	if _, err := file.Write(data); err != nil {
+		return fmt.Errorf("removal records: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("removal records: %w", err)
+	}
+	if made {
 		syncDir(storeRoot)
-	} else if err != nil {
-		return err
 	}
-	var data []byte
-	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
-		data = append(data, '\n')
-	}
-	data = append(data, lines...)
-	_, err = log.appendRecord(data)
-	return err
+	return nil
 }
 
 // removeKeptBytes removes the bytes at a digest's path, re-digested first:

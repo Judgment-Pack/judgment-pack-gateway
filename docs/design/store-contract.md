@@ -168,8 +168,9 @@ The decision records are the runtime's files, in no space of a kind; they are re
 so a record written before an action receipt the cut holds is in the export. The removal records are
 read after the artifacts too: `gateway remove-artifact` appends a record before it removes the
 bytes, so an export that holds no bytes for a receipt holds the record that names it, when one was
-made. The file is read as verification reads it: one that is there and is not a regular file
-refuses the export. The export copies
+made. The file is read following no link: one that is there and is not a regular file, a link
+whatever it leads to included, refuses the export before anything is written, and so does one
+that cannot be read. The export copies
 what is there, damage included: a receipt that is misfiled, an artifact that does not digest, a
 session with no receipt are exported as they are, so verification of the export says what it says
 of the store. A receipt or an artifact that is a link refuses the export: no file of the store is

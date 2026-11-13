@@ -21,6 +21,7 @@ import {
   documentBound,
   eachDecisionRecord,
   eachEntry,
+  eachRemovalLine,
   endsWith,
   entryCost,
   eachRegistryLine,
@@ -322,7 +323,7 @@ function removalOf(v: Value | null, keys: readonly ReachedKey[]): (Removal & { r
   const callIndex = member(v, "callIndex");
   const receiptSignature = of("receiptSignature", /^[0-9a-f]{128}$/);
   const resultDigest = of("resultDigest", /^sha256:[0-9a-f]{64}$/);
-  const removedAt = of("removedAt", /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
+  const removedAt = str(member(v, "removedAt"));
   const removedBy = str(member(v, "removedBy"));
   const keyId = of("keyId", /^[0-9a-f]{32}$/);
   const signature = of("signature", /^[0-9a-f]{128}$/);
@@ -338,6 +339,7 @@ function removalOf(v: Value | null, keys: readonly ReachedKey[]): (Removal & { r
     receiptSignature === undefined ||
     resultDigest === undefined ||
     removedAt === undefined ||
+    !isRemovalTime(removedAt) ||
     removedBy === undefined ||
     !isScopeIdentifier(removedBy) ||
     keyId === undefined ||
@@ -356,35 +358,55 @@ function removalOf(v: Value | null, keys: readonly ReachedKey[]): (Removal & { r
   return { sessionId: own(sessionId), callIndex: callIndex.integer, resultDigest: own(resultDigest), keyPos, receiptSignature: own(receiptSignature) };
 }
 
-// loadRemovals is the store's removal records (§1.3a, "Loading"; §4.1): a
-// file that is not there loads none; one there that is not a regular file,
-// or cannot be read, is no verdict. Each line terminated by a line feed is
-// judged alone; the text after the last line feed is no line an append
-// finished.
+// loadRemovals is the store's removal records (§1.3a, "Loading"; §4.1),
+// read a line at a time (eachRemovalLine): nothing at the path loads none,
+// and nor does anything there that is not a regular file, which is not
+// read; a regular file that cannot be read is no verdict. A record that
+// names the receipt by the same session, index and digest as one kept
+// replaces it only where its key was reached later, which is all the
+// artifact step reads of either; so what is kept, and charged, grows with
+// the receipts the records name, not with the lines that repeat them.
 function loadRemovals(root: string, keys: readonly ReachedKey[], budget: Budget): Map<string, Removal[]> {
   const removals = new Map<string, Removal[]>();
-  const p = under(root, "artifact-removals.jsonl");
-  if (nothingAt(p)) {
-    return removals;
-  }
-  const bytes = readDocument(p, "the removal records");
-  let start = 0;
-  for (let at = bytes.indexOf(0x0a); at >= 0; at = bytes.indexOf(0x0a, start)) {
-    const line = bytes.subarray(start, at);
-    start = at + 1;
+  eachRemovalLine(under(root, "artifact-removals.jsonl"), (line) => {
     const rec = removalOf(parseOr(line, () => null), keys);
     if (rec === null) {
-      continue;
+      return;
+    }
+    const named = removals.get(rec.receiptSignature);
+    const at = named?.findIndex((k) => k.sessionId === rec.sessionId && k.callIndex === rec.callIndex && k.resultDigest === rec.resultDigest) ?? -1;
+    if (at >= 0) {
+      if (rec.keyPos > named![at]!.keyPos) {
+        named![at] = rec;
+      }
+      return;
     }
     budget.charge(entryCost + size(rec.receiptSignature) + size(rec.sessionId) + size(rec.resultDigest), "the removal records");
-    const named = removals.get(rec.receiptSignature);
     if (named === undefined) {
       removals.set(rec.receiptSignature, [rec]);
     } else {
       named.push(rec);
     }
-  }
+  });
   return removals;
+}
+
+// isRemovalTime is a removedAt of its form that names an instant (§1.3a):
+// a date the calendar holds, and an hour, minute and second of a day.
+function isRemovalTime(s: string): boolean {
+  const m = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z$/.exec(s);
+  if (m === null) {
+    return false;
+  }
+  const [y, mo, d, h, mi, se] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number];
+  // setUTCFullYear, not Date.UTC, which reads a year below 100 as 19xx
+  const t = new Date(0);
+  t.setUTCFullYear(y, mo - 1, d);
+  t.setUTCHours(h, mi, se, 0);
+  return (
+    t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d &&
+    t.getUTCHours() === h && t.getUTCMinutes() === mi && t.getUTCSeconds() === se
+  );
 }
 
 // judge is the ladder of §1.4 for one receipt: at most one status, the

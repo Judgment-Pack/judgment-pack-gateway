@@ -906,6 +906,11 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 		// would read as one of a source fixed to none.
 		return nil, fmt.Errorf("source %s is fixed to a scope identifier and needs receipt version 3", requestText(source))
 	}
+	if spec.notRetained && g.receiptVersion != receiptVersion3 {
+		// Version 2 has no artifact member: what the source returns is
+		// kept by no receipt it could mint, so the source is not run.
+		return nil, fmt.Errorf("source %s keeps no payload, which only a version 3 receipt can say; this gateway mints version %s", requestText(source), g.receiptVersion)
+	}
 	// A call under a delegation: an acquisition the delegation admits, or
 	// the read-back of a delegated key's uncertain action, which any sender
 	// the key authenticated may cause (SPEC.md §11.8).
@@ -1088,12 +1093,10 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	// what another receipt may cite; nothing cites it until a receipt is
 	// stamped. A source that keeps no payload writes nothing: the digest is
 	// of the bytes returned, and the receipt says nothing was kept (SPEC.md
-	// §1.3a), which only a version 3 receipt can.
+	// §1.3a), which only a version 3 receipt can (refused above, before the
+	// source ran).
 	var resultDigest string
 	if spec.notRetained {
-		if g.receiptVersion != receiptVersion3 {
-			return nil, fmt.Errorf("source %s keeps no payload, which only a version 3 receipt can say; this gateway mints version %s", source, g.receiptVersion)
-		}
 		resultDigest = "sha256:" + digestOfBytes(canon(result))
 	} else if resultDigest, err = g.store.retain(canon(result)); err != nil {
 		return nil, err

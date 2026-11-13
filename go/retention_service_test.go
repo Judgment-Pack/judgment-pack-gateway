@@ -142,14 +142,27 @@ func TestASourceThatKeepsNoPayloadReturnsTheBytesAndWritesNone(t *testing.T) {
 // version 2 refuses the acquisition, and writes no receipt and no payload.
 func TestASourceThatKeepsNoPayloadRefusesAVersion2Receipt(t *testing.T) {
 	service, server := unkeptService(t, receiptVersion)
+	// the helper writes its command line here first: the source ran
+	ran := filepath.Join(t.TempDir(), "argv")
+	t.Setenv(envSourceArgv, ran)
 	if code, out := post(t, server, "/acquire", `{"session":"nr-2","source":"unkept","arguments":{"q":"a"}}`); code == http.StatusOK {
 		t.Fatalf("a version 2 acquisition of a source that keeps nothing: %d %v", code, out)
+	}
+	if _, err := os.Lstat(ran); err == nil {
+		t.Fatal("the source ran for an acquisition no receipt could be minted for")
 	}
 	if held := artifactsHeld(t, service.storeRoot); len(held) != 0 {
 		t.Fatalf("wrote %v", held)
 	}
 	if _, err := os.Stat(filepath.Join(service.storeRoot, "receipts", "nr-2", "0.json")); err == nil {
 		t.Fatal("a receipt was written")
+	}
+	// the marker marks: a source that keeps its payload runs under version 2
+	if code, out := post(t, server, "/acquire", `{"session":"nr-3","source":"kept","arguments":{"q":"a"}}`); code != http.StatusOK {
+		t.Fatalf("a version 2 acquisition of a source that keeps its payload: %d %v", code, out)
+	}
+	if _, err := os.Lstat(ran); err != nil {
+		t.Fatalf("the kept source did not run: %v", err)
 	}
 }
 

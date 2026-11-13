@@ -7,11 +7,12 @@
 import * as assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as path from "node:path";
 import { test } from "node:test";
 
-import { NoVerdict } from "../src/inputs.ts";
-import { verifyStore } from "../src/verify.ts";
+import { NoVerdict, readChunk, removalLineBound } from "../src/inputs.ts";
+import { limits, verifyStore } from "../src/verify.ts";
 import { acquisitionV3, authority, keyId, newStore, publicKey, put, resultDigest, sealLine, sign, signed, tempDir, verdictText } from "./support.ts";
 import type { Receipt, Store } from "./support.ts";
 
@@ -50,26 +51,114 @@ function supplied(entries: Record<string, string | null>): string {
   return dir;
 }
 
-test("a removal file that is not a regular file is no verdict, and one that is not there loads nothing", () => {
-  const { store } = one(acquisitionV3(), false);
-  assert.equal(verdict(store).findings[0]!.status, "artifact-missing");
-  fs.mkdirSync(path.join(store.root, "artifact-removals.jsonl"));
-  assert.throws(() => verifyStore(store.root, store.registry, authority, undefined, publicKey), NoVerdict);
-});
-
-test("a removal record names the receipt it was made for, and a line after the last line feed is none", () => {
-  const { store, r } = one(acquisitionV3(), false);
+// recordFor is the removal record for r, signed, as a line of the file
+// without its line feed; removedAt as given.
+function recordFor(r: Receipt, removedAt = "2026-09-16T00:00:00Z"): string {
   const record = {
     callIndex: 0,
     keyId,
     kind: "artifact-removal",
     receiptSignature: r["signature"],
-    removedAt: "2026-09-16T00:00:00Z",
+    removedAt,
     removedBy: "retention-job",
     resultDigest,
     sessionId: "s1",
   };
-  const text = JSON.stringify({ ...record, signature: sign("judgment-pack-gateway/artifact-removal/1:", record) });
+  return JSON.stringify({ ...record, signature: sign("judgment-pack-gateway/artifact-removal/1:", record) });
+}
+
+test("anything at the removal file's path that is not a regular file is not read, a link to the records included; one that cannot be read is no verdict", () => {
+  for (const [name, make] of [
+    ["a directory", (file: string) => fs.mkdirSync(file)],
+    ["a link to the records", (file: string, records: string) => fs.symlinkSync(records, file)],
+    ["a link that leads nowhere", (file: string, records: string) => fs.symlinkSync(records + ".nowhere", file)],
+  ] as const) {
+    const { store, r } = one(acquisitionV3(), false);
+    const file = path.join(store.root, "artifact-removals.jsonl");
+    const records = path.join(tempDir(), "records.jsonl");
+    fs.writeFileSync(records, recordFor(r) + "\n");
+    fs.copyFileSync(records, file);
+    assert.equal(verdict(store).findings[0]!.status, "ok", name);
+    fs.unlinkSync(file);
+    assert.equal(verdict(store).findings[0]!.status, "artifact-missing", name);
+    make(file, records);
+    assert.equal(verdict(store).findings[0]!.status, "artifact-missing", name);
+  }
+  if (process.getuid?.() !== 0) {
+    const { store, r } = one(acquisitionV3(), false);
+    const file = path.join(store.root, "artifact-removals.jsonl");
+    fs.writeFileSync(file, recordFor(r) + "\n");
+    fs.chmodSync(file, 0);
+    assert.throws(() => verifyStore(store.root, store.registry, authority, undefined, publicKey), NoVerdict);
+  }
+});
+
+test("a socket at the removal file's path is not read, and nothing waits on it", async (t) => {
+  const { store, r } = one(acquisitionV3(), false);
+  const file = path.join(store.root, "artifact-removals.jsonl");
+  if (Buffer.byteLength(file) > 100) {
+    t.skip("a socket's path is held to about a hundred bytes");
+    return;
+  }
+  const records = path.join(tempDir(), "records.jsonl");
+  fs.writeFileSync(records, recordFor(r) + "\n");
+  const server = net.createServer();
+  await new Promise<void>((done) => server.listen(file, done));
+  try {
+    assert.equal(fs.lstatSync(file).isSocket(), true);
+    assert.equal(verdict(store).findings[0]!.status, "artifact-missing");
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+test("the removal file is read a line at a time: a line over the bound loads nothing and swallows nothing, and a record repeated keeps one", () => {
+  const { store, r } = one(acquisitionV3(), false);
+  const file = path.join(store.root, "artifact-removals.jsonl");
+  const record = recordFor(r);
+  const padded = (n: number) => "{" + " ".repeat(n - record.length) + record.slice(1);
+  for (const [name, text, status] of [
+    ["at the bound", padded(removalLineBound) + "\n", "ok"],
+    ["one byte over", padded(removalLineBound + 1) + "\n", "artifact-missing"],
+    ["over, then the record", "x".repeat(3 * removalLineBound + 7) + "\n" + record + "\n", "ok"],
+    ["over across a read", "x".repeat(readChunk + 5) + "\n" + record + "\n", "ok"],
+    ["blank lines and the record twice", "\n\n" + record + "\n\n" + record + "\n" + padded(record.length + 3) + "\n", "ok"],
+    ["over and torn", padded(removalLineBound + 1), "artifact-missing"],
+  ] as const) {
+    fs.writeFileSync(file, text);
+    assert.equal(verdict(store).findings[0]!.status, status, name);
+  }
+});
+
+test("a record repeated is kept, and charged, once: a file of copies fits a budget one record fits", () => {
+  const { store, r } = one(acquisitionV3(), false);
+  const record = recordFor(r);
+  const saved = limits.retainedBytes;
+  limits.retainedBytes = 64 << 10;
+  try {
+    fs.writeFileSync(path.join(store.root, "artifact-removals.jsonl"), (record + "\n").repeat(1000));
+    assert.equal(verdict(store).findings[0]!.status, "ok");
+  } finally {
+    limits.retainedBytes = saved;
+  }
+});
+
+test("a removal record's removedAt is an instant: of its form and of the calendar", () => {
+  const { store, r } = one(acquisitionV3(), false);
+  const file = path.join(store.root, "artifact-removals.jsonl");
+  for (const at of ["2028-02-29T23:59:59Z", "0000-01-01T00:00:00Z", "9999-12-31T23:59:59Z"]) {
+    fs.writeFileSync(file, recordFor(r, at) + "\n");
+    assert.equal(verdict(store).findings[0]!.status, "ok", at);
+  }
+  for (const at of ["2026-13-45T99:99:99Z", "2026-13-01T00:00:00Z", "2028-02-30T00:00:00Z", "2026-02-29T00:00:00Z", "2026-11-00T00:00:00Z", "2026-11-13T24:00:00Z", "2026-11-13T00:60:00Z", "2026-11-13T23:59:60Z", "2026-11-13 00:00:00Z"]) {
+    fs.writeFileSync(file, recordFor(r, at) + "\n");
+    assert.equal(verdict(store).findings[0]!.status, "artifact-missing", at);
+  }
+});
+
+test("a removal record names the receipt it was made for, and a line after the last line feed is none", () => {
+  const { store, r } = one(acquisitionV3(), false);
+  const text = recordFor(r);
   fs.writeFileSync(path.join(store.root, "artifact-removals.jsonl"), text);
   assert.equal(verdict(store).findings[0]!.status, "artifact-missing", "torn");
   fs.writeFileSync(path.join(store.root, "artifact-removals.jsonl"), text + "\n");

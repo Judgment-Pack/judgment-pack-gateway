@@ -11,9 +11,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const removalStamp = "2026-11-13T00:00:01Z"
@@ -406,20 +409,156 @@ func TestRemoveArtifactRefusesWhatItMayNotRemove(t *testing.T) {
 			t.Fatalf("the verdict: %v %v", ok, said)
 		}
 	})
-	t.Run("removal records that cannot be read", func(t *testing.T) {
-		g, seedPath := removalStore(t)
-		if err := os.Mkdir(filepath.Join(g.storeRoot, removalsFile), 0o755); err != nil {
-			t.Fatal(err)
+	// Anything at the removal file's path that is not a regular file is
+	// refused, and nothing is written: a directory, and a link, whatever it
+	// leads to -- a file outside the store, the registry, nowhere.
+	for name, make := range map[string]func(g *gatewayService, file, outside string) error{
+		"a directory":               func(_ *gatewayService, file, _ string) error { return os.Mkdir(file, 0o755) },
+		"a link outside the store":  func(_ *gatewayService, file, outside string) error { return os.Symlink(outside, file) },
+		"a link to the registry":    func(g *gatewayService, file, _ string) error { return os.Symlink(g.regPath, file) },
+		"a link that leads nowhere": func(_ *gatewayService, file, outside string) error { return os.Symlink(outside+".nowhere", file) },
+		"a link to a file in a store": func(g *gatewayService, file, _ string) error {
+			return os.Symlink(filepath.Join("receipts", "r", "0.json"), file)
+		},
+	} {
+		t.Run("removal records at "+name, func(t *testing.T) {
+			g, seedPath := removalStore(t)
+			outside := filepath.Join(t.TempDir(), "outside.jsonl")
+			if err := os.WriteFile(outside, []byte("held\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tree, registry := storeTree(t, g.storeRoot), readFile(t, g.regPath)
+			file := filepath.Join(g.storeRoot, removalsFile)
+			if err := make(g, file, outside); err != nil {
+				if runtime.GOOS == "windows" && name != "a directory" {
+					t.Skipf("no link here: %v", err)
+				}
+				t.Fatal(err)
+			}
+			code, stdout, stderr := removeOn(t, g, seedPath, "--receipt", "r/1", "--by", "operator-1")
+			if code != 1 || stdout != "" || !strings.HasSuffix(stderr, "is not a regular file, and nothing was removed\n") {
+				t.Fatalf("exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+			}
+			// what was put there taken away, the store is as it was
+			if err := os.Remove(file); err != nil {
+				t.Fatal(err)
+			}
+			if !sameEntries(storeTree(t, g.storeRoot), tree) || readFile(t, g.regPath) != registry || readFile(t, outside) != "held\n" {
+				t.Fatal("something was written")
+			}
+			if _, err := os.Lstat(outside + ".nowhere"); err == nil {
+				t.Fatal("a file was made where the link led")
+			}
+		})
+	}
+}
+
+// The append itself writes through no link and to nothing but a regular
+// file, whatever was read before it: an entry put at the path after the
+// records were read is refused, and the file is made only where nothing is
+// at its name.
+func TestTheRemovalAppendWritesThroughNoLink(t *testing.T) {
+	line := []byte("{}\n")
+	for name, make := range map[string]func(file, outside string) error{
+		"a directory":               func(file, _ string) error { return os.Mkdir(file, 0o755) },
+		"a link to a file":          func(file, outside string) error { return os.Symlink(outside, file) },
+		"a link that leads nowhere": func(file, outside string) error { return os.Symlink(outside+".nowhere", file) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			storeRoot := t.TempDir()
+			outside := filepath.Join(t.TempDir(), "outside.jsonl")
+			if err := os.WriteFile(outside, []byte("held\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := make(filepath.Join(storeRoot, removalsFile), outside); err != nil {
+				if runtime.GOOS == "windows" && name != "a directory" {
+					t.Skipf("no link here: %v", err)
+				}
+				t.Fatal(err)
+			}
+			if err := appendRemovals(storeRoot, false, line); err == nil {
+				t.Fatal("appended")
+			}
+			if readFile(t, outside) != "held\n" {
+				t.Fatal("written through the link")
+			}
+			if _, err := os.Lstat(outside + ".nowhere"); err == nil {
+				t.Fatal("a file was made where the link led")
+			}
+		})
+	}
+	t.Run("another file put in its place once judged", func(t *testing.T) {
+		storeRoot := t.TempDir()
+		file := filepath.Join(storeRoot, removalsFile)
+		other := filepath.Join(storeRoot, "other.jsonl")
+		for _, p := range []string{file, other} {
+			if err := os.WriteFile(p, []byte("held\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
-		tree := storeTree(t, g.storeRoot)
-		code, stdout, stderr := removeOn(t, g, seedPath, "--receipt", "r/1", "--by", "operator-1")
-		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, "is not a regular file, and nothing was removed\n") {
-			t.Fatalf("exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+		removalJudged = func() {
+			if err := os.Rename(other, file); err != nil {
+				t.Error(err)
+			}
 		}
-		if !sameEntries(storeTree(t, g.storeRoot), tree) {
-			t.Fatal("the store changed")
+		defer func() { removalJudged = nil }()
+		if err := appendRemovals(storeRoot, false, line); err == nil {
+			t.Fatal("appended to a file put in the place of the one judged")
+		}
+		if readFile(t, file) != "held\n" {
+			t.Fatal("written")
 		}
 	})
+	t.Run("made, then appended to", func(t *testing.T) {
+		storeRoot := t.TempDir()
+		file := filepath.Join(storeRoot, removalsFile)
+		if err := appendRemovals(storeRoot, true, line); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte("{}\n{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := appendRemovals(storeRoot, true, line); err != nil {
+			t.Fatal(err)
+		}
+		if got := readFile(t, file); got != "{}\n{\n{}\n" {
+			t.Fatalf("the file: %q", got)
+		}
+	})
+}
+
+// An action reads the store's removal records once, however many receipts
+// it cites (SPEC.md §1.3a): every line that loads costs a signature check.
+func TestAnActionReadsTheRemovalRecordsOnce(t *testing.T) {
+	service, server := testService(t)
+	service.sources["tickets/write"] = sourceSpec{argv: []string{os.Args[0], "--tools=update_ticket"}, env: helperEnv, shape: "mcp", tools: []string{"update_ticket"}, endpoint: "https://mcp.example/"}
+	service.decisionRecords = t.TempDir()
+	issuer := newIssuer(t)
+	id := identityFor(t, issuer)
+	service.identity = &id
+	token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
+	var cites []string
+	for i, q := range []string{"a", "b", "c"} {
+		code, out := authed(t, server, "/acquire", `{"session":"act-1","source":"screening","arguments":{"q":"`+q+`"}}`, token)
+		if code != http.StatusOK {
+			t.Fatalf("acquire: %d %v", code, out)
+		}
+		signature := out["receipt"].(map[string]any)["signature"].(string)
+		cites = append(cites, fmt.Sprintf(`{"sessionId":"act-1","callIndex":%d,"signature":"%s"}`, i, signature))
+	}
+	var reads atomic.Int32
+	removalsRead = func() { reads.Add(1) }
+	t.Cleanup(func() { removalsRead = nil })
+	body := `{"session":"act-1","platform":"tickets","tool":"update_ticket","arguments":{"id":"T-1"},` +
+		`"decision":{"recordDigest":"sha256:` + strings.Repeat("c", 64) + `","packDigest":"sha256:` + strings.Repeat("b", 64) + `"},` +
+		`"cites":[` + strings.Join(cites, ",") + `]}`
+	// every citation resolves, and the action is refused after them
+	if code, out := authed(t, server, "/act", body, token); code != http.StatusBadRequest || out["refusedAt"] != "decision" {
+		t.Fatalf("want a refusal at the decision: %d %v", code, out)
+	}
+	if n := reads.Load(); n != 1 {
+		t.Fatalf("the removal records were read %d times for one action citing three receipts", n)
+	}
 }
 
 func writeStoreFile(t *testing.T, g *gatewayService, rel, text string) {
@@ -526,11 +665,15 @@ func TestACitationOfARemovedReceiptResolves(t *testing.T) {
 	if got := g.resolveCitation(citation{sessionID: "r", callIndex: 1, signature: signatureOf("1")}, keys); got != "the receipt does not verify under this engine's keys (artifact-missing)" {
 		t.Fatalf("the record gone: %q", got)
 	}
+	// a directory at the file's path is not read: as no records
 	if err := os.Mkdir(filepath.Join(g.storeRoot, removalsFile), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := g.resolveCitation(citation{sessionID: "r", callIndex: 3, signature: signatureOf("3")}, keys); got != "the store's removal records cannot be read" {
-		t.Fatalf("records that cannot be read: %q", got)
+	if got := g.resolveCitation(citation{sessionID: "r", callIndex: 3, signature: signatureOf("3")}, keys); got != "" {
+		t.Fatalf("r/3 beside a directory at the removal file's path: %q", got)
+	}
+	if got := g.resolveCitation(citation{sessionID: "r", callIndex: 1, signature: signatureOf("1")}, keys); got != "the receipt does not verify under this engine's keys (artifact-missing)" {
+		t.Fatalf("r/1 beside a directory at the removal file's path: %q", got)
 	}
 }
 

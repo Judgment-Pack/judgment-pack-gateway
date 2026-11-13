@@ -8,15 +8,17 @@ package main
 // own bytes.
 
 import (
+	"bufio"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"strings"
+	"time"
 )
 
 const (
@@ -84,6 +86,20 @@ func removalSigningInput(obj *vObject) []byte {
 	return append([]byte(removalContext), canon(covered)...)
 }
 
+// removalTimeLayout is removedAt's form: UTC, to the second.
+const removalTimeLayout = "2006-01-02T15:04:05Z"
+
+// isRemovalTime is a removedAt of its form that names an instant (SPEC.md
+// §1.3a): a date the calendar holds, and an hour, minute and second of a
+// day, so that it reads back as written.
+func isRemovalTime(s string) bool {
+	if !witnessTimeForm.MatchString(s) {
+		return false
+	}
+	t, err := time.Parse(removalTimeLayout, s)
+	return err == nil && t.Format(removalTimeLayout) == s
+}
+
 // removalOf holds one line to a removal record's form and loads it under
 // the keys the walk reached: exactly its members, each of its form, its
 // keyId a reached key's, its signature verifying under that key. A line
@@ -119,7 +135,7 @@ func removalOf(line string, keys []reachedKey) (removalRecord, bool) {
 		!okIndex || int64(index) < 0 || int64(index) > maxCallIndex ||
 		!okReceipt || !isSignature3(receiptSignature) ||
 		!okDigest || !isDigest(resultDigest) ||
-		!okAt || !witnessTimeForm.MatchString(removedAt) ||
+		!okAt || !isRemovalTime(removedAt) ||
 		!okBy || !isScopeIdentifier(removedBy) ||
 		!okKey || !isLowerHexOfLen(keyID, 32) ||
 		!okSig || !isSignature3(signatureHex) {
@@ -146,52 +162,160 @@ func removalOf(line string, keys []reachedKey) (removalRecord, bool) {
 	}, true
 }
 
+// removalLineBound is the most bytes a line of the removal file holds, its
+// line feed not counted, for a record on it to load (SPEC.md §1.3a). A
+// record the command writes is under 600 bytes; a longer line loads
+// nothing and is read no further than the bound, so a reader holds one
+// line at a time, and what it keeps grows with the records that load.
+const removalLineBound = 4096
+
+// removalsRead, when set, runs each time the removal file is read: a
+// test's count of the reads. removalJudged, when set, runs between judging
+// the file's entry and opening it: a test's way of putting another file in
+// its place at that moment.
+var (
+	removalsRead  func()
+	removalJudged func()
+)
+
+// errRemovalsNotRegular is something at the removal file's path that is
+// not a regular file -- a link, whatever it leads to, a directory, a FIFO.
+// A verifier reads no record from it (SPEC.md §1.3a, §4.1), and the
+// command and the export refuse it, writing nothing.
+var errRemovalsNotRegular = errors.New("is not a regular file")
+
 // loadRemovals reads the store's removal records (SPEC.md §1.3a,
-// "Loading"; §4.1): a file that is not there loads none; one there that is
-// not a regular file, or cannot be read, is no verdict. Each line
-// terminated by a line feed is judged alone, and a torn last line is none.
+// "Loading"; §4.1): nothing at the path loads none, and nor does something
+// there that is not a regular file, which is not read; a regular file that
+// cannot be read is no verdict.
 func loadRemovals(storeRoot string, keys []reachedKey) (map[string][]removalRecord, error) {
-	data, present, err := readRemovals(storeRoot)
-	if err != nil || !present {
-		return nil, err
+	removals, _, err := readRemovals(storeRoot, keys)
+	if errors.Is(err, errRemovalsNotRegular) {
+		return nil, nil
 	}
-	return parseRemovals(data, keys), nil
+	return removals, err
 }
 
-// readRemovals is the removal file's bytes, and whether it is there.
-func readRemovals(storeRoot string) ([]byte, bool, error) {
+// readRemovals reads the removal file a line at a time and loads its
+// records, and says whether the file ends in a line no append finished.
+// Something at the path that is not a regular file is errRemovalsNotRegular.
+func readRemovals(storeRoot string, keys []reachedKey) (map[string][]removalRecord, bool, error) {
+	if removalsRead != nil {
+		removalsRead()
+	}
+	file, err := openRemovals(storeRoot)
+	if err != nil || file == nil {
+		return nil, false, err
+	}
+	defer file.Close()
+	removals, torn, err := scanRemovals(file, keys)
+	if err != nil {
+		return nil, false, fmt.Errorf("removal records: %w", err)
+	}
+	return removals, torn, nil
+}
+
+// openRemovals opens the store's removal file to read, following no link:
+// nil, and no error, where nothing is at its path (openRemovalEntry).
+func openRemovals(storeRoot string) (*os.File, error) {
 	path := filepath.Join(storeRoot, removalsFile)
 	if _, err := os.Lstat(path); err != nil {
 		if absent(err) {
-			return nil, false, nil
+			return nil, nil
 		}
-		return nil, false, fmt.Errorf("removal records: %w", err)
+		return nil, fmt.Errorf("removal records: %w", err)
 	}
-	info, err := os.Stat(path)
+	root, err := os.OpenRoot(storeRoot)
 	if err != nil {
-		return nil, false, fmt.Errorf("removal records: %w", err)
+		return nil, fmt.Errorf("removal records: %w", err)
 	}
-	if !info.Mode().IsRegular() {
-		return nil, false, fmt.Errorf("removal records: %s is not a regular file", path)
-	}
-	data, err := os.ReadFile(path)
+	defer root.Close()
+	file, err := openRemovalEntry(root, openNoFollow)
 	if err != nil {
-		return nil, false, fmt.Errorf("removal records: %w", err)
+		if absent(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("removal records: %s %w", path, err)
 	}
-	return data, true, nil
+	return file, nil
 }
 
-// parseRemovals loads every record of a removal file's bytes.
-func parseRemovals(data []byte, keys []reachedKey) map[string][]removalRecord {
-	removals := map[string][]removalRecord{}
-	lines := strings.Split(string(data), "\n")
-	// The text after the last line feed is a line no append finished.
-	for _, line := range lines[:len(lines)-1] {
-		if rec, ok := removalOf(line, keys); ok {
-			removals[rec.receiptSignature] = append(removals[rec.receiptSignature], rec)
+// openRemovalEntry opens the removal file in the held store directory with
+// open, which follows no link and waits on no writer: the entry at its
+// name judged first -- a regular file, or errRemovalsNotRegular -- and the
+// file opened the entry judged, before the open and after it.
+func openRemovalEntry(root *os.Root, open func(*os.Root, string) (*os.File, error)) (*os.File, error) {
+	entry, err := root.Lstat(removalsFile)
+	if err != nil {
+		return nil, err
+	}
+	if !entry.Mode().IsRegular() {
+		return nil, errRemovalsNotRegular
+	}
+	if removalJudged != nil {
+		removalJudged()
+	}
+	file, err := open(root, removalsFile)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	after, err := root.Lstat(removalsFile)
+	if err != nil || !info.Mode().IsRegular() || !os.SameFile(entry, info) || !os.SameFile(after, info) {
+		file.Close()
+		return nil, errors.New("is not the file its name held a moment ago")
+	}
+	return file, nil
+}
+
+// scanRemovals loads the records of a removal file's lines, read one at a
+// time: each line terminated by a line feed and of at most
+// removalLineBound bytes is judged alone; a longer one is passed over
+// unread; the text after the last line feed is a line no append finished,
+// and torn says whether there is any.
+func scanRemovals(r io.Reader, keys []reachedKey) (removals map[string][]removalRecord, torn bool, err error) {
+	removals = map[string][]removalRecord{}
+	in := bufio.NewReaderSize(r, removalLineBound+1)
+	for {
+		line, err := in.ReadSlice('\n')
+		long := false
+		for err == bufio.ErrBufferFull {
+			long = true
+			line, err = in.ReadSlice('\n')
+		}
+		switch {
+		case err == io.EOF:
+			return removals, long || len(line) > 0, nil
+		case err != nil:
+			return nil, false, err
+		case !long:
+			if rec, ok := removalOf(string(line[:len(line)-1]), keys); ok {
+				keepRemoval(removals, rec)
+			}
 		}
 	}
-	return removals
+}
+
+// keepRemoval keeps a record that loaded once for what it names: a record
+// naming the receipt by the same session, index and digest as one kept
+// replaces it only where its key was reached later, which is all namedBy
+// reads of either. What is kept grows with the receipts the records name,
+// not with the lines that repeat them.
+func keepRemoval(removals map[string][]removalRecord, rec removalRecord) {
+	named := removals[rec.receiptSignature]
+	for i := range named {
+		if named[i].sessionID == rec.sessionID && named[i].callIndex == rec.callIndex && named[i].resultDigest == rec.resultDigest {
+			if rec.keyPos > named[i].keyPos {
+				named[i] = rec
+			}
+			return
+		}
+	}
+	removals[rec.receiptSignature] = append(named, rec)
 }
 
 // namedBy is whether a record that loaded names the receipt: its session

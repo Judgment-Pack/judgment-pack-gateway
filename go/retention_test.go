@@ -86,26 +86,131 @@ func (s retentionStore) verdict(t *testing.T, supplied string) *report {
 	return rep
 }
 
-// A removal file that is not there loads nothing; one there that is not a
-// regular file is no verdict (SPEC.md §4.1), never a store with no records.
-func TestARemovalFileThatIsNotARegularFileIsNoVerdict(t *testing.T) {
+// A removal file that is not there loads nothing, and nor does anything at
+// its path that is not a regular file (SPEC.md §1.3a, §4.1): it is not read,
+// so the removed receipt is artifact-missing -- a directory, and a link,
+// whatever it leads to, the very records that load where they are
+// included. The FIFO and a file that cannot be read: retention_unix_test.go.
+func TestARemovalFileThatIsNotARegularFileIsNotRead(t *testing.T) {
+	for name, make := range map[string]func(file, records string) error{
+		"a directory":               func(file, _ string) error { return os.Mkdir(file, 0o755) },
+		"a link to the records":     func(file, records string) error { return os.Symlink(records, file) },
+		"a link that leads nowhere": func(file, records string) error { return os.Symlink(records+".nowhere", file) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := materializeRetention(t, "v3-artifact-removed")
+			if status, observations := statusOf(t, s.verdict(t, ""), 0); status != "ok" || len(observations) != 1 || observations[0] != observationRemoved {
+				t.Fatalf("with the record: %s %v", status, observations)
+			}
+			file := filepath.Join(s.root, removalsFile)
+			records := filepath.Join(s.tmp, "records.jsonl")
+			if err := os.Rename(file, records); err != nil {
+				t.Fatal(err)
+			}
+			if status, _ := statusOf(t, s.verdict(t, ""), 0); status != "artifact-missing" {
+				t.Fatalf("with no removal file: %s, want artifact-missing", status)
+			}
+			if err := make(file, records); err != nil {
+				if runtime.GOOS == "windows" && name != "a directory" {
+					t.Skipf("no link here: %v", err)
+				}
+				t.Fatal(err)
+			}
+			if status, _ := statusOf(t, s.verdict(t, ""), 0); status != "artifact-missing" {
+				t.Fatalf("%s at the removal file's path: %s, want artifact-missing", name, status)
+			}
+		})
+	}
+}
+
+// The file read is the entry judged: another file put in its place between
+// the look at the entry and the open is not read as the records, and there
+// is no verdict -- the store changed under the verifier.
+func TestTheRemovalFileReadIsTheEntryJudged(t *testing.T) {
 	s := materializeRetention(t, "v3-artifact-removed")
-	rep := s.verdict(t, "")
-	if status, observations := statusOf(t, rep, 0); status != "ok" || len(observations) != 1 || observations[0] != observationRemoved {
-		t.Fatalf("with the record: %s %v", status, observations)
-	}
 	file := filepath.Join(s.root, removalsFile)
-	if err := os.Remove(file); err != nil {
+	other := filepath.Join(s.root, "other.jsonl")
+	if err := os.WriteFile(other, []byte(readFile(t, file)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if status, _ := statusOf(t, s.verdict(t, ""), 0); status != "artifact-missing" {
-		t.Fatalf("with no removal file: %s, want artifact-missing", status)
+	removalJudged = func() {
+		if err := os.Rename(other, file); err != nil {
+			t.Error(err)
+		}
 	}
-	if err := os.Mkdir(file, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(func() { removalJudged = nil })
 	if rep, err := s.verify(t, ""); err == nil {
-		t.Fatalf("a removal file that is a directory gave a verdict: %+v", rep)
+		t.Fatalf("another file put in the removal file's place gave a verdict: %+v", rep)
+	}
+}
+
+// Records naming one receipt by the same members are kept once, under the
+// latest key any of them was signed by, which is all namedBy reads.
+func TestKeepRemovalKeepsTheLatestKeyOnce(t *testing.T) {
+	removals := map[string][]removalRecord{}
+	rec := removalRecord{sessionID: "s1", callIndex: 0, receiptSignature: "sig", resultDigest: "d"}
+	for _, pos := range []int{0, 1, 0} {
+		rec.keyPos = pos
+		keepRemoval(removals, rec)
+	}
+	if named := removals["sig"]; len(named) != 1 || named[0].keyPos != 1 {
+		t.Fatalf("kept %+v", named)
+	}
+	other := rec
+	other.callIndex = 1
+	keepRemoval(removals, other)
+	if len(removals["sig"]) != 2 {
+		t.Fatalf("a record of another index is another record: %+v", removals["sig"])
+	}
+}
+
+// The removal file is read a line at a time (SPEC.md §1.3a): a line of at
+// most removalLineBound bytes before its line feed is judged, and a longer
+// one loads nothing and does not swallow the line after it; blank lines
+// and lines that repeat a record keep nothing more; a last line with no
+// line feed loads nothing and is torn. The corpus holds the bound itself
+// (v3-artifact-removal-record-at-line-bound, -over-line-bound), for both
+// verifiers.
+func TestTheRemovalFileIsReadALineAtATime(t *testing.T) {
+	s := materializeRetention(t, "v3-artifact-removed")
+	data := []byte(readFile(t, filepath.Join(s.root, removalsFile)))
+	record := strings.TrimSuffix(string(data), "\n")
+	if strings.Contains(record, "\n") || len(record) > removalLineBound {
+		t.Fatalf("the vector's file is not one record: %q", data)
+	}
+	padded := func(n int) string { return "{" + strings.Repeat(" ", n-len(record)) + record[1:] }
+	keys := []reachedKey{{key: ed25519.PublicKey(s.publicKey), keyID: keyIDFor(s.publicKey)}}
+	loaded := func(t *testing.T, text string) (int, bool) {
+		t.Helper()
+		removals, torn, err := scanRemovals(strings.NewReader(text), keys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, named := range removals {
+			n += len(named)
+		}
+		return n, torn
+	}
+	for name, c := range map[string]struct {
+		text   string
+		loaded int
+		torn   bool
+	}{
+		"the record":                       {record + "\n", 1, false},
+		"at the bound":                     {padded(removalLineBound) + "\n", 1, false},
+		"one byte over":                    {padded(removalLineBound+1) + "\n", 0, false},
+		"over, then the record":            {strings.Repeat("x", 3*removalLineBound+7) + "\n" + record + "\n", 1, false},
+		"over and torn":                    {record + "\n" + strings.Repeat("x", 2*removalLineBound+2), 1, true},
+		"blank lines and the record twice": {"\n\n" + record + "\n\n" + record + "\n" + padded(len(record)+3) + "\n", 1, false},
+		"torn":                             {record, 0, true},
+		"empty":                            {"", 0, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if n, torn := loaded(t, c.text); n != c.loaded || torn != c.torn {
+				t.Fatalf("%d record(s) kept, torn %v; want %d, %v", n, torn, c.loaded, c.torn)
+			}
+		})
 	}
 }
 
@@ -323,6 +428,13 @@ func TestARemovalRecordLoadsOnlyOfItsForm(t *testing.T) {
 	if rec, ok := removalOf(line(members()), keys); !ok || rec.callIndex != 3 || rec.sessionID != "s1" || rec.keyPos != 0 {
 		t.Fatalf("the record of its form: %+v %v", rec, ok)
 	}
+	for _, at := range []string{"2028-02-29T23:59:59Z", "0000-01-01T00:00:00Z", "9999-12-31T23:59:59Z"} {
+		m := members()
+		m["removedAt"] = at
+		if _, ok := removalOf(line(m), keys); !ok {
+			t.Errorf("removed at %s, an instant: not loaded", at)
+		}
+	}
 	for name, change := range map[string]func(m map[string]any){
 		"another kind":                 func(m map[string]any) { m["kind"] = "seal" },
 		"a callIndex below 0":          func(m map[string]any) { m["callIndex"] = int64(-1) },
@@ -332,6 +444,14 @@ func TestARemovalRecordLoadsOnlyOfItsForm(t *testing.T) {
 		"a receipt signature short":    func(m map[string]any) { m["receiptSignature"] = strings.Repeat("ab", 63) },
 		"a digest of another form":     func(m map[string]any) { m["resultDigest"] = strings.Repeat("0", 64) },
 		"a time of another form":       func(m map[string]any) { m["removedAt"] = "2026-11-13 00:00:00Z" },
+		"a time of no calendar":        func(m map[string]any) { m["removedAt"] = "2026-13-45T99:99:99Z" },
+		"a thirteenth month":           func(m map[string]any) { m["removedAt"] = "2026-13-01T00:00:00Z" },
+		"a 30 February":                func(m map[string]any) { m["removedAt"] = "2028-02-30T00:00:00Z" },
+		"a 29 February of no leap":     func(m map[string]any) { m["removedAt"] = "2026-02-29T00:00:00Z" },
+		"a day 0":                      func(m map[string]any) { m["removedAt"] = "2026-11-00T00:00:00Z" },
+		"an hour 24":                   func(m map[string]any) { m["removedAt"] = "2026-11-13T24:00:00Z" },
+		"a minute 60":                  func(m map[string]any) { m["removedAt"] = "2026-11-13T00:60:00Z" },
+		"a second 60":                  func(m map[string]any) { m["removedAt"] = "2026-11-13T23:59:60Z" },
 		"an empty label":               func(m map[string]any) { m["removedBy"] = "" },
 		"a label holding a line feed":  func(m map[string]any) { m["removedBy"] = "a\nb" },
 		"a member left out":            func(m map[string]any) { delete(m, "removedAt") },

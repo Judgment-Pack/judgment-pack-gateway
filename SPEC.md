@@ -824,18 +824,27 @@ every other member retained. Its members:
   characters;
 - `resultDigest` — the receipt's `resultDigest`, `"sha256:"` and 64 lowercase hexadecimal
   characters;
-- `removedAt` — when, `YYYY-MM-DDThh:mm:ssZ` in UTC;
+- `removedAt` — when, `YYYY-MM-DDThh:mm:ssZ` in UTC, naming an instant: a date the
+  calendar holds, an hour from 00 to 23, a minute and a second from 00 to 59 (no leap
+  second);
 - `removedBy` — the label the operator gave the command, a string of the form of a scope
   identifier (§1.2a, `scope`); a label, not a credential: the key signed the record, and
   nothing establishes who ran the command;
 - `keyId` — the key id of the key that signed the record, 32 lowercase hexadecimal
   characters.
 
-**Loading.** A record loads when its line is one JSON object, terminated by a line feed,
-holding exactly the nine members above, no name twice, each of the form given; its `keyId`
-names a key the walk of §3b reached; and its signature verifies under that key. A line that
-is not so loads nothing and is no finding: a torn last line, left by an interrupted append,
-is such a line. A record **names** a receipt when its `sessionId` is the receipt's session
+**Loading.** The file is read only where it is a regular file: nothing at its path, and
+anything there that is not a regular file — a directory, a FIFO, a link, whatever the link
+leads to — is not read, and no record loads (§4.1); a link is not followed, so the records a
+verifier reads are the store's own bytes. A line is the bytes before a line feed. A record
+loads when its line is of at most 4096 bytes, its line feed not counted, and is one JSON
+object holding exactly the nine members above, no name twice, each of the form given; its
+`keyId` names a key the walk of §3b reached; and its signature verifies under that key. A line
+that is not so loads nothing and is no finding: a torn last line, left by an interrupted
+append, is such a line, and so is a longer line, which a verifier need read no further than
+its bound — a record the command writes is under 600 bytes, so the bound is one no record
+it writes reaches, and a reader holds one line at a time. A record that repeats one loaded,
+or names the same receipt as one, adds nothing a verifier need keep. A record **names** a receipt when its `sessionId` is the receipt's session
 directory, its `callIndex`, `receiptSignature` and `resultDigest` are the receipt's own, and
 its key is the receipt's key or a key the walk reached after it. A record that names no
 receipt in the store is nothing the verifier reports. The file is no part of the registry:
@@ -1516,7 +1525,8 @@ a verdict at all.
 | the decision-record directory (§4 step 6) does not exist, or the verifier was given none | absent — every version 3 action receipt that passed the ladder is `decision-record-mismatch`; an absent directory cannot make an action verify, it can only fail to excuse one |
 | the decision-record path exists but is not a directory, or cannot be read, or any existing parent path component is not a directory, or it or a directory above it is a link that leads nowhere, or the path is spelled so that the platform could resolve it otherwise (below), or a directory or regular file under it cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
 | `<root>/artifact-removals.jsonl` does not exist | no removal record loads (§1.3a) — a receipt whose bytes are gone and that does not carry `artifact: "not-retained"` is `artifact-missing` |
-| `<root>/artifact-removals.jsonl` exists and is not a regular file, or cannot be read | no verdict — the verifier refuses (non-zero exit); the records are present and unreadable, not absent |
+| `<root>/artifact-removals.jsonl` exists and is not a regular file: a directory, a FIFO or another special file, or a link, whatever it leads to, nowhere included | not read: no removal record loads (§1.3a, "Loading"), as where the file does not exist — a receipt whose bytes are gone and that does not carry `artifact: "not-retained"` is `artifact-missing`. A link is not followed, so a verifier reads no record from outside the store |
+| `<root>/artifact-removals.jsonl` is a regular file that cannot be read | no verdict — the verifier refuses (non-zero exit); the records are present and unreadable, not absent |
 | the supplied-bytes directory (§4, `--artifacts`) does not exist, is not a directory, or cannot be read, or the path is spelled so that the platform could resolve it otherwise (below), or a file in it that the verifier reads (§1.3a, step 3) is not a regular file or cannot be read | no verdict — the verifier refuses (non-zero exit); a reader that names a directory of bytes is answered about those bytes or not at all |
 
 The registry and the decision-record directory are taken by their spelling, and a path the
@@ -1833,7 +1843,9 @@ it, a receipt that:
   them there.
 
 Otherwise it appends the receipt's removal record (§1.3a), signed by the key in force, and
-then removes the bytes. A receipt a record already names is not recorded again: its bytes,
+then removes the bytes. Where anything is at `<root>/artifact-removals.jsonl` that is not a
+regular file — a link, whatever it leads to, included — it refuses every receipt and writes
+nothing: it reads no record through a link and appends none through one, nor beside it. A receipt a record already names is not recorded again: its bytes,
 if still there, are removed. A removal stopped between the two leaves the record and the
 bytes, which verify `ok` with no observation (§1.3a, step 1), and a second run completes it.
 The command prints each record it appends as its line. `--by` is a label of the form of a

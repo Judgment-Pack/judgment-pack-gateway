@@ -2254,11 +2254,13 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 		"v3-artifact-not-retained-bytes-in-store", "v3-artifact-not-retained-shared-digest",
 		"v3-artifact-not-retained-supplied-elsewhere", "v3-artifact-not-retained-supplied-mismatch",
 		"v3-artifact-not-retained-supplied", "v3-artifact-not-retained",
+		"v3-artifact-removal-record-again-under-a-later-key", "v3-artifact-removal-record-at-line-bound",
 		"v3-artifact-removal-record-changed-after-signing", "v3-artifact-removal-record-digest-differs",
 		"v3-artifact-removal-record-extra-member", "v3-artifact-removal-record-forged",
 		"v3-artifact-removal-record-index-differs", "v3-artifact-removal-record-key-after-the-receipt",
 		"v3-artifact-removal-record-key-before-the-receipt", "v3-artifact-removal-record-names-another-receipt",
-		"v3-artifact-removal-record-other-key", "v3-artifact-removal-record-session-differs",
+		"v3-artifact-removal-record-other-key", "v3-artifact-removal-record-over-line-bound",
+		"v3-artifact-removal-record-removed-at-not-an-instant", "v3-artifact-removal-record-session-differs",
 		"v3-artifact-removal-record-torn", "v3-artifact-removal-records-beside-lines-that-load-nothing",
 		"v3-artifact-removed-bytes-present",
 		"v3-artifact-removed-other-bytes-put-back", "v3-artifact-removed-shared-digest",
@@ -2266,7 +2268,9 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 	}
 	retentionObserving := []string{
 		"v3-artifact-not-retained-supplied-elsewhere", "v3-artifact-not-retained",
-		"v3-artifact-removal-record-key-after-the-receipt", "v3-artifact-removal-records-beside-lines-that-load-nothing",
+		"v3-artifact-removal-record-again-under-a-later-key", "v3-artifact-removal-record-at-line-bound",
+		"v3-artifact-removal-record-key-after-the-receipt",
+		"v3-artifact-removal-record-over-line-bound", "v3-artifact-removal-records-beside-lines-that-load-nothing",
 		"v3-artifact-removed-shared-digest", "v3-artifact-removed",
 	}
 	supplying := []string{
@@ -2313,8 +2317,8 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 			if err != nil {
 				t.Fatalf("no run: %v", err)
 			}
-			if count != 180 {
-				t.Fatalf("%d store vectors read, want 180", count)
+			if count != 184 {
+				t.Fatalf("%d store vectors read, want 184", count)
 			}
 			disagreeing := map[string]bool{}
 			for _, failure := range failures {
@@ -2492,7 +2496,7 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 	// observes in.
 	if got, want := []int{len(stores), len(okTrue), len(withFindings), len(withWitnesses), len(withRotations), len(stating),
 		len(witnesses), len(refusals), len(readings), len(okReadings), len(withHead)},
-		[]int{180, 41, 180, 3, 11, 8, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
+		[]int{184, 43, 184, 3, 12, 11, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
 		t.Fatalf("the corpus's vectors, by what their answers give: %v, want %v", got, want)
 	}
 	for name := range stating {

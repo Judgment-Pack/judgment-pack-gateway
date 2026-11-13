@@ -147,6 +147,22 @@ func exportEngine(configPath, out string, observations []string) (*vObject, erro
 	}, out)
 }
 
+// exportRemovals is the store's removal file's bytes, and whether it is
+// there, read following no link (openRemovals): anything at its path that
+// is not a regular file is refused (SPEC.md §1.3a).
+func exportRemovals(storeRoot string) ([]byte, bool, error) {
+	file, err := openRemovals(storeRoot)
+	if err != nil || file == nil {
+		return nil, false, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, false, fmt.Errorf("removal records: %w", err)
+	}
+	return data, true, nil
+}
+
 // exportOutside refuses an export directory inside what it exports: a
 // directory made under the store's receipts would be a session there, and
 // a file made under the decision records a record verification reads.
@@ -327,6 +343,13 @@ func (w *exportWriter) put(rel string, data []byte) error {
 
 // writeExport writes the export into out, which must not be there yet.
 func writeExport(in exportInputs, out string) (*vObject, error) {
+	// a removal file the export would refuse is refused before anything is
+	// written, and judged again where it is read
+	if in.storeRoot != "" {
+		if _, _, err := exportRemovals(in.storeRoot); err != nil {
+			return nil, err
+		}
+	}
 	if err := os.Mkdir(out, 0o700); err != nil {
 		return nil, fmt.Errorf("the export directory: %v", err)
 	}
@@ -385,10 +408,12 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 	// removal appends its record before it removes the bytes, so bytes the
 	// export lacks because a removal took them after they were listed are
 	// named by a record read here. A file that is not there is none; one
-	// that is not a regular file, or cannot be read, stops the export, as
-	// it is no verdict to verify.
+	// that cannot be read stops the export, as it is no verdict to verify;
+	// and so does anything at its path that is not a regular file, a link
+	// included, which is read through by no reader of the store
+	// (exportRemovals).
 	if in.storeRoot != "" {
-		data, present, err := readRemovals(in.storeRoot)
+		data, present, err := exportRemovals(in.storeRoot)
 		if err != nil {
 			return nil, err
 		}

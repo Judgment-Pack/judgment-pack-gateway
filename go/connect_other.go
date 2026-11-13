@@ -33,6 +33,13 @@ func openNoFollow(dir *os.Root, name string) (*os.File, error) {
 	return dir.OpenFile(name, os.O_RDONLY, 0)
 }
 
+// Elsewhere than Unix the removal file is opened to append as openNoFollow
+// opens one to read: the held directory keeps it from leading out, and
+// the entry and the file opened are compared (openRemovalEntry).
+func openAppendNoFollow(dir *os.Root, name string) (*os.File, error) {
+	return dir.OpenFile(name, os.O_WRONLY|os.O_APPEND, 0)
+}
+
 func snapshotHeld(info os.FileInfo, owner fileOwnerIDs, dir bool) error { return nil }
 
 func frontendOwns(owner fileOwnerIDs) bool { return false }

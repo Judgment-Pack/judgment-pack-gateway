@@ -764,6 +764,29 @@ func TestExportRefusesALinkInTheStore(t *testing.T) {
 			holdsSeed(t, out)
 		})
 	}
+	// The removal file (SPEC.md §1.3a) is read through no link: one at its
+	// path, or anything there that is not a regular file, refuses the
+	// export before anything is written.
+	for name, make := range map[string]func(file string) error{
+		"a link at the removal file":      func(file string) error { return os.Symlink(seedPath, file) },
+		"a directory at the removal file": func(file string) error { return os.Mkdir(file, 0o755) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			st, _, storeRoot, registryPath := testStore(t)
+			stampSession(t, st, "sealed", 1)
+			if err := make(filepath.Join(storeRoot, removalsFile)); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(t.TempDir(), "export")
+			_, err := writeExport(exportInputs{authority: "gateway:test", keyID: st.keyID, kind: newFsKind(fsLayout{store: storeRoot, registry: registryPath}), storeRoot: storeRoot}, out)
+			if err == nil || !strings.Contains(err.Error(), "is not a regular file") {
+				t.Fatalf("an export of %s: %v", name, err)
+			}
+			if _, err := os.Lstat(out); err == nil {
+				t.Fatal("the refused export wrote its directory")
+			}
+		})
+	}
 	t.Run("a link that leads nowhere", func(t *testing.T) {
 		st, _, storeRoot, registryPath := testStore(t)
 		stampSession(t, st, "sealed", 1)

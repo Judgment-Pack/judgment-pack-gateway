@@ -183,8 +183,13 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	if err != nil {
 		return nil, actRefusal{"cites", "the cited receipts cannot be resolved: " + err.Error()}
 	}
+	// the store's removal records, read once for every citation
+	removals, err := loadRemovals(g.storeRoot, keys)
+	if err != nil {
+		return nil, actRefusal{"cites", "the cited receipts cannot be resolved: the store's removal records cannot be read"}
+	}
 	for _, c := range cites {
-		if reason := g.resolveCitation(c, keys); reason != "" {
+		if reason := g.resolveCitationWith(c, keys, removals); reason != "" {
 			return nil, actRefusal{"cites", fmt.Sprintf("citation %s/%d does not resolve in this engine's store: %s", c.sessionID, c.callIndex, reason)}
 		}
 	}
@@ -974,6 +979,16 @@ func parseDecision(v value) (decision, error) {
 // whose payload a record says was removed, resolves, and the action reads
 // no cited payload; one whose bytes are gone with no record does not.
 func (g *gatewayService) resolveCitation(c citation, keys []reachedKey) string {
+	removals, err := loadRemovals(g.storeRoot, keys)
+	if err != nil {
+		return "the store's removal records cannot be read"
+	}
+	return g.resolveCitationWith(c, keys, removals)
+}
+
+// resolveCitationWith is resolveCitation under removal records already
+// read: a request citing many receipts reads the file once.
+func (g *gatewayService) resolveCitationWith(c citation, keys []reachedKey, removals map[string][]removalRecord) string {
 	sessions, err := os.ReadDir(filepath.Join(g.storeRoot, "receipts"))
 	if err != nil {
 		return "the store's receipts cannot be listed"
@@ -992,10 +1007,6 @@ func (g *gatewayService) resolveCitation(c citation, keys []reachedKey) string {
 	data, err := os.ReadFile(filepath.Join(g.storeRoot, "receipts", c.sessionID, fileName))
 	if err != nil {
 		return "the receipt cannot be read"
-	}
-	removals, err := loadRemovals(g.storeRoot, keys)
-	if err != nil {
-		return "the store's removal records cannot be read"
 	}
 	r, status, err := checkReceiptWith(data, g.storeRoot, c.sessionID, fileName, g.authority, keys, &retention{removals: removals})
 	if err != nil {
