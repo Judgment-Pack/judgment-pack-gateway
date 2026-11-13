@@ -53,7 +53,8 @@ gateway instance, and only one, serves a database.
    seal-open --config`, `gateway remove-artifact --config`, and a key rotation under way. The
    list is derived from the code paths that open the store's directory, each with a test that it
    is refused and reads no empty directory (`docs/postgresql-store.md`, "Not available with this
-   kind yet").
+   kind yet"). *Amended 2026-11-13 (#430, ADR-0033): a platform's `scope` is taken with
+   `storage`, served through the kind's view of its scope identifier.*
 
 3. **`gateway store migrate`** takes the migration login's connection string by reference, the
    owner role and the run-time role; it refuses a login that is either role, so the run-time

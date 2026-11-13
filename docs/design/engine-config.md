@@ -1892,9 +1892,13 @@ its environment holds the variable.
 
 Refused by name, `engine configuration: …`: `storage` in a file of version 23 or earlier; `store`
 or `registry` beside `storage`; and, with `storage`, what reads the store on disk, with the error
-`storage-kind-unsupported` naming it: `witness`, `sealOpenAtStart`, a platform's `write`,
-`descriptorStatements` and `scope` (postgresql-store.md, "Not available with this kind yet", has
-the commands and routes refused besides).
+`storage-kind-unsupported` naming it: `witness`, `sealOpenAtStart`, a platform's `write` and
+`descriptorStatements` (postgresql-store.md, "Not available with this kind yet", has the commands
+and routes refused besides). A platform's `scope` is taken with `storage`: the kind keeps each
+scope identifier's rows apart, and a session's receipts are of one scope (postgresql-store.md,
+"Scope identifiers"; ADR-0033). No engine version is added for it: no member is added, and a
+gateway before it refuses `scope` beside `storage` by name, so it refuses such a file rather than
+reading it otherwise.
 
 **Upgrading.** A version 23 file loads unchanged under a gateway of this version. To move to the
 PostgreSQL kind, run `gateway store migrate`, raise `engineVersion` to `"24"`, replace `store` and
