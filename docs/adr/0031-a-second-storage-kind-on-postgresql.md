@@ -64,13 +64,13 @@ migration files the binary carries, SCRAM-SHA-256 and TLS. Choosing a driver ins
 the maintainer (below).
 
 1. **The client** (`go/pgwire.go`). A connection string is a `postgresql://` URL naming a host, a
-   user and a database, with `sslmode=verify-full` (the default) or, to a loopback host alone,
-   `disable`, and no parameter but `sslrootcert` and `connect_timeout`; any other parameter is
-   refused, never ignored. A loopback host is a literal loopback address or the name `localhost`,
+   user, a password and a database, with `sslmode=verify-full` (the default) or, to a loopback host
+   alone, `disable`, and no parameter but `sslrootcert` and `connect_timeout`; any other parameter
+   is refused, never ignored. A loopback host is a literal loopback address or the name `localhost`,
    and under `disable` either is held after the dial: a connection whose remote address is not a
    loopback address is closed before a byte is sent on it, since a resolver need not answer
-   `localhost` with one (#440). The login is SCRAM-SHA-256 alone: a server that asks for a password in
-   the clear or by MD5 is refused before the password leaves the gateway, and one that admits a
+   `localhost` with one (#440). The login is SCRAM-SHA-256 alone: a server that asks for a password
+   in the clear or by MD5 is refused before the password leaves the gateway, and one that admits a
    login the connection string gives a password for without the exchange, or whose final
    signature is not the one the password's verifier makes, is refused. Every value is bound as a
    parameter in the binary format; the simple query form runs only the schema files the binary

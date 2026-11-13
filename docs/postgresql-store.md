@@ -38,6 +38,9 @@ postgresql://gateway_runtime:<password>@db.example.internal:5432/gateway_store?s
   connection reached, and closes it, with nothing sent, unless that is a loopback address: a
   resolver need not answer `localhost` with one. `connect_timeout` is in seconds, 1 to 300, and 10
   without it. Any other parameter is refused, not ignored.
+- The password is required: a connection string without one, or with an empty one, is refused. A
+  login without a password makes no SCRAM exchange, so the server proves nothing of itself by it,
+  and under `disable` nothing else would.
 - The connection string is a secret. The gateway never prints it: not in an error, a log line, a
   receipt, the start's lines or `gateway store migrate`'s report. A configuration names it only by
   reference, a file or an environment variable ("Selecting the kind", below).

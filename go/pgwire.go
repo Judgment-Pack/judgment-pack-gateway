@@ -95,7 +95,7 @@ func (pgDSN) GoString() string { return pgDSNPrinted }
 
 // errPgDSN is the one sentence a connection string out of form is refused
 // with: it quotes nothing of the string.
-var errPgDSN = errors.New("the store's connection string is not a postgresql:// URL naming a host, a user and a database, with sslmode verify-full or, to a loopback host, disable, and no other parameter than sslrootcert and connect_timeout")
+var errPgDSN = errors.New("the store's connection string is not a postgresql:// URL naming a host, a user, a password and a database, with sslmode verify-full or, to a loopback host, disable, and no other parameter than sslrootcert and connect_timeout")
 
 // parsePgDSN reads a connection string of the URL form,
 // postgresql://user:password@host:port/database?sslmode=...: the one form
@@ -112,7 +112,10 @@ func parsePgDSN(text string) (pgDSN, error) {
 	if d.port == "" {
 		d.port = pgDefaultPort
 	}
-	if d.host == "" || d.user == "" || d.database == "" || strings.Contains(d.database, "/") ||
+	// a password is required: a login without one has the server prove
+	// nothing of itself (no SCRAM exchange), so under sslmode=disable
+	// nothing would tell the gateway's server from another (#440)
+	if d.host == "" || d.user == "" || d.password == "" || d.database == "" || strings.Contains(d.database, "/") ||
 		strings.ContainsRune(d.user+d.database+d.password, 0) {
 		return pgDSN{}, errPgDSN
 	}
