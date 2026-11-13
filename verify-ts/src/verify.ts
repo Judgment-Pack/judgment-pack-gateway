@@ -17,6 +17,7 @@ import {
   checkSpellings,
   code,
   digestArtifact,
+  digestSupplied,
   documentBound,
   eachDecisionRecord,
   eachEntry,
@@ -26,14 +27,16 @@ import {
   locateDecisionRecords,
   locateRegistry,
   nameOf,
+  nothingAt,
   readDocument,
   refuseUnsupportedPlatform,
+  suppliedDirectory,
 } from "./inputs.ts";
 import { TooLarge, count, hasDuplicate, integerDigits, maxValues, member, parse } from "./json.ts";
 import type { NumberValue, ObjectValue, Value } from "./json.ts";
 import { RegistryWalk } from "./rotation.ts";
 import type { ReachedKey, RotationStatus } from "./rotation.ts";
-import { structureV2, structureV3 } from "./structure.ts";
+import { isScopeIdentifier, structureV2, structureV3 } from "./structure.ts";
 import { descriptorStatus } from "./descriptors.ts";
 
 export type Status =
@@ -84,6 +87,9 @@ type Judged = {
   readonly status: Status;
   // Past order 1: the receipt's index, for its finding.
   readonly callIndex?: bigint;
+  // For a receipt that passed with no bytes re-digested: what the artifact
+  // step says of it (§1.3a), artifact-not-retained or artifact-removed.
+  readonly observation?: string;
   // For a receipt that passed: what the chain walk reads of it, its key's
   // place among the keys the registry's walk reached among it (§3b).
   readonly chain?: { readonly version: string; readonly signature: string; readonly prev: Prev; readonly keyPos: number };
@@ -284,9 +290,106 @@ function citedSignature(v: Value | null): string | undefined {
   return signature !== undefined && /^[0-9a-f]{128}$/.test(signature) ? own(signature) : undefined;
 }
 
+// A removal record that loaded (§1.3a): of its form, under a key the walk
+// reached, its signature verifying; kept by the receipt signature it names.
+type Removal = { readonly sessionId: string; readonly callIndex: bigint; readonly resultDigest: string; readonly keyPos: number };
+const removalPrefix = "judgment-pack-gateway/artifact-removal/1:";
+const removalMembers = ["callIndex", "keyId", "kind", "receiptSignature", "removedAt", "removedBy", "resultDigest", "sessionId", "signature"];
+
+// What the artifact step reads beside the store's own bytes (§1.3a): the
+// removal records that loaded, and the directory of bytes a reader
+// supplied, undefined when none was.
+type Retention = { readonly removals: ReadonlyMap<string, readonly Removal[]>; readonly supplied: string | undefined };
+
+// removalOf is a line of the removal file, read, as a record when it holds
+// exactly its nine members, no name twice, each of its form, its key id
+// names a key the walk reached and its signature verifies under that key,
+// over the prefix and the canonical form of everything but the signature;
+// any other line is no record.
+function removalOf(v: Value | null, keys: readonly ReachedKey[]): (Removal & { readonly receiptSignature: string }) | null {
+  if (v === null || v.type !== "object" || hasDuplicate(v)) {
+    return null;
+  }
+  if (v.members.length !== removalMembers.length || !v.members.every((m) => removalMembers.includes(m.name))) {
+    return null;
+  }
+  const of = (name: string, form: RegExp): string | undefined => {
+    const s = str(member(v, name));
+    return s !== undefined && form.test(s) ? s : undefined;
+  };
+  const kind = of("kind", /^artifact-removal$/);
+  const sessionId = of("sessionId", /^[A-Za-z0-9._-]{1,128}$/);
+  const callIndex = member(v, "callIndex");
+  const receiptSignature = of("receiptSignature", /^[0-9a-f]{128}$/);
+  const resultDigest = of("resultDigest", /^sha256:[0-9a-f]{64}$/);
+  const removedAt = of("removedAt", /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
+  const removedBy = str(member(v, "removedBy"));
+  const keyId = of("keyId", /^[0-9a-f]{32}$/);
+  const signature = of("signature", /^[0-9a-f]{128}$/);
+  if (
+    kind === undefined ||
+    sessionId === undefined ||
+    sessionId === "." ||
+    sessionId === ".." ||
+    callIndex?.type !== "number" ||
+    callIndex.integer === null ||
+    callIndex.integer < 0n ||
+    callIndex.integer > 2n ** 53n - 1n ||
+    receiptSignature === undefined ||
+    resultDigest === undefined ||
+    removedAt === undefined ||
+    removedBy === undefined ||
+    !isScopeIdentifier(removedBy) ||
+    keyId === undefined ||
+    signature === undefined
+  ) {
+    return null;
+  }
+  const keyPos = keys.findIndex((k) => k.keyId === keyId);
+  if (keyPos < 0) {
+    return null;
+  }
+  const payload: ObjectValue = { type: "object", members: v.members.filter((m) => m.name !== "signature") };
+  if (!signed(keys[keyPos]!.key, removalPrefix, payload, signature)) {
+    return null;
+  }
+  return { sessionId: own(sessionId), callIndex: callIndex.integer, resultDigest: own(resultDigest), keyPos, receiptSignature: own(receiptSignature) };
+}
+
+// loadRemovals is the store's removal records (§1.3a, "Loading"; §4.1): a
+// file that is not there loads none; one there that is not a regular file,
+// or cannot be read, is no verdict. Each line terminated by a line feed is
+// judged alone; the text after the last line feed is no line an append
+// finished.
+function loadRemovals(root: string, keys: readonly ReachedKey[], budget: Budget): Map<string, Removal[]> {
+  const removals = new Map<string, Removal[]>();
+  const p = under(root, "artifact-removals.jsonl");
+  if (nothingAt(p)) {
+    return removals;
+  }
+  const bytes = readDocument(p, "the removal records");
+  let start = 0;
+  for (let at = bytes.indexOf(0x0a); at >= 0; at = bytes.indexOf(0x0a, start)) {
+    const line = bytes.subarray(start, at);
+    start = at + 1;
+    const rec = removalOf(parseOr(line, () => null), keys);
+    if (rec === null) {
+      continue;
+    }
+    budget.charge(entryCost + size(rec.receiptSignature) + size(rec.sessionId) + size(rec.resultDigest), "the removal records");
+    const named = removals.get(rec.receiptSignature);
+    if (named === undefined) {
+      removals.set(rec.receiptSignature, [rec]);
+    } else {
+      named.push(rec);
+    }
+  }
+  return removals;
+}
+
 // judge is the ladder of §1.4 for one receipt: at most one status, the
 // first failure in order.
-function judge(parsed: Value | null, bytesDigest: string, root: string, session: string, file: string, keys: readonly ReachedKey[], authority: string): Judged {
+function judge(parsed: Value | null, bytesDigest: string, root: string, session: string, file: string, keys: readonly ReachedKey[], authority: string, retention: Retention): Judged {
   // 1. malformed: unparseable, a name twice, or a structural violation of
   // the receipt's version.
   if (parsed === null || parsed.type !== "object" || hasDuplicate(parsed)) {
@@ -335,13 +438,39 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
     return judged("authority-mismatch");
   }
   // 7. artifact-missing, and 8. artifact-mismatch: the artifact at the
-  // result digest's hex, re-digested.
+  // result digest's hex, re-digested; where nothing at all is there, a
+  // receipt that says its call kept no payload, or that a removal record
+  // names, passes order 7, and bytes a reader supplied for it are
+  // re-digested in its stead (§1.3a).
   const hex = str(member(receipt, "resultDigest"))!.slice("sha256:".length);
-  const digest = digestArtifact(under(root, "artifacts", hex));
+  const at = under(root, "artifacts", hex);
+  const digest = digestArtifact(at);
+  let observation: string | undefined;
   if (digest === null) {
-    return judged("artifact-missing");
-  }
-  if (digest !== hex) {
+    if (!nothingAt(at)) {
+      return judged("artifact-missing");
+    }
+    if (version === "3" && member(receipt, "artifact") !== undefined) {
+      observation = "artifact-not-retained";
+    } else if (
+      (retention.removals.get(signature) ?? []).some(
+        (r) => r.sessionId === session && r.callIndex === callIndex && r.resultDigest === str(member(receipt, "resultDigest")) && r.keyPos >= keyPos,
+      )
+    ) {
+      observation = "artifact-removed";
+    } else {
+      return judged("artifact-missing");
+    }
+    if (retention.supplied !== undefined) {
+      const supplied = digestSupplied(under(retention.supplied, hex));
+      if (supplied !== null) {
+        if (supplied !== hex) {
+          return judged("artifact-mismatch");
+        }
+        observation = undefined;
+      }
+    }
+  } else if (digest !== hex) {
     return judged("artifact-mismatch");
   }
   if (version === "3") {
@@ -394,6 +523,7 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
     file,
     status: "ok",
     callIndex,
+    ...(observation !== undefined && { observation }),
     chain: { version: own(version), signature: own(signature), prev, keyPos },
     ...(action && { action }),
     ...(delivery && {delivery}),
@@ -510,7 +640,7 @@ export function verifyStore(
   authority: string,
   decisionRecordsPath: string | undefined,
   publicKey: Uint8Array,
-  options: { readonly ordinarySealsOnly?: boolean } = {},
+  options: { readonly ordinarySealsOnly?: boolean; readonly artifacts?: string } = {},
 ): Verdict {
   const ordinarySealsOnly = options.ordinarySealsOnly === true;
   refuseUnsupportedPlatform();
@@ -520,6 +650,9 @@ export function verifyStore(
   // A spelling §4.1 refuses is refused before anything is read, and each
   // anchor is judged absent or present before the store is read.
   checkSpellings(registryPath, decisionRecordsPath);
+  if (options.artifacts !== undefined) {
+    suppliedDirectory(options.artifacts);
+  }
   const registry = locateRegistry(registryPath);
   const records = locateDecisionRecords(decisionRecordsPath);
 
@@ -579,6 +712,8 @@ export function verifyStore(
   walk.end();
   testHooks.sample?.("registry");
   const keys = walk.keys;
+  // §1.3a: the removal records, under the keys the walk reached.
+  const retention: Retention = { removals: loadRemovals(root, keys, budget), supplied: options.artifacts };
 
   for (const [session, files] of store) {
     const judged: Judged[] = [];
@@ -589,7 +724,7 @@ export function verifyStore(
         throw new NoVerdict(`receipt ${session}/${file} holds more than ${maxValues} values`);
       });
       stems.set(file.slice(0, -".json".length), citedSignature(parsed));
-      const j = judge(parsed, sha256Hex(bytes), root, session, file, keys, authority);
+      const j = judge(parsed, sha256Hex(bytes), root, session, file, keys, authority, retention);
       // A witness named is kept beside the bound receiptCost covers: its
       // origin may be 2048 characters.
       if (j.witness !== undefined) {
@@ -867,6 +1002,12 @@ export function verifyStore(
   // 8's of each action whose record was found and is not a runtime
   // evaluation record, which is not compared.
   function* observations(): Generator<Finding> {
+    // §1.3a's, of each receipt that passed with no bytes re-digested.
+    for (const [session, judged] of sessions) {
+      for (const j of judged) {
+        if (j.status === "ok" && j.observation !== undefined) yield [["sessionId", session],["callIndex", j.callIndex!],["observation", j.observation]];
+      }
+    }
     for (const [session, judged] of sessions) {
       for (const j of judged) {
         const delivery = deliveryState.get(j);

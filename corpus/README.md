@@ -227,7 +227,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 97 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 128 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -336,6 +336,35 @@ noncharacter; and `signature-mismatch` for the member changed, added and removed
 A verifier written before the member (v0.26.0, in Go and in TypeScript) answers `ok` for every
 one of them but the three tampered receipts, which it answers `signature-mismatch`: that is the
 compatibility §1.2a states, and these vectors hold the readers that know the member to more.
+
+Thirty-one are of payload retention (§1.3a; `docs/adr/0028-payloads-a-gateway-does-not-keep.md`;
+issue #422), each named `v3-artifact-*` and signed, receipts, seals and removal records alike,
+by a signer that shares no code with the gateway, its expected answers written from §1.3a; the
+signer reproduces the frozen seal of `v3-scope-valid` byte for byte. Each states its
+observations. Of a source that keeps no payload: a receipt carrying `artifact: "not-retained"`
+with no bytes anywhere, `ok` with the observation `artifact-not-retained`; with its bytes in the
+store, `ok` and no observation, and with other bytes there, `artifact-mismatch`; with its bytes
+supplied, `ok` and no observation, with other bytes supplied, `artifact-mismatch`, and with a
+supplied directory holding only another digest's bytes, `ok` with the observation; two
+receipts of one digest, one never kept, both `ok` on the bytes the other kept. Of the member's
+form: `malformed` for the string `"kept"`, for `true`, for `null`, and on an action;
+`signature-mismatch` for the member added after signing to a kept receipt whose bytes are gone,
+and removed after signing. Of a recorded removal: a record naming the receipt, `ok` with the
+observation `artifact-removed`; with its bytes supplied, `ok` and no observation, and other bytes
+supplied, `artifact-mismatch`; other bytes put back after the removal, `artifact-mismatch`; the
+bytes still there, `ok` and no observation; and `artifact-missing` for a kept receipt with no
+record whose bytes are supplied, for a record under a key no walk reaches, for one signed by
+another key under the test key's id, changed after signing, carrying a tenth member, torn, naming
+another receipt, naming another index, and naming another digest. Two hold a rotation: a
+record signed by the key rotated to names a receipt made under the key rotated from, `ok` with
+the observation, and a record signed by the key rotated from names no receipt made under the
+key rotated to, `artifact-missing`. One holds the record between
+lines that load nothing, `ok` with the observation; one holds two receipts of one digest and a
+record naming one of them, the one `ok` with the observation and the other `artifact-missing`.
+Six supply bytes (`suppliedArtifacts`, below). A verifier written before §1.3a (v0.26.0, in
+Go and in TypeScript) answers `artifact-missing` where these vectors expect `ok` with an
+observation, gives no verdict for the six that supply bytes, and answers `ok` for the four
+receipts whose member is not of its form or is on an action; it agrees with the rest.
 
 **`witnesses`.** A vector whose report names witnesses gives them in `expected`
 as `witnesses`, each `{"trail", "origin", "keyId"}`, and a runner compares them
@@ -534,7 +563,7 @@ this one:
 - `CMD canon` — stdin: one JSON document (the *text*). stdout: the canonical
   bytes, exactly, no trailing newline. Exit 0 if inside the domain, non-zero if
   refused.
-- `CMD verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [<decision-records-dir>]`
+- `CMD verify [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>]`
   — stdin: the 32-byte Ed25519 **public** key, raw bytes, never a secret.
   stdout: `{"ok": bool, "findings": [...]}`, and optionally the
   `observations` member of `SPEC.md` §4, which the runner compares as a multiset
@@ -555,6 +584,13 @@ this one:
   under --ordinary-seals-only:` and at most 256 bytes of its standard error,
   quoted; the run goes on, and exits 1. No verdict for a vector run without the
   option still stops the run, exit 2.
+  `--artifacts <dir>` is the supplied-bytes option of `SPEC.md` §4, given after
+  `--ordinary-seals-only` where both are and before the store root; the runner passes
+  it exactly when the vector carries a `suppliedArtifacts` map, each key the 64
+  lowercase hexadecimal characters of a file's name in a fresh directory and each value
+  that file's bytes, and nothing in its place otherwise. No verdict for a vector run
+  with it disagrees with that vector, `store <name>: no verdict under --artifacts:`, and
+  the run goes on, as under `--ordinary-seals-only`.
 - `CMD witness --trail <hex> --witness-key <file>... [--witness <file>]...
   [--witness-head <file>]` — the flags of the runtime's `audit verify`: the trail being
   verified; each key a file holding its 64 lowercase hexadecimal characters and a

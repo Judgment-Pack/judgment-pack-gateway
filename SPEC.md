@@ -165,6 +165,7 @@ Two forms recur and are named once:
 | `delegation` | object (§11.7) — **optional**, on either kind: present exactly when the call was dispatched under a delegation |
 | `reconciler` | object (§11.7) — **optional**: present only on a read-back (§1.2b) of an action reserved under a delegation |
 | `scope` | string (below) — **optional**, on either kind: present exactly when the operator's configuration fixes the source to a scope identifier |
+| `artifact` | the string `"not-retained"` (below) — **optional**, on an acquisition alone: present exactly when the operator's configuration has the source keep no payload (§1.3a) |
 
 `argumentsDigest` does not exist in version 3.
 
@@ -540,6 +541,17 @@ findings. In a version 2 receipt `scope` is not defined: a verifier holds it to 
 and does not interpret it, and the signature covers it as it covers every member
 (§1.2); this gateway never mints it there.
 
+**`artifact`** — optional: the top-level string `"not-retained"`, and no other value, on a
+receipt whose `kind` is `"acquisition"`. It says that the gateway kept no payload for the
+call: it returned the result to the caller with the receipt and kept only its digest,
+`resultDigest` (§1.3a). Any other value, a value of another type, or the member on an action
+is `malformed`. It is signed with every other member, so the member added to a receipt,
+removed from it or changed after signing is `signature-mismatch`. The gateway sets it from
+its operator's configuration (`docs/design/engine-config.md`, `artifact`); a receipt of a
+source that keeps its payloads is the receipt it was before the member existed. In a version
+2 receipt `artifact` is not defined: a verifier holds it to no form and does not interpret
+it, and this gateway never mints it there. A seal (§3) never carries it.
+
 **What the signature covers** — `"judgment-pack-gateway/receipt/3:"` followed by
 `canon` of the receipt object with **the receipt's own top-level `signature`
 member removed and every other member retained** — every nested member
@@ -763,6 +775,7 @@ owner-supplied contract; a provider name alone establishes no guarantee.
 ```
 <root>/receipts/<sessionId>/<callIndex>.json   one canonical receipt, newline-terminated
 <root>/artifacts/<hex>                          the retained bytes; <hex> is resultDigest's hex
+<root>/artifact-removals.jsonl                  optional: one removal record per line (§1.3a)
 ```
 
 The registry is a separate file: one canonical seal object per line, newline
@@ -774,6 +787,108 @@ is handed their directory separately (§4). A store may hold receipts of both
 versions across sessions; within one session every receipt is of one version,
 and a session that mixes them is `chain-broken` (§1.4).
 
+### 1.3a Payload retention
+
+A gateway keeps the bytes of every result it attests at `<root>/artifacts/<hex>`, and order
+7 (§1.4) fails a receipt whose bytes are not there. Two departures from that are defined
+(`docs/adr/0028-payloads-a-gateway-does-not-keep.md`): a source that keeps no payload, and a
+recorded removal. Neither changes a receipt, a store or a verdict where neither is used.
+
+**A source that keeps no payload.** The operator's configuration may have an acquisition
+source keep no payload (`docs/design/engine-config.md`, `artifact`). The gateway then
+returns the result to the caller as it always does, digests it into `resultDigest`, writes
+nothing at `<root>/artifacts/<hex>`, and mints the receipt with `artifact: "not-retained"`
+(§1.2a). The receipt is checked as every receipt is: its form, its key, its signature, its
+place, its authority, its session's sequence, chain and seal. Its bytes are checked where a
+verifier has them: in the store, where another receipt's call returned the same bytes and
+kept them, or in a directory of supplied bytes (§4.1, `--artifacts`). Where it has none, the
+receipt is `ok` and the report says so with the observation `artifact-not-retained`.
+
+**A recorded removal.** `gateway remove-artifact` (§6, below) removes the bytes a receipt's
+call kept and records the removal first in `<root>/artifact-removals.jsonl`, one record per
+line, each line terminated by a line feed:
+
+```
+{ "callIndex": <integer>, "keyId": <hex>, "kind": "artifact-removal",
+  "receiptSignature": <hex>, "removedAt": <string>, "removedBy": <string>,
+  "resultDigest": <digest>, "sessionId": <string>, "signature": <hex> }
+```
+
+`signature` = Ed25519, under the gateway's signing seed, over
+`"judgment-pack-gateway/artifact-removal/1:" + canon(the record without signature)`,
+every other member retained. Its members:
+
+- `sessionId` and `callIndex` — the receipt's, a §3a identifier and an integer from 0 to
+  2^53−1;
+- `receiptSignature` — the receipt's `signature` member, 128 lowercase hexadecimal
+  characters;
+- `resultDigest` — the receipt's `resultDigest`, `"sha256:"` and 64 lowercase hexadecimal
+  characters;
+- `removedAt` — when, `YYYY-MM-DDThh:mm:ssZ` in UTC;
+- `removedBy` — the label the operator gave the command, a string of the form of a scope
+  identifier (§1.2a, `scope`); a label, not a credential: the key signed the record, and
+  nothing establishes who ran the command;
+- `keyId` — the key id of the key that signed the record, 32 lowercase hexadecimal
+  characters.
+
+**Loading.** A record loads when its line is one JSON object, terminated by a line feed,
+holding exactly the nine members above, no name twice, each of the form given; its `keyId`
+names a key the walk of §3b reached; and its signature verifies under that key. A line that
+is not so loads nothing and is no finding: a torn last line, left by an interrupted append,
+is such a line. A record **names** a receipt when its `sessionId` is the receipt's session
+directory, its `callIndex`, `receiptSignature` and `resultDigest` are the receipt's own, and
+its key is the receipt's key or a key the walk reached after it. A record that names no
+receipt in the store is nothing the verifier reports. The file is no part of the registry:
+it is in the store, where one who can write to the store can delete it or a line of it —
+which makes a removed receipt `artifact-missing`, a failure, never a pass — but cannot write
+a record that loads without the key, nor make one record name another receipt, since the
+receipt's signature is in it.
+
+**The artifact step.** Orders 7 and 8 of §1.4 read, for a receipt that reaches them:
+
+1. Where the verifier reads bytes at `<root>/artifacts/<hex>`, as it always has, they are
+   re-digested, whatever else holds: another digest is `artifact-mismatch`. So a payload
+   changed after its removal was recorded, or put back other than it was, fails as a
+   changed payload always has; and a record for a receipt whose bytes are there changes
+   nothing.
+2. Where nothing is there — the path names no file, no directory and no link, a link that
+   leads nowhere being something — the receipt passes order 7 when it carries
+   `artifact: "not-retained"` or a record that loads names it; otherwise it is
+   `artifact-missing`, as before either was defined. Something at the path the verifier
+   reads no bytes from — a directory, a link that leads nowhere — is read as it was before
+   this section, `artifact-missing`, whatever the receipt carries.
+3. Where a receipt passed order 7 without bytes in the store and the verifier was given a
+   directory of supplied bytes holding a file named `<hex>`, that file is re-digested:
+   another digest is `artifact-mismatch`.
+4. A receipt that passes with no bytes re-digested at all carries the observation
+   `artifact-not-retained` when it carries the member, and `artifact-removed` when a record
+   names it and it does not. Bytes re-digested and matching, in the store or supplied, are
+   an `ok` with no observation: the bytes were checked, as for any kept receipt.
+
+Supplied bytes are never read for a receipt without the member and without a record: a
+kept receipt whose bytes are gone is `artifact-missing` whatever is supplied.
+
+**What it establishes.** `artifact-not-retained` on a receipt that verifies: that the
+holder of the gateway key, minting the receipt, kept no payload for it, and that the digest
+it signed is the digest of what it returned. `artifact-removed`: that a holder of a gateway
+key the walk reached signed a record that this receipt's payload was removed, when and under
+which label it says. Neither establishes what the payload was, that a copy of it exists
+anywhere, or that a holder of the bytes has the bytes the digest names; a reader that holds
+bytes it says are the payload checks them by digest, as `--artifacts` does. A removal record
+does not establish that the bytes were the receipt's when they were removed: the command
+refuses to remove bytes that are not (§6), and a verifier cannot see what was removed.
+
+**A verifier written before this section** — one of `v0.26.0` or earlier, in Go and in
+TypeScript alike — tolerates the member, as it tolerates any signed member it does not know,
+and does not read `artifact-removals.jsonl`. Its artifact step is order 7 and 8 as they were:
+for a receipt carrying `artifact: "not-retained"` with no bytes in the store, and for a
+receipt whose bytes were removed under a record, it reports `artifact-missing`, and the
+report's `ok` is false; where bytes are there it re-digests them as this version does. It
+takes no `--artifacts` and refuses the option as a usage error, giving no verdict. It holds
+the member to no form, so it answers `ok` for a receipt, its bytes in the store, whose
+`artifact` this version reports `malformed`: of another value or type, or on an action. Beyond that one kind it passes no receipt this
+version fails, and it fails the receipts this version passes with an observation.
+
 ### 1.4 Verification statuses
 
 Per receipt, the ladder below yields **at most one status**, taken at the first
@@ -783,14 +898,14 @@ statuses of the ladder and do not replace it.)
 
 | Order | Status | Condition |
 |---|---|---|
-| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `decision.recordBytes` present and not `"exact"`, `witness` present and not an object whose `origin`, `keyId` and `trail` are each of their stated forms, `delegation` or `reconciler` present and not of its stated form (§11.7), `scope` present and not a string of its stated form — and never a relational one but the comparisons within one receipt that §11.7 states: `caller` `null` or naming another issuer or subject than `delegation.subject`, an action's `requester` likewise, and `reconciler` on a receipt that is not an acquisition carrying `reconciliation` |
+| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `decision.recordBytes` present and not `"exact"`, `witness` present and not an object whose `origin`, `keyId` and `trail` are each of their stated forms, `delegation` or `reconciler` present and not of its stated form (§11.7), `scope` present and not a string of its stated form, `artifact` present and not the string `"not-retained"` or on a receipt that is not an acquisition — and never a relational one but the comparisons within one receipt that §11.7 states: `caller` `null` or naming another issuer or subject than `delegation.subject`, an action's `requester` likewise, and `reconciler` on a receipt that is not an acquisition carrying `reconciliation` |
 | 2 | `unsupported-version` | `receiptVersion` is neither `"2"` nor `"3"` |
 | 3 | `key-mismatch` | `keyId` is not the key id of a key the verifier reached (§3b): the key it pinned, or a key a rotation it followed rotated to |
 | 4 | `signature-mismatch` | the signature does not verify, under the key `keyId` names, over the input §1.2 or §1.2a defines for the receipt's version |
 | 5 | `misfiled` | the filename stem is not `callIndex`, **or** `sessionId` is not the directory name |
 | 6 | `authority-mismatch` | `authority` is not the expected authority |
-| 7 | `artifact-missing` | no artifact at `resultDigest`'s path |
-| 8 | `artifact-mismatch` | the artifact re-digests to something else |
+| 7 | `artifact-missing` | no artifact at `resultDigest`'s path, and the receipt neither carries `artifact: "not-retained"` nor is named by a removal record that loads (§1.3a) |
+| 8 | `artifact-mismatch` | the artifact re-digests to something else; or, for a receipt that passed order 7 with no artifact in the store, bytes supplied for it do (§1.3a) |
 | — | `ok` | none of the above |
 
 Both halves of `misfiled` are load-bearing: without the `sessionId`↔directory
@@ -1329,8 +1444,10 @@ of every other finding and of whether any action receipt names that record.
 failing it: an array of `{sessionId, callIndex, observation}`, with the
 receipt's own session and index. The observations this document names are
 step 3's `session-open` and `sealed-after-interruption`, step 8's
-`decision-record-not-compared`, and §1.2b's
-`action-uncertain`, `action-committed` and `action-mismatch`. An observation is
+`decision-record-not-compared`, §1.2b's
+`action-uncertain`, `action-committed` and `action-mismatch`, and §1.3a's
+`artifact-not-retained` and `artifact-removed`, each on a receipt whose ladder status
+is `ok`. An observation is
 not a finding: it never makes `ok` false, a consumer's verdict (§5a) does not
 read it, and a report with none may leave the member out. The corpus compares
 observations where a store vector states them, and only there (§7).
@@ -1360,6 +1477,17 @@ false; nothing else changes. The option in any later place is a usage error (exi
 verdict reached in its stead; a store root or decision-record directory spelled so is given
 as `./--ordinary-seals-only`.
 
+**Supplied bytes.** A verifier may be given, with the option `--artifacts <dir>`, a
+directory of bytes a reader holds for receipts whose payload the store does not keep, laid
+out as `<root>/artifacts/` is: a file named by the 64 lowercase hexadecimal characters of
+the digest it is said to have. It follows `--ordinary-seals-only` where that is given and
+comes before the store root otherwise; in any other place it is a usage error, as that
+option is. The directory is read only as §1.3a's step 3 says, for a receipt that carries
+`artifact: "not-retained"` or is named by a removal record and has no bytes in the store; a
+file there that no such receipt names is not read, and its being there is nothing the
+verifier reports. The directory is taken by its spelling as the decision-record directory is
+(§4.1).
+
 `ok` is true only if the inline verify passed **and** no registry finding fired
 **and** no rotation finding fired (§3b) **and** no citation, decision-record,
 decision-pack, decision-cites, decision-trail or record-citation finding fired.
@@ -1387,6 +1515,9 @@ a verdict at all.
 | a session directory holding no receipts | a session with count 0, judged against its seal like any other |
 | the decision-record directory (§4 step 6) does not exist, or the verifier was given none | absent — every version 3 action receipt that passed the ladder is `decision-record-mismatch`; an absent directory cannot make an action verify, it can only fail to excuse one |
 | the decision-record path exists but is not a directory, or cannot be read, or any existing parent path component is not a directory, or it or a directory above it is a link that leads nowhere, or the path is spelled so that the platform could resolve it otherwise (below), or a directory or regular file under it cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
+| `<root>/artifact-removals.jsonl` does not exist | no removal record loads (§1.3a) — a receipt whose bytes are gone and that does not carry `artifact: "not-retained"` is `artifact-missing` |
+| `<root>/artifact-removals.jsonl` exists and is not a regular file, or cannot be read | no verdict — the verifier refuses (non-zero exit); the records are present and unreadable, not absent |
+| the supplied-bytes directory (§4, `--artifacts`) does not exist, is not a directory, or cannot be read, or the path is spelled so that the platform could resolve it otherwise (below), or a file in it that the verifier reads (§1.3a, step 3) is not a regular file or cannot be read | no verdict — the verifier refuses (non-zero exit); a reader that names a directory of bytes is answered about those bytes or not at all |
 
 The registry and the decision-record directory are taken by their spelling, and a path the
 platform could resolve to another file than the one its spelling names is refused before
@@ -1477,6 +1608,11 @@ not itself a finding.
   a credential. Receipts of every scope identifier share the gateway's key, store and
   registry, a session may hold receipts of several, and a caller the gateway admits is
   served by any source whose identifier it names.
+- A source that keeps no payload, and a recorded removal (§1.3a), leave a receipt
+  checkable without the bytes it attests, and the bytes checkable where a reader holds
+  them. They do not keep the bytes anywhere, make a removal undone, or establish that bytes
+  a reader holds were the result; one who can write to the store can take a removal record
+  away, which makes the receipt `artifact-missing`, and cannot make one load.
 - Scope not claimed: no availability/HA guarantees, no authenticated transport
   (binds a loopback address unless `gateway serve --listen` names another, or a version-19
   engine configuration's `listen` does, beside an `identity` and
@@ -1574,6 +1710,13 @@ consumer therefore establishes **both** halves:
 Bytes nobody re-checked are bytes nobody attested, and a digest no accepted
 receipt covers selects nothing.
 
+A receipt whose `ok` carries `artifact-not-retained` or `artifact-removed` (§1.3a) is
+bound the same way, and the store has no bytes for it to re-digest: the consumer
+re-digests the bytes it holds itself — the result the acquire response returned beside
+the receipt, or a copy kept since — or hands them to the verifier with `--artifacts`, whose
+`ok` with no observation on that receipt says they re-digested to its `resultDigest`. A
+consumer that holds no bytes for such a receipt has the receipt and nothing to use.
+
 The consumer's ceremony, in order: **obtain the snapshot → verify under a pinned
 key → bind the receipt → re-digest → use.** Acquiring and sealing are the
 *producer's* steps and precede it; an offline consumer of an already-sealed store
@@ -1657,6 +1800,50 @@ A `source` is an operator-configured subprocess that reads the canonical argumen
 stdin and emits a JSON result on stdout. The gateway attaches no transport of its own
 — it attests whatever bytes a configured source returns, which is exactly the inline
 core's boundary: **proof of the bytes, not proof of their truth.**
+
+### Payloads a gateway does not keep
+
+**`/acquire` on a source that keeps no payload** (§1.3a) answers as on any source: `result`
+is the result, and the receipt's `resultDigest` its digest. It writes nothing under
+`<root>/artifacts/`, and the receipt carries `artifact: "not-retained"`. The response is
+then the one place the gateway hands the bytes out: a caller that needs them later keeps
+them. Such a source is an acquisition source of a version 22 engine configuration
+(`docs/design/engine-config.md`, `artifact`), of a gateway minting version 3 receipts; a
+platform that sets `write: true` refuses the member, since `/act` keeps the result of every
+action it runs.
+
+**`gateway remove-artifact`** removes the bytes a receipt's call kept, with the gateway
+stopped, held as `gateway seal-open` holds it (§3c): `--receipt <sessionId>/<callIndex>`,
+once or more, `--by <label>`, and `--scope <identifier>` for a receipt that carries one,
+beside `--config <engine.json>` or the store, seed, registry and authority by flag. For each
+receipt named, in the order given, it refuses, naming the receipt and changing nothing for
+it, a receipt that:
+
+- is not in the store, or does not have ladder status `ok` (§1.4) under the keys the walk
+  of its registry reached — so bytes changed before their removal are `artifact-mismatch`
+  and are not removed;
+- is an action, whose result `/act` and its recovery read back;
+- carries `artifact: "not-retained"`, whose call kept nothing;
+- carries a `scope` that `--scope` does not give byte for byte, or none where `--scope` is
+  given — one sentence for each, naming no scope identifier, as `/acquire` refuses;
+- shares its `resultDigest` with a receipt in the store that is not named in the same run,
+  does not carry `artifact: "not-retained"` and is named by no removal record, since the
+  bytes are that receipt's too — the refusal names each such receipt; or whose digest a
+  descriptor statement or snapshot in the store has, since descriptor provenance (§9) reads
+  them there.
+
+Otherwise it appends the receipt's removal record (§1.3a), signed by the key in force, and
+then removes the bytes. A receipt a record already names is not recorded again: its bytes,
+if still there, are removed. A removal stopped between the two leaves the record and the
+bytes, which verify `ok` with no observation (§1.3a, step 1), and a second run completes it.
+The command prints each record it appends as its line. `--by` is a label of the form of a
+scope identifier, required, and not checked against anything.
+
+**Citations of such receipts.** A receipt carrying `artifact: "not-retained"`, or one a
+removal record names, has ladder status `ok` under the conditions of §1.3a, so a decision
+record may cite it and `/act` resolves the citation as it resolves any other (§4 step 5):
+the action reads no cited payload. `gateway seal-open` seals a session holding such receipts
+as it seals any whole session. An action's own result is always kept.
 
 ### Who may ask for a write
 
@@ -2117,6 +2304,19 @@ under the option, exiting non-zero as a verifier written before it does when it 
 option it does not know, disagrees with that vector, and the run goes on to the next. No
 verdict for a vector run without the option is not an answer to it: the run stops there, as
 it did before the option (`corpus/README.md`).
+
+**Payload retention.** The store vectors of §1.3a state their observations, so a verifier
+that does not report `artifact-not-retained` and `artifact-removed` disagrees with them. A
+store vector may carry supplied bytes (`"suppliedArtifacts"`, `corpus/README.md`): the
+process contract then passes `--artifacts <dir>` to the implementation's `verify`, after
+`--ordinary-seals-only` where the vector gives both and before the store root, and passes
+nothing in its place otherwise. No verdict for such a vector, as a verifier written before
+the option gives, disagrees with that vector, and the run goes on to the next, as under
+`--ordinary-seals-only`. A verifier written before §1.3a disagrees with the vectors whose
+receipts carry `artifact: "not-retained"` or are named by a removal record and pass, and
+agrees with the rest but one kind: it holds `artifact` to no form, so a receipt whose member
+is not of its form or is on an action, its bytes in the store, is `ok` to it and `malformed` to
+this version.
 
 The rows of `testdata/interruption-seal/cases.json`, which both readers in this repository
 read, hold more of §3c over the same stores — a receipt taken away or torn after the seal,

@@ -558,6 +558,7 @@ export function structureV3(r: ObjectValue): boolean {
   const action = member(r, "action");
   const witness = member(r, "witness");
   const scope = member(r, "scope");
+  const artifact = member(r, "artifact");
   if (
     !isString(sessionId) ||
     !isFlatToken(sessionId.value) ||
@@ -581,6 +582,9 @@ export function structureV3(r: ObjectValue): boolean {
     // kind, of its form when present
     (scope !== undefined && !(isString(scope) && isScopeIdentifier(scope.value))) ||
     !isString(kind) ||
+    // that the call kept no payload (§1.3a): optional, on an acquisition
+    // alone, and the one string when present
+    (artifact !== undefined && !(isString(artifact) && artifact.value === "not-retained" && kind.value === "acquisition")) ||
     // the members of a call made under a delegation (§11.7)
     !delegationHolds(r, kind.value) ||
     !reconcilerHolds(r, kind.value)

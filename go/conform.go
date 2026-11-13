@@ -344,6 +344,11 @@ type storeVector struct {
 	// OrdinarySealsOnly runs the vector under --ordinary-seals-only
 	// (SPEC.md §4, §7): the process contract passes the option first.
 	OrdinarySealsOnly bool `json:"ordinarySealsOnly"`
+	// SuppliedArtifacts are bytes a reader supplies (SPEC.md §4, "Supplied
+	// bytes"), each named by the hex of the digest it is said to have,
+	// materialized as a directory of their own: the process contract then
+	// passes --artifacts <dir>. Absent means the option is not passed.
+	SuppliedArtifacts map[string]string `json:"suppliedArtifacts"`
 	Expected          struct {
 		OK       bool             `json:"ok"`
 		Findings []map[string]any `json:"findings"`
@@ -404,8 +409,9 @@ type contractVerdict struct {
 type implementation interface {
 	canon(source string) ([]byte, bool)
 	// verify answers the verdict the process contract gives (SPEC.md §4),
-	// under --ordinary-seals-only when ordinarySealsOnly is set.
-	verify(storeRoot, registryPath, authority, decisionRecords string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error)
+	// under --ordinary-seals-only when ordinarySealsOnly is set, and with
+	// --artifacts supplied when supplied is not "".
+	verify(storeRoot, registryPath, authority, decisionRecords, supplied string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error)
 	// witness reads one chain of witness statements (SPEC.md §8.6) from
 	// files, and answers with the verdict the process contract gives.
 	witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error)
@@ -424,8 +430,8 @@ func (inProcess) canon(source string) ([]byte, bool) {
 	return out, true
 }
 
-func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
-	rep, err := verifierFor(ordinarySealsOnly)(storeRoot, registryPath, authority, decisionRecords, publicKey)
+func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords, supplied string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
+	rep, err := verifierFor(ordinarySealsOnly)(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey)
 	if err != nil {
 		return contractVerdict{}, err
 	}
@@ -437,12 +443,12 @@ func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords stri
 }
 
 // verifierFor is the verdict gateway verify gives, plain or under
-// --ordinary-seals-only (SPEC.md §4).
-func verifierFor(ordinarySealsOnly bool) func(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
-	if ordinarySealsOnly {
-		return verifyOrdinarySealsOnly
+// --ordinary-seals-only (SPEC.md §4), with the bytes a reader supplied, ""
+// for none.
+func verifierFor(ordinarySealsOnly bool) func(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte) (*report, error) {
+	return func(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte) (*report, error) {
+		return verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, ordinarySealsOnly)
 	}
-	return verifyWithRegistryAndRecords
 }
 
 // decodeVerdict reads a verdict as the process contract gives it, its
@@ -486,12 +492,17 @@ func (s subprocess) canon(source string) ([]byte, bool) {
 	return stdout.Bytes(), true
 }
 
-func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
+func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords, supplied string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
 	args := append(append([]string{}, s.argv[1:]...), "verify")
 	if ordinarySealsOnly {
 		// The option first, before the store root, as gateway verify takes
 		// it (corpus/README.md): passed exactly when the vector says so.
 		args = append(args, "--ordinary-seals-only")
+	}
+	if supplied != "" {
+		// After it, before the store root (corpus/README.md): passed exactly
+		// when the vector supplies bytes.
+		args = append(args, "--artifacts", supplied)
 	}
 	args = append(args, storeRoot, registryPath, authority)
 	if decisionRecords != "" {
@@ -668,6 +679,22 @@ func materializeVector(vector storeVector) (root, storeRoot, registryPath, decis
 			}
 		}
 	}
+	if vector.SuppliedArtifacts != nil {
+		// Present, even when empty: a directory with no bytes in it is not
+		// the same input as no directory.
+		supplied := suppliedOf(vector, root)
+		if err := os.MkdirAll(supplied, 0o755); err != nil {
+			return "", "", "", "", err
+		}
+		for name, text := range vector.SuppliedArtifacts {
+			if !isLowerHexOfLen(name, 64) {
+				return "", "", "", "", fmt.Errorf("suppliedArtifacts: %q is not 64 lowercase hexadecimal characters", name)
+			}
+			if err := os.WriteFile(filepath.Join(supplied, name), []byte(text), 0o600); err != nil {
+				return "", "", "", "", err
+			}
+		}
+	}
 	for _, required := range []string{"receipts", "artifacts"} {
 		if err := os.MkdirAll(filepath.Join(storeRoot, required), 0o755); err != nil {
 			return "", "", "", "", err
@@ -688,6 +715,15 @@ func materializeVector(vector storeVector) (root, storeRoot, registryPath, decis
 		return "", "", "", "", err
 	}
 	return root, storeRoot, registryPath, decisionRecords, nil
+}
+
+// suppliedOf is where materializeVector puts a vector's supplied bytes,
+// under the root it made, or "" for a vector that supplies none.
+func suppliedOf(vector storeVector, root string) string {
+	if vector.SuppliedArtifacts == nil {
+		return ""
+	}
+	return filepath.Join(root, "supplied")
 }
 
 func corpusPublicKey(corpusDir string) ([]byte, error) {
@@ -809,16 +845,20 @@ func runStoreVectors(corpusDir string, impl implementation) ([]string, int, erro
 		if err != nil {
 			return nil, 0, err
 		}
-		verdict, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, vector.OrdinarySealsOnly, publicKey)
+		verdict, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, suppliedOf(vector, root), vector.OrdinarySealsOnly, publicKey)
 		os.RemoveAll(root)
 		var refused noVerdict
-		if err != nil && vector.OrdinarySealsOnly && errors.As(err, &refused) {
+		if err != nil && (vector.OrdinarySealsOnly || vector.SuppliedArtifacts != nil) && errors.As(err, &refused) {
 			// A verifier written before the option refuses one it does not
 			// know: that is its answer to this vector, a disagreement, and
 			// the run goes on (SPEC.md §7). No verdict for a vector run
-			// without the option still stops it.
-			failures = append(failures, fmt.Sprintf("store %s: no verdict under --ordinary-seals-only: %s",
-				vector.Name, boundedStderr(refused.stderr)))
+			// without either option still stops it.
+			option := "--ordinary-seals-only"
+			if !vector.OrdinarySealsOnly {
+				option = "--artifacts"
+			}
+			failures = append(failures, fmt.Sprintf("store %s: no verdict under %s: %s",
+				vector.Name, option, boundedStderr(refused.stderr)))
 			continue
 		}
 		var twice memberTwice

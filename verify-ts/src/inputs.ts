@@ -136,6 +136,70 @@ function checkSpelling(p: string, what: string): void {
 // checkSpellings refuses, before anything is read, an anchor spelled so the
 // platform could resolve it otherwise -- and, for the registry, which is a
 // file, a path naming none.
+// suppliedDirectory holds the directory a reader named with --artifacts
+// (§4, "Supplied bytes"; §4.1): taken by its spelling, there, a directory,
+// and one that can be read, or no verdict.
+export function suppliedDirectory(p: string): void {
+  checkSpelling(p, "the supplied-bytes directory");
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(p);
+    if (stat.isDirectory()) {
+      fs.readdirSync(p);
+    }
+  } catch (e) {
+    throw unreadable("the supplied-bytes directory", p, e);
+  }
+  if (!stat.isDirectory()) {
+    throw new NoVerdict(`the supplied-bytes directory ${JSON.stringify(p)} is not a directory`);
+  }
+}
+
+// nothingAt is whether the path names nothing at all: no file, no
+// directory and no link, a link that leads nowhere being something
+// (§1.3a, "The artifact step").
+export function nothingAt(p: string): boolean {
+  try {
+    fs.lstatSync(p);
+    return false;
+  } catch (e) {
+    return code(e) === "ENOENT";
+  }
+}
+
+// digestSupplied is the SHA-256 of the file a reader supplied at p, or null
+// when the directory holds no entry of its name; an entry that is not a
+// regular file, or that cannot be read, is no verdict (§4.1).
+export function digestSupplied(p: string): string | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(p);
+  } catch (e) {
+    if (code(e) === "ENOENT") {
+      return null;
+    }
+    throw unreadable("the supplied bytes", p, e);
+  }
+  if (!stat.isFile()) {
+    throw new NoVerdict(`the supplied bytes ${JSON.stringify(p)} are not a regular file`);
+  }
+  try {
+    return withRegular(p, "the supplied bytes", (fd) => {
+      const hash = crypto.createHash("sha256");
+      const buffer = Buffer.alloc(chunk);
+      for (;;) {
+        const read = fs.readSync(fd, buffer, 0, buffer.length, null);
+        if (read === 0) {
+          return hash.digest("hex");
+        }
+        hash.update(buffer.subarray(0, read));
+      }
+    });
+  } catch (e) {
+    throw unreadable("the supplied bytes", p, e);
+  }
+}
+
 export function checkSpellings(registry: string, decisionRecords: string | undefined): void {
   if (registry === "" || registry.endsWith(path.sep)) {
     throw new NoVerdict(`the registry path ${JSON.stringify(registry)} names no file`);

@@ -1,0 +1,37 @@
+{
+  "name": "v3-artifact-removal-record-key-before-the-receipt",
+  "note": "A rotation from the test key to a second key, then a session of two under the second, sealed under it; receipt 0's bytes are gone and the store holds a removal record naming it signed by the test key, which the walk reached before the receipt's. The record loads, since its key was reached, and names no receipt, since a key the gateway rotated from before the receipt was made cannot record its removal: receipt 0 is artifact-missing (SPEC.md §1.3a, \"Loading\").",
+  "authority": "gateway:corpus",
+  "files": {
+    "receipts/s1/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"7db0b01f39d179aacf7b03dbd7dd9d71\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"c56db22ace3e3846f4e7e03dfa0353b30e30e67c7495ff0b7983297100c4c2a9e769663ebb23ee12eed71503dbcc53d021c2fec4c985c7757559c6bf2d865807\",\"source\":\"corpus\"}\n",
+    "receipts/s1/1.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"caller\":null,\"keyId\":\"7db0b01f39d179aacf7b03dbd7dd9d71\",\"kind\":\"acquisition\",\"prevSignature\":\"c56db22ace3e3846f4e7e03dfa0353b30e30e67c7495ff0b7983297100c4c2a9e769663ebb23ee12eed71503dbcc53d021c2fec4c985c7757559c6bf2d865807\",\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"659ed956d96631f6c623058455ee3f5e58cc473f684cd8678d5a928ef7d2e2a4e76b75cf9dd69672001216c6f3785d4b7c0a20b51d035a7f52298bb57aeeb100\",\"source\":\"corpus\"}\n",
+    "artifacts/4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa": "{\"n\":1,\"session\":\"s1\"}",
+    "artifact-removals.jsonl": "{\"callIndex\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"artifact-removal\",\"receiptSignature\":\"c56db22ace3e3846f4e7e03dfa0353b30e30e67c7495ff0b7983297100c4c2a9e769663ebb23ee12eed71503dbcc53d021c2fec4c985c7757559c6bf2d865807\",\"removedAt\":\"2026-09-13T00:00:00Z\",\"removedBy\":\"retention-job\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"sessionId\":\"s1\",\"signature\":\"f73d06832f8781230ddf41d887908b44e55d862d7deca523ef2d4cb28da6d97b83c2fc8e89645d55f7cf939fb579499700527c3e3614033d9f3c779b0b6a4f06\"}\n"
+  },
+  "registry": "{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"key-rotation\",\"next\":\"22fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6\",\"nextKeyId\":\"7db0b01f39d179aacf7b03dbd7dd9d71\",\"rotatedAt\":\"2026-09-12T12:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"6e5ec0b5fa8d38b29af1c63c26302eecd97d922bde1f1d297308b54bda7b2993ea1ba6b29fced466323b6ad7b9776fe5f30aeff20f069bb39b42b59044b6bd0b\"}\n{\"keyId\":\"7db0b01f39d179aacf7b03dbd7dd9d71\",\"kind\":\"key-continuation\",\"previous\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\",\"previousKeyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"rotatedAt\":\"2026-09-12T12:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"fe1c593bb0b7c323296d21dfd9d89e69894de26bacaa23e69b26e8124b9a34b6c569c075e88acc36af524d49e2f42418d1173b9900231f3b43298af8616d0209\"}\n{\"finalCount\":2,\"keyId\":\"7db0b01f39d179aacf7b03dbd7dd9d71\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"cf6378705c7cf52c20a5a16e2efa0e357b8307403270896c37316cc8d5c3a988feca0be86665b6597c5d76d5e538721e4f2b911b1e330feac5513b213a2f8004\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s1",
+        "status": "artifact-missing"
+      },
+      {
+        "callIndex": 1,
+        "sessionId": "s1",
+        "status": "ok"
+      },
+      {
+        "callIndex": null,
+        "sessionId": "s1",
+        "status": "sequence-broken"
+      }
+    ],
+    "observations": [],
+    "rotations": {
+      "count": 1,
+      "keyId": "7db0b01f39d179aacf7b03dbd7dd9d71"
+    }
+  }
+}

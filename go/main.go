@@ -6,7 +6,7 @@ package main
 // Subcommands:
 //
 //	gateway canon                                    < value.json
-//	gateway verify <store-root> <registry> <auth> [<decision-records>]  < publickey.raw
+//	gateway verify [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry> <auth> [<decision-records>]  < publickey.raw
 //	gateway export --config <engine.json> --out <dir> [--observations <file>]...
 //	gateway export --check <dir>
 //	gateway conform [--impl CMD] [--corpus DIR]
@@ -132,7 +132,7 @@ func cmdCanon() int {
 }
 
 func cmdVerify(args []string) int {
-	const usage = "usage: gateway verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
+	const usage = "usage: gateway verify [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
 	// --ordinary-seals-only, first or not at all: a session a seal made
 	// after an interruption anchors is then a finding, not an observation
 	// (SPEC.md §4 step 3). The option in any later place is a usage error,
@@ -146,9 +146,28 @@ func cmdVerify(args []string) int {
 			return 2
 		}
 	}
-	verify := verifyWithRegistryAndRecords
+	ordinarySealsOnly := false
 	if len(args) > 0 && args[0] == "--ordinary-seals-only" {
-		verify, args = verifyOrdinarySealsOnly, args[1:]
+		ordinarySealsOnly, args = true, args[1:]
+	}
+	// --artifacts <dir>, the bytes a reader supplied (SPEC.md §4, "Supplied
+	// bytes"): after --ordinary-seals-only, before the store root, or not at
+	// all. In any later place it is a usage error, as that option is; a
+	// directory of that spelling is given as ./--artifacts.
+	supplied := ""
+	if len(args) > 0 && args[0] == "--artifacts" {
+		if len(args) < 2 || args[1] == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		supplied, args = args[1], args[2:]
+	}
+	for _, a := range args {
+		if a == "--artifacts" {
+			fmt.Fprintln(os.Stderr, "gateway verify: --artifacts goes before the store root, after --ordinary-seals-only; a directory so named is given as ./--artifacts")
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
 	}
 	if len(args) < 3 || len(args) > 5 {
 		fmt.Fprintln(os.Stderr, usage)
@@ -190,7 +209,7 @@ func cmdVerify(args []string) int {
 		return 1
 	}
 
-	report, err := verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
+	report, err := verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, ordinarySealsOnly)
 	if err != nil {
 		// Could not produce a verdict at all.
 		fmt.Fprintln(os.Stderr, "verify:", err)
