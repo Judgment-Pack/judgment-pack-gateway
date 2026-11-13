@@ -24,7 +24,10 @@ the operator declares with `--source-env` and `PATH` and nothing else, a process
 at most `--source-timeout` seconds (thirty by default) and at most `--source-max-output` bytes on
 stdout (one mebibyte by default). A refusal reaches the caller as the first 200 bytes of what the
 adapter wrote on stderr, each byte outside printable ASCII replaced by `?`, so say the reason in
-one short line and keep a credential out of it.
+one short line and keep a credential out of it. An adapter of the `http` shape whose endpoint
+answered 429 or 503 may say so instead by exiting 7 beside a report of the class and the wait
+on stdout, which the gateway answers its caller with ([SPEC.md §6](../SPEC.md), "Adapter
+sources"); an adapter that never writes the report is answered as any other refusal.
 
 ### The envelope
 
@@ -126,7 +129,9 @@ minted, and the caller is told the reason. Its class says whose it was, and the 
 
 - `source-failed`, `source failed: …` — the adapter exited with a status other than 0, and what
   follows is the start of what it wrote on stderr. This is your adapter refusing, the one class a
-  case for a request it must turn down expects.
+  case for a request it must turn down expects. An adapter of the `http` shape that exits 7 beside
+  a throttled report (SPEC.md §6, "Adapter sources") is in this class too, with the gateway's
+  sentence for the class in place of stderr.
 - `timeout`, `source did not finish within its N-second timeout` — the adapter ran past the
   source's timeout, or left a descendant holding its output past it.
 - `output-bound`, `source output exceeds N bytes` — stdout ran past the source's output bound.
@@ -799,7 +804,8 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   holds a token between acquisitions without reading it. A failure of the step exits 3 (no
   credential; no token was requested), 4 (the token request refused, or answered with no token
   taken), 5 (the endpoint answered 401 to the token; the request is not sent again) or 6 (a sealed
-  token not opened under this configuration and credential, or past its time); no diagnostic
+  token not opened under this configuration and credential, or past its time); a token endpoint
+  that answers 429 or 503 is a throttled answer (below), exit 7; no diagnostic
   carries the key, the federated token, the assertion, the token or the token endpoint's answer.
   `--check` obtains a token as an acquisition does.
 - `--header NAME=VALUE` is sent on every request as written and may be given more than once;
@@ -821,6 +827,17 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   "endpoint", "peerIdentity", "probe"?: {"path", "status"}}}` — reading no stdin; a check that
   did not succeed writes `{"check": {"status": "failed", "message"}}` beside its exit status,
   so a caller reads one shape either way. Nothing is minted from it.
+- **A throttled answer** — 429 or 503, from the endpoint or the token step's token endpoint —
+  exits 7, with the diagnostic on stderr any refusing answer has and, on stdout beside it,
+  `{"throttled": {"retryAfter": N | null, "status": 429 | 503}}`: the class, and the wait the
+  answer's `Retry-After` asked for, as whole seconds. The header is taken as exactly one line of
+  delta-seconds (ASCII digits) or an HTTP-date of any of RFC 9110's three forms, counted up to
+  the next whole second; a wait past 3600 seconds is 3600; no line, two lines, a value of
+  neither form (a sign, a fraction, a list) and a date at or before now are `null`. Nothing else
+  of the answer is in the report. The gateway answers `/acquire` with that class and a
+  `Retry-After` it writes from the number, and nothing of the answer or of stderr (SPEC.md §6,
+  "When an acquisition does not happen"; [ADR-0029](../docs/adr/0029-a-throttled-source-is-answered-with-its-class.md)).
+  Every other refusing answer exits 1 as before.
 - A redirect is an answer from another resource than the one the operator fixed, and
   following one would carry the credential there: it is reported and never followed. An
   answer outside 2xx is a read that did not happen — nothing is minted, and the first bytes of

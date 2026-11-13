@@ -624,3 +624,17 @@ Durable waiting belongs to the caller. Runner's independent `jpack-source-worker
 calls the normal `/acquire` API and retains its response in the caller's private
 store. Gateway never stores the response's commitment salts or a replayable
 request record. See [source custody and recovery](docs/design/durable-operations.md).
+
+### Paging, and a throttled source
+
+The gateway keeps no cursor, high-water mark or "since" for a generic source: each
+`/acquire` is one receipted read of the page or window its request names, and the caller
+keeps where it is. A caller pages by naming each page in the request (an http source's
+`query` or `body`, on a path the binding admits), takes the next cursor from the page it was
+answered, and seals the session after the last page, so each page is its own receipt and the
+seal fixes how many there are. An http source whose endpoint answers 429 or 503 is answered
+with that class and, when the endpoint asked for a wait in a form taken, a `Retry-After` of at
+most 3600 seconds; nothing is minted for it, and the caller asks for the same page again when
+it chooses. The worked example is in
+[engine-config.md](docs/design/engine-config.md) ("Paging is the caller's"), and the answers in
+SPEC.md §6 ("When an acquisition does not happen").

@@ -473,11 +473,15 @@ func (p *prepared) useToken(ctx context.Context, cfg Config) error {
 }
 
 // redacted is err with every secret of p replaced in its text, its kind
-// kept when it is a TokenFailure.
+// kept when it is a TokenFailure or a Throttled answer.
 func (p *prepared) redacted(err error) error {
 	var failure *TokenFailure
 	if errors.As(err, &failure) {
 		return &TokenFailure{Kind: failure.Kind, text: redact.Diagnostic(failure.text, false, p.secrets)}
+	}
+	var throttled *Throttled
+	if errors.As(err, &throttled) {
+		return &Throttled{Status: throttled.Status, RetryAfter: throttled.RetryAfter, text: redact.Diagnostic(throttled.text, false, p.secrets)}
 	}
 	return errors.New(redact.Diagnostic(err.Error(), false, p.secrets))
 }
@@ -745,6 +749,11 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 		// credential that ends in whitespace is matched whole before the
 		// whitespace goes.
 		redacted := redact.Diagnostic(fmt.Sprintf("the endpoint answered %d %s: %s", a.status, http.StatusText(a.status), head), truncated, p.secrets)
+		if throttles(a.status) {
+			// The same diagnostic, said by its kind beside it: the class
+			// and the wait asked for, and nothing else of the answer.
+			return nil, throttled(a.status, a.header.Values("Retry-After"), time.Now(), strings.TrimSpace(redacted))
+		}
 		return nil, errors.New(strings.TrimSpace(redacted))
 	}
 	result, err := resultOf(a)
