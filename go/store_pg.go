@@ -6,12 +6,13 @@ package main
 // (store_pg/migrations), reached through the client in pgwire.go.
 //
 // Every operation is one transaction. It sets, for that transaction alone,
-// the scope identifier its view of the kind is of (gateway.scope), the
-// search path, a statement timeout and synchronous commit, so nothing a
-// session, a role or a database set before decides what a transaction
-// sees, how long it waits or whether its commit is durable. Row-level
-// security keys on the scope setting; the kind also names its scope in
-// every statement, so a policy and a filter both hold a transaction to it.
+// the scope its view of the kind is of (gateway.scope, in the form its rows
+// hold it: pgRowScope), the search path, a statement timeout and
+// synchronous commit, so nothing a session, a role or a database set before
+// decides what a transaction sees, how long it waits or whether its commit
+// is durable. Row-level security keys on the scope setting; the kind also
+// names its scope in every statement, so a policy and a filter both hold a
+// transaction to it.
 //
 // The kind reads no clock of the database: a lease expires by the clock
 // the kind is given (store_leases.go), and receipt times are the gateway's.
@@ -40,9 +41,9 @@ const (
 	// pgDefaultOperation bounds one operation: waiting for a connection,
 	// the transaction's statements and its commit.
 	pgDefaultOperation = 30 * time.Second
-	// pgAppendAttempts bounds how often an append is tried again when
-	// another append took the log's end first.
-	pgAppendAttempts = 32
+	// pgLogAppendLock is the transaction advisory lock an append holds
+	// to its commit: one append at a time takes the log's end.
+	pgLogAppendLock = 0x6761746577617972 // "gatewayr" in ASCII, a constant of this schema
 	// pgMinServerVersion is PostgreSQL 16, the major version tested.
 	pgMinServerVersion = 160000
 )
@@ -129,14 +130,34 @@ func (p *pgPool) close() {
 }
 
 // pgKind is the kind, seen as one scope identifier sees it, or as no scope
-// does (scope ""): every row it writes carries that scope, and it reads no
-// other. Views of one kind share its connections.
+// does: every row it writes carries that scope, and it reads no other.
+// Views of one kind share its connections.
 type pgKind struct {
-	pool      *pgPool
-	scope     string
+	pool *pgPool
+	// row is the view's scope as its rows hold it and as its transactions
+	// set it (pgRowScope)
+	row       string
 	operation time.Duration
 	clock     func() time.Time
 }
+
+// pgRowScope is a scope as the rows of the scoped tables hold it, and as a
+// transaction sets gateway.scope: 'none' for no scope, and 'scope:' and the
+// identifier for one. Neither is empty, and no form is another's, so a
+// transaction that set no scope -- the setting reads as NULL, or as the
+// empty string once an earlier transaction on its connection set it --
+// matches no row of no scope or of any (store_pg/migrations/0001).
+func pgRowScope(scope string) string {
+	if scope == "" {
+		return pgNoScope
+	}
+	return pgScopePrefix + scope
+}
+
+const (
+	pgNoScope     = "none"
+	pgScopePrefix = "scope:"
+)
 
 // openPgKind opens the kind and holds the database to the conditions the
 // kind is run under (pgHoldsItsConditions), refusing to open otherwise.
@@ -156,7 +177,7 @@ func openPgKind(o pgOptions) (*pgKind, error) {
 	if o.clock == nil {
 		o.clock = time.Now
 	}
-	k := &pgKind{pool: newPgPool(o.dsn, o.connections), operation: o.operation, clock: o.clock}
+	k := &pgKind{pool: newPgPool(o.dsn, o.connections), row: pgNoScope, operation: o.operation, clock: o.clock}
 	if err := k.holdsItsConditions(pgShippedMigrations()); err != nil {
 		k.close()
 		return nil, err
@@ -171,7 +192,7 @@ func (k *pgKind) inScope(scope string) (*pgKind, error) {
 		return nil, errors.New("store: a PostgreSQL store's scope is a scope identifier: " + scopeForm)
 	}
 	view := *k
-	view.scope = scope
+	view.row = pgRowScope(scope)
 	return &view, nil
 }
 
@@ -244,7 +265,7 @@ func (k *pgKind) transact(mode pgMode, fn func(pgTx) error) error {
 		pg_catalog.set_config('search_path', 'pg_catalog', true),
 		pg_catalog.set_config('statement_timeout', $2, true),
 		pg_catalog.set_config('lock_timeout', $2, true),
-		pg_catalog.set_config('synchronous_commit', 'on', true)`, k.scope, timeout); err != nil {
+		pg_catalog.set_config('synchronous_commit', 'on', true)`, k.row, timeout); err != nil {
 		k.rollback(c)
 		return err
 	}
@@ -319,7 +340,7 @@ func (b pgBlobs) putBlob(data []byte) (string, error) {
 	name := "sha256:" + hex.EncodeToString(sum[:])
 	err := b.k.transact(pgWriteCommitted, func(tx pgTx) error {
 		_, err := tx.exec(`INSERT INTO gateway.blobs (scope, name, data) VALUES ($1, $2, $3)
-			ON CONFLICT (scope, name) DO NOTHING`, b.k.scope, name, data)
+			ON CONFLICT (scope, name) DO NOTHING`, b.k.row, name, data)
 		return err
 	})
 	if err != nil {
@@ -335,7 +356,7 @@ func (b pgBlobs) getBlob(name string) ([]byte, error) {
 	var data []byte
 	found := false
 	err := b.k.transact(pgRead, func(tx pgTx) error {
-		rows, err := tx.exec(`SELECT data FROM gateway.blobs WHERE scope = $1 AND name = $2`, b.k.scope, name)
+		rows, err := tx.exec(`SELECT data FROM gateway.blobs WHERE scope = $1 AND name = $2`, b.k.row, name)
 		if err == nil && len(rows.rows) == 1 {
 			data, found = rows.rows[0][0], true
 		}
@@ -353,7 +374,7 @@ func (b pgBlobs) getBlob(name string) ([]byte, error) {
 func (b pgBlobs) listBlobs() ([]string, error) {
 	var names []string
 	err := b.k.transact(pgRead, func(tx pgTx) error {
-		rows, err := tx.exec(`SELECT name FROM gateway.blobs WHERE scope = $1 ORDER BY name`, b.k.scope)
+		rows, err := tx.exec(`SELECT name FROM gateway.blobs WHERE scope = $1 ORDER BY name`, b.k.row)
 		names = pgNames(rows)
 		return err
 	})
@@ -376,7 +397,7 @@ func (x pgIndexed) makeSeries(series string) (bool, error) {
 		// a series of any scope holds its name: a session's name is one
 		// across scopes, and one another scope made is never this call's
 		rows, err := tx.exec(`INSERT INTO gateway.series (scope, name) VALUES ($1, $2)
-			ON CONFLICT DO NOTHING RETURNING name`, x.k.scope, series)
+			ON CONFLICT DO NOTHING RETURNING name`, x.k.row, series)
 		made = err == nil && len(rows.rows) == 1
 		return err
 	})
@@ -398,7 +419,7 @@ func (x pgIndexed) createIndexed(series string, index int64, data []byte) error 
 	err := x.k.transact(pgWriteCommitted, func(tx pgTx) error {
 		rows, err := tx.exec(`INSERT INTO gateway.entries (scope, series, name, data)
 			SELECT s.scope, s.name, $3, $4 FROM gateway.series s WHERE s.scope = $1 AND s.name = $2
-			RETURNING name`, x.k.scope, series, name, data)
+			RETURNING name`, x.k.row, series, name, data)
 		made = err == nil && len(rows.rows) == 1
 		return err
 	})
@@ -419,7 +440,7 @@ func (x pgIndexed) createIndexed(series string, index int64, data []byte) error 
 func (x pgIndexed) listSeries() ([]string, error) {
 	var names []string
 	err := x.k.transact(pgRead, func(tx pgTx) error {
-		rows, err := tx.exec(`SELECT name FROM gateway.series WHERE scope = $1 ORDER BY name`, x.k.scope)
+		rows, err := tx.exec(`SELECT name FROM gateway.series WHERE scope = $1 ORDER BY name`, x.k.row)
 		names = pgNames(rows)
 		return err
 	})
@@ -435,7 +456,7 @@ func (x pgIndexed) listEntries(series string) ([]string, error) {
 	err := x.k.transact(pgRead, func(tx pgTx) error {
 		rows, err := tx.exec(`SELECT e.name FROM gateway.series s
 			LEFT JOIN gateway.entries e ON e.scope = s.scope AND e.series = s.name
-			WHERE s.scope = $1 AND s.name = $2 ORDER BY e.name`, x.k.scope, series)
+			WHERE s.scope = $1 AND s.name = $2 ORDER BY e.name`, x.k.row, series)
 		if err != nil {
 			return err
 		}
@@ -464,7 +485,7 @@ func (x pgIndexed) getEntry(series, entry string) ([]byte, error) {
 	var data []byte
 	found := false
 	err := x.k.transact(pgRead, func(tx pgTx) error {
-		rows, err := tx.exec(`SELECT data FROM gateway.entries WHERE scope = $1 AND series = $2 AND name = $3`, x.k.scope, series, entry)
+		rows, err := tx.exec(`SELECT data FROM gateway.entries WHERE scope = $1 AND series = $2 AND name = $3`, x.k.row, series, entry)
 		if err == nil && len(rows.rows) == 1 {
 			data, found = rows.rows[0][0], true
 		}
@@ -492,41 +513,42 @@ func (l pgLog) appendRecord(data []byte) (int, error) {
 	if len(data) > pgMaxValue {
 		return 0, &storeError{fault: faultRefused, op: "append", err: fmt.Errorf("store: a record of %d bytes is past the kind's bound of %d", len(data), pgMaxValue)}
 	}
-	for attempt := 0; attempt < pgAppendAttempts; attempt++ {
-		made := false
-		err := l.k.transact(pgWriteCommitted, func(tx pgTx) error {
-			if len(data) == 0 {
-				rows, err := tx.exec(`SELECT 1 FROM gateway.logs WHERE name = $1`, l.name)
-				made = err == nil && len(rows.rows) == 1
-				return err
-			}
-			// the record starts where the last one stops; two appends that
-			// read one end cannot both write there (the primary key), and
-			// the one refused tries again from the new end
-			rows, err := tx.exec(`INSERT INTO gateway.log_records (log, start, data)
-				SELECT g.name, COALESCE((SELECT r.stop FROM gateway.log_records r
-					WHERE r.log = g.name ORDER BY r.start DESC LIMIT 1), 0), $2
-				FROM gateway.logs g WHERE g.name = $1
-				RETURNING start`, l.name, data)
+	made := false
+	err := l.k.transact(pgWriteCommitted, func(tx pgTx) error {
+		if len(data) == 0 {
+			rows, err := tx.exec(`SELECT 1 FROM gateway.logs WHERE name = $1`, l.name)
 			made = err == nil && len(rows.rows) == 1
 			return err
-		})
-		if pgCode(err) == pgUniqueViolation {
-			continue
 		}
-		var unknown pgCommitUnknown
-		switch {
-		case errors.As(err, &unknown):
-			// written whole; whether it was made durable is not known
-			return len(data), &storeError{fault: faultDurability, op: "append", written: len(data), committing: true, err: err}
-		case err != nil:
-			return 0, &storeError{fault: faultDurability, op: "append", err: err}
-		case !made:
-			return 0, &storeError{fault: faultAbsent, op: "append"}
+		// Appends take the log's end one at a time: the lock is held to the
+		// commit, and the statement after it, at READ COMMITTED, reads the
+		// end the last append committed. So a record commits only after the
+		// one it follows, a reader never sees one past a record not yet
+		// committed, and no append loses the end to another and is refused
+		// or tried again. The primary key still refuses a second record at
+		// one offset, from a writer that did not take the lock.
+		if _, err := tx.exec(`SELECT pg_catalog.pg_advisory_xact_lock($1)`, int64(pgLogAppendLock)); err != nil {
+			return err
 		}
-		return len(data), nil
+		rows, err := tx.exec(`INSERT INTO gateway.log_records (log, start, data)
+			SELECT g.name, COALESCE((SELECT r.stop FROM gateway.log_records r
+				WHERE r.log = g.name ORDER BY r.start DESC LIMIT 1), 0), $2
+			FROM gateway.logs g WHERE g.name = $1
+			RETURNING start`, l.name, data)
+		made = err == nil && len(rows.rows) == 1
+		return err
+	})
+	var unknown pgCommitUnknown
+	switch {
+	case errors.As(err, &unknown):
+		// written whole; whether it was made durable is not known
+		return len(data), &storeError{fault: faultDurability, op: "append", written: len(data), committing: true, err: err}
+	case err != nil:
+		return 0, &storeError{fault: faultDurability, op: "append", err: err}
+	case !made:
+		return 0, &storeError{fault: faultAbsent, op: "append"}
 	}
-	return 0, &storeError{fault: faultDurability, op: "append", err: errors.New("store: the log's end moved under every attempt to append")}
+	return len(data), nil
 }
 
 // readTx reads the log from a cursor within a transaction already open.
@@ -637,7 +659,7 @@ func (d pgDocuments) getDocument(name string) ([]byte, string, error) {
 	revision := noRevision
 	found := false
 	err := d.k.transact(pgRead, func(tx pgTx) error {
-		rows, err := tx.exec(`SELECT data, revision FROM gateway.documents WHERE scope = $1 AND name = $2`, d.k.scope, name)
+		rows, err := tx.exec(`SELECT data, revision FROM gateway.documents WHERE scope = $1 AND name = $2`, d.k.row, name)
 		if err == nil && len(rows.rows) == 1 {
 			data, revision, found = rows.rows[0][0], string(rows.rows[0][1]), true
 		}
@@ -669,12 +691,12 @@ func (d pgDocuments) putDocument(name string, data []byte, expected string) (str
 		var err error
 		if expected == noRevision {
 			rows, err = tx.exec(`INSERT INTO gateway.documents (scope, name, revision, data) VALUES ($1, $2, $3, $4)
-				ON CONFLICT (scope, name) DO NOTHING RETURNING revision`, d.k.scope, name, next, data)
+				ON CONFLICT (scope, name) DO NOTHING RETURNING revision`, d.k.row, name, next, data)
 		} else {
 			// the row is locked by the update, and a concurrent writer's
 			// update waits and then finds the revision it expected gone
 			rows, err = tx.exec(`UPDATE gateway.documents SET revision = $3, data = $4
-				WHERE scope = $1 AND name = $2 AND revision = $5 RETURNING revision`, d.k.scope, name, next, data, expected)
+				WHERE scope = $1 AND name = $2 AND revision = $5 RETURNING revision`, d.k.row, name, next, data, expected)
 		}
 		put = err == nil && len(rows.rows) == 1
 		return err
@@ -695,7 +717,7 @@ func (d pgDocuments) deleteDocument(name, expected string) error {
 	deleted, there := false, false
 	err := d.k.transact(pgWriteCommitted, func(tx pgTx) error {
 		if expected != noRevision {
-			rows, err := tx.exec(`DELETE FROM gateway.documents WHERE scope = $1 AND name = $2 AND revision = $3 RETURNING name`, d.k.scope, name, expected)
+			rows, err := tx.exec(`DELETE FROM gateway.documents WHERE scope = $1 AND name = $2 AND revision = $3 RETURNING name`, d.k.row, name, expected)
 			if err != nil {
 				return err
 			}
@@ -703,7 +725,7 @@ func (d pgDocuments) deleteDocument(name, expected string) error {
 				return nil
 			}
 		}
-		rows, err := tx.exec(`SELECT 1 FROM gateway.documents WHERE scope = $1 AND name = $2`, d.k.scope, name)
+		rows, err := tx.exec(`SELECT 1 FROM gateway.documents WHERE scope = $1 AND name = $2`, d.k.row, name)
 		there = err == nil && len(rows.rows) == 1
 		return err
 	})
@@ -721,7 +743,7 @@ func (d pgDocuments) deleteDocument(name, expected string) error {
 func (d pgDocuments) listDocuments() ([]string, error) {
 	var names []string
 	err := d.k.transact(pgRead, func(tx pgTx) error {
-		rows, err := tx.exec(`SELECT name FROM gateway.documents WHERE scope = $1 ORDER BY name`, d.k.scope)
+		rows, err := tx.exec(`SELECT name FROM gateway.documents WHERE scope = $1 ORDER BY name`, d.k.row)
 		names = pgNames(rows)
 		return err
 	})
@@ -798,7 +820,7 @@ func (k *pgKind) snapshot() (*storeCut, error) {
 			return err
 		}
 		cut.log, cut.logPresent = log, present
-		docs, err := tx.exec(`SELECT name, revision, data FROM gateway.documents WHERE scope = $1`, k.scope)
+		docs, err := tx.exec(`SELECT name, revision, data FROM gateway.documents WHERE scope = $1`, k.row)
 		if err != nil {
 			return err
 		}
@@ -806,7 +828,7 @@ func (k *pgKind) snapshot() (*storeCut, error) {
 			cut.documents[string(row[0])] = row[2]
 			cut.revisions[string(row[0])] = string(row[1])
 		}
-		series, err := tx.exec(`SELECT name FROM gateway.series WHERE scope = $1`, k.scope)
+		series, err := tx.exec(`SELECT name FROM gateway.series WHERE scope = $1`, k.row)
 		if err != nil {
 			return err
 		}
@@ -814,7 +836,7 @@ func (k *pgKind) snapshot() (*storeCut, error) {
 		for _, s := range cut.series {
 			cut.entries[s] = []string{}
 		}
-		entries, err := tx.exec(`SELECT series, name FROM gateway.entries WHERE scope = $1`, k.scope)
+		entries, err := tx.exec(`SELECT series, name FROM gateway.entries WHERE scope = $1`, k.row)
 		if err != nil {
 			return err
 		}
@@ -824,7 +846,7 @@ func (k *pgKind) snapshot() (*storeCut, error) {
 		for _, names := range cut.entries {
 			sort.Strings(names)
 		}
-		blobs, err := tx.exec(`SELECT name FROM gateway.blobs WHERE scope = $1`, k.scope)
+		blobs, err := tx.exec(`SELECT name FROM gateway.blobs WHERE scope = $1`, k.row)
 		if err != nil {
 			return err
 		}

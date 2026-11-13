@@ -9,12 +9,13 @@
 -- named), defines no function, and sets no role or database setting.
 --
 -- Rows of the tables that carry a column `scope` are each of one scope
--- identifier, or of none (the empty string: an identifier is never empty).
--- Row-level security, enabled and forced, admits to a transaction only the
--- rows of the scope its setting `gateway.scope` names, set per transaction
--- by the kind; a transaction that set none sees and writes only rows of no
--- scope. No table here holds a sequence or an identity column: nothing is
--- counted across scopes.
+-- identifier, held as 'scope:' and the identifier, or of none, held as
+-- 'none'. Row-level security, enabled and forced, admits to a transaction
+-- only the rows whose `scope` is its setting `gateway.scope`, set per
+-- transaction by the kind. No row holds the empty string, and an unset
+-- setting reads as NULL or as the empty string, so a transaction that set
+-- no scope sees no row and writes none, not even of no scope. No table here
+-- holds a sequence or an identity column: nothing is counted across scopes.
 
 CREATE SCHEMA gateway;
 REVOKE ALL ON SCHEMA gateway FROM PUBLIC;
@@ -29,7 +30,7 @@ CREATE TABLE gateway.schema_migrations (
 -- Immutable content-addressed blobs: the retained artifacts. Never changed
 -- once made; the run-time role holds no UPDATE or DELETE on it.
 CREATE TABLE gateway.blobs (
-    scope text COLLATE "C" NOT NULL CHECK (octet_length(scope) <= 128),
+    scope text COLLATE "C" NOT NULL CHECK (scope = 'none' OR (substr(scope, 1, 6) = 'scope:' AND octet_length(scope) BETWEEN 7 AND 134)),
     name  text COLLATE "C" NOT NULL CHECK (name ~ '^sha256:[0-9a-f]{64}$'),
     data  bytea NOT NULL,
     PRIMARY KEY (scope, name)
@@ -40,7 +41,7 @@ CREATE TABLE gateway.blobs (
 -- §1.3), and the session is of the scope that made it; its entries are of
 -- that scope. Neither is changed once made.
 CREATE TABLE gateway.series (
-    scope text COLLATE "C" NOT NULL CHECK (octet_length(scope) <= 128),
+    scope text COLLATE "C" NOT NULL CHECK (scope = 'none' OR (substr(scope, 1, 6) = 'scope:' AND octet_length(scope) BETWEEN 7 AND 134)),
     name  text COLLATE "C" NOT NULL CHECK (octet_length(name) BETWEEN 1 AND 255),
     PRIMARY KEY (name),
     UNIQUE (scope, name)
@@ -73,7 +74,7 @@ CREATE TABLE gateway.log_records (
 -- Versioned documents, replaced by compare-and-set against a revision; a
 -- lease is a document, of the scope that took it.
 CREATE TABLE gateway.documents (
-    scope    text COLLATE "C" NOT NULL CHECK (octet_length(scope) <= 128),
+    scope    text COLLATE "C" NOT NULL CHECK (scope = 'none' OR (substr(scope, 1, 6) = 'scope:' AND octet_length(scope) BETWEEN 7 AND 134)),
     name     text COLLATE "C" NOT NULL CHECK (octet_length(name) BETWEEN 1 AND 255),
     revision text COLLATE "C" NOT NULL CHECK (revision ~ '^[0-9a-f]{32}$'),
     data     bytea NOT NULL,
@@ -91,23 +92,23 @@ CREATE TABLE gateway.secrets (
 ALTER TABLE gateway.blobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE gateway.blobs FORCE ROW LEVEL SECURITY;
 CREATE POLICY scope_of_the_transaction ON gateway.blobs
-    USING (scope = COALESCE(pg_catalog.current_setting('gateway.scope', true), ''))
-    WITH CHECK (scope = COALESCE(pg_catalog.current_setting('gateway.scope', true), ''));
+    USING (scope = pg_catalog.current_setting('gateway.scope', true))
+    WITH CHECK (scope = pg_catalog.current_setting('gateway.scope', true));
 
 ALTER TABLE gateway.series ENABLE ROW LEVEL SECURITY;
 ALTER TABLE gateway.series FORCE ROW LEVEL SECURITY;
 CREATE POLICY scope_of_the_transaction ON gateway.series
-    USING (scope = COALESCE(pg_catalog.current_setting('gateway.scope', true), ''))
-    WITH CHECK (scope = COALESCE(pg_catalog.current_setting('gateway.scope', true), ''));
+    USING (scope = pg_catalog.current_setting('gateway.scope', true))
+    WITH CHECK (scope = pg_catalog.current_setting('gateway.scope', true));
 
 ALTER TABLE gateway.entries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE gateway.entries FORCE ROW LEVEL SECURITY;
 CREATE POLICY scope_of_the_transaction ON gateway.entries
-    USING (scope = COALESCE(pg_catalog.current_setting('gateway.scope', true), ''))
-    WITH CHECK (scope = COALESCE(pg_catalog.current_setting('gateway.scope', true), ''));
+    USING (scope = pg_catalog.current_setting('gateway.scope', true))
+    WITH CHECK (scope = pg_catalog.current_setting('gateway.scope', true));
 
 ALTER TABLE gateway.documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE gateway.documents FORCE ROW LEVEL SECURITY;
 CREATE POLICY scope_of_the_transaction ON gateway.documents
-    USING (scope = COALESCE(pg_catalog.current_setting('gateway.scope', true), ''))
-    WITH CHECK (scope = COALESCE(pg_catalog.current_setting('gateway.scope', true), ''));
+    USING (scope = pg_catalog.current_setting('gateway.scope', true))
+    WITH CHECK (scope = pg_catalog.current_setting('gateway.scope', true));

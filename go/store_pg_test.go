@@ -8,11 +8,13 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -338,6 +340,11 @@ func TestPostgresRowSecurityKeepsEachScopeApart(t *testing.T) {
 		t.Errorf("scope b listed scope a's series: %v", err)
 	}
 	requireFault(t, "scope b's create into scope a's series", b.receipts().createIndexed("session-of-a", 1, []byte("{}\n")), faultAbsent)
+	// a session's name is one across scopes, by a key row security does not
+	// narrow: scope b does not make a series scope a holds
+	if made, err := b.receipts().makeSeries("session-of-a"); err != nil || made {
+		t.Errorf("scope b made the series scope a holds: %v %v", made, err)
+	}
 	if _, _, err := b.documents().getDocument("doc-of-a"); faultOf(err) != faultAbsent {
 		t.Errorf("scope b read scope a's document: %v", err)
 	}
@@ -384,7 +391,7 @@ func TestPostgresRowSecurityKeepsEachScopeApart(t *testing.T) {
 		if err := c.script("BEGIN"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.exec(`SELECT pg_catalog.set_config('gateway.scope', $1, true)`, scope); err != nil {
+		if _, err := c.exec(`SELECT pg_catalog.set_config('gateway.scope', $1, true)`, pgRowScope(scope)); err != nil {
 			t.Fatal(err)
 		}
 		fn()
@@ -403,13 +410,13 @@ func TestPostgresRowSecurityKeepsEachScopeApart(t *testing.T) {
 			t.Fatalf("the read by index alone is planned otherwise: the test tests another path:\n%s", strings.Join(lines, "\n"))
 		}
 		for query, args := range map[string][]any{
-			`SELECT name FROM gateway.series WHERE name = 'session-of-a'`:          nil,
-			`SELECT name FROM gateway.series WHERE scope = 'scope-a'`:              nil,
-			`SELECT name FROM gateway.blobs WHERE scope = 'scope-a' AND name = $1`: {blob},
-			`SELECT data FROM gateway.entries WHERE series = 'session-of-a'`:       nil,
-			`SELECT data FROM gateway.documents WHERE name = 'doc-of-a'`:           nil,
-			`SELECT name FROM gateway.blobs`:                                       nil,
-			`SELECT count(*) FROM gateway.series HAVING count(*) > 0`:              nil,
+			`SELECT name FROM gateway.series WHERE name = 'session-of-a'`:                nil,
+			`SELECT name FROM gateway.series WHERE scope = 'scope:scope-a'`:              nil,
+			`SELECT name FROM gateway.blobs WHERE scope = 'scope:scope-a' AND name = $1`: {blob},
+			`SELECT data FROM gateway.entries WHERE series = 'session-of-a'`:             nil,
+			`SELECT data FROM gateway.documents WHERE name = 'doc-of-a'`:                 nil,
+			`SELECT name FROM gateway.blobs`:                                             nil,
+			`SELECT count(*) FROM gateway.series HAVING count(*) > 0`:                    nil,
 		} {
 			rows, err := c.exec(query, args...)
 			if err != nil {
@@ -421,7 +428,7 @@ func TestPostgresRowSecurityKeepsEachScopeApart(t *testing.T) {
 		}
 		for query, want := range map[string]string{
 			`UPDATE gateway.documents SET data = 'b''s' WHERE name = 'doc-of-a'`: "UPDATE 0",
-			`DELETE FROM gateway.documents WHERE scope = 'scope-a'`:              "DELETE 0",
+			`DELETE FROM gateway.documents WHERE scope = 'scope:scope-a'`:        "DELETE 0",
 		} {
 			rows, err := c.exec(query)
 			if err != nil || rows.tag != want {
@@ -430,11 +437,11 @@ func TestPostgresRowSecurityKeepsEachScopeApart(t *testing.T) {
 		}
 	})
 	for _, query := range []string{
-		`INSERT INTO gateway.blobs (scope, name, data) VALUES ('scope-a', 'sha256:` + strings.Repeat("0", 64) + `', '')`,
-		`INSERT INTO gateway.series (scope, name) VALUES ('scope-a', 'session-of-b')`,
-		`INSERT INTO gateway.entries (scope, series, name, data) VALUES ('scope-a', 'session-of-a', '9', '')`,
-		`INSERT INTO gateway.documents (scope, name, revision, data) VALUES ('scope-a', 'doc-of-b', '` + strings.Repeat("0", 32) + `', '')`,
-		`INSERT INTO gateway.documents (scope, name, revision, data) VALUES ('', 'doc-of-no-scope', '` + strings.Repeat("0", 32) + `', '')`,
+		`INSERT INTO gateway.blobs (scope, name, data) VALUES ('scope:scope-a', 'sha256:` + strings.Repeat("0", 64) + `', '')`,
+		`INSERT INTO gateway.series (scope, name) VALUES ('scope:scope-a', 'session-of-b')`,
+		`INSERT INTO gateway.entries (scope, series, name, data) VALUES ('scope:scope-a', 'session-of-a', '9', '')`,
+		`INSERT INTO gateway.documents (scope, name, revision, data) VALUES ('scope:scope-a', 'doc-of-b', '` + strings.Repeat("0", 32) + `', '')`,
+		`INSERT INTO gateway.documents (scope, name, revision, data) VALUES ('none', 'doc-of-no-scope', '` + strings.Repeat("0", 32) + `', '')`,
 	} {
 		inScope(t, "scope-b", func() {
 			if _, err := c.exec(query); pgCode(err) != pgInsufficientPriv {
@@ -454,11 +461,13 @@ func TestPostgresRowSecurityKeepsEachScopeApart(t *testing.T) {
 	}
 }
 
-// A transaction that names no scope identifier sees no row of one, and
-// writes none: neither a connection that never set the scope, nor one
-// whose earlier transaction did, nor the kind's view of no scope after a
-// view of one used the same connection.
-func TestAPostgresTransactionOfNoScopeSeesNoScopedRow(t *testing.T) {
+// A transaction that sets no scope sees no row and writes none, of no scope
+// or of any: on a connection that never set the scope (the setting reads as
+// NULL), on one whose earlier transaction set it for itself (it reads as the
+// empty string), and in one that sets the empty string. The kind's view of
+// no scope names its scope, and sees the rows of no scope alone, on the one
+// connection a view of a scope used before it.
+func TestAPostgresTransactionThatSetsNoScopeSeesNoRow(t *testing.T) {
 	kind, db := pgTestKind(t, "", nil)
 	single, err := openPgKind(pgOptions{dsn: db.runtime, connections: 1})
 	if err != nil {
@@ -472,41 +481,55 @@ func TestAPostgresTransactionOfNoScopeSeesNoScopedRow(t *testing.T) {
 	if _, err := a.documents().putDocument("doc", []byte("a's"), noRevision); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := single.artifacts().putBlob([]byte("a blob of no scope")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := single.documents().putDocument("doc", []byte("no scope's"), noRevision); err != nil {
+		t.Fatal(err)
+	}
 	// the view of no scope, on the one connection the view of scope a used
-	if names, err := single.artifacts().listBlobs(); err != nil || len(names) != 0 {
+	if names, err := single.artifacts().listBlobs(); err != nil || len(names) != 1 {
 		t.Fatalf("the view of no scope after a view of scope a listed %v %v", names, err)
 	}
-	if _, _, err := single.documents().getDocument("doc"); faultOf(err) != faultAbsent {
-		t.Fatalf("the view of no scope read scope a's document: %v", err)
+	if got, _, err := single.documents().getDocument("doc"); err != nil || string(got) != "no scope's" {
+		t.Fatalf("the view of no scope read %q %v", got, err)
 	}
-	if names, err := kind.documents().listDocuments(); err != nil || len(names) != 0 {
+	if names, err := kind.documents().listDocuments(); err != nil || len(names) != 1 {
 		t.Fatalf("the kind's view of no scope listed %v %v", names, err)
 	}
+
 	c := db.runtimeConn(t)
-	count := func(what string) {
+	seesNothing := func(what string) {
 		t.Helper()
 		rows, err := c.exec(`SELECT (SELECT count(*) FROM gateway.blobs)::int8 + (SELECT count(*) FROM gateway.documents)::int8`)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if n, _ := pgInt8(rows.rows[0][0]); n != 0 {
-			t.Fatalf("%s: a transaction of no scope sees %d rows of scope a", what, n)
+			t.Errorf("%s: a transaction that set no scope sees %d rows", what, n)
+		}
+		for _, row := range []string{pgNoScope, pgRowScope("scope-a")} {
+			_, err := c.exec(`INSERT INTO gateway.documents (scope, name, revision, data) VALUES ($1, 'written', $2, '')`, row, strings.Repeat("0", 32))
+			if pgCode(err) != pgInsufficientPriv {
+				t.Errorf("%s: a transaction that set no scope wrote a row of %s: %v", what, row, err)
+			}
 		}
 	}
-	count("a connection that never set the scope")
+	seesNothing("a connection that never set the scope")
 	if err := c.script("BEGIN"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.exec(`SELECT pg_catalog.set_config('gateway.scope', 'scope-a', true)`); err != nil {
+	if _, err := c.exec(`SELECT pg_catalog.set_config('gateway.scope', $1, true)`, pgRowScope("scope-a")); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.script("COMMIT"); err != nil {
 		t.Fatal(err)
 	}
-	count("a connection whose last transaction set the scope for itself")
-	if _, err := c.exec(`INSERT INTO gateway.blobs (scope, name, data) VALUES ('scope-a', 'sha256:` + strings.Repeat("1", 64) + `', '')`); pgCode(err) != pgInsufficientPriv {
-		t.Fatalf("a transaction of no scope wrote a row of scope a: %v", err)
+	seesNothing("a connection whose last transaction set the scope for itself")
+	if err := c.script("SET gateway.scope = ''"); err != nil {
+		t.Fatal(err)
 	}
+	seesNothing("a connection that set the empty string")
 }
 
 // Every transaction of the kind sets its own synchronous commit, search
@@ -518,7 +541,7 @@ func TestAPostgresTransactionSetsItsOwnSettings(t *testing.T) {
 		"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET synchronous_commit = off",
 		"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET search_path = public",
 		"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET statement_timeout = 0",
-		"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET gateway.scope = 'scope-a'",
+		"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET gateway.scope = 'scope:scope-a'",
 	)
 	kind := db.open(t, nil)
 	var got []string
@@ -534,7 +557,7 @@ func TestAPostgresTransactionSetsItsOwnSettings(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"on", "pg_catalog", "30s", "30s", ""}; !slices.Equal(got, want) {
+	if want := []string{"on", "pg_catalog", "30s", "30s", "none"}; !slices.Equal(got, want) {
 		t.Fatalf("a transaction's settings read %q, want %q", got, want)
 	}
 }
@@ -544,7 +567,7 @@ func TestAPostgresTransactionSetsItsOwnSettings(t *testing.T) {
 func TestAPostgresCommitAnsweredWithRollbackIsAFailure(t *testing.T) {
 	kind, _ := pgTestKind(t, "", nil)
 	err := kind.transact(pgWriteCommitted, func(tx pgTx) error {
-		tx.exec(`INSERT INTO gateway.blobs (scope, name, data) VALUES ('', 'sha256:` + strings.Repeat("2", 64) + `', 'x')`)
+		tx.exec(`INSERT INTO gateway.blobs (scope, name, data) VALUES ('none', 'sha256:` + strings.Repeat("2", 64) + `', 'x')`)
 		tx.exec(`SELECT 1 / 0`) // the transaction fails; the failure is not passed on
 		return nil
 	})
@@ -882,6 +905,9 @@ func pgLoadCut(t *testing.T, db *pgTestDB, cut *storeCut) {
 			t.Fatalf("%s: %v", query, err)
 		}
 	}
+	// rows of no scope, in a transaction that names it: one that names
+	// none writes no row
+	exec(`SELECT pg_catalog.set_config('gateway.scope', $1, true)`, pgNoScope)
 	if cut.logPresent {
 		exec(`INSERT INTO gateway.logs (name) VALUES ('registry')`)
 		if len(cut.log) > 0 {
@@ -889,13 +915,13 @@ func pgLoadCut(t *testing.T, db *pgTestDB, cut *storeCut) {
 		}
 	}
 	for _, series := range cut.series {
-		exec(`INSERT INTO gateway.series (scope, name) VALUES ('', $1)`, series)
+		exec(`INSERT INTO gateway.series (scope, name) VALUES ('none', $1)`, series)
 		for _, entry := range cut.entries[series] {
 			data, err := cut.entry(series, entry)
 			if err != nil {
 				t.Fatal(err)
 			}
-			exec(`INSERT INTO gateway.entries (scope, series, name, data) VALUES ('', $1, $2, $3)`, series, entry, data)
+			exec(`INSERT INTO gateway.entries (scope, series, name, data) VALUES ('none', $1, $2, $3)`, series, entry, data)
 		}
 	}
 	for _, blob := range cut.blobs {
@@ -903,12 +929,199 @@ func pgLoadCut(t *testing.T, db *pgTestDB, cut *storeCut) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		exec(`INSERT INTO gateway.blobs (scope, name, data) VALUES ('', $1, $2)`, blob, data)
+		exec(`INSERT INTO gateway.blobs (scope, name, data) VALUES ('none', $1, $2)`, blob, data)
 	}
 	for name, data := range cut.documents {
-		exec(`INSERT INTO gateway.documents (scope, name, revision, data) VALUES ('', $1, $2, $3)`, name, strings.Repeat("0", 32), data)
+		exec(`INSERT INTO gateway.documents (scope, name, revision, data) VALUES ('none', $1, $2, $3)`, name, strings.Repeat("0", 32), data)
 	}
 	if err := c.script("COMMIT"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Appends from many writers at once all land, once each and in each
+// writer's order, and every read taken meanwhile is the log's start in
+// whole records: an append holds the log's lock to its commit, so a record
+// commits only after the one it follows, and none loses the log's end to
+// another append and is refused.
+func TestAPostgresLogUnderConcurrentAppendsLosesNoneAndReadsWhole(t *testing.T) {
+	kind, _ := pgTestKind(t, "", nil)
+	log := kind.registry()
+	if err := log.createLog(); err != nil {
+		t.Fatal(err)
+	}
+	const writers, each = 6, 8
+	failures := make(chan error, writers*each+2)
+	var reads sync.Mutex
+	var seen [][]byte
+	stop := make(chan struct{})
+	var readers, appenders sync.WaitGroup
+	for r := 0; r < 2; r++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				data, err := log.readLog(0)
+				if err != nil {
+					failures <- fmt.Errorf("a read under appends: %w", err)
+					return
+				}
+				reads.Lock()
+				seen = append(seen, data)
+				reads.Unlock()
+			}
+		}()
+	}
+	for w := 0; w < writers; w++ {
+		appenders.Add(1)
+		go func(w int) {
+			defer appenders.Done()
+			for i := 0; i < each; i++ {
+				record := []byte(fmt.Sprintf("writer %d record %d\n", w, i))
+				if n, err := log.appendRecord(record); err != nil || n != len(record) {
+					failures <- fmt.Errorf("writer %d's append %d: %d %v", w, i, n, err)
+				}
+			}
+		}(w)
+	}
+	appenders.Wait()
+	close(stop)
+	readers.Wait()
+	close(failures)
+	for err := range failures {
+		t.Error(err)
+	}
+	final, err := log.readLog(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := make([]int, writers)
+	lines := strings.Split(strings.TrimSuffix(string(final), "\n"), "\n")
+	for _, line := range lines {
+		var w, i int
+		if _, err := fmt.Sscanf(line, "writer %d record %d", &w, &i); err != nil || w < 0 || w >= writers || i != next[w] {
+			t.Fatalf("the log holds %q out of its writer's order", line)
+		}
+		next[w]++
+	}
+	if len(lines) != writers*each {
+		t.Fatalf("the log holds %d records of %d appended", len(lines), writers*each)
+	}
+	if len(seen) == 0 {
+		t.Fatal("no read was taken under the appends: the test tests nothing")
+	}
+	for _, data := range seen {
+		if !bytes.HasPrefix(final, data) || (len(data) > 0 && data[len(data)-1] != '\n') {
+			t.Fatalf("a read under appends is not the log's start in whole records: %q", data)
+		}
+	}
+}
+
+// A migration that changes rows of a scoped table, under the forcing of
+// row security that holds the owner too, fails and applies nothing, rather
+// than changing no row because it set no scope; one that lifts the forcing
+// for the table, changes the rows and restores it changes the rows of every
+// scope.
+func TestAPostgresMigrationOfRowsFailsRatherThanChangingNone(t *testing.T) {
+	kind, db := pgTestKind(t, "", nil)
+	a, _ := kind.inScope("scope-a")
+	for _, view := range []*pgKind{kind, a} {
+		if _, err := view.documents().putDocument("doc", []byte("before"), noRevision); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shipped := pgShippedMigrations()
+	with := func(sql string) pgMigrationSet {
+		set := shipped
+		set.versions = append(slices.Clone(shipped.versions), pgMigration{version: 2, name: "0002_rows.sql", sql: []byte(sql)})
+		return set
+	}
+	before := db.fingerprint(t)
+	if _, err := migratePostgres(db.migrator, with(`UPDATE gateway.documents SET data = 'after'`), db.roles, time.Minute); pgCode(err) != pgInsufficientPriv {
+		t.Fatalf("a migration of rows under forced row security: %v", err)
+	}
+	if after := db.fingerprint(t); after != before {
+		t.Fatalf("a migration that failed changed the database:\n%s\n%s", before, after)
+	}
+	applied, err := migratePostgres(db.migrator, with(`ALTER TABLE gateway.documents NO FORCE ROW LEVEL SECURITY;
+UPDATE gateway.documents SET data = 'after';
+ALTER TABLE gateway.documents FORCE ROW LEVEL SECURITY;`), db.roles, time.Minute)
+	if err != nil || !slices.Equal(applied, []int{2}) {
+		t.Fatalf("a migration of rows that lifts the forcing: %v %v", applied, err)
+	}
+	for _, view := range []*pgKind{kind, a} {
+		if got, _, err := view.documents().getDocument("doc"); err != nil || string(got) != "after" {
+			t.Errorf("a row the migration changed reads %q %v", got, err)
+		}
+	}
+}
+
+// Bytes that hold a NUL, as a byte and as the escape \u0000 that Go's JSON
+// encoder writes for one in a caller's text, are kept and read back byte
+// for byte by every kind, in every space and in a cut: the PostgreSQL kind
+// keeps each value as bytea bound in the binary format, and no column or
+// statement reads one as JSON.
+func TestAValueHoldingANULRoundTripsOnEveryKind(t *testing.T) {
+	value := []byte("{\"text\":\"a\\u0000b\"}\n\x00\\x00\n")
+	if !bytes.Contains(value, []byte(`\u0000`)) || !bytes.Contains(value, []byte{0}) {
+		t.Fatal("the value holds no NUL: the test tests nothing")
+	}
+	for _, k := range storeKindsUnderTest() {
+		t.Run(k.name, func(t *testing.T) {
+			kind, _ := k.open(t, time.Now)
+			same := func(what string, got []byte, err error) {
+				t.Helper()
+				if err != nil || !bytes.Equal(got, value) {
+					t.Errorf("%s reads %q %v", what, got, err)
+				}
+			}
+			blob, err := kind.artifacts().putBlob(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := kind.artifacts().getBlob(blob)
+			same("the blob", got, err)
+			if _, err := kind.receipts().makeSeries("session-nul"); err != nil {
+				t.Fatal(err)
+			}
+			if err := kind.receipts().createIndexed("session-nul", 0, value); err != nil {
+				t.Fatal(err)
+			}
+			got, err = kind.receipts().getEntry("session-nul", "0")
+			same("the entry", got, err)
+			if err := kind.registry().createLog(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := kind.registry().appendRecord(value); err != nil {
+				t.Fatal(err)
+			}
+			got, err = kind.registry().readLog(0)
+			same("the log", got, err)
+			if _, err := kind.documents().putDocument("doc-nul", value, noRevision); err != nil {
+				t.Fatal(err)
+			}
+			got, _, err = kind.documents().getDocument("doc-nul")
+			same("the document", got, err)
+			if err := kind.secrets().putSecret("secret-nul", value); err != nil {
+				t.Fatal(err)
+			}
+			got, err = kind.secrets().getSecret("secret-nul")
+			same("the secret", got, err)
+			cut, err := kind.snapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			same("the cut's log", cut.log, nil)
+			same("the cut's document", cut.documents["doc-nul"], nil)
+			got, err = cut.entry("session-nul", "0")
+			same("the cut's entry", got, err)
+			got, err = cut.blob(blob)
+			same("the cut's blob", got, err)
+		})
 	}
 }

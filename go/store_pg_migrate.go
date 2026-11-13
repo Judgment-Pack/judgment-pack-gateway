@@ -157,7 +157,7 @@ func pgRoleName(name string) bool {
 }
 
 // The migration's lock: one migration at a time in the database.
-const pgMigrationLock = 0x6761746577617931 // "gatewayl" in ASCII, a constant of this schema
+const pgMigrationLock = 0x6761746577617931 // "gateway1" in ASCII, a constant of this schema
 
 // migratePostgres brings the database's schema to set as the migration
 // login dsn names, and answers the versions it applied: none on a second
@@ -194,8 +194,17 @@ func migratePostgres(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout time.
 	if _, err := c.exec("BEGIN ISOLATION LEVEL READ COMMITTED READ WRITE"); err != nil {
 		return nil, err
 	}
+	// Row security is forced on the owner too, and a migration sets no
+	// scope, so a statement of one that reads or changes rows of a scoped
+	// table would see none and change none, without an error. With
+	// row_security off for the transaction, such a statement fails instead,
+	// and the migration with it: a migration that changes rows lifts the
+	// forcing for the tables it changes and restores it, in its own
+	// transaction (docs/postgresql-store.md), and the start refuses a table
+	// it is not restored on.
 	if _, err := c.exec(`SELECT pg_catalog.set_config('role', $1, true),
 		pg_catalog.set_config('search_path', 'pg_catalog', true),
+		pg_catalog.set_config('row_security', 'off', true),
 		pg_catalog.set_config('gateway.runtime_role', $2, true),
 		pg_catalog.pg_advisory_xact_lock($3)`, roles.owner, roles.runtime, int64(pgMigrationLock)); err != nil {
 		return failed(err)
@@ -497,7 +506,7 @@ func pgPrivilegesHold(tx pgTx) error {
 
 // pgScopePolicy is the one policy on each table whose rows carry a scope
 // identifier, as the server prints it under the search path the kind sets.
-const pgScopePolicy = `(scope = COALESCE(current_setting('gateway.scope'::text, true), ''::text))`
+const pgScopePolicy = `(scope = current_setting('gateway.scope'::text, true))`
 
 // pgSchemaHolds holds the schema to what the migrations made: the store's
 // tables and their indexes alone, with no view, sequence, function,
