@@ -334,6 +334,61 @@ func TestTheServiceOnAnotherKindRefusesWhatReadsTheDiskByName(t *testing.T) {
 	stillEmpty()
 }
 
+// layoutHidingKind is a kind that wraps another and forwards the contract
+// alone: neither a scope keeper nor a kind known to keep one layout.
+type layoutHidingKind struct{ storeKind }
+
+// A source fixed to a scope identifier, served over a kind that neither
+// keeps each scope's rows apart nor is known to keep one layout, is refused
+// its acquisition, and nothing is written: its rows are never taken for
+// rows of no scope (#447). Over the kind that keeps one layout the same
+// acquisition is taken, and a source of no scope over the wrapper is too.
+func TestAScopedSourceOverAKindOfNoKnownLayoutIsRefused(t *testing.T) {
+	t.Setenv(envSourceHelper, "1")
+	sources := map[string]sourceSpec{
+		"plain":       {argv: []string{os.Args[0]}, env: helperEnv},
+		"screening-a": {argv: []string{os.Args[0]}, env: helperEnv, scope: "scope-a"},
+	}
+	issuer := newIssuer(t)
+	id := identityFor(t, issuer)
+	token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
+	for _, tc := range []struct {
+		name  string
+		wrap  bool
+		taken bool
+	}{{"over the kind in memory", false, true}, {"over a kind that hides its layout", true, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			memory := newMemoryKind(nil)
+			var kind storeKind = memory
+			if tc.wrap {
+				kind = layoutHidingKind{memory}
+			}
+			service, err := newGatewayServiceOn(kind, testSeed, "gateway:test", sources)
+			if err != nil {
+				t.Fatal(err)
+			}
+			service.identity = &id
+			server := httptest.NewServer(service.handler())
+			t.Cleanup(server.Close)
+			code, body := authed(t, server, "/acquire", `{"session":"scoped-1","source":"screening-a","scope":"scope-a","arguments":{"q":"acme"}}`, token)
+			if taken := code == http.StatusOK; taken != tc.taken {
+				t.Fatalf("a scoped source's acquisition: %d %v", code, body)
+			}
+			if !tc.taken && !strings.Contains(fmt.Sprint(body["error"]), "the store's kind keeps no view of a scope identifier") {
+				t.Fatalf("a scoped source's acquisition was refused otherwise: %d %v", code, body)
+			}
+			series, _ := memory.receipts().listSeries()
+			blobs, _ := memory.artifacts().listBlobs()
+			if !tc.taken && (len(series) != 0 || len(blobs) != 0) {
+				t.Fatalf("a refused acquisition wrote series %v and blobs %v", series, blobs)
+			}
+			if code, body := authed(t, server, "/acquire", `{"session":"plain-1","source":"plain","arguments":{"q":"acme"}}`, token); code != http.StatusOK {
+				t.Fatalf("a source of no scope: %d %v", code, body)
+			}
+		})
+	}
+}
+
 // The connection string's file is held as the seed's is; a variable is
 // removed from the environment once read; and no refusal of the string
 // carries any of it.

@@ -457,11 +457,28 @@ func newGatewayServiceOn(kind storeKind, seed []byte, authority string, sources 
 	return g, nil
 }
 
+// oneLayout is a kind that keeps every scope's receipts in one layout, as
+// the filesystem kind does: a source fixed to a scope identifier keeps its
+// payloads and receipts in the one store, the receipt carrying the scope.
+type oneLayout interface {
+	keepsOneLayout()
+}
+
 // storeFor is the store a source fixed to scope ("" for none) keeps its
 // payloads and receipts in: on a kind that keeps each scope's rows apart,
-// the store of the kind's view of that scope; on every other, the one.
+// the store of the kind's view of that scope; on the filesystem kind at its
+// paths and on a kind that keeps one layout, the one. A kind that is
+// neither -- one that wraps a scope keeper without being one, say -- is
+// refused a scoped source's acquisition, rather than given the rows of no
+// scope (#447).
 func (g *gatewayService) storeFor(scope string) (*store, error) {
-	if scope == "" || g.scoped == nil {
+	if scope == "" {
+		return g.store, nil
+	}
+	if g.scoped == nil {
+		if _, one := g.kind.(oneLayout); g.kind != nil && !one {
+			return nil, errors.New("the store's kind keeps no view of a scope identifier")
+		}
 		return g.store, nil
 	}
 	st, opened := g.scoped[scope]
