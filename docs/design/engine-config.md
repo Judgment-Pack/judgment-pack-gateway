@@ -54,7 +54,7 @@ The file is read through the same strict parser the gateway uses for everything 
 duplicate member names refused, integers only, unknown members refused by name. A misspelled
 key is an error, never an intention silently dropped. `engineVersion`, `authority`, `seed`,
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
-`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox`, `delegation`, `sealOpenAtStart`, `acceptOtherHostsOverPlainHTTP` and `measureSandboxAtStart` are optional; within a
+`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox`, `delegation`, `sealOpenAtStart`, `acceptOtherHostsOverPlainHTTP`, `measureSandboxAtStart` and `storage` are optional (with `storage`, `store` and `registry` are not given: "The storage kind (engine version 24)", below); within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
 `descriptors`, `operationDescriptors`, `descriptorStatements`, `decisionPolicy`,
 `parameters`, `grant`, `writeRequesters`, `scope` and `artifact` optional; each operation's `credentials`
@@ -62,7 +62,7 @@ entry is `{"file": …}`, and a live one's may carry `tokenStep` beside `file`. 
 absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"23"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"24"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
@@ -74,8 +74,9 @@ absolute.
   scope (engine version 20)", below), version 21 a live operation's
   `credentials.live.tokenStep` ("A live operation's token step (engine version 21)", below), and
   version 22 a platform's `artifact` ("A platform that keeps no payload (engine version 22)",
-  below), and version 23 `measureSandboxAtStart` ("Measuring the sandbox at the start (engine
-  version 23)", below). A
+  below), version 23 `measureSandboxAtStart` ("Measuring the sandbox at the start (engine
+  version 23)", below), and version 24 `storage` ("The storage kind (engine version 24)",
+  below). A
   file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -1858,6 +1859,47 @@ is unchanged and is still the check that says why.
 start refuse a host that cannot enforce the sandbox, raise `engineVersion` to `"23"` and add
 `"measureSandboxAtStart": true`; a gateway older than this one refuses a version-23 file by its
 version, and a file of version 22 or earlier with the member is refused by name.
+
+## The storage kind (engine version 24)
+
+Version 24 adds the optional `storage` member
+([ADR-0032](../adr/0032-a-configuration-names-its-storage-kind.md); the operator's page is
+[postgresql-store.md](../postgresql-store.md)). Without it the filesystem kind keeps the store and
+the registry at `store` and `registry`, both required, exactly as before. With it the PostgreSQL
+kind keeps both, and `store` and `registry` are not given:
+
+```json
+"storage": {
+  "kind": "postgresql",
+  "connection": { "file": "/run/secrets/gateway-store-url" },
+  "connections": 4,
+  "operationSeconds": 30
+}
+```
+
+| Member | Value | Refused |
+|---|---|---|
+| `kind` | `postgresql` | any other value |
+| `connection` | exactly one of `file`, an absolute path held as the seed's file is, or `environment`, a variable's name matching `^[A-Z_][A-Z0-9_]{0,127}$` | both, neither, any other member |
+| `connections` | integer, 1 to 64; 4 without it | outside the range, not an integer |
+| `operationSeconds` | integer, 1 to 600; 30 without it | outside the range, not an integer |
+
+The connection string itself is never written in the file. A file is read, at most 4096 bytes, at
+the start and by `gateway export --config`; a variable is read at the start and removed from the
+process's environment. A source's environment never takes it: a source is given its HOME, its
+platform's own pairs and PATH (above). `gateway mcp` is denied the file and refuses to start where
+its environment holds the variable.
+
+Refused by name, `engine configuration: …`: `storage` in a file of version 23 or earlier; `store`
+or `registry` beside `storage`; and, with `storage`, what reads the store on disk, with the error
+`storage-kind-unsupported` naming it: `witness`, `sealOpenAtStart`, a platform's `write`,
+`descriptorStatements` and `scope` (postgresql-store.md, "Not available with this kind yet", has
+the commands and routes refused besides).
+
+**Upgrading.** A version 23 file loads unchanged under a gateway of this version. To move to the
+PostgreSQL kind, run `gateway store migrate`, raise `engineVersion` to `"24"`, replace `store` and
+`registry` by `storage`, and start; a gateway older than this one refuses a version-24 file by its
+version. Moving a store from one kind to the other is not supported: the kind starts empty.
 
 ## Keyed actions (engine version 14 and later)
 

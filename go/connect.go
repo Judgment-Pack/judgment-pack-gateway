@@ -396,6 +396,18 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if described != nil && described.taxonomies != nil && req.noDescriptors {
 		return out, errors.New("V2 registration requires complete approved descriptors")
 	}
+	// With the PostgreSQL kind keeping the store, the configuration as it
+	// would be is held to what the kind cannot serve yet, and a capture,
+	// whose snapshot the store on disk keeps, is refused, before anything
+	// is asked (storage_kind.go).
+	if candidate.storage != nil {
+		if err := storageRefusals(&candidate); err != nil {
+			return out, err
+		}
+		if capturing || b.hasOwnerDeclarations() {
+			return out, storageUnsupported(connectCaptureUnsupported)
+		}
+	}
 	captureSource := req.platform + "/live"
 	if b.live == nil {
 		captureSource = req.platform + "/write"
@@ -436,7 +448,7 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		return out, err
 	}
 	// The paths serve makes, judged as serve would before making them.
-	if err := preflightPaths(candidate.store, candidate.registry, candidate.decisionRecords); err != nil {
+	if err := preflightPathsOf(candidate.store, candidate.registry, candidate.decisionRecords, candidate.storage == nil); err != nil {
 		return out, err
 	}
 	if err := validateEngineSandbox(candidate, bindings); err != nil {

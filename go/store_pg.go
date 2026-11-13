@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -46,6 +45,17 @@ const (
 	pgLogAppendLock = 0x6761746577617972 // "gatewayr" in ASCII, a constant of this schema
 	// pgMinServerVersion is PostgreSQL 16, the major version tested.
 	pgMinServerVersion = 160000
+	// pgTransactionTimeoutVersion is PostgreSQL 17, the first to bound a
+	// whole transaction (transaction_timeout).
+	pgTransactionTimeoutVersion = 170000
+	// pgIdleInTransaction is how long the server lets a session of the
+	// kind sit idle within a transaction before it ends the session, and
+	// with it the transaction and every lock it holds: a client that
+	// stopped -- paused, partitioned, crashed -- holds nothing longer. The
+	// connection's start sets it for the session and every transaction
+	// sets it again (pgKind.idle); the client's own work between two
+	// statements of one transaction is far shorter.
+	pgIdleInTransaction = 10 * time.Second
 )
 
 // pgOptions is how a kind is opened.
@@ -139,6 +149,15 @@ type pgKind struct {
 	row       string
 	operation time.Duration
 	clock     func() time.Time
+	// idle is the transaction's idle_in_transaction_session_timeout,
+	// pgIdleInTransaction unless a test shortens it; the start lease's
+	// fence leaves a write this much and a second more (fenceMargin).
+	idle time.Duration
+	// fence is the start lease's holder once this instance holds it
+	// (store_pg_lease.go): every write transaction holds the lease last,
+	// just before its commit. "" for a kind that holds none, as an export
+	// or a test opens it.
+	fence string
 }
 
 // pgRowScope is a scope as the rows of the scoped tables hold it, and as a
@@ -177,7 +196,7 @@ func openPgKind(o pgOptions) (*pgKind, error) {
 	if o.clock == nil {
 		o.clock = time.Now
 	}
-	k := &pgKind{pool: newPgPool(o.dsn, o.connections), row: pgNoScope, operation: o.operation, clock: o.clock}
+	k := &pgKind{pool: newPgPool(o.dsn, o.connections), row: pgNoScope, operation: o.operation, clock: o.clock, idle: pgIdleInTransaction}
 	if err := k.holdsItsConditions(pgShippedMigrations()); err != nil {
 		k.close()
 		return nil, err
@@ -245,6 +264,46 @@ func (k *pgKind) transact(mode pgMode, fn func(pgTx) error) error {
 		return err
 	}
 	defer k.pool.release(c)
+	return k.transactOn(c, deadline, mode, fn)
+}
+
+// pgSettings are every transaction's settings: its scope, its search path,
+// its bounds and its synchronous commit. $1 is the scope; $2 the
+// operation's bound in milliseconds, for a statement and a lock wait (and,
+// from PostgreSQL 17, the whole transaction); $3 the idle bound in
+// milliseconds. What a role, a database or the server sets decides none of
+// them for the transaction.
+const (
+	pgSettings = `SELECT pg_catalog.set_config('gateway.scope', $1, true),
+		pg_catalog.set_config('search_path', 'pg_catalog', true),
+		pg_catalog.set_config('statement_timeout', $2, true),
+		pg_catalog.set_config('lock_timeout', $2, true),
+		pg_catalog.set_config('idle_in_transaction_session_timeout', $3, true),
+		pg_catalog.set_config('synchronous_commit', 'on', true)`
+	pgSettingsFrom17 = pgSettings + `,
+		pg_catalog.set_config('transaction_timeout', $2, true)`
+)
+
+// pgServerFrom is whether c's server is version at least.
+func pgServerFrom(c *pgConn, version int) bool {
+	n, err := strconv.Atoi(c.params["server_version_num"])
+	return err == nil && n >= version
+}
+
+// settings sets this view's settings for the transaction c has begun.
+func (k *pgKind) settings(c *pgConn) error {
+	query := pgSettings
+	if pgServerFrom(c, pgTransactionTimeoutVersion) {
+		query = pgSettingsFrom17
+	}
+	_, err := c.exec(query, k.row, strconv.FormatInt(k.operation.Milliseconds(), 10), strconv.FormatInt(k.idle.Milliseconds(), 10))
+	return err
+}
+
+// transactOn is transact on c, a connection the caller holds, by deadline.
+// A write transaction of a kind that holds the start lease holds the lease
+// last, after fn's statements and just before the commit (holdFence).
+func (k *pgKind) transactOn(c *pgConn, deadline time.Time, mode pgMode, fn func(pgTx) error) error {
 	if err := c.conn.SetDeadline(deadline); err != nil {
 		c.broken = true
 		return pgTransport(err)
@@ -260,18 +319,19 @@ func (k *pgKind) transact(mode pgMode, fn func(pgTx) error) error {
 		c.broken = true
 		return err
 	}
-	timeout := strconv.FormatInt(k.operation.Milliseconds(), 10)
-	if _, err := c.exec(`SELECT pg_catalog.set_config('gateway.scope', $1, true),
-		pg_catalog.set_config('search_path', 'pg_catalog', true),
-		pg_catalog.set_config('statement_timeout', $2, true),
-		pg_catalog.set_config('lock_timeout', $2, true),
-		pg_catalog.set_config('synchronous_commit', 'on', true)`, k.row, timeout); err != nil {
+	if err := k.settings(c); err != nil {
 		k.rollback(c)
 		return err
 	}
 	if err := fn(pgTx{c}); err != nil {
 		k.rollback(c)
 		return err
+	}
+	if mode.write {
+		if err := k.holdFence(pgTx{c}); err != nil {
+			k.rollback(c)
+			return err
+		}
 	}
 	done, err := c.exec("COMMIT")
 	if err != nil {
@@ -451,6 +511,9 @@ func (x pgIndexed) listSeries() ([]string, error) {
 }
 
 func (x pgIndexed) listEntries(series string) ([]string, error) {
+	if !validListedSeries(series) {
+		return nil, pgRefused("list-entries", "not a series' name")
+	}
 	var names []string
 	there := false
 	err := x.k.transact(pgRead, func(tx pgTx) error {
@@ -479,8 +542,11 @@ func (x pgIndexed) listEntries(series string) ([]string, error) {
 }
 
 func (x pgIndexed) getEntry(series, entry string) ([]byte, error) {
-	if entry == "" || strings.ContainsAny(entry, `/\`) {
-		return nil, pgRefused("get-entry", fmt.Sprintf("%q is not an entry's name", entry))
+	if !validListedSeries(series) {
+		return nil, pgRefused("get-entry", "not a series' name")
+	}
+	if !validListedEntry(entry) {
+		return nil, pgRefused("get-entry", "not an entry's name")
 	}
 	var data []byte
 	found := false
@@ -655,6 +721,9 @@ func newRevision() (string, error) {
 }
 
 func (d pgDocuments) getDocument(name string) ([]byte, string, error) {
+	if !validStoreName(name) {
+		return nil, noRevision, pgRefused("get-document", "not a document's name")
+	}
 	var data []byte
 	revision := noRevision
 	found := false
@@ -777,6 +846,9 @@ func (s pgSecrets) putSecret(name string, value []byte) error {
 }
 
 func (s pgSecrets) getSecret(name string) ([]byte, error) {
+	if !validStoreName(name) {
+		return nil, pgRefused("get-secret", "not a secret's name")
+	}
 	var value []byte
 	found := false
 	err := s.k.transact(pgRead, func(tx pgTx) error {

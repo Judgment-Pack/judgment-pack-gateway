@@ -131,6 +131,10 @@ func TestStoreKindsConform(t *testing.T) {
 				kind, _ := k.open(t, clock.read)
 				conformLeaseTokensNeverRestart(t, kind, clock)
 			})
+			t.Run("a read of a name out of form is refused before anything is read", func(t *testing.T) {
+				kind, _ := k.open(t, nil)
+				conformNamesOutOfForm(t, kind)
+			})
 			t.Run("a snapshot is a consistent cut under concurrent writes", func(t *testing.T) {
 				kind, _ := k.open(t, nil)
 				conformSnapshot(t, kind)
@@ -329,6 +333,43 @@ func conformSecrets(t *testing.T, secrets secretSpace) {
 	requireFault(t, "a second make of a secret", secrets.putSecret("signing", []byte("another value\n")), faultTaken)
 	if got, err := secrets.getSecret("signing"); err != nil || string(got) != "first value\n" {
 		t.Fatalf("the secret after a refused make: %q %v", got, err)
+	}
+}
+
+// conformNamesOutOfForm: each kind refuses a read of a name no space of it
+// can hold -- empty, a path's parts, a separator, a NUL -- as refused, on a
+// store where a series and an entry of a name in form are there, so no
+// kind answers such a name as absent and another as refused.
+func conformNamesOutOfForm(t *testing.T, kind storeKind) {
+	receipts := kind.receipts()
+	if _, err := receipts.makeSeries("session-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := receipts.createIndexed("session-a", 0, []byte("entry\n")); err != nil {
+		t.Fatal(err)
+	}
+	for _, series := range []string{"", ".", "..", "session-a/..", "../session-a", "session-a/", `session-a\x`, "session-a\x00"} {
+		_, err := receipts.listEntries(series)
+		requireFault(t, fmt.Sprintf("the entries of the series %q", series), err, faultRefused)
+		_, err = receipts.getEntry(series, "0")
+		requireFault(t, fmt.Sprintf("an entry of the series %q", series), err, faultRefused)
+	}
+	for _, entry := range []string{"", "../0", "0/", `0\`, "0\x00"} {
+		_, err := receipts.getEntry("session-a", entry)
+		requireFault(t, fmt.Sprintf("the entry %q", entry), err, faultRefused)
+	}
+	for _, name := range []string{"", ".", "..", "../head", "a/b", "a b", "a\x00"} {
+		_, _, err := kind.documents().getDocument(name)
+		requireFault(t, fmt.Sprintf("the document %q", name), err, faultRefused)
+		_, err = kind.secrets().getSecret(name)
+		requireFault(t, fmt.Sprintf("the secret %q", name), err, faultRefused)
+	}
+	// the names in form read as they did
+	if _, err := receipts.getEntry("session-a", "0"); err != nil {
+		t.Fatalf("an entry of a name in form: %v", err)
+	}
+	if entries, err := receipts.listEntries("session-a"); err != nil || len(entries) != 1 {
+		t.Fatalf("the entries of a series of a name in form: %v %v", entries, err)
 	}
 }
 

@@ -1024,6 +1024,13 @@ func (g *gatewayService) resolveCitationWith(c citation, keys []reachedKey, remo
 // reachedKeys are the keys the engine's own reading of its registry reached
 // (SPEC.md §3b): its own last, each key it rotated from before it.
 func (g *gatewayService) reachedKeys() ([]reachedKey, error) {
+	if g.kind != nil {
+		w, err := g.kindRegistryWalk()
+		if err != nil {
+			return nil, err
+		}
+		return w.keys, nil
+	}
 	data, err := readRegistryOf(g.regPath, true)
 	if err != nil {
 		return nil, err

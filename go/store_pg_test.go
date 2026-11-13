@@ -85,7 +85,11 @@ func TestAPostgresMigrationRunTwiceChangesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(applied, []int{1}) {
+	var every []int
+	for _, m := range pgShippedMigrations().versions {
+		every = append(every, m.version)
+	}
+	if !slices.Equal(applied, every) {
 		t.Fatalf("the first run applied %v", applied)
 	}
 	first := db.fingerprint(t)
@@ -148,7 +152,8 @@ func TestAPostgresMigrationChangedOnceAppliedIsRefused(t *testing.T) {
 	t.Run("a schema newer than the binary", func(t *testing.T) {
 		db := newPgTestDB(t)
 		db.migrate(t)
-		db.asOwner(t, "INSERT INTO gateway.schema_migrations VALUES (2, '0002_later.sql', 'sha256:"+strings.Repeat("0", 64)+"')")
+		next := len(shipped.versions) + 1
+		db.asOwner(t, fmt.Sprintf("INSERT INTO gateway.schema_migrations VALUES (%d, '%04d_later.sql', 'sha256:%s')", next, next, strings.Repeat("0", 64)))
 		if _, err := migratePostgres(db.migrator, shipped, db.roles, time.Minute); err == nil || !strings.Contains(err.Error(), "older than its schema") {
 			t.Fatalf("a migration onto a newer schema: %v", err)
 		}
@@ -203,6 +208,8 @@ func TestAPostgresMigrationRefusesRolesOutsideTheirConditions(t *testing.T) {
 			return db.migrator, pgRoles{owner: db.roles.owner, runtime: `x"; DROP SCHEMA gateway; --`}
 		}, "no double quote"},
 		{"a schema gateway of another role's", func(t *testing.T, db *pgTestDB) (pgDSN, pgRoles) {
+			// a schema the admin makes, given CREATE on the database by its owner
+			db.asDatabaseOwner(t, "GRANT CREATE ON DATABASE "+db.database+" TO "+db.admin.user)
 			db.asAdmin(t, "CREATE SCHEMA gateway")
 			return db.migrator, db.roles
 		}, "another role owns it"},
@@ -227,14 +234,56 @@ func TestAPostgresMigrationRefusesRolesOutsideTheirConditions(t *testing.T) {
 	}
 	t.Run("a superuser's attributes on a role", func(t *testing.T) {
 		db := newPgTestDB(t)
-		if !db.super {
-			t.Skip("the admin login is no superuser and cannot give BYPASSRLS")
-		}
+		db.skipUnlessSuperuser(t)
 		db.asAdmin(t, "ALTER ROLE "+db.roles.runtime+" BYPASSRLS")
 		if _, err := migratePostgres(db.migrator, pgShippedMigrations(), db.roles, time.Minute); err == nil || !strings.Contains(err.Error(), "BYPASSRLS") {
 			t.Fatalf("a migration naming a run-time role with BYPASSRLS: %v", err)
 		}
 	})
+}
+
+// A statement the server refuses with a message that quotes the caller's
+// bytes reaches the caller as its SQLSTATE alone, on a server as with the
+// client's test server (TestAServerErrorReachesTheCallerWithNoneOfItsText).
+func TestAPostgresRefusalReachesTheCallerWithNoneOfItsBytes(t *testing.T) {
+	kind, _ := pgTestKind(t, "", nil)
+	const marker = "caller-bytes-marker"
+	err := kind.transact(pgRead, func(tx pgTx) error {
+		_, err := tx.exec(`SELECT $1::pg_catalog.text::pg_catalog.int4`, marker)
+		return err
+	})
+	if err == nil || pgCode(err) != "22P02" {
+		t.Fatalf("a value the server cannot read: %v", err)
+	}
+	if strings.Contains(err.Error(), marker) || strings.Contains(err.Error(), "invalid input") {
+		t.Fatalf("the refusal quotes the server's text: %v", err)
+	}
+}
+
+// The migration's checks resolve what they leave unqualified in
+// pg_catalog alone: a migration login whose setting puts a schema ahead of
+// pg_catalog, holding an operator that refuses every comparison, migrates
+// as any other, with the operator never called.
+func TestAPostgresMigrationPinsItsSearchPathFirst(t *testing.T) {
+	db := newPgTestDB(t)
+	db.asDatabaseOwner(t, "GRANT CREATE ON DATABASE "+db.database+" TO "+db.admin.user)
+	db.asAdmin(t,
+		"CREATE SCHEMA ahead",
+		"GRANT USAGE ON SCHEMA ahead TO "+db.migRole,
+		`CREATE FUNCTION ahead.name_eq(pg_catalog.name, pg_catalog.name) RETURNS pg_catalog.bool LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE = 'P0099'; END $$`,
+		`CREATE FUNCTION ahead.name_eq(pg_catalog.name, pg_catalog.text) RETURNS pg_catalog.bool LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE = 'P0099'; END $$`,
+		"CREATE OPERATOR ahead.= (LEFTARG = pg_catalog.name, RIGHTARG = pg_catalog.name, FUNCTION = ahead.name_eq)",
+		"CREATE OPERATOR ahead.= (LEFTARG = pg_catalog.name, RIGHTARG = pg_catalog.text, FUNCTION = ahead.name_eq)",
+		"ALTER ROLE "+db.migRole+" IN DATABASE "+db.database+" SET search_path = ahead, pg_catalog",
+	)
+	// the operator is the one a statement of this login resolves
+	if _, err := pgTestQueryErr(db.migrator, `SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname = $1`, db.roles.owner); pgCode(err) != "P0099" {
+		t.Fatalf("the operator ahead of pg_catalog was not resolved: %v; the test tests nothing", err)
+	}
+	if _, err := migratePostgres(db.migrator, pgShippedMigrations(), db.roles, time.Minute); err != nil {
+		t.Fatalf("a migration login with a search path ahead of pg_catalog: %v", err)
+	}
+	db.open(t, nil)
 }
 
 // The run-time login holds table privileges and nothing more: it makes,
@@ -533,33 +582,52 @@ func TestAPostgresTransactionThatSetsNoScopeSeesNoRow(t *testing.T) {
 }
 
 // Every transaction of the kind sets its own synchronous commit, search
-// path and timeouts: what a role or a database sets otherwise decides
-// nothing.
+// path and bounds -- a statement's, a lock wait's, and how long the session
+// may sit idle within it -- and its scope: what a role or a database sets
+// otherwise decides nothing.
 func TestAPostgresTransactionSetsItsOwnSettings(t *testing.T) {
-	_, db := pgTestKind(t, "", nil)
-	db.asAdmin(t,
-		"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET synchronous_commit = off",
-		"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET search_path = public",
-		"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET statement_timeout = 0",
-		"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET gateway.scope = 'scope:scope-a'",
-	)
-	kind := db.open(t, nil)
-	var got []string
-	if err := kind.transact(pgWriteCommitted, func(tx pgTx) error {
-		rows, err := tx.exec(`SELECT pg_catalog.current_setting('synchronous_commit'), pg_catalog.current_setting('search_path'),
-			pg_catalog.current_setting('statement_timeout'), pg_catalog.current_setting('lock_timeout'), pg_catalog.current_setting('gateway.scope')`)
-		if err == nil {
-			for _, v := range rows.rows[0] {
-				got = append(got, string(v))
+	settings := func(t *testing.T, db *pgTestDB) []string {
+		t.Helper()
+		kind := db.open(t, nil)
+		kind.idle = 3 * time.Second
+		var got []string
+		if err := kind.transact(pgWriteCommitted, func(tx pgTx) error {
+			rows, err := tx.exec(`SELECT pg_catalog.current_setting('synchronous_commit'), pg_catalog.current_setting('search_path'),
+				pg_catalog.current_setting('statement_timeout'), pg_catalog.current_setting('lock_timeout'), pg_catalog.current_setting('gateway.scope'),
+				pg_catalog.current_setting('idle_in_transaction_session_timeout')`)
+			if err == nil {
+				for _, v := range rows.rows[0] {
+					got = append(got, string(v))
+				}
 			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
 		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
+		return got
 	}
-	if want := []string{"on", "pg_catalog", "30s", "30s", "none"}; !slices.Equal(got, want) {
-		t.Fatalf("a transaction's settings read %q, want %q", got, want)
-	}
+	want := []string{"on", "pg_catalog", "30s", "30s", "none", "3s"}
+	t.Run("settings a role holds", func(t *testing.T) {
+		_, db := pgTestKind(t, "", nil)
+		db.asAdmin(t,
+			"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET synchronous_commit = off",
+			"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET search_path = public",
+			"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET statement_timeout = 0",
+			"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET idle_in_transaction_session_timeout = 0",
+		)
+		if got := settings(t, db); !slices.Equal(got, want) {
+			t.Fatalf("a transaction's settings read %q, want %q", got, want)
+		}
+	})
+	t.Run("a scope a role holds", func(t *testing.T) {
+		_, db := pgTestKind(t, "", nil)
+		// a parameter no module defines is set on a role by a superuser alone
+		db.skipUnlessSuperuser(t)
+		db.asAdmin(t, "ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET gateway.scope = 'scope:scope-a'")
+		if got := settings(t, db); !slices.Equal(got, want) {
+			t.Fatalf("a transaction's settings read %q, want %q", got, want)
+		}
+	})
 }
 
 // A commit the server answers with ROLLBACK, as it answers the commit of a
@@ -662,7 +730,7 @@ func TestThePostgresKindRefusesToStartOutsideItsConditions(t *testing.T) {
 			return db.runtime
 		}, "create objects in a schema"},
 		{"TEMPORARY on the database", func(t *testing.T, db *pgTestDB) pgDSN {
-			db.asAdmin(t, "GRANT TEMPORARY ON DATABASE "+db.database+" TO "+db.roles.runtime)
+			db.asDatabaseOwner(t, "GRANT TEMPORARY ON DATABASE "+db.database+" TO "+db.roles.runtime)
 			return db.runtime
 		}, "temporary tables"},
 		{"a run-time login that reaches the owner", func(t *testing.T, db *pgTestDB) pgDSN {
@@ -673,9 +741,7 @@ func TestThePostgresKindRefusesToStartOutsideItsConditions(t *testing.T) {
 			return db.migrator
 		}, "reaches, the schema's owner"},
 		{"a run-time login with BYPASSRLS", func(t *testing.T, db *pgTestDB) pgDSN {
-			if !db.super {
-				t.Skip("the admin login is no superuser and cannot give BYPASSRLS")
-			}
+			db.skipUnlessSuperuser(t)
 			db.asAdmin(t, "ALTER ROLE "+db.roles.runtime+" BYPASSRLS")
 			return db.runtime
 		}, "BYPASSRLS"},
@@ -1036,9 +1102,10 @@ func TestAPostgresMigrationOfRowsFailsRatherThanChangingNone(t *testing.T) {
 		}
 	}
 	shipped := pgShippedMigrations()
+	next := len(shipped.versions) + 1
 	with := func(sql string) pgMigrationSet {
 		set := shipped
-		set.versions = append(slices.Clone(shipped.versions), pgMigration{version: 2, name: "0002_rows.sql", sql: []byte(sql)})
+		set.versions = append(slices.Clone(shipped.versions), pgMigration{version: next, name: fmt.Sprintf("%04d_rows.sql", next), sql: []byte(sql)})
 		return set
 	}
 	before := db.fingerprint(t)
@@ -1051,7 +1118,7 @@ func TestAPostgresMigrationOfRowsFailsRatherThanChangingNone(t *testing.T) {
 	applied, err := migratePostgres(db.migrator, with(`ALTER TABLE gateway.documents NO FORCE ROW LEVEL SECURITY;
 UPDATE gateway.documents SET data = 'after';
 ALTER TABLE gateway.documents FORCE ROW LEVEL SECURITY;`), db.roles, time.Minute)
-	if err != nil || !slices.Equal(applied, []int{2}) {
+	if err != nil || !slices.Equal(applied, []int{next}) {
 		t.Fatalf("a migration of rows that lifts the forcing: %v %v", applied, err)
 	}
 	for _, view := range []*pgKind{kind, a} {

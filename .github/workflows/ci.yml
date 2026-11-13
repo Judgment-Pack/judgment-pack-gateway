@@ -253,6 +253,30 @@ jobs:
             echo "a PostgreSQL test skipped"
             exit 1
           fi
+      # The same tests as an administrator that may make roles and databases
+      # and nothing more. Three cases need a superuser to set up and skip by
+      # one message (docs/adr/0031, "Consequences"); any other skip fails.
+      - name: The PostgreSQL kind's tests as an administrator that is no superuser
+        env:
+          GATEWAY_TEST_POSTGRES_DSN: postgresql://gateway_test_creator:synthetic-ci-creator-password@127.0.0.1:5432/gateway_test_admin?sslmode=disable
+          GATEWAY_TEST_POSTGRES_REQUIRED: "1"
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          set -o pipefail
+          docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U gateway_test_admin -d gateway_test_admin \
+            -c "CREATE ROLE gateway_test_creator LOGIN CREATEROLE CREATEDB PASSWORD 'synthetic-ci-creator-password'"
+          go test -count=1 -timeout 20m -v -run '^(TestStoreKindsConform|TestPostgres.*|TestAPostgres.*|TestThePostgres.*|TestEveryCorpusStoreExportsFromThePostgresKindByteForByte|TestTheLoginHoldsTheServerToTheSCRAMExchange|TestAValueHoldingANULRoundTripsOnEveryKind)$' . | tee "${RUNNER_TEMP}/postgresql-creator.log"
+          skipped=$(grep -c -- '--- SKIP' "${RUNNER_TEMP}/postgresql-creator.log" || true)
+          explained=$(grep -c -- 'the admin login is no superuser and cannot set this case up; the run as a superuser holds it' "${RUNNER_TEMP}/postgresql-creator.log" || true)
+          if [ "${skipped}" != 3 ] || [ "${explained}" != 3 ]; then
+            grep -B1 -- '--- SKIP' "${RUNNER_TEMP}/postgresql-creator.log" || true
+            echo "the run as an administrator that is no superuser skipped ${skipped} tests, ${explained} of them for want of a superuser; want 3 and 3"
+            exit 1
+          fi
+      - name: The storage kinds through the binary
+        env:
+          GATEWAY_TEST_POSTGRES_DSN: postgresql://gateway_test_admin:synthetic-ci-password@127.0.0.1:5432/gateway_test_admin?sslmode=disable
+        run: ../scripts/checks/storage-scenario.sh
       - name: Record exact CI inputs and coverage
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         working-directory: .

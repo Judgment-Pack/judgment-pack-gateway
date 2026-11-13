@@ -178,6 +178,12 @@ func migratePostgres(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout time.
 	if err := c.conn.SetDeadline(deadline); err != nil {
 		return nil, pgTransport(err)
 	}
+	// The search path is pinned before the first check: a name the checks
+	// leave unqualified -- an operator, an aggregate -- is resolved in
+	// pg_catalog, never in a schema a role's setting puts ahead of it.
+	if _, err := c.exec(`SELECT pg_catalog.set_config('search_path', 'pg_catalog', false)`); err != nil {
+		return nil, err
+	}
 	if err := pgServerHolds(c); err != nil {
 		return nil, err
 	}
@@ -403,10 +409,11 @@ var pgPrivileges = map[string][]string{
 	"log_records":       {"SELECT", "INSERT"},
 	"secrets":           {"SELECT", "INSERT"},
 	"documents":         {"SELECT", "INSERT", "UPDATE", "DELETE"},
+	"start_lease":       {"SELECT", "INSERT", "UPDATE"},
 }
 
 // pgTables are the schema's tables, in the order the start reads them.
-var pgTables = []string{"blobs", "documents", "entries", "log_records", "logs", "schema_migrations", "secrets", "series"}
+var pgTables = []string{"blobs", "documents", "entries", "log_records", "logs", "schema_migrations", "secrets", "series", "start_lease"}
 
 // pgScopedTables are the tables whose rows carry a scope identifier: row
 // security is enabled and forced on each.
@@ -424,6 +431,9 @@ var pgTablePrivileges = []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCA
 func (k *pgKind) holdsItsConditions(set pgMigrationSet) error {
 	return k.transact(pgReadSnapshot, func(tx pgTx) error {
 		if err := pgServerHolds(tx.c); err != nil {
+			return err
+		}
+		if err := k.boundsHold(tx); err != nil {
 			return err
 		}
 		rows, err := tx.exec(`SELECT
@@ -466,6 +476,47 @@ func (k *pgKind) holdsItsConditions(set pgMigrationSet) error {
 		}
 		return pgSchemaHolds(tx)
 	})
+}
+
+// boundsHold holds the server to the bounds the kind's transactions set
+// (pgSettings): a transaction's statement, lock wait and idle time (and,
+// from PostgreSQL 17, its whole time) read as set, and so does the idle
+// bound the session's start set. A server that keeps other values -- one
+// a pool in front of it decides, say -- is refused rather than run on
+// unbounded sessions.
+func (k *pgKind) boundsHold(tx pgTx) error {
+	operation := strconv.FormatInt(k.operation.Milliseconds(), 10)
+	want := map[string][2]string{
+		"statement_timeout":                   {operation, ""},
+		"lock_timeout":                        {operation, ""},
+		"idle_in_transaction_session_timeout": {strconv.FormatInt(k.idle.Milliseconds(), 10), strconv.FormatInt(pgIdleInTransaction.Milliseconds(), 10)},
+	}
+	if pgServerFrom(tx.c, pgTransactionTimeoutVersion) {
+		want["transaction_timeout"] = [2]string{operation, ""}
+	}
+	rows, err := tx.exec(`SELECT name, setting, reset_val FROM pg_catalog.pg_settings
+		WHERE name IN ('statement_timeout', 'lock_timeout', 'idle_in_transaction_session_timeout', 'transaction_timeout')`)
+	if err != nil {
+		return err
+	}
+	seen := 0
+	for _, row := range rows.rows {
+		w, ok := want[string(row[0])]
+		if !ok {
+			continue
+		}
+		seen++
+		if string(row[1]) != w[0] {
+			return fmt.Errorf("store: the server holds %s at %s ms in a transaction of the kind, not the %s ms it sets; a session of the kind is bounded (docs/postgresql-store.md)", row[0], row[1], w[0])
+		}
+		if w[1] != "" && string(row[2]) != w[1] {
+			return fmt.Errorf("store: the server holds %s at %s ms for a session of the kind, not the %s ms its start sets; a session of the kind is bounded (docs/postgresql-store.md)", row[0], row[2], w[1])
+		}
+	}
+	if seen != len(want) {
+		return errors.New("store: the server does not report the bounds the kind sets on its sessions")
+	}
+	return nil
 }
 
 // pgPrivilegesHold holds the run-time login to exactly the privileges

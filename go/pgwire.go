@@ -8,7 +8,8 @@ package main
 //
 // What it does: a TCP connection, TLS through the protocol's SSLRequest with
 // the server's certificate checked against its host name (or no TLS at all,
-// to a loopback address only), the SCRAM-SHA-256 login with the server's
+// to a loopback host only, and only once the connection's remote address is
+// a loopback address), the SCRAM-SHA-256 login with the server's
 // signature checked, and statements through the extended query protocol with
 // every parameter bound -- never spliced into the text -- and every value in
 // the binary format. What it refuses: a cleartext or MD5 password exchange,
@@ -19,7 +20,9 @@ package main
 // host or its database in an error: a connection string is a credential,
 // and an error is written where credentials are not (ADR-0031, "The
 // connection string"). Errors name what failed by a fixed sentence and, for
-// an error the server reported, by its SQLSTATE.
+// an error the server reported, by its SQLSTATE alone: the server's message
+// is never kept, since it quotes the statement's values -- a caller's bytes
+// -- as its detail does.
 
 import (
 	"bufio"
@@ -160,7 +163,9 @@ func parsePgDSN(text string) (pgDSN, error) {
 }
 
 // pgLoopback reports a host that names this machine's loopback interface:
-// the one place a connection without TLS is admitted.
+// the one place a connection without TLS is admitted. The name localhost is
+// admitted here and held after the dial (pgPeerIsLoopback): a resolver need
+// not answer it with a loopback address.
 func pgLoopback(host string) bool {
 	if host == "localhost" {
 		return true
@@ -169,16 +174,24 @@ func pgLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// pgError is an error the server reported: its SQLSTATE and its message. The
-// detail and the hint are not kept, since the server puts the values of a
-// row there.
+// pgPeerIsLoopback reports a connection's remote address that is a
+// loopback address. A connection without TLS is used only to such a peer:
+// a host name the resolver answered otherwise is closed before a byte is
+// sent on it.
+func pgPeerIsLoopback(addr net.Addr) bool {
+	tcp, ok := addr.(*net.TCPAddr)
+	return ok && tcp.IP.IsLoopback()
+}
+
+// pgError is an error the server reported: its SQLSTATE alone. The message,
+// the detail and the hint are not kept, since the server quotes the values
+// of a statement and of a row there, and those are a caller's bytes.
 type pgError struct {
-	code    string
-	message string
+	code string
 }
 
 func (e *pgError) Error() string {
-	return fmt.Sprintf("the database refused the statement (SQLSTATE %s): %s", e.code, e.message)
+	return fmt.Sprintf("the database refused the statement (SQLSTATE %s)", e.code)
 }
 
 // pgCode is the SQLSTATE of a server's error, or "" for any other error.
@@ -250,15 +263,29 @@ type pgConn struct {
 	params map[string]string
 }
 
+// pgDial opens the TCP connection; a test replaces it.
+var pgDial = func(address string, deadline time.Time) (net.Conn, error) {
+	dialer := net.Dialer{Deadline: deadline, KeepAliveConfig: pgKeepAlive}
+	return dialer.Dial("tcp", address)
+}
+
+// pgKeepAlive is the client's TCP keepalive on every connection: a server
+// or a path that went away is known within about 20 seconds of quiet, not
+// the hours of the system's default.
+var pgKeepAlive = net.KeepAliveConfig{Enable: true, Idle: 5 * time.Second, Interval: 5 * time.Second, Count: 3}
+
 // pgConnect opens a connection and logs in, within the deadline.
 func pgConnect(d pgDSN, deadline time.Time) (*pgConn, error) {
 	if until := time.Now().Add(d.connectTimeout); until.Before(deadline) {
 		deadline = until
 	}
-	dialer := net.Dialer{Deadline: deadline}
-	raw, err := dialer.Dial("tcp", net.JoinHostPort(d.host, d.port))
+	raw, err := pgDial(net.JoinHostPort(d.host, d.port), deadline)
 	if err != nil {
 		return nil, pgTransport(err)
+	}
+	if !d.tls && !pgPeerIsLoopback(raw.RemoteAddr()) {
+		raw.Close()
+		return nil, &pgTransportError{"sslmode=disable reached a remote address that is not a loopback address; nothing was sent"}
 	}
 	if err := raw.SetDeadline(deadline); err != nil {
 		raw.Close()
@@ -417,7 +444,10 @@ func (c *pgConn) startup(d pgDSN) error {
 	start := len(c.out)
 	c.out = append(c.out, 0, 0, 0, 0)
 	c.int32(pgProtocolVersion)
-	for _, kv := range [][2]string{{"user", d.user}, {"database", d.database}, {"client_encoding", "UTF8"}, {"application_name", "gateway"}} {
+	// The session's idle bound is set at its start, so even the moment
+	// between a BEGIN and the transaction's own settings is bounded.
+	idle := strconv.FormatInt(pgIdleInTransaction.Milliseconds(), 10)
+	for _, kv := range [][2]string{{"user", d.user}, {"database", d.database}, {"client_encoding", "UTF8"}, {"application_name", "gateway"}, {"idle_in_transaction_session_timeout", idle}} {
 		c.cstring(kv[0])
 		c.cstring(kv[1])
 	}
@@ -552,7 +582,7 @@ func (c *pgConn) script(text string) error {
 		case 'E':
 			if failure == nil {
 				fields := pgFields(body)
-				failure = &pgError{code: fields['C'], message: fields['M']}
+				failure = &pgError{code: fields['C']}
 			}
 		case 'Z':
 			if len(body) != 1 {
@@ -790,7 +820,7 @@ func (c *pgConn) exec(query string, args ...any) (pgRows, error) {
 			result.tag = strings.TrimSuffix(string(body), "\x00")
 		case 'E':
 			fields := pgFields(body)
-			failure = &pgError{code: fields['C'], message: fields['M']}
+			failure = &pgError{code: fields['C']}
 		case 'Z':
 			if len(body) != 1 {
 				c.broken = true

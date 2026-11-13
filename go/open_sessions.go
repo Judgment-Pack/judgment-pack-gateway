@@ -74,6 +74,19 @@ var leftInStoreBatch = 64
 
 func (g *gatewayService) leftInStore(sessionID string) string {
 	refused := func(why string) string { return fmt.Sprintf(why, sessionID) }
+	if g.kind != nil {
+		// the kind's series, through the contract: no series is no receipt
+		entries, err := g.store.receipts.listEntries(sessionID)
+		switch {
+		case faultOf(err) == faultAbsent:
+			return ""
+		case err != nil:
+			return refused(refusalUnread)
+		case len(entries) > 0:
+			return refused(refusalLeftOpen)
+		}
+		return ""
+	}
 	path := filepath.Join(g.storeRoot, "receipts", sessionID)
 	entry, err := os.Lstat(path)
 	switch {

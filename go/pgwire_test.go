@@ -330,6 +330,125 @@ func TestALoginFailureQuotesNothing(t *testing.T) {
 	}
 }
 
+// pgPeerAs is a connection whose remote address reads as addr: what a
+// resolver that answers a loopback host's name with another address gives.
+type pgPeerAs struct {
+	net.Conn
+	addr net.Addr
+}
+
+func (c pgPeerAs) RemoteAddr() net.Addr { return c.addr }
+
+// A connection without TLS is used only to a peer at a loopback address:
+// the host localhost, answered by the resolver with another address, is
+// closed after the dial with nothing sent on it, the password least of
+// all. The same dial to a loopback peer sends the startup message.
+func TestADisabledTLSConnectionToAPeerOffLoopbackIsRefused(t *testing.T) {
+	cases := []struct {
+		name     string
+		peer     net.Addr
+		admitted bool
+	}{
+		{"a peer off loopback", &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 5432}, false},
+		{"an IPv6 peer off loopback", &net.TCPAddr{IP: net.ParseIP("2001:db8::10"), Port: 5432}, false},
+		{"a peer that is no TCP address", &net.UnixAddr{Name: "socket", Net: "unix"}, false},
+		{"an IPv4 loopback peer", &net.TCPAddr{IP: net.ParseIP("127.0.0.2"), Port: 5432}, true},
+		{"an IPv6 loopback peer", &net.TCPAddr{IP: net.IPv6loopback, Port: 5432}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake, dsn := newPgFake(t, func(f *pgFakeConn) {})
+			address := net.JoinHostPort(dsn.host, dsn.port)
+			dial := pgDial
+			t.Cleanup(func() { pgDial = dial })
+			pgDial = func(_ string, deadline time.Time) (net.Conn, error) {
+				c, err := dial(address, deadline)
+				if err != nil {
+					return nil, err
+				}
+				return pgPeerAs{c, tc.peer}, nil
+			}
+			text := "postgresql://u:pw-of-the-test@localhost:" + dsn.port + "/d?sslmode=disable"
+			d, err := parsePgDSN(text)
+			if err != nil {
+				t.Fatalf("the host localhost with sslmode=disable: %v", err)
+			}
+			c, err := pgConnect(d, time.Now().Add(10*time.Second))
+			if err == nil {
+				c.close()
+			}
+			fake.ln.Close()
+			<-fake.done
+			sent := fake.clientSent()
+			if tc.admitted {
+				if len(sent) == 0 {
+					t.Fatalf("a loopback peer was sent nothing: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "not a loopback address") {
+				t.Fatalf("a connection without TLS to %v: %v", tc.peer, err)
+			}
+			if len(sent) != 0 {
+				t.Fatalf("a peer off loopback was sent %d bytes", len(sent))
+			}
+		})
+	}
+}
+
+// An error the server reports reaches the caller as its SQLSTATE alone:
+// the message, the detail, the hint and every other field the server
+// filled -- where it quotes a statement's values, a caller's bytes -- are
+// not in it.
+func TestAServerErrorReachesTheCallerWithNoneOfItsText(t *testing.T) {
+	const marker = "caller-bytes-marker"
+	const password = "pw-of-the-test"
+	_, dsn := newPgFake(t, func(f *pgFakeConn) {
+		if !(scramServer{password: password, iterations: 4096}).run(f) {
+			return
+		}
+		f.auth(0, nil)
+		f.ready()
+		var body []byte
+		for _, field := range []string{"SERROR", "VERROR", "C22P02", "Minvalid input syntax for type integer: \"" + marker + "\"",
+			"D" + marker + " in the detail", "H" + marker + " in the hint", "W" + marker + " in the context", "n" + marker + "_constraint",
+			"t" + marker + "_table", "c" + marker + "_column", "s" + marker + "_schema"} {
+			body = append(append(body, field...), 0)
+		}
+		for {
+			kind, _, err := f.receive()
+			if err != nil {
+				return
+			}
+			switch kind {
+			case 'S':
+				f.send('E', append(body, 0))
+				f.ready()
+			case 'Q':
+				f.send('E', append(body, 0))
+				f.ready()
+			case 'X':
+				return
+			}
+		}
+	})
+	c, err := pgConnect(dsn, time.Now().Add(20*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.close()
+	_, execErr := c.exec(`SELECT $1::text::int`, marker)
+	scriptErr := c.script(`SELECT 1`)
+	for name, err := range map[string]error{"a statement": execErr, "a script": scriptErr} {
+		if err == nil || pgCode(err) != "22P02" || !strings.Contains(err.Error(), "SQLSTATE 22P02") {
+			t.Fatalf("%s the server refused: %v", name, err)
+		}
+		if strings.Contains(err.Error(), "marker") || strings.Contains(err.Error(), "invalid input") {
+			t.Fatalf("%s's error quotes the server's text: %v", name, err)
+		}
+	}
+}
+
 // pgSQLText is the SQL the kind sends and carries: its migration files and
 // every string literal of the Go files that hold its statements.
 func pgSQLText(t *testing.T) map[string]string {
@@ -358,14 +477,39 @@ func pgSQLText(t *testing.T) map[string]string {
 	return text
 }
 
-// The kind reads no clock of the database: no statement it sends or schema
-// file it carries names one, so no time it holds is the server's.
+// The kind reads no clock of the database but in the start lease: no
+// statement it sends or schema file it carries names one, so no time it
+// holds is the server's (ADR-0031, decision 9). The lease's statements
+// alone read it, as clock_timestamp() and nothing else, each on the lease's
+// table: an expiry several instances judge is the database's.
 func TestThePostgresKindReadsNoDatabaseClock(t *testing.T) {
 	clock := regexp.MustCompile(`(?i)\b(now|clock_timestamp|statement_timestamp|transaction_timestamp|timeofday|pg_postmaster_start_time)\s*\(|\b(current_timestamp|current_date|current_time|localtimestamp|localtime)\b`)
 	for name, text := range pgSQLText(t) {
 		if found := clock.FindString(text); found != "" {
 			t.Errorf("%s names the database's clock: %q", name, found)
 		}
+	}
+	data, err := os.ReadFile("store_pg_lease.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := 0
+	for _, literal := range regexp.MustCompile("`[^`]*`|\"(?:[^\"\\\\\\n]|\\\\.)*\"").FindAllString(string(data), -1) {
+		found := clock.FindAllString(literal, -1)
+		for _, f := range found {
+			if strings.ToLower(f) != "clock_timestamp(" {
+				t.Errorf("the start lease names %q, and reads the database's clock by clock_timestamp() alone", f)
+			}
+		}
+		if len(found) > 0 {
+			read++
+			if !strings.Contains(literal, "gateway.start_lease") {
+				t.Errorf("a statement that reads the database's clock is not the start lease's: %s", literal)
+			}
+		}
+	}
+	if read != 6 {
+		t.Errorf("%d of the start lease's statements read the database's clock; holder, take over, take first, renew, release and fence do", read)
 	}
 }
 
@@ -426,13 +570,18 @@ func TestTheSchemaFilesHoldToTheirRecordedDigests(t *testing.T) {
 		}
 		return data
 	}
-	tree := func() map[string][]byte {
-		return map[string][]byte{
-			"SHA256SUMS":                          read("SHA256SUMS"),
-			"grants.sql":                          read("grants.sql"),
-			"migrations/0001_contract_spaces.sql": read("migrations/0001_contract_spaces.sql"),
-		}
+	shipped, err := filepath.Glob(filepath.Join("store_pg", "migrations", "*.sql"))
+	if err != nil || len(shipped) == 0 {
+		t.Fatalf("the migrations: %v", err)
 	}
+	tree := func() map[string][]byte {
+		files := map[string][]byte{"SHA256SUMS": read("SHA256SUMS"), "grants.sql": read("grants.sql")}
+		for _, path := range shipped {
+			files["migrations/"+filepath.Base(path)] = read(filepath.Join("migrations", filepath.Base(path)))
+		}
+		return files
+	}
+	next := len(shipped) + 1
 	if _, err := readPgMigrationSet(pgMapFS(tree())); err != nil {
 		t.Fatalf("the schema as committed: %v", err)
 	}
@@ -442,13 +591,13 @@ func TestTheSchemaFilesHoldToTheirRecordedDigests(t *testing.T) {
 		t.Fatalf("a migration changed under its recorded digest: %v", err)
 	}
 	unlisted := tree()
-	unlisted["migrations/0002_more.sql"] = []byte("SELECT 1;\n")
+	unlisted[fmt.Sprintf("migrations/%04d_more.sql", next)] = []byte("SELECT 1;\n")
 	if _, err := readPgMigrationSet(pgMapFS(unlisted)); err == nil || !strings.Contains(err.Error(), "SHA256SUMS does not list") {
 		t.Fatalf("a migration the record does not list: %v", err)
 	}
 	gap := tree()
-	gap["migrations/0003_more.sql"] = []byte("SELECT 1;\n")
-	if _, err := readPgMigrationSet(pgMapFS(gap)); err == nil || !strings.Contains(err.Error(), "is not numbered 0002") {
+	gap[fmt.Sprintf("migrations/%04d_more.sql", next+1)] = []byte("SELECT 1;\n")
+	if _, err := readPgMigrationSet(pgMapFS(gap)); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("is not numbered %04d", next)) {
 		t.Fatalf("a gap in the migrations' numbers: %v", err)
 	}
 	grants := tree()

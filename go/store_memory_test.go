@@ -166,6 +166,9 @@ func (x memoryIndexed) listSeries() ([]string, error) {
 }
 
 func (x memoryIndexed) listEntries(series string) ([]string, error) {
+	if !validListedSeries(series) {
+		return nil, memoryRefused("list-entries", "not a series' name")
+	}
 	x.k.mu.Lock()
 	defer x.k.mu.Unlock()
 	entries, there := x.k.series[series]
@@ -176,6 +179,9 @@ func (x memoryIndexed) listEntries(series string) ([]string, error) {
 }
 
 func (x memoryIndexed) getEntry(series, entry string) ([]byte, error) {
+	if !validListedSeries(series) || !validListedEntry(entry) {
+		return nil, memoryRefused("get-entry", "not a series' or an entry's name")
+	}
 	x.k.mu.Lock()
 	defer x.k.mu.Unlock()
 	data, held := x.k.series[series][entry]
@@ -224,6 +230,9 @@ func (l memoryLog) createLog() error {
 }
 
 func (d memoryDocuments) getDocument(name string) ([]byte, string, error) {
+	if !validStoreName(name) {
+		return nil, noRevision, memoryRefused("get-document", "not a document's name")
+	}
 	d.k.mu.Lock()
 	defer d.k.mu.Unlock()
 	doc, there := d.k.docs[name]
@@ -300,6 +309,9 @@ func (s memorySecrets) putSecret(name string, value []byte) error {
 }
 
 func (s memorySecrets) getSecret(name string) ([]byte, error) {
+	if !validStoreName(name) {
+		return nil, memoryRefused("get-secret", "not a secret's name")
+	}
 	s.k.mu.Lock()
 	defer s.k.mu.Unlock()
 	value, there := s.k.secretSet[name]

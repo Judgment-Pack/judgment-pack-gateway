@@ -96,9 +96,22 @@ func newPgTestDB(t testing.TB) *pgTestDB {
 	db.runtime.user, db.runtime.password, db.runtime.database = db.roles.runtime, pgTestRandom(t, 16), db.database
 	db.inDB.database = db.database
 	t.Cleanup(func() {
-		// the kinds a test opened close first: cleanups run last-made first
+		// the kinds a test opened close first: cleanups run last-made first.
+		// The database is its owner's to drop: an admin that is no superuser
+		// drops it as the owner, by SET ROLE. Such an admin may not end
+		// another role's session either, so the drop waits, for a few
+		// seconds, for the server to end the sessions the test closed.
+		drop := func() error {
+			return db.adminScript("SET ROLE "+db.roles.owner, "DROP DATABASE IF EXISTS "+db.database+" WITH (FORCE)")
+		}
+		err := drop()
+		for wait := time.Now().Add(10 * time.Second); err != nil && time.Now().Before(wait); err = drop() {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if err != nil {
+			t.Errorf("dropping the test database: %v", err)
+		}
 		for _, statement := range []string{
-			"DROP DATABASE IF EXISTS " + db.database + " WITH (FORCE)",
 			"DROP ROLE IF EXISTS " + db.roles.runtime,
 			"DROP ROLE IF EXISTS " + db.migRole,
 			"DROP ROLE IF EXISTS " + db.roles.owner,
@@ -119,23 +132,39 @@ func newPgTestDB(t testing.TB) *pgTestDB {
 		// SET ROLE to it
 		"GRANT " + db.roles.owner + " TO current_user WITH INHERIT FALSE, SET TRUE",
 		"CREATE DATABASE " + db.database + " OWNER " + db.roles.owner + " ENCODING 'UTF8' TEMPLATE template0",
-		"REVOKE ALL ON DATABASE " + db.database + " FROM PUBLIC",
-		"GRANT CONNECT ON DATABASE " + db.database + " TO " + db.migRole + ", " + db.roles.runtime,
 	} {
 		if err := db.adminScript(statement); err != nil {
 			t.Fatalf("making the test database: %s: %v", strings.SplitN(statement, " PASSWORD ", 2)[0], err)
 		}
 	}
+	// The database's privileges are its owner's to give and take: given by
+	// an admin that is no superuser, a REVOKE takes nothing back, with a
+	// warning and no error, and PUBLIC keeps TEMPORARY. The admin gives them
+	// as the owner.
+	if err := db.adminScript("SET ROLE "+db.roles.owner,
+		"REVOKE ALL ON DATABASE "+db.database+" FROM PUBLIC",
+		// and to the admin itself, which a superuser needs not
+		"GRANT CONNECT ON DATABASE "+db.database+" TO "+db.migRole+", "+db.roles.runtime+", SESSION_USER",
+	); err != nil {
+		t.Fatalf("making the test database: %v", err)
+	}
 	return db
 }
 
-func (db *pgTestDB) adminScript(statement string) error {
+// adminScript runs statements as the admin login on its own database, one
+// at a time on one connection.
+func (db *pgTestDB) adminScript(statements ...string) error {
 	c, err := pgConnect(db.admin, time.Now().Add(time.Minute))
 	if err != nil {
 		return err
 	}
 	defer c.close()
-	return c.script(statement)
+	for _, statement := range statements {
+		if err := c.script(statement); err != nil {
+			return fmt.Errorf("%s: %w", statement, err)
+		}
+	}
+	return nil
 }
 
 func (db *pgTestDB) adminQuery(t testing.TB, query string, args ...any) pgRows {
@@ -159,6 +188,29 @@ func (db *pgTestDB) asAdmin(t testing.TB, statements ...string) {
 	}
 }
 
+// asDatabaseOwner runs statements as the admin login in this test's
+// database with the owner role set, one at a time: what only the
+// database's owner may do, an admin that is no superuser does so.
+func (db *pgTestDB) asDatabaseOwner(t testing.TB, statements ...string) {
+	t.Helper()
+	db.asAdmin(t, append([]string{"SET ROLE " + db.roles.owner}, statements...)...)
+}
+
+// skipUnlessSuperuser skips a case only a superuser can set up: a role
+// given BYPASSRLS, a role given a setting of a parameter no module
+// defines. The CI job's run as a superuser holds it; its run as a login
+// that may make roles and databases and nothing more skips it, by
+// pgSkipNoSuperuser, and fails on any other skip (docs/adr/0031).
+func (db *pgTestDB) skipUnlessSuperuser(t testing.TB) {
+	t.Helper()
+	if !db.super {
+		t.Skip(pgSkipNoSuperuser)
+	}
+}
+
+// pgSkipNoSuperuser is the one skip the CI job's second run allows.
+const pgSkipNoSuperuser = "the admin login is no superuser and cannot set this case up; the run as a superuser holds it"
+
 // asOwner runs statements as the owner role, reached from the migration
 // login by SET ROLE, in one transaction.
 func (db *pgTestDB) asOwner(t testing.TB, statements ...string) {
@@ -172,6 +224,16 @@ func (db *pgTestDB) asOwner(t testing.TB, statements ...string) {
 	if err := c.script(script); err != nil {
 		t.Fatalf("%s: %v", script, err)
 	}
+}
+
+// pgTestQueryErr runs one statement as a login and returns its error.
+func pgTestQueryErr(d pgDSN, query string, args ...any) (pgRows, error) {
+	c, err := pgConnect(d, time.Now().Add(time.Minute))
+	if err != nil {
+		return pgRows{}, err
+	}
+	defer c.close()
+	return c.exec(query, args...)
 }
 
 func pgTestQuery(t testing.TB, d pgDSN, query string, args ...any) pgRows {

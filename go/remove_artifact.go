@@ -148,6 +148,9 @@ func parseRemoveArtifact(args []string) (removeArtifactOptions, string) {
 		if err != nil {
 			return removeArtifactOptions{}, err.Error()
 		}
+		if err := refuseUnderPostgreSQL(cfg, "gateway remove-artifact, which keeps its removal records in the store on disk,"); err != nil {
+			return removeArtifactOptions{}, err.Error()
+		}
 		o.store, o.registry, o.authority, o.seedNames = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}
 		// the seed by the name it resolves to as well, as seal-open looks
 		// for a rotation under way beside both

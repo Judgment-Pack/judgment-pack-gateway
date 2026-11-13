@@ -66,14 +66,19 @@ the maintainer (below).
 1. **The client** (`go/pgwire.go`). A connection string is a `postgresql://` URL naming a host, a
    user and a database, with `sslmode=verify-full` (the default) or, to a loopback host alone,
    `disable`, and no parameter but `sslrootcert` and `connect_timeout`; any other parameter is
-   refused, never ignored. The login is SCRAM-SHA-256 alone: a server that asks for a password in
+   refused, never ignored. A loopback host is a literal loopback address or the name `localhost`,
+   and under `disable` either is held after the dial: a connection whose remote address is not a
+   loopback address is closed before a byte is sent on it, since a resolver need not answer
+   `localhost` with one (#440). The login is SCRAM-SHA-256 alone: a server that asks for a password in
    the clear or by MD5 is refused before the password leaves the gateway, and one that admits a
    login the connection string gives a password for without the exchange, or whose final
    signature is not the one the password's verifier makes, is refused. Every value is bound as a
    parameter in the binary format; the simple query form runs only the schema files the binary
    carries. A value is bounded (64 MiB) and so is a message. A parsed connection string prints as
    a fixed phrase, and every error is a fixed sentence naming its class or SQLSTATE, quoting
-   nothing of the host, port, user, database, password or the server's text.
+   nothing of the host, port, user, database, password or the server's text: of an error the
+   server reports, the SQLSTATE alone is kept, and its message, detail, hint and the names it
+   gives are not, since the server quotes a statement's values there (#440).
 
 2. **Selecting the kind in configuration** is not in this change; the decision recorded for it is
    this. A new engine configuration version adds a `store` member naming the kind; without it the
@@ -81,6 +86,9 @@ the maintainer (below).
    names the connection string by reference only, a file (held, as the seed's file is, to its mode
    and owner) or an environment variable, and the stored configuration version keeps the
    reference, never the string. The kind's bounds (below) are members of it with these defaults.
+   *Amended 2026-11-13 (#430, [ADR-0032](0032-a-configuration-names-its-storage-kind.md)):
+   built at engine configuration version 24, as a member named `storage`, since `store` already
+   names the filesystem kind's path.*
 
 3. **Pool bounds.** A kind holds at most 4 connections unless configured otherwise, and never more
    than 64. Each operation has one deadline, 30 seconds unless configured otherwise (1 second to
@@ -146,6 +154,8 @@ the maintainer (below).
    the log and its records, and secrets; SELECT, INSERT, UPDATE and DELETE on documents alone;
    SELECT on the migrations' record. It holds no TRUNCATE, REFERENCES or TRIGGER, no CREATE on any
    schema, and no TEMPORARY on the database. No function is defined, SECURITY DEFINER or not.
+   *Amended 2026-11-13 (#430, ADR-0032): and SELECT, INSERT and UPDATE on the start lease's one
+   row (`gateway.start_lease`, schema version 2), which it expires and never removes.*
 
 7. **Migrations.** The schema is plain SQL files, `go/store_pg/migrations/NNNN_name.sql` numbered
    from 1 with no gap, and `go/store_pg/grants.sql`, carried in the binary and recorded by digest
@@ -180,6 +190,9 @@ the maintainer (below).
    holds only while the clocks agree within the lease's margin, so the change that supports them
    decides expiry with the database's clock in the statement (below). No statement the kind sends
    or schema file it carries names one of the database's clock functions (a test).
+   *Amended 2026-11-13 (#430, ADR-0032, decision 4): the start lease's statements read the
+   database's clock (`clock_timestamp()`), and no other statement does (the same test); a
+   store-contract lease still expires by the gateway's clock.*
 
 10. **More than one gateway on one database.** Safe now: every contract operation is atomic in the
     database, so two gateways on one database lose no write, never take one index of a series or
@@ -193,7 +206,9 @@ the maintainer (below).
     rotation files, the action journal, the removal records, descriptor snapshots, the witness's
     files) is on each gateway's own disk. The configuration that selects the kind takes a lease of no scope at start
     and refuses to start while another gateway holds it, until the registry's seal is decided in
-    the database.
+    the database. *Amended 2026-11-13 (#430, ADR-0032, decision 4): built as the start lease, one
+    row of `gateway.start_lease` with an expiry by the database's clock, renewed while the
+    instance serves, removed on a clean stop, and held by every write transaction.*
 
 ### Consequences
 
@@ -212,10 +227,18 @@ the maintainer (below).
   Nor is a lease's document kept from being rewritten by the database: the kind's document space
   refuses it (`leaseDocumentsReserved`), and the run-time login, which may replace any document of
   its scope, could rewrite one by a statement of its own.
+- Bad, because the CI job's second run, as an administrator that may make roles and databases
+  and nothing more (CREATEROLE, CREATEDB), cannot set up three cases: a run-time login given
+  BYPASSRLS (the migration's refusal and the start's), and a setting of `gateway.scope` stored on
+  the run-time role, since only a superuser gives BYPASSRLS or stores a setting of a parameter no
+  module defines. Those three run in the first run, as a superuser, alone; the second skips them by
+  one message and fails on any other skip. Every other test, the harness's own setup and teardown
+  included, runs in both (#440).
 - Bad, because a series' name is one across scopes: a scope asking to make a series another scope
   holds learns that the name is taken, though nothing of its rows.
 - Bad, because the kind is not selectable yet: this change adds the kind, its schema and its
-  conditions, and the configuration that selects it is the next.
+  conditions, and the configuration that selects it is the next. *Amended 2026-11-13: selectable
+  at engine configuration version 24 (ADR-0032).*
 - Revisit when sessions are bound to one scope identifier (ADR-0026's "Bad" list), when a second
   gateway must seal on one database, or when the maintainer prefers a driver to the client.
 
