@@ -589,6 +589,10 @@ func TestThePostgresKindRefusesToStartOutsideItsConditions(t *testing.T) {
 			db.asOwner(t, "REVOKE INSERT ON gateway.entries FROM "+db.roles.runtime)
 			return db.runtime
 		}, "lacks INSERT on gateway.entries"},
+		{"a schema behind the binary's migrations", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "DELETE FROM gateway.schema_migrations")
+			return db.runtime
+		}, "run gateway store-migrate"},
 		{"row security not forced", func(t *testing.T, db *pgTestDB) pgDSN {
 			db.asOwner(t, "ALTER TABLE gateway.documents NO FORCE ROW LEVEL SECURITY")
 			return db.runtime

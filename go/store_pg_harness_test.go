@@ -29,18 +29,32 @@ const (
 // pgTestAdmin is the login the tests make roles and databases as.
 func pgTestAdmin(t testing.TB) pgDSN {
 	t.Helper()
-	text := os.Getenv(pgTestDSNVariable)
+	d, skip, fail := pgTestAdminFrom(os.Getenv)
+	if fail != "" {
+		t.Fatal(fail)
+	}
+	if skip != "" {
+		t.Skip(skip)
+	}
+	return d
+}
+
+// pgTestAdminFrom reads the admin login from the environment: a reason to
+// skip where no server is named, a failure instead where the tests are
+// required to run, and a failure for a connection string out of form.
+func pgTestAdminFrom(getenv func(string) string) (pgDSN, string, string) {
+	text := getenv(pgTestDSNVariable)
 	if text == "" {
-		if os.Getenv(pgTestRequiredVariable) != "" {
-			t.Fatalf("%s is set and %s is not: here the PostgreSQL storage kind's tests run, and do not skip", pgTestRequiredVariable, pgTestDSNVariable)
+		if getenv(pgTestRequiredVariable) != "" {
+			return pgDSN{}, "", fmt.Sprintf("%s is set and %s is not: here the PostgreSQL storage kind's tests run, and do not skip", pgTestRequiredVariable, pgTestDSNVariable)
 		}
-		t.Skipf("the PostgreSQL storage kind's tests need a server: set %s to the postgresql:// URL of a login that may make roles and databases (docs/postgresql-store.md, \"Testing\")", pgTestDSNVariable)
+		return pgDSN{}, fmt.Sprintf("the PostgreSQL storage kind's tests need a server: set %s to the postgresql:// URL of a login that may make roles and databases (docs/postgresql-store.md, \"Testing\")", pgTestDSNVariable), ""
 	}
 	d, err := parsePgDSN(text)
 	if err != nil {
-		t.Fatalf("%s: %v", pgTestDSNVariable, err)
+		return pgDSN{}, "", fmt.Sprintf("%s: %v", pgTestDSNVariable, err)
 	}
-	return d
+	return d, "", ""
 }
 
 func pgTestRandom(t testing.TB, n int) string {

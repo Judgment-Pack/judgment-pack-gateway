@@ -264,7 +264,7 @@ func TestTheLoginHoldsTheServerToItsProof(t *testing.T) {
 			(scramServer{password: password, iterations: 1024}).run(f)
 		}, "iteration count"},
 		{"a nonce that does not extend the client's", func(f *pgFakeConn) {
-			(scramServer{password: password, iterations: 4096, nonce: func(string) string { return "nonce-of-its-own" }}).run(f)
+			(scramServer{password: password, iterations: 4096, nonce: func(client string) string { return strings.Repeat("x", len(client)+8) }}).run(f)
 		}, "out of form"},
 		{"a ready message before the login", func(f *pgFakeConn) {
 			f.ready()
@@ -464,4 +464,24 @@ func pgMapFS(files map[string][]byte) fs.FS {
 		tree[name] = &fstest.MapFile{Data: data, Mode: 0o644}
 	}
 	return tree
+}
+
+// Where the PostgreSQL tests are required, as in the CI job that runs
+// them, a server not named fails them rather than skipping them.
+func TestThePostgresTestsDoNotSkipWhereRequired(t *testing.T) {
+	env := func(values map[string]string) func(string) string {
+		return func(name string) string { return values[name] }
+	}
+	if _, skip, fail := pgTestAdminFrom(env(map[string]string{pgTestRequiredVariable: "1"})); fail == "" || skip != "" {
+		t.Fatalf("required and no server: skip %q, fail %q", skip, fail)
+	}
+	if _, skip, fail := pgTestAdminFrom(env(nil)); skip == "" || fail != "" {
+		t.Fatalf("not required and no server: skip %q, fail %q", skip, fail)
+	}
+	if _, skip, fail := pgTestAdminFrom(env(map[string]string{pgTestDSNVariable: "postgresql://u:secret-pw@db.invalid/d?sslmode=disable"})); fail == "" || skip != "" || strings.Contains(fail, "secret-pw") {
+		t.Fatalf("a connection string out of form: skip %q, fail %q", skip, fail)
+	}
+	if d, skip, fail := pgTestAdminFrom(env(map[string]string{pgTestDSNVariable: "postgresql://u:pw@127.0.0.1:5432/d?sslmode=disable"})); skip != "" || fail != "" || d.database != "d" {
+		t.Fatalf("a server named: skip %q, fail %q", skip, fail)
+	}
 }
