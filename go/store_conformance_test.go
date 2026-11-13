@@ -2,7 +2,9 @@ package main
 
 // The store contract's conformance suite (docs/design/store-contract.md,
 // "What a kind must pass"): every kind runs every case. A kind is added
-// to the gateway by adding it to storeKindsUnderTest and passing.
+// to the gateway by adding it to storeKindsUnderTest and passing. The
+// PostgreSQL kind's entries (store_pg_harness_test.go) skip without a
+// server to run on.
 
 import (
 	"bytes"
@@ -50,7 +52,7 @@ type kindUnderTest struct {
 }
 
 func storeKindsUnderTest() []kindUnderTest {
-	return []kindUnderTest{
+	return append([]kindUnderTest{
 		{"filesystem", func(t *testing.T, clock func() time.Time) (storeKind, func()) {
 			root := t.TempDir()
 			kind := newFsKind(fsLayout{
@@ -82,7 +84,7 @@ func storeKindsUnderTest() []kindUnderTest {
 				kind.mu.Unlock()
 			}
 		}},
-	}
+	}, pgKindsUnderTest()...)
 }
 
 func requireFault(t *testing.T, what string, err error, want storeFault) {
