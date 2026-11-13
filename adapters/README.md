@@ -772,6 +772,29 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   `--credential-header NAME=MEMBER` sends it under the header NAME, for an endpoint that takes
   its key under a name of its own. A refusal names no member, since a member's name may be
   another member's value. An endpoint that needs no credential is given none of the three.
+- `--token-endpoint URL --client-id ID`, with `--assertion-key MEMBER` or
+  `--federated-token-file PATH`, is the token step (engine configuration version 21,
+  `credentials.live.tokenStep`; [ADR-0027](../docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md)):
+  in place of a static member, the adapter obtains an access token from the token endpoint by the
+  client-credentials grant with a client assertion (RFC 7523) and sends it as
+  `Authorization: Bearer`. With `--assertion-key`, the assertion is a JWT the adapter signs with
+  the PKCS #8 key under that member of the credentials file — RS256 for an RSA key of 2048 bits or
+  more, ES256 for a P-256 key — and `--assertion-x5t` or `--assertion-x5t-s256` places a fixed
+  thumbprint in its header; with `--federated-token-file`, it is that file's text, read at each
+  token request. `--token-scope` is sent as the request's `scope`. The token endpoint is held to
+  the `--endpoint` form, reached against the system's roots (not `--ca-file`'s) within ten
+  seconds, and a redirect is refused; its answer is taken only as at most 64 KiB of
+  `application/json` with `access_token`, `token_type` `Bearer` in any case and an `expires_in`
+  from 1 to 86400 or none. `--bearer` and `--credential-header` are refused beside it.
+  `--token-only` obtains a token and writes it sealed, `{"sealed", "expiresIn"}`, AES-256-GCM under
+  a key derived from the credential; an acquisition handed a sealed token in
+  `ADAPTER_HTTP_SEALED_TOKEN` opens and sends it without a token request, which is how the engine
+  holds a token between acquisitions without reading it. A failure of the step exits 3 (no
+  credential; no token was requested), 4 (the token request refused, or answered with no token
+  taken), 5 (the endpoint answered 401 to the token; the request is not sent again) or 6 (a sealed
+  token not opened under this configuration and credential, or past its time); no diagnostic
+  carries the key, the federated token, the assertion, the token or the token endpoint's answer.
+  `--check` obtains a token as an acquisition does.
 - `--header NAME=VALUE` is sent on every request as written and may be given more than once;
   an `Accept`, a format selector. `Authorization`, `Proxy-Authorization` and `Cookie` are
   refused here: a credential's place is the credentials file, not a command line a process

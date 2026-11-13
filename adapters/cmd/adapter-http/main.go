@@ -9,6 +9,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -70,21 +71,42 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	caFile := fs.String("ca-file", "", "PEM file of the only roots trusted for the endpoint, instead of the system's")
 	check := fs.Bool("check", false, "hold the configuration and credentials to their rules and reach the endpoint, then report on stdout instead of reading a request; nothing is minted from the report")
 	checkPath := fs.String("check-path", "", "with --check, a path to GET, which must answer 2xx; without it the check is the TLS handshake alone")
+	tokenEndpoint := fs.String("token-endpoint", "", "token step: the token endpoint an access token is obtained from by the client-credentials grant with a client assertion (https, or http on a loopback host); the token is sent as the bearer, in place of --bearer and --credential-header")
+	clientID := fs.String("client-id", "", "token step: the client identifier, the assertion's iss and sub")
+	assertionKey := fs.String("assertion-key", "", "token step: the credentials member holding a PKCS #8 PEM private key the assertion is signed with: RSA of 2048 bits or more (RS256) or EC P-256 (ES256)")
+	assertionX5T := fs.String("assertion-x5t", "", "token step, with --assertion-key: the certificate's SHA-1 thumbprint, base64url, sent as the assertion header's x5t")
+	assertionX5TS256 := fs.String("assertion-x5t-s256", "", "token step, with --assertion-key: the certificate's SHA-256 thumbprint, base64url, sent as the assertion header's x5t#S256")
+	federatedTokenFile := fs.String("federated-token-file", "", "token step: a file whose content, read at each token request, is the client assertion, in place of --assertion-key")
+	tokenScope := fs.String("token-scope", "", "token step: the scope the token request asks for")
+	tokenOnly := fs.Bool("token-only", false, "token step: obtain an access token and write it on stdout sealed under a key derived from the step's credential, instead of reading a request; an acquisition is then handed it in "+httpsource.SealedTokenVariable)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 0 || *endpoint == "" || *paths == "" {
-		fmt.Fprintln(stderr, "usage: adapter-http --endpoint URL --paths /A,/B [--check [--check-path /P]] [--credentials FILE (--bearer MEMBER | --credential-header NAME=MEMBER)] [--header NAME=VALUE]... [--methods GET,POST] [--ca-file FILE] [--max-output BYTES] [--timeout D]")
+		fmt.Fprintln(stderr, "usage: adapter-http --endpoint URL --paths /A,/B [--check [--check-path /P]] [--credentials FILE (--bearer MEMBER | --credential-header NAME=MEMBER)] [--header NAME=VALUE]... [--methods GET,POST] [--ca-file FILE] [--max-output BYTES] [--timeout D] [--token-endpoint URL --client-id ID (--assertion-key MEMBER [--assertion-x5t T | --assertion-x5t-s256 T] | --federated-token-file FILE) [--token-scope S] [--token-only]]")
 		return 2
 	}
 	if *checkPath != "" && !*check {
 		fmt.Fprintln(stderr, "adapter-http: --check-path is for --check")
 		return 2
 	}
+	if *tokenOnly && *check {
+		fmt.Fprintln(stderr, "adapter-http: --token-only and --check are two runs")
+		return 2
+	}
 	cfg := httpsource.Config{
 		Endpoint: *endpoint, Credentials: *credentials, Bearer: *bearer, CredentialHeader: *credentialHeader,
 		Headers: headers, Paths: split(*paths), Methods: split(*methods), MaxOutput: *maxOutput, CAFile: *caFile,
 		CheckPath: *checkPath,
+	}
+	if *tokenEndpoint != "" || *clientID != "" || *assertionKey != "" || *federatedTokenFile != "" || *assertionX5T != "" || *assertionX5TS256 != "" || *tokenScope != "" || *tokenOnly {
+		cfg.Token = &httpsource.TokenStep{Endpoint: *tokenEndpoint, ClientID: *clientID, KeyMember: *assertionKey, FederatedTokenFile: *federatedTokenFile,
+			X5T: *assertionX5T, X5TS256: *assertionX5TS256, Scope: *tokenScope}
+		// A sealed token is for an acquisition; a check and the token
+		// step alone obtain their own.
+		if !*check && !*tokenOnly {
+			cfg.SealedToken = os.Getenv(httpsource.SealedTokenVariable)
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
@@ -94,8 +116,25 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// the credential, a configuration refused for a path -- crosses it too.
 	secrets := httpsource.Secrets(cfg)
 	diagnostic := func(err error) string { return redact.Diagnostic(err.Error(), false, secrets) }
+	// A token step's failure exits with its kind's status, which is how
+	// the gateway tells "no credential", "token refused" and "the source
+	// refused the token" apart without reading the text.
+	failed := func(err error) int {
+		var failure *httpsource.TokenFailure
+		if errors.As(err, &failure) {
+			return int(failure.Kind)
+		}
+		return 1
+	}
 	var out []byte
-	if *check {
+	if *tokenOnly {
+		sealed, err := httpsource.ObtainSealed(ctx, cfg)
+		if err != nil {
+			fmt.Fprintln(stderr, "adapter-http: token step:", diagnostic(err))
+			return failed(err)
+		}
+		out = sealed
+	} else if *check {
 		// No request is read: the check is the operator's, not an
 		// acquisition, and stdin is whatever they left attached.
 		report, err := httpsource.Check(ctx, cfg)
@@ -118,7 +157,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		envelope, err := httpsource.Acquire(ctx, cfg, req)
 		if err != nil {
 			fmt.Fprintln(stderr, "adapter-http:", diagnostic(err))
-			return 1
+			return failed(err)
 		}
 		out = envelope
 	}

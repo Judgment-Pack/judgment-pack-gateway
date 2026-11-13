@@ -76,6 +76,14 @@ type Config struct {
 	// CheckPath, when given, is a path a check requests with GET; without
 	// one a check establishes the endpoint's TLS identity and nothing more.
 	CheckPath string
+	// Token, when given, is the token step (token.go): the credential sent
+	// is the access token it obtains, as the bearer, and neither Bearer nor
+	// CredentialHeader is given beside it.
+	Token *TokenStep
+	// SealedToken is a token the step obtained earlier, sealed
+	// (ObtainSealed), which an acquisition opens and sends instead of
+	// obtaining one; empty, it obtains one for its one request.
+	SealedToken string
 }
 
 // Request is the canonical arguments the gateway hands the adapter on
@@ -362,28 +370,13 @@ func credentialsOf(cfg Config) (header, value string, secrets []string, err erro
 	if cfg.Credentials == "" {
 		return "", "", nil, errors.New("a credential member is named but no --credentials file is given")
 	}
-	data, err := redact.ReadCredentials(cfg.Credentials)
+	members, secrets, err := credentialMembers(cfg.Credentials)
 	if err != nil {
 		return "", "", nil, err
 	}
-	if _, err := canon.Canonicalize(data, canon.CarryNumbersAsText); err != nil {
-		return "", "", nil, redact.MalformedCredentials(err)
-	}
-	members, err := exactMembers(data)
-	if err != nil {
-		return "", "", nil, errors.New("credentials file is not a JSON object of strings")
-	}
-	for _, raw := range members {
-		if trimmed := bytes.TrimSpace(raw); len(trimmed) == 0 || trimmed[0] != '"' {
-			return "", "", nil, errors.New("a credentials member is not a string")
-		}
-	}
-	raw, ok := members[member]
+	value, ok := members[member]
 	if !ok {
 		return "", "", nil, errors.New("the credentials file does not carry the member the configuration sends")
-	}
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return "", "", nil, errors.New("a credentials member is not a string")
 	}
 	if value == "" || strings.ContainsAny(value, "\r\n\x00") {
 		return "", "", nil, errors.New("the credential member has a value a header cannot carry")
@@ -391,7 +384,62 @@ func credentialsOf(cfg Config) (header, value string, secrets []string, err erro
 	if cfg.Bearer != "" {
 		value = "Bearer " + value
 	}
-	return header, value, redact.SecretsOf(data), nil
+	return header, value, secrets, nil
+}
+
+// credentialMembers reads the credentials file as a JSON object of strings,
+// its members by their exact names, with every scalar for redaction.
+func credentialMembers(path string) (map[string]string, []string, error) {
+	data, err := redact.ReadCredentials(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := canon.Canonicalize(data, canon.CarryNumbersAsText); err != nil {
+		return nil, nil, redact.MalformedCredentials(err)
+	}
+	raw, err := exactMembers(data)
+	if err != nil {
+		return nil, nil, errors.New("credentials file is not a JSON object of strings")
+	}
+	members := make(map[string]string, len(raw))
+	for name, value := range raw {
+		var s string
+		if trimmed := bytes.TrimSpace(value); len(trimmed) == 0 || trimmed[0] != '"' || json.Unmarshal(value, &s) != nil {
+			return nil, nil, errors.New("a credentials member is not a string")
+		}
+		members[name] = s
+	}
+	return members, redact.SecretsOf(data), nil
+}
+
+// tokenCredentials holds a token step to its rules and reads its
+// credential: the key member of the credentials file, which is then
+// required, or the federated token file, beside which a credentials file
+// given is read for its values to be kept out of every diagnostic. A
+// static credential named beside the step is refused, since the step's
+// token is what is sent.
+func tokenCredentials(cfg Config) (*tokenSigner, []string, error) {
+	if cfg.Bearer != "" || cfg.CredentialHeader != "" {
+		return nil, nil, errors.New("a token step sends the token it obtains as the bearer; --bearer and --credential-header name a static credential and are not given beside it")
+	}
+	if _, err := holdTokenStep(cfg.Token); err != nil {
+		return nil, nil, err
+	}
+	var members map[string]string
+	var secrets []string
+	if cfg.Credentials != "" {
+		var err error
+		if members, secrets, err = credentialMembers(cfg.Credentials); err != nil {
+			return nil, nil, tokenFailure(TokenNoCredential, "%v", err)
+		}
+	} else if cfg.Token.KeyMember != "" {
+		return nil, nil, tokenFailure(TokenNoCredential, "the token step's key is a credentials member, and no --credentials file is given")
+	}
+	signer, err := readTokenCredential(cfg.Token, members)
+	if err != nil {
+		return nil, nil, err
+	}
+	return signer, secrets, nil
 }
 
 // prepared is a configuration held to its rules, ready to send under.
@@ -405,6 +453,33 @@ type prepared struct {
 	identity  adapterIdentity
 	loopback  bool
 	transport *http.Transport
+	// signer is the token step's credential, read; nil without a step,
+	// and then credName and credValue are the static credential.
+	signer *tokenSigner
+}
+
+// useToken is the credential of a configuration with a token step: the
+// sealed token handed in, or one obtained now, sent as the bearer.
+func (p *prepared) useToken(ctx context.Context, cfg Config) error {
+	if p.signer == nil {
+		return nil
+	}
+	token, err := tokenFor(ctx, cfg, p.signer, &p.secrets)
+	if err != nil {
+		return err
+	}
+	p.credName, p.credValue = "Authorization", "Bearer "+token
+	return nil
+}
+
+// redacted is err with every secret of p replaced in its text, its kind
+// kept when it is a TokenFailure.
+func (p *prepared) redacted(err error) error {
+	var failure *TokenFailure
+	if errors.As(err, &failure) {
+		return &TokenFailure{Kind: failure.Kind, text: redact.Diagnostic(failure.text, false, p.secrets)}
+	}
+	return errors.New(redact.Diagnostic(err.Error(), false, p.secrets))
 }
 
 // prepare holds the configuration to its rules and reads the credentials,
@@ -434,7 +509,14 @@ func prepare(cfg Config) (*prepared, error) {
 	if err != nil {
 		return nil, err
 	}
-	credName, credValue, secrets, err := credentialsOf(cfg)
+	var credName, credValue string
+	var secrets []string
+	var signer *tokenSigner
+	if cfg.Token != nil {
+		signer, secrets, err = tokenCredentials(cfg)
+	} else {
+		credName, credValue, secrets, err = credentialsOf(cfg)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +557,7 @@ func prepare(cfg Config) (*prepared, error) {
 		return nil, err
 	}
 	return &prepared{base: base, headers: headers, credName: credName, credValue: credValue, secrets: secrets,
-		client: client, identity: identity, loopback: base.Scheme == "http", transport: transport}, nil
+		client: client, identity: identity, loopback: base.Scheme == "http", transport: transport, signer: signer}, nil
 }
 
 var errRedirect = errors.New("the endpoint answered with a redirect, which is not followed")
@@ -502,19 +584,28 @@ func ownIdentity() (adapterIdentity, error) {
 	return adapterIdentity{Name: adapterName, Version: Version, Digest: "sha256:" + hex.EncodeToString(h.Sum(nil))}, nil
 }
 
-// build is the request as it will be sent: the path under the endpoint,
-// the query sorted, the fixed headers, a JSON body, and the credential
-// last.
-func (p *prepared) build(ctx context.Context, cfg Config, req Request) (*http.Request, error) {
+// admits holds a request to the paths and the methods the configuration
+// names.
+func (p *prepared) admits(cfg Config, req Request) error {
 	if !contains(cfg.Paths, req.Path) {
-		return nil, fmt.Errorf("path %q is not one this source may request: %v", req.Path, cfg.Paths)
+		return fmt.Errorf("path %q is not one this source may request: %v", req.Path, cfg.Paths)
 	}
 	methods := cfg.Methods
 	if len(methods) == 0 {
 		methods = []string{http.MethodPost}
 	}
 	if !contains(methods, req.Method) {
-		return nil, fmt.Errorf("method %s is not one this source may use: %v", req.Method, methods)
+		return fmt.Errorf("method %s is not one this source may use: %v", req.Method, methods)
+	}
+	return nil
+}
+
+// build is the request as it will be sent: the path under the endpoint,
+// the query sorted, the fixed headers, a JSON body, and the credential
+// last.
+func (p *prepared) build(ctx context.Context, cfg Config, req Request) (*http.Request, error) {
+	if err := p.admits(cfg, req); err != nil {
+		return nil, err
 	}
 	target := *p.base
 	target.Path = strings.TrimSuffix(p.base.Path, "/") + req.Path
@@ -614,9 +705,17 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	// redacted by the command, against Secrets.
 	finish := func(out []byte, err error) ([]byte, error) {
 		if err != nil {
-			return nil, errors.New(redact.Diagnostic(err.Error(), false, p.secrets))
+			return nil, p.redacted(err)
 		}
 		return out, nil
+	}
+	// The request is held to the binding before any token is obtained, so
+	// a request that would be refused costs the token endpoint nothing.
+	if err := p.admits(cfg, req); err != nil {
+		return finish(nil, err)
+	}
+	if err := p.useToken(ctx, cfg); err != nil {
+		return finish(nil, err)
 	}
 	httpReq, err := p.build(ctx, cfg, req)
 	if err != nil {
@@ -625,6 +724,13 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	a, err := p.send(ctx, cfg, httpReq)
 	if err != nil {
 		return finish(nil, err)
+	}
+	if a.status == http.StatusUnauthorized && p.signer != nil {
+		// The token was refused: said by its kind, so the caller holding
+		// it drops it, and with nothing of the answer, which may quote
+		// what was sent. The request is not sent again: a second request
+		// to the source would be a second read under one acquisition.
+		return finish(nil, tokenFailure(TokenRejectedBySource, "the endpoint refused the token the token step obtained (401); the request is not sent again"))
 	}
 	if a.status < 200 || a.status > 299 {
 		// A refusal is a read that did not happen: nothing is minted for
@@ -850,7 +956,13 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	}
 	report := checkReport{Status: "succeeded", Adapter: p.identity, Endpoint: p.base.String()}
 	finish := func(err error) ([]byte, error) {
-		return nil, errors.New(redact.Diagnostic(err.Error(), false, p.secrets))
+		return nil, p.redacted(err)
+	}
+	// A check with a token step obtains a token, which is what holds the
+	// step's credential and its endpoint to their rules; the check path,
+	// when given, is asked with it.
+	if err := p.useToken(ctx, cfg); err != nil {
+		return finish(err)
 	}
 	if cfg.CheckPath != "" {
 		if err := pathProblem(cfg.CheckPath); err != nil {
