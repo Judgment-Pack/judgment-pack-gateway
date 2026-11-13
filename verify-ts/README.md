@@ -85,7 +85,11 @@ reference.
   byte that is not whitespace: one that opens an object could be a seal, or a
   record that cites, and is no verdict; any other is not one JSON object, and is
   not read — a record is still hashed for §4 step 6. Artifacts and `.jsonl`
-  files are hashed as they are read, whatever their size. Standard input is held
+  files are hashed as they are read, whatever their size. The store's removal
+  file is read a line at a time, whatever its size, holding no more of a line
+  than the 4096 bytes past which its record loads nothing (§1.3a, the bound
+  being the specification's), and is read only where it is a regular file:
+  anything else at its path, a link included, is not read, as §4.1 says. Standard input is held
   to the same bound, and the key on it to 32 bytes. A document, a line and
   standard input are held as they are read in one buffer grown by doubling, so
   reading one holds at most twice its bytes, however few each read returns.
@@ -111,7 +115,10 @@ reference.
   what is kept of it empty or not — 1 KiB, and its name; each receipt file,
   charged when it is met for all that will be kept of it — 2 KiB, and its name
   twice; each seal; each directory under the decision records still to walk;
-  and the buffer of failing records' findings, 33 bytes each. The charge that
+  and the buffer of failing records' findings, 33 bytes each; and each removal
+  record that loads naming a receipt no record kept names, 256 bytes and its
+  strings — a line that repeats one kept, a blank line, and a line that loads
+  nothing are charged nothing. The charge that
   passes the budget is no verdict, made before anything more is read:
   directories are read an entry at a time, so a store too large is refused
   before any receipt is read, and a registry at the seal that passes it, before

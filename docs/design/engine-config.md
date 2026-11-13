@@ -57,12 +57,12 @@ key is an error, never an intention silently dropped. `engineVersion`, `authorit
 `runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox`, `delegation`, `sealOpenAtStart` and `acceptOtherHostsOverPlainHTTP` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
 `descriptors`, `operationDescriptors`, `descriptorStatements`, `decisionPolicy`,
-`parameters`, `grant`, `writeRequesters` and `scope` optional; each operation's `credentials`
+`parameters`, `grant`, `writeRequesters`, `scope` and `artifact` optional; each operation's `credentials`
 entry is `{"file": …}`, and a live one's may carry `tokenStep` beside `file`. Every path is
 absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"21"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"22"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
@@ -71,8 +71,10 @@ absolute.
   version 17 `sealOpenAtStart`, version 18 a platform's `writeRequesters`, version 19
   `acceptOtherHostsOverPlainHTTP`, without which `listen` is a loopback address ("Listening off
   loopback (engine version 19)", below), version 20 a platform's `scope` ("A platform's
-  scope (engine version 20)", below), and version 21 a live operation's
-  `credentials.live.tokenStep` ("A live operation's token step (engine version 21)", below). A
+  scope (engine version 20)", below), version 21 a live operation's
+  `credentials.live.tokenStep` ("A live operation's token step (engine version 21)", below), and
+  version 22 a platform's `artifact` ("A platform that keeps no payload (engine version 22)",
+  below). A
   file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -1736,6 +1738,55 @@ assertion (RFC 7523).
 **Upgrading.** A version 20 file loads unchanged under a gateway of this version. To give an
 http source a token step, raise `engineVersion` to `"21"` and add `tokenStep` to the platform's
 `credentials.live`; a gateway older than this one refuses a version-21 file by its version.
+
+## A platform that keeps no payload (engine version 22)
+
+Version 22 adds a platform's optional `artifact` member
+([ADR-0028](../adr/0028-payloads-a-gateway-does-not-keep.md), SPEC.md §1.2a, `artifact`, §1.3a,
+and §6, "Payloads a gateway does not keep", gateway #422): a platform whose sources return
+results the operator should not hold beyond the call.
+
+```json
+"warehouse-east": {
+  "binding": "postgres@sha256:…",
+  "credentials": {"history": {"file": "/run/secrets/east-history"}, "live": {"file": "/run/secrets/east-live"}},
+  "user": "engine-east",
+  "artifact": "not-retained"
+}
+```
+
+- **The form.** The one string `"not-retained"`, which is the receipt member's value too.
+  Anything else — another string, another case, `null` or another type — is refused naming the
+  platform and the form, quoting nothing of the value. Absent means every payload is kept, as
+  before the member.
+- **What it changes.** The platform's `history` and `live` sources, of every shape (`airbyte`,
+  `mcp`, `http`). An acquisition answers `result` as before and its receipt's `resultDigest` is
+  the digest of those bytes; nothing is written under the store's `artifacts/`, and the version
+  3 receipt carries `artifact: "not-retained"` under the signature. A gateway minting version 2
+  receipts refuses such an acquisition, since only version 3 can say so. The response is the one
+  place the bytes are handed out: a caller that needs them later keeps them, and may give them
+  to `gateway verify --artifacts <dir>`, which re-digests them.
+- **When the file is loaded** (`serve`, `connect`, `connect --replace`, `posture`), the member is
+  refused at a version before 22, and on a platform that sets `write: true`, since `/act` and its
+  recovery read an action's result back from the store. It is allowed beside `mcp`, `scope`, a
+  `grant` and a delegation, none of which changes what is kept.
+- **`connect --replace`** keeps the member as written, since an entry written without it would
+  keep the payloads the operator chose not to hold, and refuses a replacement that sets
+  `--write` before anything is asked. `connect` has no flag for it: write it in the file, at
+  version 22.
+- **`/posture`** reports nothing of it.
+
+A receipt with the member verifies `ok` with the observation `artifact-not-retained` where no
+bytes for it are there; bytes that are there, in the store or supplied, are re-digested, and
+other bytes are `artifact-mismatch`. A verifier written before the member reports
+`artifact-missing` for it (SPEC.md §1.3a).
+
+**Removing a kept payload** is `gateway remove-artifact`, not this member: SPEC.md §6.
+
+**Upgrading.** A version 21 file loads unchanged under a gateway of this version. To stop
+keeping a platform's payloads, raise `engineVersion` to `"22"` and add `artifact` to the
+platform; a gateway older than this one refuses a version-22 file by its version. Payloads the
+platform kept before stay where they are.
 
 ## Keyed actions (engine version 14 and later)
 

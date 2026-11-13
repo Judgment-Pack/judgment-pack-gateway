@@ -5,7 +5,7 @@
 //   main.ts canon      stdin: one JSON document; stdout: its canonical
 //                      bytes; exit 0 inside the domain, 1 refused, 2
 //                      past what this implementation reads
-//   main.ts verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [<decision-records-dir>]
+//   main.ts verify [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>]
 //                      stdin: the 32-byte Ed25519 public key; stdout:
 //                      {"ok": bool, "findings": [...]}; exit 0 whenever a
 //                      verdict was reached, 2 when none could be; with
@@ -13,7 +13,11 @@
 //                      made after an interruption anchors is a finding
 //                      (SPEC.md §4 step 3); the option in a later place
 //                      is a usage error, exit 64, and a directory so
-//                      spelled is given as ./--ordinary-seals-only
+//                      spelled is given as ./--ordinary-seals-only;
+//                      --artifacts <dir>, after it and before the store
+//                      root, is the bytes a reader supplied (SPEC.md §4,
+//                      "Supplied bytes"), and in any other place a usage
+//                      error, exit 64
 //   main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]
 //                      a reading of a chain of witness statements
 //                      (SPEC.md §8.6); stdout: the answer, a refusal
@@ -177,18 +181,27 @@ function main(args: string[]): number {
     return 0;
   }
   const ordinarySealsOnly = command === "verify" && rest[0] === "--ordinary-seals-only";
-  const positional = ordinarySealsOnly ? rest.slice(1) : rest;
-  // The option in any later place is a usage error, never taken as an
+  const afterOption = ordinarySealsOnly ? rest.slice(1) : rest;
+  // --artifacts <dir>, after --ordinary-seals-only and before the store
+  // root, or not at all.
+  const supplied = command === "verify" && afterOption[0] === "--artifacts" && afterOption.length > 1 && afterOption[1] !== "";
+  const positional = supplied ? afterOption.slice(2) : afterOption;
+  // Either option in any later place is a usage error, never taken as an
   // argument and the plain verdict run in its stead.
   const misplaced = command === "verify" && rest.slice(1).includes("--ordinary-seals-only");
-  if (command === "verify" && !misplaced && (positional.length === 3 || positional.length === 4)) {
+  const misplacedArtifacts = command === "verify" && (positional.includes("--artifacts") || (afterOption[0] === "--artifacts" && !supplied));
+  if (command === "verify" && !misplaced && !misplacedArtifacts && (positional.length === 3 || positional.length === 4)) {
     try {
-      const [root, registry, authority, decisionRecords] = exactArguments(positional) as [string, string, string, string | undefined];
+      // The directory comes right before the positional arguments, so the
+      // command line's last entries are it and them.
+      const exact = exactArguments(supplied ? [afterOption[1]!, ...positional] : positional);
+      const artifacts = supplied ? exact[0] : undefined;
+      const [root, registry, authority, decisionRecords] = (supplied ? exact.slice(1) : exact) as [string, string, string, string | undefined];
       const key = readInput(32);
       if (key === null) {
         throw new NoVerdict("the public key on standard input is more than 32 bytes");
       }
-      const verdict = verifyStore(root, registry, authority, decisionRecords, key, { ordinarySealsOnly });
+      const verdict = verifyStore(root, registry, authority, decisionRecords, key, { ordinarySealsOnly, ...(artifacts !== undefined && { artifacts }) });
       const output = new Output();
       writeVerdict(verdict, (text) => output.write(text));
       output.flush();
@@ -207,8 +220,11 @@ function main(args: string[]): number {
   if (misplaced) {
     process.stderr.write("verify: --ordinary-seals-only goes first, before the store root; a directory so named is given as ./--ordinary-seals-only\n");
   }
+  if (misplacedArtifacts) {
+    process.stderr.write("verify: --artifacts <dir> goes before the store root, after --ordinary-seals-only; a directory so named is given as ./--artifacts\n");
+  }
   process.stderr.write(
-    "usage: main.ts canon | main.ts verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n",
+    "usage: main.ts canon | main.ts verify [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n",
   );
   return 64;
 }

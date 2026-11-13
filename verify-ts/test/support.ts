@@ -38,6 +38,7 @@ export type StoreVector = {
   emptySessions?: string[];
   decisionRecords?: Record<string, string>;
   ordinarySealsOnly?: boolean;
+  suppliedArtifacts?: Record<string, string>;
   expected: {
     ok: boolean;
     findings: Record<string, unknown>[];
@@ -114,7 +115,7 @@ function only(file: string, o: unknown, ...names: string[]): void {
 // not read, at the top or in expected.
 export function readStoreVector(file: string): StoreVector {
   const v = readVector(file) as StoreVector;
-  only(file, v, "name", "note", "authority", "files", "registry", "decisionRecords", "absentRegistry", "emptySessions", "ordinarySealsOnly", "expected");
+  only(file, v, "name", "note", "authority", "files", "registry", "decisionRecords", "absentRegistry", "emptySessions", "ordinarySealsOnly", "suppliedArtifacts", "expected");
   only(file, v.expected, "ok", "findings", "witnesses", "rotations", "observations");
   return v;
 }
@@ -131,7 +132,7 @@ export function storeVectors(): StoreVector[] {
 
 // materialize writes a vector as the runner would, and is the arguments
 // verify takes.
-export function materialize(v: StoreVector): { root: string; registry: string; decisionRecords: string | undefined } {
+export function materialize(v: StoreVector): { root: string; registry: string; decisionRecords: string | undefined; artifacts: string | undefined } {
   const at = tempDir();
   const root = path.join(at, "store");
   for (const [file, text] of Object.entries(v.files)) {
@@ -154,7 +155,20 @@ export function materialize(v: StoreVector): { root: string; registry: string; d
       fs.writeFileSync(path.join(decisionRecords, file), text);
     }
   }
-  return { root, registry, decisionRecords };
+  // the bytes a reader supplies (SPEC.md §4, "Supplied bytes"), each named
+  // by its digest, in a directory of their own
+  let artifacts: string | undefined;
+  if (v.suppliedArtifacts !== undefined) {
+    artifacts = path.join(at, "supplied");
+    fs.mkdirSync(artifacts);
+    for (const [hex, text] of Object.entries(v.suppliedArtifacts)) {
+      if (!/^[0-9a-f]{64}$/.test(hex)) {
+        throw new Error(`${v.name}: a supplied file is named ${JSON.stringify(hex)}, not a digest`);
+      }
+      fs.writeFileSync(path.join(artifacts, hex), text);
+    }
+  }
+  return { root, registry, decisionRecords, artifacts };
 }
 
 // verdictText is the verdict as the process contract writes it.

@@ -343,6 +343,17 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		}
 		entry.scope = previous.scope
 	}
+	// So is artifact (engineVersion 22, ADR-0028), which connect has no flag
+	// for: an entry written without it would keep every payload the
+	// operator chose not to hold, so the entry replaced keeps it, and a
+	// replacement that sets --write, which it refuses, is refused, never
+	// written without it.
+	if previous != nil && previous.notRetained {
+		if entry.write {
+			return out, fmt.Errorf("platform %s keeps no payload (artifact %q), which --replace keeps, and a platform that keeps no payload allows no write; remove artifact from the file first, or replace the entry without --write", req.platform, artifactNotRetained)
+		}
+		entry.notRetained = true
+	}
 	// So is a live operation's tokenStep (engineVersion 21, token_step.go),
 	// which connect has no flag for: an entry written without it would send
 	// the member the binding names in place of the token the step obtains,
@@ -860,9 +871,9 @@ func checkedAdapter(report []byte) (string, json.RawMessage, error) {
 // pin, and parameters are a version-8 member, so it is raised to version 8
 // exactly when the entry carries them; otherwise its version stays as it
 // was found, and a later one is never lowered. The entry replaced keeps its
-// decisionPolicy, its writeRequesters, its scope and its live operation's
-// tokenStep as written, which connect has no flag for (ADR-0011;
-// write_requesters.go; ADR-0026; ADR-0027);
+// decisionPolicy, its writeRequesters, its scope, its artifact and its live
+// operation's tokenStep as written, which connect has no flag for (ADR-0011;
+// write_requesters.go; ADR-0026; ADR-0028; ADR-0027);
 // parameters are the ones connect resolved the binding with, the entry's
 // own on --replace when none were given.
 func renderPlatformEntry(data []byte, req connectRequest, ref, pin string, parameters map[string]string) ([]byte, error) {
@@ -958,6 +969,9 @@ func renderPlatformEntry(data []byte, req connectRequest, ref, pin string, param
 			}
 			if scope, ok := replacedObj.get("scope"); ok {
 				entry.set("scope", scope)
+			}
+			if artifact, ok := replacedObj.get("artifact"); ok {
+				entry.set("artifact", artifact)
 			}
 		}
 	}

@@ -171,6 +171,13 @@ func openNoFollow(dir *os.Root, name string) (*os.File, error) {
 	return dir.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 }
 
+// openAppendNoFollow opens a file in the held directory to append, as
+// openNoFollow opens one to read: the store's removal file
+// (appendRemovals).
+func openAppendNoFollow(dir *os.Root, name string) (*os.File, error) {
+	return dir.OpenFile(name, os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+}
+
 // snapshotHeld is why a snapshot, or the snapshots' directory, is not what
 // the frontend will verify at start and can read, or nil: of its kind,
 // owned by root or by the configuration's owner, belonging to neither the

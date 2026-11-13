@@ -135,6 +135,17 @@ func validateVersion3(obj *vObject, r *receipt) error {
 			return errors.New("scope is not a scope identifier: " + scopeForm)
 		}
 	}
+	// That the call kept no payload (SPEC.md §1.3a; ADR-0028): optional, on
+	// an acquisition alone, and the one string when present.
+	if v, present := obj.get("artifact"); present {
+		if s, ok := stringOf(v); !ok || s != artifactNotRetained {
+			return errors.New(`artifact is not the string "not-retained"`)
+		}
+		if kind != "acquisition" {
+			return errors.New("artifact is on an acquisition alone")
+		}
+		r.notRetained = true
+	}
 	r.kind = kind
 	return nil
 }

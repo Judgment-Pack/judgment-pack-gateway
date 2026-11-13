@@ -792,6 +792,17 @@ of the witness but its origin and key identifier.
 registry over the store.** The anchor must be fetched from the key holder, not from the store being
 checked. A verifier that reads both from the same untrusted place gets no guarantee.
 
+**A receipt whose payload is not kept establishes less than one whose payload is.**
+A receipt carrying `artifact: "not-retained"`, or one a removal record names (SPEC.md
+§1.3a), verifies `ok` with an observation that says so, and the verifier checks bytes for it
+only where it has them. Neither observation establishes what the payload was, or that a holder
+of bytes has the ones the digest names; a reader that holds them checks them with `gateway
+verify --artifacts <dir>`. A removal record is signed by a gateway key and binds one receipt by
+its signature, so one who can write to the store without the key cannot make a record load or
+move one to another receipt; deleting the file or a line of it makes the receipt
+`artifact-missing`, a failure. `removedBy` is a label the operator typed: nothing establishes
+who ran the command. A verifier of `v0.26.0` or earlier reports both kinds `artifact-missing`.
+
 **A seal made after an interruption does not establish that the session was never sealed.**
 `gateway seal-open` and the start switch seal a session no seal closes (SPEC.md §3c), and
 neither can tell a session that was never sealed from one whose seal line was taken out of the

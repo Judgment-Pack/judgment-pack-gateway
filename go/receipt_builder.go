@@ -28,6 +28,10 @@ type receiptInput struct {
 	// for a source fixed to none, whose receipt is then the one it was
 	// before the member existed.
 	scope string
+	// notRetained is whether the call kept no payload (SPEC.md §1.3a): the
+	// acquisition then carries artifact "not-retained"; false for a kept
+	// one, whose receipt is the one it was before the member existed.
+	notRetained bool
 }
 
 // buildReceipt assembles the unsigned core. keyId and signature remain the
@@ -66,6 +70,9 @@ func buildReceipt(in receiptInput) *vObject {
 		}
 		if in.scope != "" {
 			core.set("scope", vString(in.scope))
+		}
+		if in.notRetained {
+			core.set("artifact", vString(artifactNotRetained))
 		}
 		core.set(in.kind, in.detail)
 	} else {

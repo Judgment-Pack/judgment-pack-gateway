@@ -72,7 +72,7 @@ func (e sealOpenRead) Error() string {
 // sealOpenJudge is what may be done with one session: a target to seal, a
 // refusal, or neither (a session --all passes over: sealed, or holding no
 // receipt); an error is a session that could not be read.
-func sealOpenJudge(storeRoot, authority string, walk *registryWalk, sessionID string, named bool) (*sealOpenTarget, string, error) {
+func sealOpenJudge(storeRoot, authority string, walk *registryWalk, ret *retention, sessionID string, named bool) (*sealOpenTarget, string, error) {
 	// a directory --all meets that no session id names is no session of
 	// a gateway's (SPEC.md §3a)
 	if requireSession(sessionID) != nil {
@@ -93,7 +93,7 @@ func sealOpenJudge(storeRoot, authority string, walk *registryWalk, sessionID st
 	case !info.IsDir():
 		return nil, fmt.Sprintf("session %s is in the store as something other than a session directory; nothing is sealed there", sessionID), nil
 	}
-	result, err := verifySessionUnder(storeRoot, sessionID, authority, walk.keys)
+	result, err := verifySessionWith(storeRoot, sessionID, authority, walk.keys, ret)
 	if err != nil {
 		return nil, "", sealOpenRead{sessionID, err}
 	}
@@ -143,10 +143,18 @@ func sealOpenUnder(storeRoot, authority string, writer *registryWriter, data []b
 	} else if err := requireSession(session); err != nil {
 		return nil, nil, err
 	}
+	// the removal records, as verify reads them (SPEC.md §1.3a): a receipt
+	// whose payload a record says was removed is whole, as one whose call
+	// kept none is
+	removals, err := loadRemovals(storeRoot, walk.keys)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%v, and nothing was sealed", err)
+	}
+	ret := &retention{removals: removals}
 	var targets []sealOpenTarget
 	var refused []string
 	for _, name := range names {
-		target, refusal, err := sealOpenJudge(storeRoot, authority, walk, name, session != "")
+		target, refusal, err := sealOpenJudge(storeRoot, authority, walk, ret, name, session != "")
 		if err != nil {
 			return nil, nil, err
 		}

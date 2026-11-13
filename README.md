@@ -141,6 +141,17 @@ gateway seals into. The store then verifies, with the observation `sealed-after-
 consumer that accepts only counts the minting process sealed (in a later place the option is
 a usage error). A session that is not whole is named and left as it is.
 
+A payload the gateway kept can be removed later without its receipt failing: with the
+gateway stopped, `./gateway remove-artifact --store ./store --seed gateway.seed --registry
+./registry.jsonl --authority gateway:demo --receipt s1/0 --by operator-1` appends a signed
+removal record to the store's `artifact-removals.jsonl`, then removes the bytes, and prints
+the record (SPEC.md §1.3a and §6). The receipt then verifies `ok` with the observation
+`artifact-removed`; bytes put back are re-digested, and bytes gone with no record are
+`artifact-missing`, as before. It refuses a receipt that does not verify, an action, one whose
+call kept nothing, one whose `scope` `--scope` does not give, and one whose bytes another
+receipt or a descriptor in the store still reads. `--by` is a label, recorded and checked
+against nothing.
+
 **One gateway per store and registry.** Run one gateway on a store and its registry at a time.
 On Unix a running gateway holds an exclusive `flock(2)` lock on its registry file, taken at the
 start once the registry is there and held until the gateway exits. A second gateway on the same
@@ -434,7 +445,11 @@ short-lived access tokens against a certificate or a federated identity, the pla
 `credentials.live.tokenStep` (engine configuration version 21) has `adapter-http` obtain the token
 by a client assertion, with a key held in that credentials file or a federated token read from a
 file; the signer holds the token only sealed, and never reads the key or the token
-([ADR-0027](docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md)). With an
+([ADR-0027](docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md)). A
+platform whose results the operator should not hold sets `artifact: "not-retained"` (engine
+configuration version 22): its acquisitions return the bytes, the store keeps only their digest,
+and the receipt says so under its signature
+([ADR-0028](docs/adr/0028-payloads-a-gateway-does-not-keep.md)). With an
 `identity` in the configuration — an issuer, the audience the engine is named as, and a file of
 the issuer's public keys — every request that acquires, seals or verifies carries a bearer token
 the issuer signed, and the receipt names the caller it proved; without one, every receipt carries

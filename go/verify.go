@@ -110,6 +110,11 @@ type receipt struct {
 	// keyPos is the place of the receipt's key among the keys the walk of
 	// the registry reached (SPEC.md §3b), 0 for the key pinned.
 	keyPos int
+	// notRetained is artifact "not-retained" (SPEC.md §1.3a): the call kept
+	// no payload. observation is what the artifact step says of a receipt
+	// that passed it with no bytes re-digested, "" otherwise.
+	notRetained bool
+	observation string
 }
 
 func receiptFrom(obj *vObject) (*receipt, error) {
@@ -606,7 +611,14 @@ func verifyWithRegistry(storeRoot, registryPath, authority string, publicKey []b
 // per-session findings, the registry anchor, and for version 3 action receipts
 // the citation and decision-record checks of steps 5 to 8.
 func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
-	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, publicKey, false, false)
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, "", publicKey, false, false)
+}
+
+// verifySupplied is verifyWithRegistryAndRecords, or the strict verdict, with
+// the bytes a reader supplied (gateway verify --artifacts; SPEC.md §4,
+// "Supplied bytes"): "" supplies none.
+func verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte, ordinarySealsOnly bool) (*report, error) {
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, false, ordinarySealsOnly)
 }
 
 // verifyOrdinarySealsOnly is the strict verdict (gateway verify
@@ -615,7 +627,7 @@ func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRe
 // verdict observes it so, for a consumer that accepts only a session sealed
 // by the process that minted it.
 func verifyOrdinarySealsOnly(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
-	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, publicKey, false, true)
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, "", publicKey, false, true)
 }
 
 // verifyAsEngine is the engine's own verification (/verify): the registry it
@@ -623,10 +635,10 @@ func verifyOrdinarySealsOnly(storeRoot, registryPath, authority, decisionRecords
 // verdict, never "no seals" -- which, with no session left to enumerate,
 // would verify.
 func verifyAsEngine(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
-	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, publicKey, true, false)
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, "", publicKey, true, false)
 }
 
-func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte, registryRequired, ordinarySealsOnly bool) (*report, error) {
+func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte, registryRequired, ordinarySealsOnly bool) (*report, error) {
 	// the inputs' spellings are judged before anything is read (SPEC.md §4.1)
 	if err := requirePlainSpelling(registryPath, true); err != nil {
 		return nil, err
@@ -634,6 +646,11 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 	if decisionRecords != "" {
 		if err := requirePlainSpelling(decisionRecords, false); err != nil {
 			return nil, fmt.Errorf("decision-record directory: %w", err)
+		}
+	}
+	if supplied != "" {
+		if err := suppliedDirectory(supplied); err != nil {
+			return nil, err
 		}
 	}
 	// SPEC.md §4.1: A store root that exists but is not a directory is an unreadable evidence container (refusal).
@@ -672,6 +689,13 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 		walk = walkRegistry(registryData, publicKey)
 	}
 	seals, sealOrder := walk.seals, walk.order
+	// The removal records load under the keys the walk reached (SPEC.md
+	// §1.3a): a file that cannot be read is no verdict.
+	removals, err := loadRemovals(storeRoot, walk.keys)
+	if err != nil {
+		return nil, err
+	}
+	ret := &retention{removals: removals, supplied: supplied}
 	if walk.followed() > 0 {
 		rep.Rotations = &rotationsFollowed{Count: walk.followed(), KeyID: walk.current().keyID}
 	}
@@ -681,10 +705,11 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 	signatures := map[string]map[string]string{}
 	var actions, naming, reconciling []*receipt
 	for _, sessionID := range sessions {
-		result, err := verifySessionUnder(storeRoot, sessionID, authority, walk.keys)
+		result, err := verifySessionWith(storeRoot, sessionID, authority, walk.keys, ret)
 		if err != nil {
 			return nil, err
 		}
+		rep.Observations = append(rep.Observations, result.observations...)
 		counts[sessionID] = result.count
 		whole[sessionID] = result.whole
 		signatures[sessionID] = result.signatures
@@ -980,6 +1005,9 @@ type sessionResult struct {
 	// of its own to report, which unsealed reads as open (SPEC.md §4
 	// step 3).
 	whole bool
+	// observations are what the artifact step says of receipts that passed
+	// the ladder with no bytes re-digested (SPEC.md §1.3a).
+	observations []finding
 }
 
 func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*sessionResult, error) {
@@ -989,6 +1017,13 @@ func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*s
 // verifySessionUnder is verifySession under the keys the walk of the
 // registry reached (SPEC.md §3b), the key pinned first.
 func verifySessionUnder(storeRoot, sessionID, authority string, keys []reachedKey) (*sessionResult, error) {
+	return verifySessionWith(storeRoot, sessionID, authority, keys, nil)
+}
+
+// verifySessionWith is verifySessionUnder reading, at each receipt's
+// artifact step, the removal records and supplied bytes ret holds (SPEC.md
+// §1.3a).
+func verifySessionWith(storeRoot, sessionID, authority string, keys []reachedKey, ret *retention) (*sessionResult, error) {
 	dir := filepath.Join(storeRoot, "receipts", sessionID)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1022,7 +1057,10 @@ func verifySessionUnder(storeRoot, sessionID, authority string, keys []reachedKe
 		if signature, ok := topLevelSignature(data); ok {
 			result.signatures[strings.TrimSuffix(name, ".json")] = signature
 		}
-		r, status := checkReceiptUnder(data, storeRoot, sessionID, name, authority, keys)
+		r, status, err := checkReceiptWith(data, storeRoot, sessionID, name, authority, keys, ret)
+		if err != nil {
+			return nil, err
+		}
 		if r == nil {
 			findings = append(findings, finding{
 				"sessionId": sessionID, "file": name, "status": status,
@@ -1034,6 +1072,11 @@ func verifySessionUnder(storeRoot, sessionID, authority string, keys []reachedKe
 		})
 		if status == "ok" {
 			valid = append(valid, r)
+			if r.observation != "" {
+				result.observations = append(result.observations, finding{
+					"sessionId": sessionID, "callIndex": r.callIndex, "observation": r.observation,
+				})
+			}
 			if r.reconciliation != nil {
 				result.reconciling = append(result.reconciling, r)
 			}
@@ -1110,17 +1153,26 @@ func checkReceipt(data []byte, storeRoot, sessionID, fileName, authority string,
 // reached (SPEC.md §3b): a receipt is taken under any of them, its keyId
 // naming the one its signature is verified under.
 func checkReceiptUnder(data []byte, storeRoot, sessionID, fileName, authority string, keys []reachedKey) (*receipt, string) {
+	r, status, _ := checkReceiptWith(data, storeRoot, sessionID, fileName, authority, keys, nil)
+	return r, status
+}
+
+// checkReceiptWith is checkReceiptUnder reading, at the artifact step, the
+// removal records and supplied bytes ret holds (SPEC.md §1.3a). Only a
+// supplied file that cannot be read is an error, which is no verdict; with
+// ret nil there is none.
+func checkReceiptWith(data []byte, storeRoot, sessionID, fileName, authority string, keys []reachedKey, ret *retention) (*receipt, string, error) {
 	v, err := parseJSON(data)
 	if err != nil {
-		return nil, "malformed"
+		return nil, "malformed", nil
 	}
 	obj, ok := v.(*vObject)
 	if !ok {
-		return nil, "malformed"
+		return nil, "malformed", nil
 	}
 	r, err := receiptFrom(obj)
 	if err != nil {
-		return nil, "malformed"
+		return nil, "malformed", nil
 	}
 	// SPEC 1.4 order 1: every LEXICAL requirement, settled before the version,
 	// the key id, or any cryptographic work. SPEC 1.2 fixes both forms --
@@ -1129,16 +1181,16 @@ func checkReceiptUnder(data []byte, storeRoot, sessionID, fileName, authority st
 	// than inferred from a successful decode.
 	digestHex, ok := strings.CutPrefix(r.resultDigest, "sha256:")
 	if !ok || !isLowerHexOfLen(digestHex, 64) {
-		return nil, "malformed"
+		return nil, "malformed", nil
 	}
 	// A signature containing non-hex characters is malformed, not a mismatch:
 	// nothing about it is a failed cryptographic check.
 	if _, err := hex.DecodeString(r.signature); err != nil {
-		return nil, "malformed"
+		return nil, "malformed", nil
 	}
 
 	if r.version != receiptVersion && r.version != receiptVersion3 {
-		return r, "unsupported-version"
+		return r, "unsupported-version", nil
 	}
 	// key-mismatch precedes signature-mismatch (SPEC 1.4 orders 3 then 4), so a
 	// receipt carrying both defects reports the earlier one. Verifying first
@@ -1151,38 +1203,40 @@ func checkReceiptUnder(data []byte, storeRoot, sessionID, fileName, authority st
 		}
 	}
 	if r.keyPos < 0 {
-		return r, "key-mismatch"
+		return r, "key-mismatch", nil
 	}
 	publicKey := keys[r.keyPos].key
 	// Well-formed hex of the wrong length is NOT malformed: it is a signature
 	// that cannot verify, which is order 4.
 	sig, err := hex.DecodeString(r.signature)
 	if err != nil || len(sig) != ed25519.SignatureSize {
-		return r, "signature-mismatch"
+		return r, "signature-mismatch", nil
 	}
 	if !ed25519.Verify(publicKey, r.signingInput(), sig) {
-		return r, "signature-mismatch"
+		return r, "signature-mismatch", nil
 	}
 	// Location binding: the receipt has to sit where it says it does, so a
 	// valid receipt cannot be moved within or between sessions.
 	stem := strings.TrimSuffix(fileName, ".json")
 	n, err := strconv.ParseInt(stem, 10, 64)
 	if err != nil || n != r.callIndex || r.sessionID != sessionID {
-		return r, "misfiled"
+		return r, "misfiled", nil
 	}
 	if r.authority != authority {
-		return r, "authority-mismatch"
+		return r, "authority-mismatch", nil
 	}
 	// Result re-digest: the retained artifact must still be the bytes the
-	// receipt attested.
-	artifact, err := os.ReadFile(filepath.Join(storeRoot, "artifacts", digestHex))
+	// receipt attested; where none is retained, the receipt says its call
+	// kept none or a removal record names it, and bytes a reader supplied
+	// are re-digested in their stead (SPEC.md §1.3a).
+	status, observation, err := artifactStep(r, storeRoot, sessionID, digestHex, ret)
 	if err != nil {
-		return r, "artifact-missing"
+		return r, "", err
 	}
-	sum := sha256.Sum256(artifact)
-	if hex.EncodeToString(sum[:]) != digestHex {
-		return r, "artifact-mismatch"
+	if status != "ok" {
+		return r, status, nil
 	}
+	r.observation = observation
 	if r.version == receiptVersion3 && r.kind == "acquisition" {
 		a, _ := r.obj.get("acquisition")
 		acq := a.(*vObject)
@@ -1191,10 +1245,10 @@ func checkReceiptUnder(data []byte, storeRoot, sessionID, fileName, authority st
 			source, _ := memberString(r.obj, "source")
 			endpoint, _ := memberString(acq, "endpoint")
 			transport, _ := memberString(acq, "transport")
-			return r, checkDescriptorProvenance(storeRoot, *p, authority, source, endpoint, transport == "http", keys[:r.keyPos+1])
+			return r, checkDescriptorProvenance(storeRoot, *p, authority, source, endpoint, transport == "http", keys[:r.keyPos+1]), nil
 		}
 	}
-	return r, "ok"
+	return r, "ok", nil
 }
 
 // isLowerHexOfLen reports whether s is exactly n lowercase hexadecimal

@@ -139,7 +139,7 @@ test("main.ts verify takes --ordinary-seals-only first or not at all, and the ve
   );
   assert.equal(run("--ordinary-seals-only", root, registry).status, 64);
   const usage =
-    "usage: main.ts canon | main.ts verify [--ordinary-seals-only] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n";
+    "usage: main.ts canon | main.ts verify [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n";
   const notFirst = "verify: --ordinary-seals-only goes first, before the store root; a directory so named is given as ./--ordinary-seals-only\n" + usage;
   const misplaced: [string, string[]][] = [
     ["a fourth argument", [root, registry, v.authority, "--ordinary-seals-only"]],

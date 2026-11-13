@@ -71,8 +71,8 @@ test("every store vector", () => {
   const vectors = storeVectors();
   assert.ok(vectors.length >= 39);
   for (const v of vectors) {
-    const { root, registry, decisionRecords } = materialize(v);
-    const options = { ordinarySealsOnly: v.ordinarySealsOnly === true };
+    const { root, registry, decisionRecords, artifacts } = materialize(v);
+    const options = { ordinarySealsOnly: v.ordinarySealsOnly === true, ...(artifacts !== undefined && { artifacts }) };
     const verdict = JSON.parse(verdictText(verifyStore(root, registry, v.authority, decisionRecords, publicKey, options)));
     assert.equal(verdict.ok, v.expected.ok, v.name);
     assert.deepEqual(multiset(verdict.findings), multiset(v.expected.findings), v.name);
