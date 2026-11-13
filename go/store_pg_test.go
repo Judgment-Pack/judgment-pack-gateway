@@ -899,7 +899,8 @@ func requireSameCut(t *testing.T, name string, got, want *storeCut) {
 // Every store vector of the corpus, held in the PostgreSQL kind, exports
 // byte for byte as the filesystem kind exports it, and its restore
 // verifies to the store's verdict: no vector changed, the vectors loaded
-// into the kind's tables as the filesystem holds them.
+// into the kind's tables as the filesystem holds them. So does each vector
+// held as rows of no scope and of two scope identifiers (pgLoadCutAcross).
 func TestEveryCorpusStoreExportsFromThePostgresKindByteForByte(t *testing.T) {
 	pgTestAdmin(t)
 	corpus := filepath.Join("..", "corpus")
@@ -952,6 +953,16 @@ func TestEveryCorpusStoreExportsFromThePostgresKindByteForByte(t *testing.T) {
 			if got := restoredVerdict(t, restored, vector.Authority, publicKey); !bytes.Equal(got, live) {
 				t.Fatalf("the restored export's verdict differs from the store's:\nstore:    %s\nrestored: %s", live, got)
 			}
+			// the same vector spread across scope identifiers, as a store of
+			// platforms fixed to them holds it, exports as the gateway exports
+			// the kind: every scope's rows, read one scope at a time
+			spread, spreadDB := pgTestKind(t, "", nil)
+			pgLoadCutAcross(t, spreadDB, cut, []string{pgNoScope, pgRowScope("scope-a"), pgRowScope("scope-b")})
+			spreadOut := filepath.Join(t.TempDir(), "postgresql-scoped")
+			if _, err := writeExport(exportInputs{authority: vector.Authority, keyID: keyIDFor(publicKey), kind: pgEveryScope{spread}, storeRoot: storeRoot, decisionRecords: records}, spreadOut); err != nil {
+				t.Fatalf("export of the PostgreSQL kind across scopes: %v", err)
+			}
+			requireSameTree(t, "postgresql across scopes", readTreeBytes(t, spreadOut), readTreeBytes(t, fsOut))
 		})
 	}
 }
@@ -960,6 +971,17 @@ func TestEveryCorpusStoreExportsFromThePostgresKindByteForByte(t *testing.T) {
 // login, row by row as the filesystem holds them: a vector's entries are
 // named as its files are, and its blobs need not digest to their names.
 func pgLoadCut(t *testing.T, db *pgTestDB, cut *storeCut) {
+	t.Helper()
+	pgLoadCutAcross(t, db, cut, []string{pgNoScope})
+}
+
+// pgLoadCutAcross is pgLoadCut with the cut's series, each with its
+// entries, and its blobs spread across rows, scopes as the scoped tables
+// hold them, in turn; every third blob is held by the next scope too, as a
+// payload two scopes' sources returned alike. Each scope identifier among
+// rows is recorded, a row of no scope, as a gateway's start records it. The
+// log and the documents are of no scope.
+func pgLoadCutAcross(t *testing.T, db *pgTestDB, cut *storeCut, rows []string) {
 	t.Helper()
 	c := db.runtimeConn(t)
 	if err := c.script("BEGIN"); err != nil {
@@ -971,32 +993,51 @@ func pgLoadCut(t *testing.T, db *pgTestDB, cut *storeCut) {
 			t.Fatalf("%s: %v", query, err)
 		}
 	}
-	// rows of no scope, in a transaction that names it: one that names
-	// none writes no row
-	exec(`SELECT pg_catalog.set_config('gateway.scope', $1, true)`, pgNoScope)
+	// each row in its scope, set for the transaction: one that sets none
+	// writes no row
+	in := func(row string) {
+		t.Helper()
+		exec(`SELECT pg_catalog.set_config('gateway.scope', $1, true)`, row)
+	}
+	in(pgNoScope)
+	for _, row := range rows {
+		if row != pgNoScope {
+			exec(`INSERT INTO gateway.scope_identifiers (scope, identifier) VALUES ('none', $1)`, row)
+		}
+	}
 	if cut.logPresent {
 		exec(`INSERT INTO gateway.logs (name) VALUES ('registry')`)
 		if len(cut.log) > 0 {
 			exec(`INSERT INTO gateway.log_records (log, start, data) VALUES ('registry', 0, $1)`, cut.log)
 		}
 	}
-	for _, series := range cut.series {
-		exec(`INSERT INTO gateway.series (scope, name) VALUES ('none', $1)`, series)
+	for i, series := range cut.series {
+		row := rows[i%len(rows)]
+		in(row)
+		exec(`INSERT INTO gateway.series (scope, name) VALUES ($1, $2)`, row, series)
 		for _, entry := range cut.entries[series] {
 			data, err := cut.entry(series, entry)
 			if err != nil {
 				t.Fatal(err)
 			}
-			exec(`INSERT INTO gateway.entries (scope, series, name, data) VALUES ('none', $1, $2, $3)`, series, entry, data)
+			exec(`INSERT INTO gateway.entries (scope, series, name, data) VALUES ($1, $2, $3, $4)`, row, series, entry, data)
 		}
 	}
-	for _, blob := range cut.blobs {
+	for i, blob := range cut.blobs {
 		data, err := cut.blob(blob)
 		if err != nil {
 			t.Fatal(err)
 		}
-		exec(`INSERT INTO gateway.blobs (scope, name, data) VALUES ('none', $1, $2)`, blob, data)
+		holders := []string{rows[i%len(rows)]}
+		if i%3 == 0 && len(rows) > 1 {
+			holders = append(holders, rows[(i+1)%len(rows)])
+		}
+		for _, row := range holders {
+			in(row)
+			exec(`INSERT INTO gateway.blobs (scope, name, data) VALUES ($1, $2, $3)`, row, blob, data)
+		}
 	}
+	in(pgNoScope)
 	for name, data := range cut.documents {
 		exec(`INSERT INTO gateway.documents (scope, name, revision, data) VALUES ('none', $1, $2, $3)`, name, strings.Repeat("0", 32), data)
 	}
