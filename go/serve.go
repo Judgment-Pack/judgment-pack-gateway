@@ -125,6 +125,14 @@ type sourceSpec struct {
 	// fixed to none, whose requests name none and whose receipts are those
 	// it minted before the member existed.
 	scope string
+	// tokenStep is whether the source's adapter-http obtains the token it
+	// sends (engineVersion 21, token_step.go): an acquisition is then handed
+	// the source's sealed token, held in tokens.
+	tokenStep bool
+	// requestPaths and requestMethods are, for a source with a token step,
+	// its operation's paths and methods: a request naming another is
+	// refused before a token is obtained for it (token_step.go).
+	requestPaths, requestMethods []string
 }
 
 // adapterShapes are the shapes --source-shape may declare: every shape of
@@ -280,6 +288,9 @@ type gatewayService struct {
 	// (ADR-0014), which a receipt minted for that trail names in its
 	// witness member; empty, no receipt names one. No request sets it.
 	witnessedBy map[string]namedWitness
+	// tokens are the sealed tokens of the sources with a token step
+	// (token_step.go), in memory only.
+	tokens tokenCache
 }
 
 // startHook runs between making the store and opening the registry; a test
@@ -1023,7 +1034,7 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 		}
 	}
 
-	result, adapterDigest, observedAt, err := g.runSource(source, spec, canonicalArgs)
+	result, adapterDigest, observedAt, err := g.runAcquisitionSource(source, spec, canonicalArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -1211,6 +1222,14 @@ func (l *actionKeyLocks) lock(name string) func() {
 }
 
 func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte) (result value, adapterDigest, observedAt string, err error) {
+	ctx, timeout, cancel := g.sourceRunContext(source, spec)
+	defer cancel()
+	return g.runSourceUnder(ctx, cancel, timeout, source, spec, stdin)
+}
+
+// sourceRunContext is the context a source's acquisition runs under: its
+// timeout, from g.ctx, and that timeout.
+func (g *gatewayService) sourceRunContext(source string, spec sourceSpec) (context.Context, time.Duration, context.CancelFunc) {
 	timeout := spec.timeout
 	if timeout <= 0 {
 		timeout = g.defaultTimeout
@@ -1220,7 +1239,6 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 		makeContext = g.sourceContext
 	}
 	ctx, cancel := makeContext(g.ctx, timeout)
-	defer cancel()
 	if g.sourceDeadline != nil {
 		// Read from the context itself rather than worked out again from
 		// timeout, so the deadline a test is handed is the one the source
@@ -1228,6 +1246,20 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 		deadline, _ := ctx.Deadline()
 		g.sourceDeadline(source, deadline)
 	}
+	return ctx, timeout, cancel
+}
+
+// sourceTimeoutError is what a source that did not finish within its
+// timeout is said as.
+func sourceTimeoutError(timeout time.Duration) error {
+	return fmt.Errorf("source did not finish within its %d-second timeout", int64(timeout/time.Second))
+}
+
+// runSourceUnder runs the source once under ctx, whose deadline is timeout's;
+// cancel ends ctx, and is what an overflow of the source's output calls. A
+// token step's runs share one such context (runAcquisitionSource), so its
+// deadline is the whole acquisition's.
+func (g *gatewayService) runSourceUnder(ctx context.Context, cancel context.CancelFunc, timeout time.Duration, source string, spec sourceSpec, stdin []byte) (result value, adapterDigest, observedAt string, err error) {
 	// The command is resolved once, here, to the file that will be started,
 	// and that file is what a version 3 receipt digests -- os/exec would
 	// otherwise give a relative Windows command its extension only at start,
@@ -1333,9 +1365,11 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 		if sourceTimedOut(cancelled.Load(), ctx.Err(), waitErr) {
 			// Said as such, since whatever the source wrote on stderr before
 			// it was killed is not why it failed.
-			return nil, "", "", fmt.Errorf("source did not finish within its %d-second timeout", int64(timeout/time.Second))
+			return nil, "", "", sourceTimeoutError(timeout)
 		}
-		return nil, "", "", fmt.Errorf("source failed: %s", sourceFailureText(stderr.buf.String()))
+		// The status is kept beside the text, which is unchanged: a token
+		// step's adapter reports its failure's kind by it (token_step.go).
+		return nil, "", "", &sourceExited{code: exitStatus(waitErr), text: "source failed: " + sourceFailureText(stderr.buf.String())}
 	}
 	observedAt = nowStamp()
 	result, err = parseJSON(stdout.buf.Bytes())

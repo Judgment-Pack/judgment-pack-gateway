@@ -429,7 +429,12 @@ the engine ships, with their pins and licences, are in [catalog/](catalog/README
 may also name a plain HTTP API as a platform's `live` operation, of the `http` shape: the engine
 runs `adapter-http` for it as the platform's user with the platform's credential, at the endpoint
 and paths the binding fixes, and its receipt is the one `--source-shape NAME=http` gives
-([ADR-0024](docs/adr/0024-an-http-source-in-the-engine.md)). With an
+([ADR-0024](docs/adr/0024-an-http-source-in-the-engine.md)). For a provider that issues
+short-lived access tokens against a certificate or a federated identity, the platform's
+`credentials.live.tokenStep` (engine configuration version 21) has `adapter-http` obtain the token
+by a client assertion, with a key held in that credentials file or a federated token read from a
+file; the signer holds the token only sealed, and never reads the key or the token
+([ADR-0027](docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md)). With an
 `identity` in the configuration — an issuer, the audience the engine is named as, and a file of
 the issuer's public keys — every request that acquires, seals or verifies carries a bearer token
 the issuer signed, and the receipt names the caller it proved; without one, every receipt carries

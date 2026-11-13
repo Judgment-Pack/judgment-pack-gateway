@@ -230,7 +230,7 @@ func TestHTTPOperationParses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if word := httpSourceArgv("adapter-http", *b.live.http, "c")[2]; maxHTTPPathsWord != 128<<10-1 || len(word) != maxHTTPPathsWord || !strings.HasPrefix(word, "--paths=/000") {
+	if word := httpSourceArgv("adapter-http", *b.live.http, "c", nil)[2]; maxHTTPPathsWord != 128<<10-1 || len(word) != maxHTTPPathsWord || !strings.HasPrefix(word, "--paths=/000") {
 		t.Fatalf("the paths word at its bound: %d bytes", len(word))
 	}
 }

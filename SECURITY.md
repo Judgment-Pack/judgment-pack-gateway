@@ -292,6 +292,45 @@ the source to reads. An `http` source is never a write tool: its platform derive
 `/act` takes no write for it, the MCP server lists no tool of it, and a delegated acquisition of it
 names no tool and is refused.
 
+**An http source's token step keeps the key and the token with the platform's user; the signer
+holds the token sealed** (engine configuration version 21; gateway #421;
+[ADR-0027](docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md)). A platform's
+`credentials.live.tokenStep` has `adapter-http`, as the platform's user, obtain the access token it
+sends from a token endpoint the configuration fixes, by a client assertion: a JWT it signs with a
+key held as a member of the platform's live credentials file, or a federated identity token read
+from a file held as that credentials file is — owned by the platform's user, readable by that user
+alone, on a way no other user may replace. That file is found again at each token request under
+the directory it is named in, fixed at start: a link on the way is followed only when root owns
+it and only within that directory, so a rewrite in place and a link swap inside the directory, as
+a platform renews a projected token, are both followed, and a target outside it is refused as no
+credential; the file is opened once and held by its open handle, a regular file the platform's
+user owns and alone may read. The signer reads neither, nor the assertion, nor the
+access token: the adapter answers the token sealed with AES-256-GCM under a key HKDF derives from
+the credential, bound to the source's configuration, and the signer holds that ciphertext, in
+memory alone, per source and scope identifier, and hands it to the next acquisition, where the
+adapter opens it. What the seal holds is the signer as written: it never reads the credential or
+the token in the clear, so neither is in its memory, a dump of it or anything it writes. It is
+not a boundary against a compromised signer: one that can read every credential, as under
+`rootSigner`, or switch users, as a non-root signer holding `CAP_SETUID` can (below), can derive
+the key as the platform's user does. The token endpoint is held to the endpoint form
+above, follows no redirect, is bounded to 64 KiB and ten seconds, and is reached against the
+system's roots; an answer is taken only as a `Bearer` `access_token` with an `expires_in` of at
+most a day, or none. Each failure — no credential, a refused or malformed token answer, a token the
+source refused — is one fixed sentence that names the source and quotes nothing of the endpoint's
+answer, and nothing the gateway or the adapter writes of its own — a receipt's members, a record,
+`/posture`, a response, an error, a log line — carries the key, the federated token, the
+assertion, the token or the sealed token. A source whose answer quotes the request's headers
+back puts the token in the result the receipt attests, as it would a static bearer; what a
+source answers is the source's. A source that
+answered 401 to the token is not asked again under the same receipt: the token is dropped and the
+acquisition fails. Acquisitions waiting on a token request that fails are each told its failure
+rather than sending one each, and the source's one timeout bounds the whole acquisition, the
+token request included, so a token endpoint that hangs holds an acquisition no longer than a
+source that hangs. A request naming a path or a method the operation does not allow is refused
+before a token is requested for it. The token step does not establish which identity the token was issued to, or
+that the token endpoint is the one the source trusts; it changes how the credential is obtained,
+not what the receipt says.
+
 **A write-back platform writes as the credential its operator configured, under a decision
 policy, and its receipt names the URL it wrote to** (issue #248;
 [executor.md](docs/design/executor.md), "The write-back platforms"). The `azure-devops` and
