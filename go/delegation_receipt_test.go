@@ -77,12 +77,16 @@ func TestDelegationReceiptMemberRows(t *testing.T) {
 // A receipt made under no delegation is byte for byte the receipt it was
 // before the members existed (SPEC.md §11.7): every version 3 receipt the
 // corpus holds is rebuilt by the builder with no delegation and no
-// reconciler, signed by the corpus key, and compared with its file.
+// reconciler, signed by the corpus key, and compared with its file. So is
+// a receipt of a source fixed to no scope identifier (ADR-0026): the
+// builder is given the scope the file holds, "" where it holds none, and a
+// receipt holding none is rebuilt byte for byte as it was before the member
+// existed; one holding a scope (v3-scope-*) is rebuilt with it.
 func TestUndelegatedReceiptsAreByteIdentical(t *testing.T) {
 	seed := mustHex(t, strings.TrimSpace(readFile(t, corpusPath("TEST-SEED"))))
 	key := ed25519.NewKeyFromSeed(seed)
 	vectors, _ := filepath.Glob(corpusPath("v3", "stores", "*.json"))
-	rebuilt := 0
+	rebuilt, scoped := 0, 0
 	for _, path := range vectors {
 		var vector struct {
 			Files map[string]string `json:"files"`
@@ -140,6 +144,9 @@ func TestUndelegatedReceiptsAreByteIdentical(t *testing.T) {
 			if w, present := obj.get("witness"); present {
 				in.witness = w.(*vObject)
 			}
+			if in.scope, _ = memberString(obj, "scope"); in.scope != "" {
+				scoped++
+			}
 			detail, _ := obj.get(kind)
 			in.detail = detail.(*vObject)
 			core := buildReceipt(in)
@@ -158,6 +165,10 @@ func TestUndelegatedReceiptsAreByteIdentical(t *testing.T) {
 	if rebuilt < 40 {
 		t.Fatalf("only %d receipts rebuilt", rebuilt)
 	}
+	// v3-scope-valid's two, v3-scope-at-the-bound's and v3-scope-on-an-action's.
+	if scoped != 4 {
+		t.Fatalf("%d receipts holding a scope rebuilt, want 4", scoped)
+	}
 }
 
 // expectedTopLevel is how many top-level members the builder writes for a
@@ -165,6 +176,9 @@ func TestUndelegatedReceiptsAreByteIdentical(t *testing.T) {
 func expectedTopLevel(obj *vObject) int {
 	n := 14 // the common members, argumentsCommitment, kind, caller, the detail, keyId and signature
 	if _, present := obj.get("witness"); present {
+		n++
+	}
+	if _, present := obj.get("scope"); present {
 		n++
 	}
 	return n

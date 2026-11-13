@@ -227,7 +227,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 80 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 97 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -321,6 +321,21 @@ carries no `reconciliation`. A verifier written before the members (v0.23.0, in 
 TypeScript) answers `ok` for every one of them but the tampered member, and reads `caller` as
 naming the subject: that is the compatibility §11.7 states, and these vectors hold the readers
 that know the members to more.
+
+Seventeen are of the `scope` member (§1.2a; `docs/adr/0026-a-scope-identifier-fixed-on-a-platform.md`;
+issue #420), each named `v3-scope-*` and signed with its members by a signer that shares no code
+with the gateway; sixteen hold the member, and one held it when signed and has had it removed: a sealed session of two acquisitions whose scope identifiers differ, one of them
+non-ASCII and holding a space, both `ok`, since no scope identifier is compared with another; one
+of exactly 128 bytes, made of four-byte and two-byte characters, `ok`; an action carrying the
+member, `ok`, since the format admits it on either kind; `malformed` for 129 bytes that are 128
+code points and 128 UTF-16 code units, for the empty string, for `null`, for a C0 control, for a
+tab and for a line feed, which display policy 1 admits and a scope identifier does not, for
+U+200B, for U+202E, for a private-use code point, for U+2FFC, unassigned in Unicode 15.0.0 and
+assigned later, so a verifier reading its runtime's own later tables is caught, and for a
+noncharacter; and `signature-mismatch` for the member changed, added and removed after signing.
+A verifier written before the member (v0.26.0, in Go and in TypeScript) answers `ok` for every
+one of them but the three tampered receipts, which it answers `signature-mismatch`: that is the
+compatibility §1.2a states, and these vectors hold the readers that know the member to more.
 
 **`witnesses`.** A vector whose report names witnesses gives them in `expected`
 as `witnesses`, each `{"trail", "origin", "keyId"}`, and a runner compares them

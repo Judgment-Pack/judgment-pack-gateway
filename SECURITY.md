@@ -662,6 +662,25 @@ ties a host to an issuer, so an entry admits any chain a configured issuing host
 that `sub`. Which tools a platform
 offers is not hidden, since the session, platform and tool steps answer every requester alike.
 
+**A platform's `scope` labels its receipts, and authorizes nothing.** The member (engine
+configuration version 20; [ADR-0026](docs/adr/0026-a-scope-identifier-fixed-on-a-platform.md);
+[`SPEC.md`](SPEC.md) §1.2a, `scope`) fixes the platform's sources to a scope identifier that each
+`/acquire` to them must repeat, byte for byte, and that their receipts carry under the signature.
+A request naming none or another is refused `400` before the source runs, with one fixed sentence
+that names no scope identifier, and no line is written for it. What a verifying receipt
+establishes is that the operator held the source to that identifier and the request named it.
+It does not establish:
+- that the caller was entitled to the identifier: it is a label a request repeats, not a
+  credential, so any caller the gateway admits that names it is served;
+- that a session's receipts share one identifier, or that no other source or gateway uses it;
+- anything kept apart by it: every scope identifier shares the gateway's one key, store and
+  registry.
+
+A verifier written before the member holds it to no form, and answers `ok` for a signed receipt
+whose `scope` a verifier of this version reports `malformed`. Which sources are fixed to a scope
+identifier can be learned by an admitted caller from how the gateway answers a request that
+leaves `scope` out; which identifier, never.
+
 **A checkpoint witness is reached from other hosts by other parties** ([ADR-0013](docs/adr/0013-checkpoint-witness.md);
 [`SPEC.md`](SPEC.md) §6, "Witness endpoints"). It is the first surface of this reference meant
 for that, and what the reference does for it is narrow. A submission carries a bearer token of

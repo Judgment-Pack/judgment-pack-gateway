@@ -83,7 +83,10 @@ file without the member still loads, and a version-`1` file with it is refused b
 `listen` is a literal loopback address with an explicit port, validated as a loopback signer
 `listen` is; when `mcp` is present the signer's `listen` may not name port zero, nor an address
 that is not loopback (engine configuration version 19), since the frontend finds the signer by
-that value and nothing else, and fronts a signer on loopback. `resource` is the URL the world
+that value and nothing else, and fronts a signer on loopback. Beside `mcp` a platform's `scope`
+is refused (engine configuration version 20, [ADR-0026](../adr/0026-a-scope-identifier-fixed-on-a-platform.md)):
+the frontend forwards a call with no scope member, so it could reach none of that platform's
+sources. `resource` is the URL the world
 reaches the MCP endpoint by — the protected resource's identifier, below — an absolute
 `https` URL without a fragment, required with `--http`; with it, the `identity` member is
 required too, and its `issuer` must be an authorization server's identifier as RFC 8414 has

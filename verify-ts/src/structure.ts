@@ -9,6 +9,7 @@ import { isIPv6 } from "node:net";
 import { member, negative } from "./json.ts";
 import type { ObjectValue, Value } from "./json.ts";
 import { citations, isFlatToken } from "./citations.ts";
+import { displayRefused } from "./display-policy-table.ts";
 
 const digestForm = /^sha256:[0-9a-f]{64}$/;
 const signatureV3Form = /^[0-9a-f]{128}$/;
@@ -391,6 +392,46 @@ function isWitness(v: Value | undefined): boolean {
   );
 }
 
+// refusedByPolicy is whether display policy 1 refuses the code point: a
+// search of its ranges.
+function refusedByPolicy(cp: number): boolean {
+  let lo = 0;
+  let hi = displayRefused.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const [first, last] = displayRefused[mid]!;
+    if (cp < first) {
+      hi = mid - 1;
+    } else if (cp > last) {
+      lo = mid + 1;
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
+
+// isScopeIdentifier is the scope member's form (§1.2a): 1 to 128 bytes of
+// UTF-8, no code point display policy 1 refuses, and neither tab nor line
+// feed. A string holding a surrogate alone is no UTF-8, and no scope
+// identifier. Nothing is folded, trimmed or normalized.
+export function isScopeIdentifier(s: string): boolean {
+  if (!s.isWellFormed()) {
+    return false;
+  }
+  const bytes = Buffer.byteLength(s, "utf8");
+  if (bytes < 1 || bytes > 128) {
+    return false;
+  }
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    if (cp === 0x09 || cp === 0x0a || refusedByPolicy(cp)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // isPrincipal is a principal reference (§11.1): exactly kind, issuer and
 // subject, the kind person or service, issuer and subject non-empty.
 function isPrincipal(v: Value | undefined): v is ObjectValue {
@@ -516,6 +557,7 @@ export function structureV3(r: ObjectValue): boolean {
   const acquisition = member(r, "acquisition");
   const action = member(r, "action");
   const witness = member(r, "witness");
+  const scope = member(r, "scope");
   if (
     !isString(sessionId) ||
     !isFlatToken(sessionId.value) ||
@@ -535,6 +577,9 @@ export function structureV3(r: ObjectValue): boolean {
     member(r, "argumentsDigest") !== undefined ||
     // the witness the receipt names: optional, of its form when present
     (witness !== undefined && !isWitness(witness)) ||
+    // the scope identifier the source was fixed to: optional, on either
+    // kind, of its form when present
+    (scope !== undefined && !(isString(scope) && isScopeIdentifier(scope.value))) ||
     !isString(kind) ||
     // the members of a call made under a delegation (§11.7)
     !delegationHolds(r, kind.value) ||

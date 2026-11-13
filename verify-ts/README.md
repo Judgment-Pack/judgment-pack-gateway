@@ -31,8 +31,10 @@ The `witness` member was added to it by the author of the reference's change, as
 `action.policy` was, and so were the members a remote MCP server adds to an acquisition
 (ADR-0015), `action.tool.transport` (#268) and the walk of a registry's key rotations
 (§3b, #317), and the seal made after an interruption with `verify --ordinary-seals-only`
-(§3c, #395), the option first, and in a later place a usage error exiting 64: a second body
-of code, not a second reading of the text.
+(§3c, #395), the option first, and in a later place a usage error exiting 64, and the `scope`
+member (§1.2a, #420), whose display policy table (`src/display-policy-table.ts`) is the
+reference's `go/policy_table.go` transcribed range for range, which its test holds it to: a second body
+of code, not a second reading of the text, and for that table not even a second body of data.
 `impl witness --trail <hex> --witness-key <file>... [--witness <file>]...
 [--witness-head <file>]` reads a chain of witness statements (§8.6) and writes
 its answer — a refusal, findings, or what the chain says — exiting 0 whenever it
