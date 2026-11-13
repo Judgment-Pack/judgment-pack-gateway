@@ -10,7 +10,8 @@
 --
 -- Append-only by privilege: blobs, series, entries, logs, log_records and
 -- secrets are SELECT and INSERT alone. Documents alone are replaced and
--- removed. Nothing is TRUNCATE, REFERENCES, TRIGGER or DDL.
+-- removed, and the start lease's one row (schema version 2) is taken,
+-- renewed and released. Nothing is TRUNCATE, REFERENCES, TRIGGER or DDL.
 
 DO $grants$
 DECLARE
@@ -22,5 +23,6 @@ BEGIN
     EXECUTE pg_catalog.format('GRANT SELECT ON gateway.schema_migrations TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT, INSERT ON gateway.blobs, gateway.series, gateway.entries, gateway.logs, gateway.log_records, gateway.secrets TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT, INSERT, UPDATE, DELETE ON gateway.documents TO %I', runtime);
+    EXECUTE pg_catalog.format('GRANT SELECT, INSERT, UPDATE, DELETE ON gateway.start_lease TO %I', runtime);
 END
 $grants$;

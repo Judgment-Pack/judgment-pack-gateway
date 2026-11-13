@@ -138,6 +138,10 @@ type pgKind struct {
 	row       string
 	operation time.Duration
 	clock     func() time.Time
+	// fence is the start lease's holder once this instance holds it
+	// (store_pg_lease.go): every write transaction holds the lease first.
+	// "" for a kind that holds none, as an export or a test opens it.
+	fence string
 }
 
 // pgRowScope is a scope as the rows of the scoped tables hold it, and as a
@@ -267,6 +271,12 @@ func (k *pgKind) transact(mode pgMode, fn func(pgTx) error) error {
 		pg_catalog.set_config('synchronous_commit', 'on', true)`, k.row, timeout); err != nil {
 		k.rollback(c)
 		return err
+	}
+	if mode.write {
+		if err := k.holdFence(pgTx{c}); err != nil {
+			k.rollback(c)
+			return err
+		}
 	}
 	if err := fn(pgTx{c}); err != nil {
 		k.rollback(c)

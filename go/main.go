@@ -520,11 +520,14 @@ func cmdServeEngine(args []string) int {
 		}
 	}
 	service.witness = witness
-	return serveEngineService(service, cfg, delegation)
+	return serveEngineService(service, cfg, delegation, nil)
 }
 
 // serveEngineService serves a service made, until a signal ends it.
-func serveEngineService(service *gatewayService, cfg engineConfig, delegation *delegationService) int {
+// keep, where it is not nil, runs beside the service for its lifetime, and
+// a loss it reports stops the service, which then exits 1 (the start
+// lease's renewal, store_pg_lease.go).
+func serveEngineService(service *gatewayService, cfg engineConfig, delegation *delegationService, keep func(context.Context, func(error))) int {
 	service.attachDelegation(delegation)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -532,7 +535,21 @@ func serveEngineService(service *gatewayService, cfg engineConfig, delegation *d
 	// the signer's admission gate, for the rotation contract: SIGUSR1
 	// closes it, SIGUSR2 reopens it
 	installOperatorControls(ctx, service)
-	if err := service.listenAndServe(cfg.listen); err != nil {
+	lost := make(chan error, 1)
+	if keep != nil {
+		go keep(service.ctx, func(err error) {
+			lost <- err
+			service.cancel()
+		})
+	}
+	err := service.listenAndServe(cfg.listen)
+	select {
+	case why := <-lost:
+		fmt.Fprintln(os.Stderr, "serve:", why)
+		return 1
+	default:
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1
 	}
@@ -560,29 +577,70 @@ func rotationPendingAtStart(cfg engineConfig, seedNames []string) error {
 }
 
 // serveEngineOnKind is the rest of serve --config where storage names the
-// PostgreSQL kind (storage_kind.go): the kind opened and held to its
-// conditions, the service built over it, and the registry it keeps walked
-// as holdEngineRegistry walks the file, before anything is served. What
-// the start makes in the kind is the registry, empty, where it is not there
-// and no session is held (newRegistryWriterOn).
+// PostgreSQL kind (storage_kind.go), served until a signal stops it or the
+// start lease is lost; a clean stop releases the lease.
 func serveEngineOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, identity *identityConfig, delegation *delegationService) int {
+	started, err := startEngineOnKind(cfg, seed, sources, identity, os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	defer started.stop(os.Stderr)
+	return serveEngineService(started.service, cfg, delegation, started.lease.keep)
+}
+
+// kindStart is a start on the PostgreSQL kind: the kind, the lease this
+// instance holds on it, and the service over it.
+type kindStart struct {
+	kind    *pgKind
+	lease   *pgStartLease
+	service *gatewayService
+}
+
+// stop releases the lease, so the next instance starts at once -- one left
+// behind expires -- and closes the kind.
+func (s *kindStart) stop(said io.Writer) {
+	if err := s.lease.release(); err != nil {
+		fmt.Fprintf(said, "stop: the start lease is left to expire within %s: %v\n", pgStartLeasePeriod, err)
+	}
+	s.kind.close()
+}
+
+// startEngineOnKind opens the kind the configuration names, held to its
+// conditions; takes the start lease, refused while another instance's is
+// live (errStartLeaseHeld), before anything is written; builds the service
+// over the kind; and walks the registry it keeps as holdEngineRegistry
+// walks the file. What the start makes in the kind is the lease's row and
+// the registry, empty, where it is not there and no session is held
+// (newRegistryWriterOn).
+func startEngineOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, identity *identityConfig, said io.Writer) (*kindStart, error) {
 	kind, err := openStorageKind(cfg.storage)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "start:", err)
-		return 1
+		return nil, err
 	}
-	defer kind.close()
-	service, err := buildServiceOn(kind, seed, cfg.authority, engineServeOptions(cfg, sources, identity))
+	holder, err := newStartLeaseHolder()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "start:", err)
-		return 1
+		kind.close()
+		return nil, err
 	}
-	if _, err := service.kindRegistryWalk(); err != nil {
-		fmt.Fprintln(os.Stderr, "start:", err)
-		return 1
+	lease, err := kind.takeStartLease(holder, pgStartLeasePeriod, pgStartLeaseRenewal)
+	if err != nil {
+		kind.close()
+		return nil, err
 	}
-	fmt.Fprintln(os.Stderr, "start:", storageStartLine(cfg.storage))
-	return serveEngineService(service, cfg, delegation)
+	started := &kindStart{kind: kind, lease: lease}
+	service, err := buildServiceOn(kind, seed, cfg.authority, engineServeOptions(cfg, sources, identity))
+	if err == nil {
+		_, err = service.kindRegistryWalk()
+	}
+	if err != nil {
+		started.stop(said)
+		return nil, err
+	}
+	started.service = service
+	fmt.Fprintln(said, "start:", storageStartLine(cfg.storage))
+	fmt.Fprintf(said, "start: gateway instance %s holds the start lease, which runs %s from each renewal by the database's clock and is renewed every %s\n", holder, pgStartLeasePeriod, pgStartLeaseRenewal)
+	return started, nil
 }
 
 // writeNewSeed creates path exclusively. O_EXCL is the whole point and a

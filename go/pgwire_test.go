@@ -477,14 +477,39 @@ func pgSQLText(t *testing.T) map[string]string {
 	return text
 }
 
-// The kind reads no clock of the database: no statement it sends or schema
-// file it carries names one, so no time it holds is the server's.
+// The kind reads no clock of the database but in the start lease: no
+// statement it sends or schema file it carries names one, so no time it
+// holds is the server's (ADR-0031, decision 9). The lease's statements
+// alone read it, as clock_timestamp() and nothing else, each on the lease's
+// table: an expiry several instances judge is the database's.
 func TestThePostgresKindReadsNoDatabaseClock(t *testing.T) {
 	clock := regexp.MustCompile(`(?i)\b(now|clock_timestamp|statement_timestamp|transaction_timestamp|timeofday|pg_postmaster_start_time)\s*\(|\b(current_timestamp|current_date|current_time|localtimestamp|localtime)\b`)
 	for name, text := range pgSQLText(t) {
 		if found := clock.FindString(text); found != "" {
 			t.Errorf("%s names the database's clock: %q", name, found)
 		}
+	}
+	data, err := os.ReadFile("store_pg_lease.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := 0
+	for _, literal := range regexp.MustCompile("`[^`]*`|\"(?:[^\"\\\\\\n]|\\\\.)*\"").FindAllString(string(data), -1) {
+		found := clock.FindAllString(literal, -1)
+		for _, f := range found {
+			if strings.ToLower(f) != "clock_timestamp(" {
+				t.Errorf("the start lease names %q, and reads the database's clock by clock_timestamp() alone", f)
+			}
+		}
+		if len(found) > 0 {
+			read++
+			if !strings.Contains(literal, "gateway.start_lease") {
+				t.Errorf("a statement that reads the database's clock is not the start lease's: %s", literal)
+			}
+		}
+	}
+	if read != 4 {
+		t.Errorf("%d of the start lease's statements read the database's clock; take, holder, renew and fence do", read)
 	}
 }
 
@@ -545,13 +570,18 @@ func TestTheSchemaFilesHoldToTheirRecordedDigests(t *testing.T) {
 		}
 		return data
 	}
-	tree := func() map[string][]byte {
-		return map[string][]byte{
-			"SHA256SUMS":                          read("SHA256SUMS"),
-			"grants.sql":                          read("grants.sql"),
-			"migrations/0001_contract_spaces.sql": read("migrations/0001_contract_spaces.sql"),
-		}
+	shipped, err := filepath.Glob(filepath.Join("store_pg", "migrations", "*.sql"))
+	if err != nil || len(shipped) == 0 {
+		t.Fatalf("the migrations: %v", err)
 	}
+	tree := func() map[string][]byte {
+		files := map[string][]byte{"SHA256SUMS": read("SHA256SUMS"), "grants.sql": read("grants.sql")}
+		for _, path := range shipped {
+			files["migrations/"+filepath.Base(path)] = read(filepath.Join("migrations", filepath.Base(path)))
+		}
+		return files
+	}
+	next := len(shipped) + 1
 	if _, err := readPgMigrationSet(pgMapFS(tree())); err != nil {
 		t.Fatalf("the schema as committed: %v", err)
 	}
@@ -561,13 +591,13 @@ func TestTheSchemaFilesHoldToTheirRecordedDigests(t *testing.T) {
 		t.Fatalf("a migration changed under its recorded digest: %v", err)
 	}
 	unlisted := tree()
-	unlisted["migrations/0002_more.sql"] = []byte("SELECT 1;\n")
+	unlisted[fmt.Sprintf("migrations/%04d_more.sql", next)] = []byte("SELECT 1;\n")
 	if _, err := readPgMigrationSet(pgMapFS(unlisted)); err == nil || !strings.Contains(err.Error(), "SHA256SUMS does not list") {
 		t.Fatalf("a migration the record does not list: %v", err)
 	}
 	gap := tree()
-	gap["migrations/0003_more.sql"] = []byte("SELECT 1;\n")
-	if _, err := readPgMigrationSet(pgMapFS(gap)); err == nil || !strings.Contains(err.Error(), "is not numbered 0002") {
+	gap[fmt.Sprintf("migrations/%04d_more.sql", next+1)] = []byte("SELECT 1;\n")
+	if _, err := readPgMigrationSet(pgMapFS(gap)); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("is not numbered %04d", next)) {
 		t.Fatalf("a gap in the migrations' numbers: %v", err)
 	}
 	grants := tree()

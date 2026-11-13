@@ -85,7 +85,11 @@ func TestAPostgresMigrationRunTwiceChangesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(applied, []int{1}) {
+	var every []int
+	for _, m := range pgShippedMigrations().versions {
+		every = append(every, m.version)
+	}
+	if !slices.Equal(applied, every) {
 		t.Fatalf("the first run applied %v", applied)
 	}
 	first := db.fingerprint(t)
@@ -148,7 +152,8 @@ func TestAPostgresMigrationChangedOnceAppliedIsRefused(t *testing.T) {
 	t.Run("a schema newer than the binary", func(t *testing.T) {
 		db := newPgTestDB(t)
 		db.migrate(t)
-		db.asOwner(t, "INSERT INTO gateway.schema_migrations VALUES (2, '0002_later.sql', 'sha256:"+strings.Repeat("0", 64)+"')")
+		next := len(shipped.versions) + 1
+		db.asOwner(t, fmt.Sprintf("INSERT INTO gateway.schema_migrations VALUES (%d, '%04d_later.sql', 'sha256:%s')", next, next, strings.Repeat("0", 64)))
 		if _, err := migratePostgres(db.migrator, shipped, db.roles, time.Minute); err == nil || !strings.Contains(err.Error(), "older than its schema") {
 			t.Fatalf("a migration onto a newer schema: %v", err)
 		}
@@ -1093,9 +1098,10 @@ func TestAPostgresMigrationOfRowsFailsRatherThanChangingNone(t *testing.T) {
 		}
 	}
 	shipped := pgShippedMigrations()
+	next := len(shipped.versions) + 1
 	with := func(sql string) pgMigrationSet {
 		set := shipped
-		set.versions = append(slices.Clone(shipped.versions), pgMigration{version: 2, name: "0002_rows.sql", sql: []byte(sql)})
+		set.versions = append(slices.Clone(shipped.versions), pgMigration{version: next, name: fmt.Sprintf("%04d_rows.sql", next), sql: []byte(sql)})
 		return set
 	}
 	before := db.fingerprint(t)
@@ -1108,7 +1114,7 @@ func TestAPostgresMigrationOfRowsFailsRatherThanChangingNone(t *testing.T) {
 	applied, err := migratePostgres(db.migrator, with(`ALTER TABLE gateway.documents NO FORCE ROW LEVEL SECURITY;
 UPDATE gateway.documents SET data = 'after';
 ALTER TABLE gateway.documents FORCE ROW LEVEL SECURITY;`), db.roles, time.Minute)
-	if err != nil || !slices.Equal(applied, []int{2}) {
+	if err != nil || !slices.Equal(applied, []int{next}) {
 		t.Fatalf("a migration of rows that lifts the forcing: %v %v", applied, err)
 	}
 	for _, view := range []*pgKind{kind, a} {

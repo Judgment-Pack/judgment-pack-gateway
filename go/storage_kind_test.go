@@ -481,20 +481,15 @@ func TestThePostgreSQLKindServesAndExportsWithTheConnectionStringInNoOutput(t *t
 		t.Fatal(err)
 	}
 	var said bytes.Buffer
-	kind, err := openStorageKind(cfg.storage)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(kind.close)
 	t.Setenv(envSourceHelper, "1")
-	service, err := buildServiceOn(kind, testSeed, cfg.authority, engineServeOptions(cfg, map[string]sourceSpec{"screening": {argv: []string{os.Args[0]}, env: helperEnv}}, nil))
+	// serve --config's start on the kind: opened, the start lease taken, the
+	// service built and the registry walked
+	started, err := startEngineOnKind(cfg, testSeed, map[string]sourceSpec{"screening": {argv: []string{os.Args[0]}, env: helperEnv}}, nil, &said)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("start: %v", err)
 	}
-	if _, err := service.kindRegistryWalk(); err != nil {
-		t.Fatal(err)
-	}
-	fmt.Fprintln(&said, "start:", storageStartLine(cfg.storage))
+	t.Cleanup(func() { started.stop(&said) })
+	service := started.service
 	server := httptest.NewServer(service.handler())
 	t.Cleanup(server.Close)
 	for _, call := range []struct{ path, body string }{
