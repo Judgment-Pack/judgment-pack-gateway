@@ -110,13 +110,15 @@ receipts it left out.
   done here.
 - Bad, because nothing binds a session to one scope identifier: a session may hold receipts of
   several, and of scoped and unscoped sources alike, and its seal names none.
-- Bad, because a verifier written before the member answers `ok` for a receipt whose `scope` is
-  out of form, and reports no scope at all; a reader who relies on the member needs a verifier
-  of this version.
-- Bad, because a gateway whose configuration fixes some source to a scope answers an
-  unscoped source's request that names one with the scope refusal, and a gateway fixing none
-  answers it as an unknown member, so the answer tells a caller whether the gateway fixes any
-  scope, though never which.
+- Bad, because a verifier written before the member does not check its form: it answers `ok`
+  for a signed receipt whose `scope` is out of form, and a reader who relies on the form needs a
+  verifier of this version.
+- Bad, because the answers tell an admitted caller which sources are scoped, though never the
+  identifier: a request that leaves `scope` out is served by an unscoped source and refused by a
+  scoped one, and a request that names one is answered as an unknown member by a gateway fixing
+  no scope. The refusal promises nothing about timing beyond this: the comparison takes a time
+  that does not depend on where two identifiers of one length first differ, and identifiers of
+  different lengths differ at once.
 - Bad, because a scoped platform allows no write and no MCP server, until `/act` and the MCP
   server carry a scope.
 - Revisit when a caller's token is to be held to a scope, when a session or a seal is to name

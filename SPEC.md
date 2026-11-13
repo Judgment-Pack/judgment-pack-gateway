@@ -532,10 +532,13 @@ member is unrelated to a delegation's scope (§11.5) and to an action key's firs
 
 **A verifier written before the member** tolerates it, as it tolerates any signed
 member it does not know: on a receipt carrying a scope identifier it reaches the
-verdict it reached before, reports no scope, and holds the member to no form, so it
-answers `ok` for a receipt, signed under the key it trusts, whose `scope` a verifier
-of this version reports `malformed`. A scope identifier added to a receipt, removed
-from it or changed after signing is `signature-mismatch` under either.
+verdict it reached before and holds the member to no form, so it answers `ok` for a
+receipt, signed under the key it trusts, whose `scope` a verifier of this version
+reports `malformed`. A scope identifier added to a receipt, removed from it or changed
+after signing is `signature-mismatch` under either. Neither reports the member in its
+findings. In a version 2 receipt `scope` is not defined: a verifier holds it to no form
+and does not interpret it, and the signature covers it as it covers every member
+(§1.2); this gateway never mints it there.
 
 **What the signature covers** — `"judgment-pack-gateway/receipt/3:"` followed by
 `canon` of the receipt object with **the receipt's own top-level `signature`

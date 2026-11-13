@@ -322,9 +322,9 @@ TypeScript) answers `ok` for every one of them but the tampered member, and read
 naming the subject: that is the compatibility §11.7 states, and these vectors hold the readers
 that know the members to more.
 
-Seventeen hold the `scope` member (§1.2a; `docs/adr/0026-a-scope-identifier-fixed-on-a-platform.md`;
+Seventeen are of the `scope` member (§1.2a; `docs/adr/0026-a-scope-identifier-fixed-on-a-platform.md`;
 issue #420), each named `v3-scope-*` and signed with its members by a signer that shares no code
-with the gateway: a sealed session of two acquisitions whose scope identifiers differ, one of them
+with the gateway; sixteen hold the member, and one held it when signed and has had it removed: a sealed session of two acquisitions whose scope identifiers differ, one of them
 non-ASCII and holding a space, both `ok`, since no scope identifier is compared with another; one
 of exactly 128 bytes, made of four-byte and two-byte characters, `ok`; an action carrying the
 member, `ok`, since the format admits it on either kind; `malformed` for 129 bytes that are 128

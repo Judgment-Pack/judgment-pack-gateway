@@ -677,9 +677,9 @@ It does not establish:
   registry.
 
 A verifier written before the member holds it to no form, and answers `ok` for a signed receipt
-whose `scope` a verifier of this version reports `malformed`. Whether a gateway fixes any source
-to a scope identifier can be learned from how it answers a request that names one for a source
-that has none; which identifier, never.
+whose `scope` a verifier of this version reports `malformed`. Which sources are fixed to a scope
+identifier can be learned by an admitted caller from how the gateway answers a request that
+leaves `scope` out; which identifier, never.
 
 **A checkpoint witness is reached from other hosts by other parties** ([ADR-0013](docs/adr/0013-checkpoint-witness.md);
 [`SPEC.md`](SPEC.md) §6, "Witness endpoints"). It is the first surface of this reference meant

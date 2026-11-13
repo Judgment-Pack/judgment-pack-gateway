@@ -12,6 +12,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -802,12 +803,14 @@ func requestScope(members map[string]json.RawMessage) (requestedScope, error) {
 const scopeRefusal = "scope: the request's scope does not match the source's"
 
 // scopeHolds is whether a request's scope is its source's: both none, or
-// both the same bytes. Nothing is folded, trimmed or normalized.
+// both the same bytes. Nothing is folded, trimmed or normalized. The bytes
+// are compared in a time that does not depend on where they first differ;
+// two of different lengths differ at once.
 func scopeHolds(spec sourceSpec, asked requestedScope) bool {
 	if spec.scope == "" {
 		return !asked.named
 	}
-	return asked.named && asked.value == spec.scope
+	return asked.named && subtle.ConstantTimeCompare([]byte(asked.value), []byte(spec.scope)) == 1
 }
 
 // memberText reads a string-valued member of a request envelope, or "" when

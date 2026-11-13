@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -29,6 +30,15 @@ func jsonText(t *testing.T, s string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// sessionHeld is whether the gateway holds the session: whether a request
+// was admitted to it.
+func sessionHeld(g *gatewayService, id string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, held := g.sessions[id]
+	return held
 }
 
 // scopedService is a gateway with a source fixed to testScope and one fixed
@@ -124,6 +134,11 @@ func TestARequestForAnotherScopeIsRefusedBeforeTheSourceStarts(t *testing.T) {
 		t.Fatal("the decomposed spelling is the precomposed one")
 	}
 	started := service.started.Load()
+	// Admission is counted as it is reached: a session admission takes up
+	// and a request then refuses is released again, so the session map
+	// alone would not show it.
+	var admissions atomic.Int64
+	service.beforeReadAdmit = func() { admissions.Add(1) }
 	for _, tc := range []struct{ name, source, scope string }{
 		{"no scope, for a scoped source", "scoped", ""},
 		{"another scope", "scoped", `"équipe-b"`},
@@ -147,12 +162,18 @@ func TestARequestForAnotherScopeIsRefusedBeforeTheSourceStarts(t *testing.T) {
 			if bytes.Contains(raw, []byte("quipe")) {
 				t.Fatalf("the refusal quotes a scope identifier: %s", raw)
 			}
+			if sessionHeld(service, "scope-2") || admissions.Load() != 0 {
+				t.Fatal("a refused request was admitted to the session")
+			}
 		})
 	}
 	for _, scope := range []string{`null`, `7`, `true`, `["équipe-a"]`, `{"scope":"équipe-a"}`} {
 		code, raw := postRawWith(t, server, "/acquire", `{"session":"scope-2","source":"scoped","scope":`+scope+`,"arguments":{"q":"a"}}`, "")
 		if code != http.StatusBadRequest || !bytes.Contains(raw, []byte("scope must be a string")) || bytes.Contains(raw, []byte("quipe")) {
 			t.Fatalf("scope %s: %d %s", scope, code, raw)
+		}
+		if sessionHeld(service, "scope-2") || admissions.Load() != 0 {
+			t.Fatal("a refused request was admitted to the session")
 		}
 	}
 	if service.started.Load() != started {
@@ -186,6 +207,45 @@ func TestAGatewayFixingNoScopeRefusesTheMember(t *testing.T) {
 	}
 	if service.started.Load() != started {
 		t.Fatal("a source started")
+	}
+}
+
+// A delegated request to a scoped source that names none or another is
+// refused before the delegation counts the call or the session is
+// admitted; the same request naming the scope is counted once.
+func TestADelegatedRequestForAnotherScopeIsNotCounted(t *testing.T) {
+	h := newDelegationHarness(t, false)
+	live := h.g.sources["tickets/live"]
+	live.scope = testScope
+	h.g.sources["tickets/live"] = live
+	// The handler reads which sources are scoped when it is made.
+	h.server.Close()
+	h.server = httptest.NewServer(h.g.handler())
+	t.Cleanup(h.server.Close)
+	root := statement(t, nil)
+	child := childOf(t, root, map[string]any{"scope": map[string]any{"sources": []any{
+		scopeOf("tickets/live", []any{"query"}, []any{"read-external"}, map[string]any{"calls": 5}),
+	}}})
+	cred := h.credential(t, root, child)
+	reads, counted, started := h.host.readCount(), h.host.counted(), h.g.started.Load()
+	body := func(scope string) string {
+		return strings.Replace(h.acquireBody("s-scoped", "query"), `"source":"tickets/live",`, `"source":"tickets/live",`+scope, 1)
+	}
+	for _, scope := range []string{``, `"scope":"équipe-b",`, `"scope":"",`} {
+		status, out := h.present(t, "/acquire", body(scope), cred)
+		if status != http.StatusBadRequest || out["error"] != scopeRefusal {
+			t.Fatalf("scope %q: %d %v", scope, status, out)
+		}
+		if h.host.counted() != counted || h.host.readCount() != reads || h.g.started.Load() != started || sessionHeld(h.g, "s-scoped") {
+			t.Fatalf("scope %q: a refused request was counted (%d), read (%d), run or admitted", scope, h.host.counted()-counted, h.host.readCount()-reads)
+		}
+	}
+	status, out := h.present(t, "/acquire", body(`"scope":`+jsonText(t, testScope)+`,`), cred)
+	if status != http.StatusOK || out["receipt"].(map[string]any)["scope"] != testScope {
+		t.Fatalf("the scope as fixed: %d %v", status, out)
+	}
+	if h.host.counted() != counted+1 {
+		t.Fatalf("the acquisition is counted once: %d", h.host.counted()-counted)
 	}
 }
 
@@ -254,6 +314,12 @@ func TestThePlatformScopeConfiguration(t *testing.T) {
 	if len(cfg.platforms) != 1 || cfg.platforms[0].scope != testScope || len(sources) != 2 ||
 		sources["warehouse/history"].scope != testScope || sources["warehouse/live"].scope != testScope {
 		t.Fatalf("the scope fixed on both sources: %+v %+v", cfg.platforms, sources)
+	}
+	// An http live operation's source is fixed to it too (ADR-0024).
+	records := catalogWith(t, map[string]string{"records": recordsBinding})
+	text := strings.Replace(engineJSON(t, records, ``, platformJSONFor(t, "records", "records@"+digestOf(recordsBinding), "engine-docs", `,"scope":`+jsonText(t, testScope), "live")), `"engineVersion":"1"`, `"engineVersion":"20"`, 1)
+	if _, sources, err := load(t, text); err != nil || len(sources) != 1 || sources["records/live"].shape != "http" || sources["records/live"].scope != testScope {
+		t.Fatalf("an http live source: %v %+v", err, sources)
 	}
 	// A version-20 file without the member loads, its sources fixed to none.
 	if _, sources, err := load(t, at("20", ``, ``)); err != nil || sources["warehouse/history"].scope != "" || sources["warehouse/live"].scope != "" {
