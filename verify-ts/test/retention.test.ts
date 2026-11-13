@@ -120,6 +120,10 @@ test("the removal file is read a line at a time: a line over the bound loads not
   for (const [name, text, status] of [
     ["at the bound", padded(removalLineBound) + "\n", "ok"],
     ["one byte over", padded(removalLineBound + 1) + "\n", "artifact-missing"],
+    // spaces after the record: its first removalLineBound bytes are a
+    // record, so only the bound refuses the line
+    ["at the bound, spaces after", record + " ".repeat(removalLineBound - record.length) + "\n", "ok"],
+    ["one byte over, spaces after", record + " ".repeat(removalLineBound + 1 - record.length) + "\n", "artifact-missing"],
     ["over, then the record", "x".repeat(3 * removalLineBound + 7) + "\n" + record + "\n", "ok"],
     ["over across a read", "x".repeat(readChunk + 5) + "\n" + record + "\n", "ok"],
     ["blank lines and the record twice", "\n\n" + record + "\n\n" + record + "\n" + padded(record.length + 3) + "\n", "ok"],
@@ -150,7 +154,7 @@ test("a removal record's removedAt is an instant: of its form and of the calenda
     fs.writeFileSync(file, recordFor(r, at) + "\n");
     assert.equal(verdict(store).findings[0]!.status, "ok", at);
   }
-  for (const at of ["2026-13-45T99:99:99Z", "2026-13-01T00:00:00Z", "2028-02-30T00:00:00Z", "2026-02-29T00:00:00Z", "2026-11-00T00:00:00Z", "2026-11-13T24:00:00Z", "2026-11-13T00:60:00Z", "2026-11-13T23:59:60Z", "2026-11-13 00:00:00Z"]) {
+  for (const at of ["2026-13-45T99:99:99Z", "2026-13-01T00:00:00Z", "2028-02-30T00:00:00Z", "2026-02-29T00:00:00Z", "2026-11-00T00:00:00Z", "2026-11-13T24:00:00Z", "2026-11-13T00:60:00Z", "2026-11-13T23:59:60Z", "2026-11-13 00:00:00Z", "2026-11-13T1:00:00Z", "2026-11-13T00:00:00.5Z"]) {
     fs.writeFileSync(file, recordFor(r, at) + "\n");
     assert.equal(verdict(store).findings[0]!.status, "artifact-missing", at);
   }

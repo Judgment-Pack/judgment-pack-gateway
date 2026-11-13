@@ -90,14 +90,15 @@ func removalSigningInput(obj *vObject) []byte {
 const removalTimeLayout = "2006-01-02T15:04:05Z"
 
 // isRemovalTime is a removedAt of its form that names an instant (SPEC.md
-// §1.3a): a date the calendar holds, and an hour, minute and second of a
-// day, so that it reads back as written.
+// §1.3a): two digits to each field, which time.Parse does not ask of an
+// hour, and no fraction, which it takes unasked; then a date the calendar
+// holds, and an hour, minute and second of a day, which it checks.
 func isRemovalTime(s string) bool {
 	if !witnessTimeForm.MatchString(s) {
 		return false
 	}
-	t, err := time.Parse(removalTimeLayout, s)
-	return err == nil && t.Format(removalTimeLayout) == s
+	_, err := time.Parse(removalTimeLayout, s)
+	return err == nil
 }
 
 // removalOf holds one line to a removal record's form and loads it under
@@ -243,7 +244,7 @@ func openRemovals(storeRoot string) (*os.File, error) {
 // openRemovalEntry opens the removal file in the held store directory with
 // open, which follows no link and waits on no writer: the entry at its
 // name judged first -- a regular file, or errRemovalsNotRegular -- and the
-// file opened the entry judged, before the open and after it.
+// file opened the very entry judged.
 func openRemovalEntry(root *os.Root, open func(*os.Root, string) (*os.File, error)) (*os.File, error) {
 	entry, err := root.Lstat(removalsFile)
 	if err != nil {
@@ -264,8 +265,7 @@ func openRemovalEntry(root *os.Root, open func(*os.Root, string) (*os.File, erro
 		file.Close()
 		return nil, err
 	}
-	after, err := root.Lstat(removalsFile)
-	if err != nil || !info.Mode().IsRegular() || !os.SameFile(entry, info) || !os.SameFile(after, info) {
+	if !os.SameFile(entry, info) {
 		file.Close()
 		return nil, errors.New("is not the file its name held a moment ago")
 	}

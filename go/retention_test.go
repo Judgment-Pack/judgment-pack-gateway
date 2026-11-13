@@ -197,9 +197,13 @@ func TestTheRemovalFileIsReadALineAtATime(t *testing.T) {
 		loaded int
 		torn   bool
 	}{
-		"the record":                       {record + "\n", 1, false},
-		"at the bound":                     {padded(removalLineBound) + "\n", 1, false},
-		"one byte over":                    {padded(removalLineBound+1) + "\n", 0, false},
+		"the record":    {record + "\n", 1, false},
+		"at the bound":  {padded(removalLineBound) + "\n", 1, false},
+		"one byte over": {padded(removalLineBound+1) + "\n", 0, false},
+		// spaces after the record: its first removalLineBound bytes are a
+		// record, so only the bound refuses the line
+		"at the bound, spaces after":       {record + strings.Repeat(" ", removalLineBound-len(record)) + "\n", 1, false},
+		"one byte over, spaces after":      {record + strings.Repeat(" ", removalLineBound+1-len(record)) + "\n", 0, false},
 		"over, then the record":            {strings.Repeat("x", 3*removalLineBound+7) + "\n" + record + "\n", 1, false},
 		"over and torn":                    {record + "\n" + strings.Repeat("x", 2*removalLineBound+2), 1, true},
 		"blank lines and the record twice": {"\n\n" + record + "\n\n" + record + "\n" + padded(len(record)+3) + "\n", 1, false},
@@ -452,6 +456,8 @@ func TestARemovalRecordLoadsOnlyOfItsForm(t *testing.T) {
 		"an hour 24":                   func(m map[string]any) { m["removedAt"] = "2026-11-13T24:00:00Z" },
 		"a minute 60":                  func(m map[string]any) { m["removedAt"] = "2026-11-13T00:60:00Z" },
 		"a second 60":                  func(m map[string]any) { m["removedAt"] = "2026-11-13T23:59:60Z" },
+		"an hour of one digit":         func(m map[string]any) { m["removedAt"] = "2026-11-13T1:00:00Z" },
+		"a fraction of a second":       func(m map[string]any) { m["removedAt"] = "2026-11-13T00:00:00.5Z" },
 		"an empty label":               func(m map[string]any) { m["removedBy"] = "" },
 		"a label holding a line feed":  func(m map[string]any) { m["removedBy"] = "a\nb" },
 		"a member left out":            func(m map[string]any) { delete(m, "removedAt") },
