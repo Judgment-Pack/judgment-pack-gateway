@@ -900,8 +900,8 @@ where it is between them. A caller paging through a source names each page in th
 the page it was answered:
 
 ```json
-{"session": "orders-2026-11-13", "source": "orders/live",
- "arguments": {"path": "/orders", "method": "GET", "query": {"since": "2026-11-12T00:00:00Z", "limit": "100"}}}
+{"session": "records-2026-11-13", "source": "records/live",
+ "arguments": {"path": "/search", "method": "GET", "query": {"since": "2026-11-12T00:00:00Z", "limit": "100"}}}
 ```
 
 The answer's `result.body` is the endpoint's page, `{"items": [...], "next": "c-2"}` say; the

@@ -1817,15 +1817,25 @@ An `/acquire` that is refused, or whose source fails, mints nothing, retains not
 holds no session open: no receipt, no artifact, no registry line, and a session the request
 would have begun is not begun, so the same session can be named again. A refusal of a call
 under a delegation answers as §11.5 states. Every other such answer is
-`Content-Type: application/json` with a body of exactly one member, `error`, a string:
+`Content-Type: application/json` with a body of exactly one member, `error`, a string, and is
+one of these five, with no other status:
 
-- **`400`** for a request refused before the source runs (above), and for a source that
-  failed: its text begins `source failed: ` and goes on with the first 200 bytes of what the
-  source wrote on stderr, each byte outside printable ASCII replaced by `?`; or it is another
-  of the gateway's sentences for a source that did not finish within its timeout, ran past its
-  output bound, could not be started or answered with no result the gateway takes. This
-  includes a source whose endpoint answered with any status this section does not name below
-  — a `500`, a `502`, a `504` — and one whose endpoint could not be reached.
+- **`404`** with `{"error":"not found"}` for a method other than `POST`, before anything else
+  of the request is read.
+- **`401`** with `WWW-Authenticate: Bearer`, from a gateway with an identity configured, for a
+  request whose `Authorization` carries no bearer token it admits (§1.2, `caller`): the text names one
+  reason, never the token. A gateway with no identity configured answers no `401` here.
+- **`400`** for a request refused before the source runs (above), a body past the request
+  bound among them; for a source that failed; and for any other failure of the acquisition. A
+  failed source's text is `source failed: ` followed by what the source wrote on stderr, of
+  which the gateway keeps the first 4096 bytes: the whitespace around it dropped, each byte
+  outside printable ASCII (`0x20` to `0x7E`) replaced by `?`, and, when what remains is longer
+  than 200 bytes, its first 200 bytes followed by `…(N bytes)`, *N* the decimal length in bytes
+  of what remains. Or it is another of the gateway's sentences, for a source that did not
+  finish within its timeout, ran past its output bound, could not be started or answered with
+  no result the gateway takes. This includes a source whose endpoint answered with any status
+  this section does not name below — a `500`, a `502`, a `504` — and one whose endpoint could
+  not be reached.
 - **`429`** or **`503`**, the class the source reported, for a source of shape `http` whose
   adapter reported a throttled answer ("Adapter sources", below): its endpoint, or its token
   step's token endpoint (`docs/design/engine-config.md`), answered `429` or `503`. The body is
@@ -1853,7 +1863,10 @@ receipted. A throttled token request leaves no token held, so the next acquisiti
 one again; a throttled request to the source leaves the sealed token held, since the source did
 not refuse it. The gateway does not retry, wait or queue: the caller decides whether and when to
 ask again, and a request it sends again is a new acquisition, receipted as its own if it
-succeeds. The MCP front (`docs/design/mcp-server.md`) lists no tool of a platform whose `live`
+succeeds. A call under a delegation is admitted, and counted, immediately before its source
+starts (§11.5), and the platform's grant records its use then (§10, rule 3): a throttled call,
+as any call whose source fails, has used one of the delegation's counted calls and one use of
+the grant, and each time the caller asks again is counted again. The MCP front (`docs/design/mcp-server.md`) lists no tool of a platform whose `live`
 is of shape `http`, so no forward of it reaches such a source; its error result for a refused
 forward carries the signer's status, as before, and no `Retry-After`.
 
@@ -2056,7 +2069,9 @@ of a source declared `http` whose endpoint, or whose token step's token endpoint
 — one member, `throttled`, an object of exactly `status`, `429` or `503`, the class the
 endpoint answered, and `retryAfter`, the wait it asked for in whole seconds, an integer from
 0 to 3600, or `null` for none; each member once, the whole one JSON value in the canonical
-domain (§1.1) and nothing after it. The gateway reads stdout beside status 7 from a source
+domain (§1.1), each integer spelled in digits alone with no sign (`-0` is not `0` here), and
+nothing before or after it, whitespace included; whitespace between its tokens is its
+spelling. The gateway reads stdout beside status 7 from a source
 declared `http` and from no other, and answers the acquisition with that class ("When an
 acquisition does not happen", above). Status 7 from a source of another shape, or from a bare
 command, status 7 beside anything else on stdout — a member more or missing, another class, a

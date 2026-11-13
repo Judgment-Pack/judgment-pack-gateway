@@ -63,9 +63,10 @@ and it can be added for a shape when one does.
    `null`. 3600 is the bound because a caller that waits longer than an hour on one answer has
    stopped being a retry, and because the caller the ask names gives up past it.
 3. **The gateway.** It reads stdout beside status 7 from a source declared `http` alone, held
-   strictly: one member, two members, the class 429 or 503, the wait 0 to 3600 or null. Anything
-   else, status 7 from another shape, and the report beside another status are a failed source,
-   `400`, as before. It answers the class, the body `{"error": "source failed: the source's
+   strictly: one member, two members, the class 429 or 503, the wait 0 to 3600 or null, each
+   integer spelled with no sign (so `-0` is refused), and nothing before or after the value,
+   whitespace included. Anything else, status 7 from another shape, and the report beside
+   another status are a failed source, `400`, as before. It answers the class, the body `{"error": "source failed: the source's
    endpoint answered 429 Too Many Requests; nothing was retained or minted"}` (or 503 Service
    Unavailable), and `Retry-After` as delta-seconds when a wait was reported. The text begins as
    every failed source's does, so `gateway adapter-conform` classes the answer `source-failed`
@@ -97,6 +98,12 @@ and it can be added for a shape when one does.
    caller keeps where it is. A page is its own receipt; a session sealed after the last page
    covers the count of every page in it. The recurring observations of the one built-in provider
    that has them (`docs/design/recurring-source-observations.md`) are unchanged.
+10. **Under a delegation.** A call under a delegation is admitted and counted immediately before
+    its source starts (SPEC.md §11.5), and the platform's grant records its use then (§10,
+    rule 3). A throttled call is no exception: like any call whose source fails, it has used one
+    of the delegation's counted calls and one use of the grant, and a caller that asks again is
+    counted again each time. Nothing is given back for a throttled answer, as nothing is for any
+    call whose source failed.
 
 ### Consequences
 
@@ -105,7 +112,11 @@ and it can be added for a shape when one does.
 - Good: nothing of the endpoint's answer but its class and a number crosses, and the number is
   bounded and re-encoded.
 - Bad: the class is the endpoint's; a 503 from a source and the gateway's own 503 for a closed
-  admission differ by their sentence and by `Retry-After` alone.
+  admission differ by their sentence, and by `Retry-After` only when the source reported a wait:
+  a throttled 503 with none reported carries no `Retry-After`, and differs by its sentence alone.
+- Bad: a call under a delegation is counted, and its grant's use recorded, before its source
+  starts, so a throttled call, as any failed one, has used one of the delegation's counted calls
+  and one use of the grant, and each retry uses another (determination 10).
 - Bad: a 429 or 503 from an adapter of another shape, or from a bare command, is still a `400`.
 - Neutral: the wait is the adapter's reading of the endpoint's header at the moment it read the
   answer; acquisitions that shared one throttled token request are told the same number.

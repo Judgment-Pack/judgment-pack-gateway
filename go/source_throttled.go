@@ -39,9 +39,14 @@ func (e *sourceThrottled) Error() string {
 
 // throttleReport reads an http adapter's stdout beside sourceExitThrottled:
 // exactly {"throttled": {"status": 429 | 503, "retryAfter": 0 to 3600 |
-// null}}, each member once. Anything else is not a report, and false.
+// null}}, each member once, its integers spelled in digits alone (no sign,
+// so no -0), and nothing before or after the value, whitespace included.
+// Anything else is not a report, and false.
 func throttleReport(stdout []byte) (*sourceThrottled, bool) {
-	v, err := parseJSON(stdout)
+	if len(stdout) == 0 || isJSONSpace(stdout[0]) || isJSONSpace(stdout[len(stdout)-1]) {
+		return nil, false
+	}
+	v, err := (&parser{data: stdout, unsigned: true}).document()
 	if err != nil {
 		return nil, false
 	}
@@ -72,4 +77,10 @@ func throttleReport(stdout []byte) (*sourceThrottled, bool) {
 		return nil, false
 	}
 	return out, true
+}
+
+// isJSONSpace is whether c is one of the four bytes JSON reads as whitespace
+// between tokens (RFC 8259 §2).
+func isJSONSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
