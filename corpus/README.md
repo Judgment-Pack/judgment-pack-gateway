@@ -227,7 +227,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 128 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 129 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -337,7 +337,7 @@ A verifier written before the member (v0.26.0, in Go and in TypeScript) answers 
 one of them but the three tampered receipts, which it answers `signature-mismatch`: that is the
 compatibility §1.2a states, and these vectors hold the readers that know the member to more.
 
-Thirty-one are of payload retention (§1.3a; `docs/adr/0028-payloads-a-gateway-does-not-keep.md`;
+Thirty-two are of payload retention (§1.3a; `docs/adr/0028-payloads-a-gateway-does-not-keep.md`;
 issue #422), each named `v3-artifact-*` and signed, receipts, seals and removal records alike,
 by a signer that shares no code with the gateway, its expected answers written from §1.3a; the
 signer reproduces the frozen seal of `v3-scope-valid` byte for byte. Each states its
@@ -355,7 +355,7 @@ supplied, `artifact-mismatch`; other bytes put back after the removal, `artifact
 bytes still there, `ok` and no observation; and `artifact-missing` for a kept receipt with no
 record whose bytes are supplied, for a record under a key no walk reaches, for one signed by
 another key under the test key's id, changed after signing, carrying a tenth member, torn, naming
-another receipt, naming another index, and naming another digest. Two hold a rotation: a
+another receipt, naming another index, naming another session, and naming another digest. Two hold a rotation: a
 record signed by the key rotated to names a receipt made under the key rotated from, `ok` with
 the observation, and a record signed by the key rotated from names no receipt made under the
 key rotated to, `artifact-missing`. One holds the record between

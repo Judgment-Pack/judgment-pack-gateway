@@ -2258,8 +2258,9 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 		"v3-artifact-removal-record-extra-member", "v3-artifact-removal-record-forged",
 		"v3-artifact-removal-record-index-differs", "v3-artifact-removal-record-key-after-the-receipt",
 		"v3-artifact-removal-record-key-before-the-receipt", "v3-artifact-removal-record-names-another-receipt",
-		"v3-artifact-removal-record-other-key", "v3-artifact-removal-record-torn",
-		"v3-artifact-removal-records-beside-lines-that-load-nothing", "v3-artifact-removed-bytes-present",
+		"v3-artifact-removal-record-other-key", "v3-artifact-removal-record-session-differs",
+		"v3-artifact-removal-record-torn", "v3-artifact-removal-records-beside-lines-that-load-nothing",
+		"v3-artifact-removed-bytes-present",
 		"v3-artifact-removed-other-bytes-put-back", "v3-artifact-removed-shared-digest",
 		"v3-artifact-removed-supplied-mismatch", "v3-artifact-removed-supplied", "v3-artifact-removed",
 	}
@@ -2312,8 +2313,8 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 			if err != nil {
 				t.Fatalf("no run: %v", err)
 			}
-			if count != 179 {
-				t.Fatalf("%d store vectors read, want 179", count)
+			if count != 180 {
+				t.Fatalf("%d store vectors read, want 180", count)
 			}
 			disagreeing := map[string]bool{}
 			for _, failure := range failures {
@@ -2491,7 +2492,7 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 	// observes in.
 	if got, want := []int{len(stores), len(okTrue), len(withFindings), len(withWitnesses), len(withRotations), len(stating),
 		len(witnesses), len(refusals), len(readings), len(okReadings), len(withHead)},
-		[]int{179, 41, 179, 3, 11, 8, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
+		[]int{180, 41, 180, 3, 11, 8, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
 		t.Fatalf("the corpus's vectors, by what their answers give: %v, want %v", got, want)
 	}
 	for name := range stating {
