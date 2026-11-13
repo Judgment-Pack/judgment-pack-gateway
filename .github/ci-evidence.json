@@ -194,6 +194,15 @@
           ],
           "profile": "go-windows",
           "checks": []
+        },
+        "postgresql": {
+          "name": "postgresql",
+          "job_id": "postgresql",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "profile": "go-linux",
+          "checks": []
         }
       }
     }

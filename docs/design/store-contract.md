@@ -206,8 +206,11 @@ export and a restore).
 ## What a kind must pass
 
 `go/store_conformance_test.go` runs every case on every kind in `storeKindsUnderTest`: the
-filesystem kind and the in-memory kind (`go/store_memory_test.go`). A kind is added by adding it
-there and passing:
+filesystem kind, the in-memory kind (`go/store_memory_test.go`), and the PostgreSQL kind as no
+scope sees it and as one scope identifier does (`go/store_pg_harness_test.go`; the kind is
+[docs/postgresql-store.md](../postgresql-store.md) and
+[ADR-0031](../adr/0031-a-second-storage-kind-on-postgresql.md), and its cases skip without a
+server). A kind is added by adding it there and passing:
 
 - a blob is named by its digest, kept once, and a name it never held is absent;
 - an entry is created once, a second create at its index is refused and leaves it as it was, a
@@ -237,6 +240,12 @@ not be a directory directly under the receipts root is refused by every operatio
 is made; a pinned snapshot is read only at the snapshot's mode and an owner the MCP server accepts
 (`go/store_fs_unix_test.go`); and the custody's storage intent has its directory synced after its
 rename, through the `Files` directory-sync seam, while no other custody document does.
+
+The PostgreSQL kind's own conditions -- its roles, its migrations and their digests, row security
+by scope, append-only tables by privilege, the settings each transaction makes, the order of the
+registry's appends, and its client's login and connection string -- have tests of their own
+(`go/store_pg_test.go`, `go/pgwire_test.go`), and so does the byte identity of its exports with the
+filesystem kind's, for one scenario run on both and for every corpus store.
 
 The custody's documents answer to the document cases in `adapters/internal/storecontract`. The
 in-memory kind, whose compare-and-set is atomic on its own, is held to the core's concurrent case:
