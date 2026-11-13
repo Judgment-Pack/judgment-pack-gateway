@@ -774,6 +774,29 @@ func TestThePostgresKindRefusesToStartOutsideItsConditions(t *testing.T) {
 	})
 }
 
+// The privileges the start holds the run-time login to on each table are
+// every privilege the server knows of a table: MAINTAIN besides from
+// PostgreSQL 17 (#440), which a server before it refuses by name.
+func TestTheStartAsksOfMAINTAINFromPostgreSQL17(t *testing.T) {
+	for _, tc := range []struct {
+		version  string
+		maintain bool
+	}{{"160015", false}, {"169999", false}, {"170000", true}, {"170006", true}, {"180001", true}} {
+		privileges := pgTablePrivilegesOn(&pgConn{params: map[string]string{"server_version_num": tc.version}})
+		if contains(privileges, "MAINTAIN") != tc.maintain {
+			t.Fatalf("on a server at %s the privileges asked are %v", tc.version, privileges)
+		}
+		for _, p := range pgTablePrivileges {
+			if !contains(privileges, p) {
+				t.Fatalf("on a server at %s the privileges asked lack %s: %v", tc.version, p, privileges)
+			}
+		}
+	}
+	if contains(pgTablePrivileges, "MAINTAIN") {
+		t.Fatal("the privilege list a server before PostgreSQL 17 is asked of names MAINTAIN")
+	}
+}
+
 // One scenario on both kinds holds the same bytes: receipts stamped and
 // sessions sealed through the contract into a store of the filesystem kind
 // and into one of the PostgreSQL kind, of no scope and of one scope

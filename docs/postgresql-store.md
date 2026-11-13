@@ -291,12 +291,12 @@ start refuses a table it was not restored on.
 | `gateway.start_lease` (one row: the instance that serves) | SELECT, INSERT, UPDATE | every one: it carries no scope |
 | `gateway.scope_identifiers` (schema version 3: the scope identifiers recorded) | SELECT, INSERT | no scope's: every row is of no scope |
 
-Append-only by privilege: nothing but a document and the start lease's row is changed once
-written, and nothing but a document is removed; a scope identifier, once recorded, stays. The login
-holds no TRUNCATE, REFERENCES or TRIGGER, and makes, changes and drops nothing. No function is
-defined in the schema. An append to the registry takes a transaction advisory lock
-(`pg_advisory_xact_lock`, which every role may call unless the operator took it back); the
-migration takes another. Both keys are constants of the schema, so leave them to the gateway in
+Append-only by privilege: nothing but a document and the start lease's row is changed once written,
+and nothing but a document is removed; a scope identifier, once recorded, stays. The login holds no
+TRUNCATE, REFERENCES or TRIGGER (nor, from PostgreSQL 17, MAINTAIN), and makes, changes and drops
+nothing. No function is defined in the schema. An append to the registry takes a transaction
+advisory lock (`pg_advisory_xact_lock`, which every role may call unless the operator took it back);
+the migration takes another. Both keys are constants of the schema, so leave them to the gateway in
 this database.
 
 The kind's start refuses a database where any of this differs: a privilege more or less, by table
