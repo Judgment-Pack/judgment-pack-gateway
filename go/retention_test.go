@@ -123,6 +123,45 @@ func TestARemovalFileThatIsNotARegularFileIsNotRead(t *testing.T) {
 	}
 }
 
+// A store root that is not there holds no removal records: no records, and
+// no error. On Windows a name under a directory that is not there answers
+// ERROR_PATH_NOT_FOUND, which absent does not take for absence, so the
+// reader looks at the store root itself; the stand-in below gives that
+// answer here. A store root that is there, whose removal file gives that
+// answer, is still a refusal.
+func TestARemovalFileUnderNoStoreRootIsNoRecords(t *testing.T) {
+	pathNotFound := func(name string) func(string) (fs.FileInfo, error) {
+		return func(path string) (fs.FileInfo, error) {
+			if path == name {
+				return nil, &fs.PathError{Op: "lstat", Path: path, Err: syscall.Errno(3)}
+			}
+			return os.Lstat(path)
+		}
+	}
+	t.Cleanup(func() { lstat = os.Lstat })
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	for name, answer := range map[string]func(string) (fs.FileInfo, error){
+		"as this platform answers": os.Lstat,
+		"as Windows answers":       pathNotFound(filepath.Join(missing, removalsFile)),
+	} {
+		lstat = answer
+		removals, err := loadRemovals(missing, nil)
+		lstat = os.Lstat
+		if err != nil || removals != nil {
+			t.Fatalf("%s: %v %v, want no records and no error", name, removals, err)
+		}
+	}
+
+	there := t.TempDir()
+	lstat = pathNotFound(filepath.Join(there, removalsFile))
+	_, err := loadRemovals(there, nil)
+	lstat = os.Lstat
+	if err == nil {
+		t.Fatal("a store root that is there, its removal file not reached: no error")
+	}
+}
+
 // The file read is the entry judged: another file put in its place between
 // the look at the entry and the open is not read as the records, and there
 // is no verdict -- the store changed under the verifier.

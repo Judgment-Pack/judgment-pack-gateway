@@ -217,11 +217,19 @@ func readRemovals(storeRoot string, keys []reachedKey) (map[string][]removalReco
 }
 
 // openRemovals opens the store's removal file to read, following no link:
-// nil, and no error, where nothing is at its path (openRemovalEntry).
+// nil, and no error, where nothing is at its path or no store root is there
+// to hold it (openRemovalEntry).
 func openRemovals(storeRoot string) (*os.File, error) {
 	path := filepath.Join(storeRoot, removalsFile)
-	if _, err := os.Lstat(path); err != nil {
+	if _, err := lstat(path); err != nil {
 		if absent(err) {
+			return nil, nil
+		}
+		// absent confirms a name only in a directory it reached: on Windows
+		// a name under a store root that is not there answers
+		// ERROR_PATH_NOT_FOUND, so the store root is looked at in its turn,
+		// as nothingAt looks at artifacts/.
+		if _, rootErr := lstat(storeRoot); rootErr != nil && absent(rootErr) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("removal records: %w", err)
