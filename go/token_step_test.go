@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -392,6 +393,7 @@ func TestTokenStepDrivesTheHTTPAdapterEndToEnd(t *testing.T) {
 	thumb := sha256.Sum256([]byte("records-certificate"))
 	thumbprint := base64.RawURLEncoding.EncodeToString(thumb[:])
 	const federatedText = "federated-identity-token-5f1e"
+	const renewedText = "federated-identity-token-renewed-9b3d"
 	const refusalText = "refusal-description-7c2a"
 
 	var mu sync.Mutex
@@ -416,7 +418,7 @@ func TestTokenStepDrivesTheHTTPAdapterEndToEnd(t *testing.T) {
 		case "records-client":
 			ok = ok && form.Get("scope") == "records.read" && esAssertionHolds(assertion, &key.PublicKey, client, tokenURL, thumbprint)
 		case "docs-client":
-			ok = ok && !form.Has("scope") && assertion == federatedText
+			ok = ok && !form.Has("scope") && (assertion == federatedText || assertion == renewedText)
 		default:
 			ok = false
 		}
@@ -584,8 +586,9 @@ func TestTokenStepDrivesTheHTTPAdapterEndToEnd(t *testing.T) {
 	if docsSealed := held("docs/live"); docsSealed == "" || docsSealed == recordsSealed {
 		t.Fatalf("the federated platform's own sealed token: %q", docsSealed)
 	}
-	if requested, _ = counts(); requested["docs-client"] != 1 {
-		t.Fatalf("the federated platform's token requests: %d", requested["docs-client"])
+	succeeds("the first platform after the federated one", "records/live")
+	if requested, _ = counts(); requested["docs-client"] != 1 || requested["records-client"]-beforeRequests["records-client"] != 1 {
+		t.Fatalf("each platform's own token, held: %d federated token requests, %d keyed", requested["docs-client"], requested["records-client"]-beforeRequests["records-client"])
 	}
 	// The receipt has the members it has without a token step.
 	plain := succeeds("the platform with a static credential", "plain/live")
@@ -627,6 +630,20 @@ func TestTokenStepDrivesTheHTTPAdapterEndToEnd(t *testing.T) {
 	refuse = false
 	mu.Unlock()
 
+	// The federated token renewed in place: the sealed token held was
+	// sealed under the one before, so the adapter does not open it; it is
+	// dropped, another obtained with the renewed token, and the request
+	// sent once.
+	if err := os.WriteFile(federated, []byte(renewedText+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeRequests, beforeHits = counts()
+	succeeds("after the federated token was renewed", "docs/live")
+	if requested, hit = counts(); requested["docs-client"]-beforeRequests["docs-client"] != 1 || hit["/docs"]-beforeHits["/docs"] != 1 {
+		t.Fatalf("a renewed federated token: %d token requests, the API asked %d times", requested["docs-client"]-beforeRequests["docs-client"], hit["/docs"]-beforeHits["/docs"])
+	}
+	held("docs/live")
+
 	// No key in the platform's own file: no token is requested, though
 	// the writing platform's file holds the same key under the same name.
 	writeJSON("records-live.json", map[string]string{"API_TOKEN": "member-never-sent"})
@@ -660,7 +677,7 @@ func TestTokenStepDrivesTheHTTPAdapterEndToEnd(t *testing.T) {
 		})
 	}
 	keyLines := strings.Split(strings.TrimSpace(keyPEM), "\n")
-	secrets := append(append(append([]string{federatedText, refusalText, "member-never-sent", keyLines[1], keyLines[len(keyLines)-2]}, issued...), assertions...), sealed...)
+	secrets := append(append(append([]string{federatedText, renewedText, refusalText, "member-never-sent", keyLines[1], keyLines[len(keyLines)-2]}, issued...), assertions...), sealed...)
 	if len(issued) < 4 || len(sealed) < 3 {
 		t.Fatalf("the test saw %d tokens issued and %d sealed", len(issued), len(sealed))
 	}
@@ -728,5 +745,137 @@ func TestConnectReplaceKeepsTheTokenStep(t *testing.T) {
 	live := deriveSources(after, bindings)["warehouse/live"]
 	if after.version != "21" || after.platforms[0].tokenStep == nil || *after.platforms[0].tokenStep != want || !reflect.DeepEqual(live.argv[1:], f.asked[0].argv[1:]) {
 		t.Fatalf("the token step kept as written: version %s, %+v\n%s", after.version, after.platforms[0].tokenStep, f.fileText(t))
+	}
+}
+
+// TestTokenStepStandIn is a stand-in adapter-http when the test below
+// starts this binary as one, and nothing otherwise. --token-only writes
+// TOKEN_STAND_IN_ANSWER and exits TOKEN_STAND_IN_EXIT; an acquisition
+// records the sealed token it was handed and does as TOKEN_STAND_IN_RUN
+// says: answer, exit 5 (the source refused the token), exit 6 (the sealed
+// token not opened), or exit 6 the first time only.
+func TestTokenStepStandIn(t *testing.T) {
+	dir := os.Getenv("TOKEN_STAND_IN_DIR")
+	if dir == "" {
+		return
+	}
+	appendTo := func(name, line string) {
+		f, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			os.Exit(1)
+		}
+		f.WriteString(line + "\n")
+		f.Close()
+	}
+	if os.Args[len(os.Args)-1] == "--token-only" {
+		appendTo("token-runs", "run")
+		os.Stderr.WriteString("stand-in-stderr-4e1a\n")
+		os.Stdout.WriteString(os.Getenv("TOKEN_STAND_IN_ANSWER"))
+		n, _ := strconv.Atoi(os.Getenv("TOKEN_STAND_IN_EXIT"))
+		os.Exit(n)
+	}
+	appendTo("acquisitions", os.Getenv(sealedTokenVariable))
+	switch os.Getenv("TOKEN_STAND_IN_RUN") {
+	case "rejected":
+		os.Exit(tokenExitRejectedBySource)
+	case "unusable":
+		os.Exit(tokenExitSealUnusable)
+	case "unusable-once":
+		if _, err := os.Stat(filepath.Join(dir, "once")); err != nil {
+			os.WriteFile(filepath.Join(dir, "once"), nil, 0o600)
+			os.Exit(tokenExitSealUnusable)
+		}
+	}
+	os.Stdout.WriteString(`{"ok":true}`)
+	os.Exit(0)
+}
+
+// The signer reads the adapter's sealed answer strictly -- exactly a
+// sealed token of base64url and a lifetime of 1 to 86400 seconds or null --
+// and maps each status to its own sentence, quoting nothing the adapter
+// wrote; an acquisition is handed the sealed token held; one the source
+// refused is dropped and not retried; one the adapter could not open is
+// obtained again and the acquisition run once more, once.
+func TestTokenStepReadsTheAdaptersAnswerStrictly(t *testing.T) {
+	service, _ := testService(t)
+	standIn := func(answer string, exit int, run string) (sourceSpec, string) {
+		dir := t.TempDir()
+		return sourceSpec{argv: []string{os.Args[0], "-test.run=^TestTokenStepStandIn$", "--"}, shape: "http", tokenStep: true,
+			env: []string{"TOKEN_STAND_IN_DIR=" + dir, "TOKEN_STAND_IN_ANSWER=" + answer, fmt.Sprintf("TOKEN_STAND_IN_EXIT=%d", exit), "TOKEN_STAND_IN_RUN=" + run}}, dir
+	}
+	lines := func(dir, name string) []string {
+		data, _ := os.ReadFile(filepath.Join(dir, name))
+		return strings.Fields(string(data))
+	}
+	const good = `{"sealed":"c2VhbGVk","expiresIn":600}`
+	for _, c := range []struct {
+		name, answer string
+		exit         int
+		want         string // "" for an answer taken
+	}{
+		{"a lifetime", good, 0, ""},
+		{"no lifetime", `{"sealed":"c2VhbGVk","expiresIn":null}`, 0, ""},
+		{"no lifetime member", `{"sealed":"c2VhbGVk"}`, 0, errTokenAnswer},
+		{"another member", `{"sealed":"c2VhbGVk","expiresIn":600,"token":"x"}`, 0, errTokenAnswer},
+		{"a sealed token not of base64url", `{"sealed":"c2Vh+bGVk","expiresIn":600}`, 0, errTokenAnswer},
+		{"an empty sealed token", `{"sealed":"","expiresIn":600}`, 0, errTokenAnswer},
+		{"a lifetime of zero", `{"sealed":"c2VhbGVk","expiresIn":0}`, 0, errTokenAnswer},
+		{"a lifetime past a day", `{"sealed":"c2VhbGVk","expiresIn":86401}`, 0, errTokenAnswer},
+		{"a lifetime as a string", `{"sealed":"c2VhbGVk","expiresIn":"600"}`, 0, errTokenAnswer},
+		{"not an object", `["c2VhbGVk"]`, 0, errTokenAnswer},
+		{"no credential", good, tokenExitNoCredential, errTokenNoCredential},
+		{"refused", good, tokenExitRefused, errTokenRefused},
+		{"a 401 status from the token step", good, tokenExitRejectedBySource, errTokenRefused},
+		{"a seal status from the token step", good, tokenExitSealUnusable, errTokenRefused},
+	} {
+		spec, _ := standIn(c.answer, c.exit, "ok")
+		sealed, expiresIn, err := service.obtainToken("records/live", spec)
+		switch {
+		case c.want == "" && (err != nil || sealed != "c2VhbGVk" || (expiresIn != 600 && expiresIn != 0)):
+			t.Fatalf("%s: %q %d %v", c.name, sealed, expiresIn, err)
+		case c.want != "" && (err == nil || err.Error() != fmt.Sprintf(c.want, "records/live")):
+			t.Fatalf("%s: want %q, got %v", c.name, fmt.Sprintf(c.want, "records/live"), err)
+		}
+	}
+	// A failure that is not the token step's is said as any source's.
+	spec, _ := standIn(good, 1, "ok")
+	if _, _, err := service.obtainToken("records/live", spec); err == nil || !strings.HasPrefix(err.Error(), "source failed: ") {
+		t.Fatalf("a source that failed otherwise: %v", err)
+	}
+
+	// Handed the sealed token held, and the second acquisition takes it
+	// from the cache.
+	spec, dir := standIn(good, 0, "ok")
+	for i := 0; i < 2; i++ {
+		if result, _, _, err := service.runAcquisitionSource("ok/live", spec, []byte("{}")); err != nil || result == nil {
+			t.Fatalf("an acquisition handed the sealed token: %v", err)
+		}
+	}
+	if runs, handed := lines(dir, "token-runs"), lines(dir, "acquisitions"); len(runs) != 1 || !slices.Equal(handed, []string{"c2VhbGVk", "c2VhbGVk"}) {
+		t.Fatalf("%d token runs, handed %q", len(runs), handed)
+	}
+	// The source refused the token: dropped, not sent again, and the next
+	// acquisition obtains another.
+	spec, dir = standIn(good, 0, "rejected")
+	if _, _, _, err := service.runAcquisitionSource("rejected/live", spec, []byte("{}")); err == nil || err.Error() != fmt.Sprintf(errTokenRejected, "rejected/live") {
+		t.Fatalf("a token the source refused: %v", err)
+	}
+	if len(lines(dir, "acquisitions")) != 1 {
+		t.Fatalf("a token the source refused was sent again: %d acquisitions", len(lines(dir, "acquisitions")))
+	}
+	service.runAcquisitionSource("rejected/live", spec, []byte("{}"))
+	if len(lines(dir, "token-runs")) != 2 {
+		t.Fatalf("a refused token was kept: %d token runs", len(lines(dir, "token-runs")))
+	}
+	// A sealed token the adapter could not open: obtained again, and the
+	// acquisition run once more.
+	spec, dir = standIn(good, 0, "unusable-once")
+	if _, _, _, err := service.runAcquisitionSource("renewed/live", spec, []byte("{}")); err != nil || len(lines(dir, "token-runs")) != 2 || len(lines(dir, "acquisitions")) != 2 {
+		t.Fatalf("a sealed token not opened once: %v, %d token runs, %d acquisitions", err, len(lines(dir, "token-runs")), len(lines(dir, "acquisitions")))
+	}
+	spec, dir = standIn(good, 0, "unusable")
+	if _, _, _, err := service.runAcquisitionSource("unusable/live", spec, []byte("{}")); err == nil || err.Error() != fmt.Sprintf(errTokenRefused, "unusable/live") ||
+		len(lines(dir, "token-runs")) != 2 || len(lines(dir, "acquisitions")) != 2 {
+		t.Fatalf("a sealed token never opened: %v, %d token runs, %d acquisitions", err, len(lines(dir, "token-runs")), len(lines(dir, "acquisitions")))
 	}
 }
