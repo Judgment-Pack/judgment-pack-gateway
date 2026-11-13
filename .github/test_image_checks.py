@@ -2,7 +2,7 @@
 exported filesystem built in memory: one thing wrong per case, so that no
 other refusal can mask the one under test. Run from the repository root:
 python3 .github/test_image_checks.py"""
-import io, os, struct, sys, tarfile, tempfile, unittest
+import io, os, shutil, struct, sys, tarfile, tempfile, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import image_checks as ic
@@ -13,6 +13,20 @@ PASSWD = b"root:x:0:0:root:/root:/sbin/nologin\nengine:x:65532:65532:e:/home/eng
     b"engine-%d:x:%d:%d:p:/home/engine-%d:/sbin/nologin\n" % (n, 65600 + n, 65600 + n, n) for n in range(1, 9))
 GROUP = b"root:x:0:\nengine:x:65532:\nengine-mcp:x:65533:\n" + b"".join(b"engine-%d:x:%d:\n" % (n, 65600 + n) for n in range(1, 9))
 RUNTIME = b"released jpack"
+
+
+def elf(interpreter=False):
+    """A 64-bit little-endian ELF header with two program headers, PT_LOAD
+    and, when asked, PT_INTERP: as much of an executable as the check reads."""
+    phoff, phentsize, phnum = 64, 56, 2
+    header = b"\x7fELF" + bytes([2, 1, 1]) + bytes(9) + struct.pack("<HHIQQQIHHHHHH", 2, 62, 1, 0, phoff, 0, 0, 64, phentsize, phnum, 0, 0, 0)
+    load = struct.pack("<IIQQQQQQ", 1, 5, 0, 0, 0, 0, 0, 0)
+    second = struct.pack("<IIQQQQQQ", 3 if interpreter else 4, 4, 0, 0, 0, 0, 0, 0)
+    return header + load + second
+
+
+GATEWAY_LICENSE = b"gateway licence"
+GATEWAY_NOTICES = b"gateway third-party notices"
 
 
 class Export:
@@ -61,8 +75,14 @@ def good(**over):
     over[name] = None to leave it out."""
     e = Export()
     spec = {}
-    for d in ("usr", "usr/local", "usr/local/bin", "usr/share", "usr/share/engine", "usr/share/engine/catalog", "usr/share/engine/corpus", "usr/share/engine/runtime", "etc", "home"):
+    for d in ("bin", "usr", "usr/bin", "usr/local", "usr/local/bin", "usr/share", "usr/share/engine", "usr/share/engine/bubblewrap", "usr/share/engine/catalog", "usr/share/engine/corpus", "usr/share/engine/runtime", "etc", "home"):
         spec[d] = dict(kind="dir")
+    spec["usr/bin/bwrap"] = dict(kind="file", data=elf(), mode=0o755)
+    spec["bin/true"] = dict(kind="file", data=elf(), mode=0o755)
+    for document in ic.LAUNCHER_DOCUMENTS:
+        spec[document] = dict(kind="file", data=b"n")
+    spec["usr/share/engine/LICENSE"] = dict(kind="file", data=GATEWAY_LICENSE)
+    spec["usr/share/engine/THIRD_PARTY_NOTICES"] = dict(kind="file", data=GATEWAY_NOTICES)
     spec["usr/local/bin/gateway"] = dict(kind="file", data=b"g", mode=0o700, uid=65532, gid=65532, caps=CAPS)
     spec["usr/local/bin/engine-mcp"] = dict(kind="file", data=b"g", mode=0o755)
     spec["usr/local/bin/adapter-airbyte"] = dict(kind="file", data=b"a", mode=0o755)
@@ -98,15 +118,21 @@ def good(**over):
 class Checks(unittest.TestCase):
     def setUp(self):
         self.checkout = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.checkout)
         os.makedirs(os.path.join(self.checkout, "catalog"))
         os.makedirs(os.path.join(self.checkout, "corpus"))
         open(os.path.join(self.checkout, "catalog", "postgres.json"), "wb").write(b'{"bindingVersion":"1"}')
         open(os.path.join(self.checkout, "corpus", "canon.json"), "wb").write(b"[]")
+        open(os.path.join(self.checkout, "LICENSE"), "wb").write(GATEWAY_LICENSE)
+        open(os.path.join(self.checkout, "THIRD_PARTY_NOTICES"), "wb").write(GATEWAY_NOTICES)
         self.runtime = os.path.join(self.checkout, "runtime-jpack")
         open(self.runtime, "wb").write(RUNTIME)
 
     def run_check(self, export, config=CONFIG, runtime="pinned"):
-        fs, archive = ic.read_export(export.done() if isinstance(export, Export) else export)
+        if isinstance(export, Export):
+            export = export.done()
+            self.addCleanup(os.unlink, export)
+        fs, archive = ic.read_export(export)
         return ic.check(fs, archive, config, self.checkout, self.runtime if runtime == "pinned" else runtime)
 
     def refused(self, export, fragment, config=CONFIG, runtime="pinned"):
@@ -162,6 +188,69 @@ class Checks(unittest.TestCase):
 
     def test_runtime_notices_directory_writable(self):
         self.refused(good(**{"usr/share/engine/runtime": dict(kind="dir", mode=0o777)}), "unwritable by others")
+
+    # The source sandbox's launcher and the program its start check runs:
+    # at the fixed locations, root's on a root-owned path, executable by all,
+    # static; their notices beside them; the gateway's own notices.
+    def test_launcher_missing(self):
+        self.refused(good(**{"usr/bin/bwrap": None}), "usr/bin/bwrap is not in the image")
+
+    def test_launcher_check_missing(self):
+        self.refused(good(**{"bin/true": None}), "bin/true is not in the image")
+
+    def test_launcher_not_executable_by_all(self):
+        self.refused(good(**{"usr/bin/bwrap": dict(mode=0o754)}), "usr/bin/bwrap is type b'0' mode 0754; it must be a regular file executable by every user")
+
+    def test_launcher_check_not_executable_by_all(self):
+        self.refused(good(**{"bin/true": dict(mode=0o744)}), "bin/true is type b'0' mode 0744; it must be a regular file executable by every user")
+
+    def test_launcher_writable(self):
+        self.refused(good(**{"usr/bin/bwrap": dict(mode=0o777)}), "unwritable by others")
+
+    def test_launcher_owned_by_a_platform(self):
+        self.refused(good(**{"usr/bin/bwrap": dict(uid=65601)}), "must be root's")
+
+    def test_launcher_directory_owned_by_a_platform(self):
+        self.refused(good(**{"bin": dict(kind="dir", uid=65601)}), "must be root's")
+
+    def test_launcher_set_user_id(self):
+        self.refused(good(**{"usr/bin/bwrap": dict(mode=0o4755)}), "set-user-id or set-group-id")
+
+    def test_launcher_with_capabilities(self):
+        self.refused(good(**{"usr/bin/bwrap": dict(caps=CAPS)}), "bwrap carries a capability attribute")
+
+    def test_launcher_dynamic(self):
+        self.refused(good(**{"usr/bin/bwrap": dict(data=elf(interpreter=True))}), "usr/bin/bwrap names a program interpreter")
+
+    def test_launcher_check_dynamic(self):
+        self.refused(good(**{"bin/true": dict(data=elf(interpreter=True))}), "bin/true names a program interpreter")
+
+    def test_launcher_not_an_executable(self):
+        self.refused(good(**{"usr/bin/bwrap": dict(data=b"#!/bin/sh\n")}), "is not an ELF file")
+
+    def test_launcher_program_headers_outside(self):
+        self.refused(good(**{"bin/true": dict(data=elf()[:100])}), "program headers lie outside it")
+
+    def test_launcher_licence_missing(self):
+        self.refused(good(**{"usr/share/engine/bubblewrap/bubblewrap-COPYING": None}), "bubblewrap-COPYING is not in the image")
+
+    def test_launcher_source_missing(self):
+        self.refused(good(**{"usr/share/engine/bubblewrap/bubblewrap-source.tar.xz": None}), "bubblewrap-source.tar.xz is not in the image")
+
+    def test_launcher_notice_not_readable(self):
+        self.refused(good(**{"usr/share/engine/bubblewrap/musl-COPYRIGHT": dict(mode=0o600)}), "readable by everyone")
+
+    def test_launcher_notice_not_a_file(self):
+        self.refused(good(**{"usr/share/engine/bubblewrap/README": dict(kind="dir")}), "README is not a regular file")
+
+    def test_gateway_licence_missing(self):
+        self.refused(good(**{"usr/share/engine/LICENSE": None}), "usr/share/engine/LICENSE is not in the image")
+
+    def test_gateway_notices_not_the_checkouts(self):
+        self.refused(good(**{"usr/share/engine/THIRD_PARTY_NOTICES": dict(data=b"stale notices")}), "usr/share/engine/THIRD_PARTY_NOTICES differs from the checkout's THIRD_PARTY_NOTICES")
+
+    def test_gateway_notices_not_readable(self):
+        self.refused(good(**{"usr/share/engine/THIRD_PARTY_NOTICES": dict(data=GATEWAY_NOTICES, mode=0o600)}), "readable by everyone")
 
     # The gateway: each of its properties on its own.
     # The MCP server's copy of the executable: root's, 0755, no capability,
@@ -298,7 +387,9 @@ class Checks(unittest.TestCase):
         # whatever its own header said.
         e = good(**{"opt/target": dict(mode=0o640, uid=65601, gid=65601)})
         e.hardlink("opt/link", "opt/target", mode=0o777, uid=0)
-        fs, _ = ic.read_export(e.done())
+        path = e.done()
+        self.addCleanup(os.unlink, path)
+        fs, _ = ic.read_export(path)
         link, target = fs["opt/link"], fs["opt/target"]
         self.assertIs(link, target)
         self.assertEqual((link.mode, link.uid, link.gid, link.capability), (0o640, 65601, 65601, None))
@@ -497,6 +588,7 @@ class Layers(unittest.TestCase):
 
     def saved(self, layers):
         image = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, image)
         names = []
         for i, entries in enumerate(layers):
             path = os.path.join(image, "layer-%d.tar" % i)

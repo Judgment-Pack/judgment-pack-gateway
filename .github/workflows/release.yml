@@ -1,7 +1,8 @@
 name: Release
 
-# Publishes a release of the gateway and its adapters: six archives, their
-# checksums and a build-provenance attestation, from a tag a person pushes
+# Publishes a release of the gateway and its adapters: six archives, the
+# engine image for linux/amd64 and linux/arm64, their checksums and
+# build-provenance attestations, from a tag a person pushes
 # on a commit already on main (docs/releasing.md). Nothing here decides
 # that there is to be a release, and nothing here writes its notes: both
 # are a person's, reviewed in the pull request that added
@@ -11,18 +12,27 @@ name: Release
 # where they say they run, and that no release is published until a
 # maintainer has approved it at the `production` gate.
 #
-# What exists before that approval, and is not secret: the archives, as an
-# artifact of the run that anyone who can read the repository's runs can
-# download; their attestation, which is recorded in a public log when it is
-# made; and the draft, which those who can write to the repository can see.
+# What exists before that approval, and is not secret: the archives and the
+# engine image's archive, as artifacts of the run that anyone who can read
+# the repository's runs can download; their attestations, which are recorded
+# in a public log when they are made; and the draft, which those who can
+# write to the repository can see. Nothing is in the registry before it: the
+# image is pushed by the publish job, past the gate, and a tag a registry
+# serves can be moved, which a run artifact cannot.
 #
 # Every job works on the commit the run was started for, by its digest. The
 # tag is a name, and until a release is published nothing keeps a name from
 # being moved: so the name is held to that commit when the run begins,
 # before the draft is made, and before it is published.
 #
-# It publishes no image. The engine image is still built by CI from every
-# commit and never pushed (docs/design/engine-image.md, Provenance).
+# The engine image is built here from the tagged commit by the script CI
+# runs on every push to main (build/engine-image.sh), into an OCI archive.
+# The bytes of its index travel with the archives as a release asset, so
+# that its SHA-256 -- the image digest -- is in checksums.txt, attested with
+# them and stated in the release notes; the publish job pushes the archive
+# under the release's version as its tag, every manifest by its digest, and
+# reads the tag back before it publishes the release
+# (docs/design/engine-image.md, Provenance; docs/adr/0030).
 
 on:
   push:
@@ -33,6 +43,8 @@ permissions: {}
 
 env:
   RELEASE_TAG: ${{ github.ref_name }}
+  # The repository's own package, in the lowercase a registry name takes.
+  IMAGE: ghcr.io/judgment-pack/judgment-pack-gateway
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -197,7 +209,7 @@ jobs:
       - admit
       - verify
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -239,14 +251,6 @@ jobs:
           # beside this one (n8n-nodes-judgment-pack@...).
           GORELEASER_CURRENT_TAG: ${{ env.RELEASE_TAG }}
 
-      # Printed, so that the run's own record says what it packaged. The
-      # publish job holds the draft to these again before it publishes.
-      - name: Verify packaged checksums
-        working-directory: dist
-        run: |
-          sha256sum --check checksums.txt
-          cat checksums.txt
-
       # Held of the archives themselves, all six, and not of the
       # configuration that was meant to make them: an archive holds files
       # and nothing else, each in the form the packer writes, under its
@@ -260,9 +264,45 @@ jobs:
         shell: bash
         run: python3 build/release_archives.py --dist dist --version "${RELEASE_TAG#v}" --commit "${GITHUB_SHA}"
 
+      # The engine image from the same commit, for linux/amd64 and
+      # linux/arm64, by the script CI runs (scripts/checks/image-platforms.sh):
+      # an OCI archive the publish job pushes past the gate, and the bytes of
+      # its index, which join the archives as a release asset, so that the
+      # image digest -- their SHA-256 -- is a line of checksums.txt and
+      # attested with them. The gateway inside reports the release's tag, as
+      # the archives' does.
+      - name: Build the engine image
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ env.RELEASE_TAG }}
+        run: |
+          build/engine-image.sh build "${RUNNER_TEMP}/engine-image"
+          index="judgment-pack-gateway_${RELEASE_TAG#v}_engine-image.index.json"
+          cp "${RUNNER_TEMP}/engine-image/engine-image.index.json" "dist/${index}"
+          digest="$(cat "${RUNNER_TEMP}/engine-image/engine-image.digest")"
+          printf '%s  %s\n' "${digest#sha256:}" "${index}" >> dist/checksums.txt
+
+      # Printed, so that the run's own record says what it packaged. The
+      # publish job holds the draft to these again before it publishes.
+      - name: Verify packaged checksums
+        working-directory: dist
+        run: |
+          sha256sum --check checksums.txt
+          cat checksums.txt
+
+      # The notes a person wrote, and after them what this run alone knows:
+      # the image by its tag and by its digest.
       - name: Carry the release notes with the archives
         shell: bash
-        run: cp "docs/releases/${RELEASE_TAG}.md" dist/release-notes.md
+        run: |
+          cp "docs/releases/${RELEASE_TAG}.md" dist/release-notes.md
+          version="${RELEASE_TAG#v}"
+          digest="$(cat "${RUNNER_TEMP}/engine-image/engine-image.digest")"
+          {
+            printf '\n## Engine image\n\n'
+            printf '`%s:%s`, for linux/amd64 and linux/arm64, is the image index `%s`: pin it as `%s@%s`. ' "${IMAGE}" "${version}" "${digest}" "${IMAGE}" "${digest}"
+            printf 'The index itself is `judgment-pack-gateway_%s_engine-image.index.json` among this release'"'"'s files, named in `checksums.txt` by that digest and attested with the archives.\n' "${version}"
+          } >> dist/release-notes.md
 
       - name: Upload release archives for native smoke tests
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -273,9 +313,23 @@ jobs:
             dist/*.zip
             dist/checksums.txt
             dist/release-notes.md
+            dist/*_engine-image.index.json
           if-no-files-found: error
           # As long as an approval may be waited for: the publish job reads
           # it again on the far side of the gate.
+          retention-days: 30
+
+      # The image itself, for the publish job alone: no smoke test reads it,
+      # and nothing pushes it before the gate.
+      - name: Upload the engine image archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-image
+          path: |
+            ${{ runner.temp }}/engine-image/engine-image.tar
+            ${{ runner.temp }}/engine-image/engine-image.index.json
+            ${{ runner.temp }}/engine-image/engine-image.digest
+          if-no-files-found: error
           retention-days: 30
 
   smoke-unix:
@@ -441,6 +495,25 @@ jobs:
         with:
           subject-checksums: dist/checksums.txt
 
+      # The index's line above already names the image digest, under the
+      # asset's name; this names it as the image, so that a reader holding
+      # only the registry's reference finds the attestation by it
+      # (gh attestation verify oci://...). Nothing is pushed to the registry.
+      - name: Read the engine image's digest
+        id: image
+        shell: bash
+        run: |
+          shopt -s nullglob
+          index=(dist/*_engine-image.index.json)
+          (( ${#index[@]} == 1 )) || { echo "expected one engine image index, found ${#index[@]}" >&2; exit 1; }
+          echo "digest=sha256:$(sha256sum "${index[0]}" | cut -d ' ' -f 1)" >> "${GITHUB_OUTPUT}"
+
+      - name: Attest the engine image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+
       - name: Create draft release
         id: draft
         shell: bash
@@ -451,9 +524,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           shopt -s nullglob
-          assets=(dist/*.tar.gz dist/*.zip dist/checksums.txt)
-          if (( ${#assets[@]} != 7 )); then
-            echo "expected six archives and checksums.txt, found ${#assets[@]} files" >&2
+          assets=(dist/*.tar.gz dist/*.zip dist/*_engine-image.index.json dist/checksums.txt)
+          if (( ${#assets[@]} != 8 )); then
+            echo "expected six archives, the engine image's index and checksums.txt, found ${#assets[@]} files" >&2
             exit 1
           fi
 
@@ -489,9 +562,11 @@ jobs:
     needs: attest-and-draft
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: write
+      # Pushing the engine image to the repository's own package, past the gate.
+      packages: write
     env:
       RELEASE_ID: ${{ needs.attest-and-draft.outputs.release-id }}
     steps:
@@ -508,9 +583,24 @@ jobs:
           name: release-dist
           path: run
 
+      - name: Download the engine image this run built
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-image
+          path: image
+
+      # For build/engine-image.sh alone, as the tagged commit has it.
+      - name: Check out the commit the run was started for
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: source
+
       # The run's own files, the bytes the draft must hold: checksums.txt in
-      # the one form this workflow writes it, naming the six archives, each
-      # once, and every archive the bytes that list names.
+      # the one form this workflow writes it, naming the six archives and the
+      # engine image's index, each once, and every file the bytes that list
+      # names.
       - name: Hold the run's files to their checksums
         shell: bash
         working-directory: run
@@ -524,6 +614,25 @@ jobs:
           [ "${named}" = "${archives}" ] || { echo "checksums.txt does not name the run's archives, each once:" >&2; diff <(echo "${named}") <(echo "${archives}") >&2; exit 1; }
           sha256sum --check --strict checksums.txt
 
+      # Past the gate, before the release is published: the image the run's
+      # files name -- its index byte for byte the asset's -- pushed under the
+      # version, every manifest by its digest, and the tag read back from the
+      # registry and held to that digest. A push that fails leaves the draft
+      # unpublished. The credential is the job's token, in a file of this
+      # runner's alone that the copier reads, never an argument, and is
+      # removed after.
+      - name: Push the engine image by its digest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          index="run/judgment-pack-gateway_${RELEASE_TAG#v}_engine-image.index.json"
+          cmp -s "${index}" image/engine-image.index.json || { echo "the image this run built is not the one its files name" >&2; exit 1; }
+          auth="${RUNNER_TEMP}/registry-auth.json"
+          trap 'rm -f "${auth}"' EXIT
+          (umask 077 && printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf '%s:%s' "${GITHUB_ACTOR}" "${GH_TOKEN}" | base64 -w 0)" > "${auth}")
+          REGISTRY_AUTH_FILE="${auth}" source/build/engine-image.sh push image "${IMAGE}:${RELEASE_TAG#v}"
+
       # The draft has waited at the gate, and whoever may write to the
       # repository could have changed it there. The release this run
       # drafted is read through the API by its id, never downloaded: its
@@ -536,7 +645,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          # No checkout in this job; tell gh which repository to target.
+          # gh runs outside the job's one checkout (source/); tell it which
+          # repository to target.
           GH_REPO: ${{ github.repository }}
         run: |
           [[ "${RELEASE_ID}" =~ ^[0-9]+$ ]] || { echo "no release id from the draft job: ${RELEASE_ID:-none}" >&2; exit 1; }

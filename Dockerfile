@@ -1,21 +1,34 @@
 # The engine image (docs/design/engine-image.md): the core binary and the
 # adapter binaries built from this commit, the catalog and the frozen
-# corpus, and a set of platform users -- and nothing that varies per
-# deployment: no seed, no store, no registry, no configuration, no
-# credential. Those live on a volume the operator mounts.
+# corpus, the source sandbox's launcher, and a set of platform users -- and
+# nothing that varies per deployment: no seed, no store, no registry, no
+# configuration, no credential. Those live on a volume the operator mounts.
 #
 # Every base is pinned by the digest of its manifest index, as the catalog
-# pins what it names. Both modules build with CGO disabled, so the binaries
-# are static and the base needs no libc. The runtime is not built here: it
-# is the released binary, taken from the runtime's own distribution image
-# at the pinned digest, so the bytes are the ones that release attests.
+# pins what it names, and every file fetched by its content. Both modules
+# build with CGO disabled, so the binaries are static and the base needs no
+# libc. The runtime is not built here: it is the released binary, taken
+# from the runtime's own distribution image at the pinned digest, so the
+# bytes are the ones that release attests.
+#
+# One Dockerfile for every platform the release publishes (linux/amd64 and
+# linux/arm64, build/engine-image.sh): the modules are compiled on the
+# builder's own platform for the target's, and only the stages that must
+# run on the target -- the launcher's compiler and the homes -- do.
 
-FROM docker.io/library/golang:1.26-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 AS build
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 AS build
+ARG TARGETOS
+ARG TARGETARCH
+# The release tag, written into the gateway as the release archives write
+# it (.goreleaser.yml); empty outside a release, which leaves the binary
+# reporting what an unstamped build reports.
+ARG RELEASE_VERSION
 ENV CGO_ENABLED=0 GOFLAGS=-trimpath GOWORK=off
 WORKDIR /src
 COPY go/ go/
 COPY adapters/ adapters/
-RUN cd go && go build -buildvcs=false -o /out/gateway . && cp /out/gateway /out/engine-mcp \
+RUN export GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+ && cd go && go build -buildvcs=false ${RELEASE_VERSION:+"-ldflags=-X=main.releaseVersion=${RELEASE_VERSION}"} -o /out/gateway . && cp /out/gateway /out/engine-mcp \
  && cd ../adapters && go build -buildvcs=false -o /out/adapter-airbyte ./cmd/adapter-airbyte \
  && go build -buildvcs=false -o /out/adapter-mcp ./cmd/adapter-mcp \
  && go build -buildvcs=false -o /out/adapter-sandbox ./cmd/adapter-sandbox \
@@ -30,7 +43,7 @@ RUN cd go && go build -buildvcs=false -o /out/gateway . && cp /out/gateway /out/
 COPY build/setcap.go /src/setcap.go
 RUN cd /src && go run setcap.go /out/gateway && chmod 0700 /out/gateway
 COPY build/mkhomes.go /src/mkhomes.go
-RUN cd /src && go build -o /out/mkhomes mkhomes.go
+RUN cd /src && GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -o /out/mkhomes mkhomes.go
 # The platform users: a configuration names one per platform, and the
 # engine refuses a platform whose user is root, the signer's, the MCP
 # server's, or another platform's. Eight is a convention, not a limit an operator cannot raise
@@ -47,6 +60,50 @@ RUN set -e; mkdir -p /out/etc; \
       printf 'engine-%s:x:6560%s:6560%s:platform user %s:/home/engine-%s:/sbin/nologin\n' "$n" "$n" "$n" "$n" "$n" >> /out/etc/passwd; \
       printf 'engine-%s:x:6560%s:\n' "$n" "$n" >> /out/etc/group; \
     done
+
+# The source sandbox's launcher (docs/adr/0030-the-engine-image-carries-the-sandbox-launcher.md):
+# bubblewrap, built from its released source, pinned by content, as one
+# static executable linked with musl and libcap -- no program interpreter,
+# no library search path, nothing the launcher's own check
+# (adapters/internal/sandbox, trustedFile) would have to follow -- and
+# /bin/true, which bubblewrap's start check runs inside the sandbox. The
+# compiler and the two libraries are the pinned Alpine release's, as its
+# repository has them when the image is built: the step below refuses a
+# build that would link other upstream versions than the notices beside
+# the launcher name, so the notices cannot drift from what is linked. The
+# source travels with the binary, as its licence asks; the two libraries'
+# licences are in build/notices, copied from their upstream repositories at
+# those versions (musl's COPYRIGHT at v1.2.6, libcap's License at
+# libcap-2.78), so that a build fetches nothing but the source.
+FROM docker.io/library/alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS launcher
+RUN apk add --no-cache build-base meson libcap-dev libcap-static linux-headers pkgconf
+ADD --checksum=sha256:0e85c8702248b8dd64144f594147553650cdd0e4c951690345faace79c217c4d https://github.com/containers/bubblewrap/releases/download/v0.13.1/bubblewrap-0.13.1.tar.xz /out/notices/bubblewrap-source.tar.xz
+COPY build/notices/musl-COPYRIGHT build/notices/libcap-License /out/notices/
+RUN set -e; \
+    linked="$(apk list --installed musl libcap-static | cut -d ' ' -f 1 | sort | tr '\n' ' ')"; \
+    case "$linked" in \
+      "libcap-static-2.78-r"*" musl-1.2.6-r"*) ;; \
+      *) echo "the notices name libcap 2.78 and musl 1.2.6; this builder would link: $linked" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /build && tar -xJf /out/notices/bubblewrap-source.tar.xz -C /build; \
+    cd /build/bubblewrap-0.13.1; \
+    meson setup _build --buildtype=release -Dselinux=disabled -Dman=disabled -Dtests=false \
+      -Dbash_completion=disabled -Dzsh_completion=disabled --prefer-static -Dc_link_args=-static; \
+    meson compile -C _build bwrap; \
+    install -m 0755 -s _build/bwrap /out/bwrap; \
+    printf 'int main(void) { return 0; }\n' > /build/true.c; \
+    gcc -static -Os -s -o /out/true /build/true.c; \
+    for program in /out/bwrap /out/true; do \
+      if readelf -l "$program" | grep -q INTERP; then echo "$program names a program interpreter" >&2; exit 1; fi; \
+    done; \
+    cp COPYING /out/notices/bubblewrap-COPYING; \
+    printf '%s\n' \
+      '/usr/bin/bwrap is bubblewrap 0.13.1, built from bubblewrap-source.tar.xz (its release 0.13.1) beside this file, unchanged,' \
+      'and linked statically with the musl C library and libcap. /bin/true is a program of one line' \
+      'linked statically with musl. Their licences: bubblewrap-COPYING (bubblewrap, LGPL-2.0-or-later),' \
+      'musl-COPYRIGHT (musl, MIT), libcap-License (libcap, BSD-3-Clause or GPL-2.0-only).' \
+      "Linked here: $linked" > /out/notices/README; \
+    chmod 0644 /out/notices/*
 
 # The runtime pin: one line, the tag for the reader and the digest for the
 # builder. The runtime image is the released static binary on scratch, with
@@ -80,6 +137,18 @@ COPY --from=build --chown=65532:65532 /out/gateway /usr/local/bin/gateway
 # its `mcp` subcommand. The signer's 0700 binary is never the one that
 # process runs.
 COPY --from=build /out/engine-mcp /usr/local/bin/engine-mcp
+# The source sandbox's launcher at the first of the fixed locations the
+# launcher looks in, and the program its start check runs: root's,
+# executable by everyone, no set-user-id bit and no capability -- it
+# needs user namespaces as the source's user, which the container's
+# runtime gives or refuses (docs/design/engine-image.md, "The source
+# sandbox"). Their notices beside the engine's own, and the gateway's
+# licence and the notices of what its programs link, since the image is
+# published as the archives are.
+COPY --from=launcher /out/bwrap /usr/bin/bwrap
+COPY --from=launcher /out/true /bin/true
+COPY --from=launcher /out/notices/ /usr/share/engine/bubblewrap/
+COPY LICENSE THIRD_PARTY_NOTICES /usr/share/engine/
 # The homes, made in place as root -- the base's own user is nonroot, so
 # root is taken for this one step and given back below -- and each given
 # to its user; the helper removes itself, so the final filesystem carries

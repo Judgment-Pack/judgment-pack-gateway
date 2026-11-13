@@ -17,6 +17,7 @@
     "adapters/agreement/agreement_test.go",
     "adapters/go.mod",
     "adapters/go.sum",
+    "build/engine-image.sh",
     "build/mkhomes.go",
     "build/setcap.go",
     "catalog/postgres.json",
@@ -28,6 +29,7 @@
     "jpdev.json",
     "plugins/activepieces/judgment-pack/package-lock.json",
     "plugins/n8n-nodes-judgment-pack/package-lock.json",
+    "scripts/checks/image-platforms.sh",
     "scripts/checks/image-root-unwritable.sh",
     "scripts/checks/witness-scenario.sh",
     "scripts/dev/changed_checks.py",
@@ -49,9 +51,11 @@
     "packaging, packaged checksums, archive contents",
     "native archive runs: linux amd64 and arm64, macOS arm64, Windows amd64",
     "tag still names the commit, no release under the tag",
-    "attestation",
+    "engine image built for linux amd64 and arm64, its index a release asset",
+    "attestation, of the archives and of the engine image",
     "draft identity",
     "production approval",
+    "engine image pushed by digest and read back",
     "published asset digests"
   ],
   "profiles": {
