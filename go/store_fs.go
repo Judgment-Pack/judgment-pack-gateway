@@ -45,6 +45,20 @@ func validStoreName(name string) bool {
 	return sessionPattern.MatchString(name) && name != "." && name != ".."
 }
 
+// validListedSeries reports a series' name a read may ask for: any a
+// directory of the filesystem kind can be named, since listSeries lists
+// every directory whatever its name, and no other. validListedEntry is the
+// same of an entry's stem, which listEntries lists whatever it is. Every
+// kind refuses another name before it reads anything (faultRefused), so
+// the kinds answer alike; a series is made only under validStoreName.
+func validListedSeries(name string) bool {
+	return name != "." && name != ".." && validListedEntry(name)
+}
+
+func validListedEntry(name string) bool {
+	return name != "" && !strings.ContainsAny(name, "/\\\x00")
+}
+
 // fsWriteFile puts bytes at near: written to a staging file beside it,
 // synced, and then renamed over near, or, with exclusive set, linked to it
 // -- which refuses a name that is there, and is what makes the receipt log
@@ -305,6 +319,9 @@ func (x fsIndexed) listSeries() ([]string, error) {
 // listEntries names the series' .json files by their stems, as
 // verification counts them (verifySession): every one, whatever its stem.
 func (x fsIndexed) listEntries(series string) ([]string, error) {
+	if !validListedSeries(series) {
+		return nil, storeFailure(faultRefused, "list-entries", fmt.Errorf("store: %q is not a series' name", series))
+	}
 	dir, err := x.seriesDir(series)
 	if err != nil {
 		return nil, err
@@ -327,11 +344,14 @@ func (x fsIndexed) listEntries(series string) ([]string, error) {
 }
 
 func (x fsIndexed) getEntry(series, entry string) ([]byte, error) {
+	if !validListedSeries(series) {
+		return nil, storeFailure(faultRefused, "get-entry", fmt.Errorf("store: %q is not a series' name", series))
+	}
 	dir, err := x.seriesDir(series)
 	if err != nil {
 		return nil, err
 	}
-	if entry == "" || strings.ContainsAny(entry, `/\`) {
+	if !validListedEntry(entry) {
 		return nil, storeFailure(faultRefused, "get-entry", fmt.Errorf("store: %q is not an entry's name", entry))
 	}
 	// the entry's own file, as for a blob (readOwnFile)

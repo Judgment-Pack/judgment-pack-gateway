@@ -31,11 +31,16 @@ postgresql://gateway_runtime:<password>@db.example.internal:5432/gateway_store?s
 
 - `sslmode` is `verify-full` (the default: TLS 1.2 or later, with the server's certificate checked
   against `sslrootcert`, or the system's roots without it, and against the host name) or
-  `disable`, which is accepted only for a loopback host. `connect_timeout` is in seconds, 1 to 300,
-  and 10 without it. Any other parameter is refused, not ignored.
+  `disable`, which is accepted only for a loopback host: a literal loopback address such as
+  `127.0.0.1` or `[::1]`, or `localhost`. Under `disable` the gateway also checks the address the
+  connection reached, and closes it, with nothing sent, unless that is a loopback address: a
+  resolver need not answer `localhost` with one. `connect_timeout` is in seconds, 1 to 300, and 10
+  without it. Any other parameter is refused, not ignored.
 - The connection string is a secret. The gateway never prints it: not in an error, a log line or a
   receipt, and a stored engine configuration will name it only by reference, a file or an
   environment variable (ADR-0031, decision 2).
+- An error the server reports reaches the gateway's messages as its SQLSTATE alone. The server's
+  message, detail and hint are not kept: the server quotes a statement's values there.
 
 ## Before the first start
 
@@ -54,6 +59,21 @@ CREATE ROLE gateway_runtime LOGIN PASSWORD '<another password>';
 CREATE DATABASE gateway_store OWNER gateway_owner ENCODING 'UTF8' TEMPLATE template0;
 REVOKE ALL ON DATABASE gateway_store FROM PUBLIC;
 GRANT CONNECT ON DATABASE gateway_store TO gateway_migrate, gateway_runtime;
+```
+
+An administrator that is not a superuser, one that holds CREATEROLE and CREATEDB and nothing more,
+makes the same, with two differences. It makes the database for the owner only when it may SET
+ROLE to the owner, and it gives the database's privileges as the owner: a REVOKE by a role that
+neither owns the database nor is a superuser takes nothing back, with a warning and no error, and
+PUBLIC keeps TEMPORARY, which the kind's start then refuses.
+
+```sql
+GRANT gateway_owner TO CURRENT_USER WITH INHERIT FALSE, SET TRUE;
+CREATE DATABASE gateway_store OWNER gateway_owner ENCODING 'UTF8' TEMPLATE template0;
+SET ROLE gateway_owner;
+REVOKE ALL ON DATABASE gateway_store FROM PUBLIC;
+GRANT CONNECT ON DATABASE gateway_store TO gateway_migrate, gateway_runtime;
+RESET ROLE;
 ```
 
 The migration and the kind's start refuse roles outside these conditions:
@@ -160,8 +180,12 @@ The kind's tests take a server from the environment:
   databases. Each test makes its own three roles and database, with names and passwords drawn at
   random, and drops them when it ends. Without it the tests skip and say why.
 - `GATEWAY_TEST_POSTGRES_REQUIRED`: when set, a test that would skip fails instead. The CI job
-  `postgresql` sets it, runs the tests against the pinned image in a service container with
-  synthetic credentials, and fails if any test skipped.
+  `postgresql` sets it and runs the tests twice against the pinned image in a service container,
+  with synthetic credentials: as a superuser, failing if any test skipped, and as a login that may
+  make roles and databases and nothing more (CREATEROLE, CREATEDB). Three cases need a superuser to
+  set up -- BYPASSRLS on the run-time login, for the migration and for the start, and a setting of
+  `gateway.scope` stored on the run-time role -- and the second run skips those three, by one
+  message, and fails on any other skip (ADR-0031, "Consequences").
 
 Locally, a throwaway container from the same image, on loopback:
 

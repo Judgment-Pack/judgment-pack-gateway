@@ -330,6 +330,125 @@ func TestALoginFailureQuotesNothing(t *testing.T) {
 	}
 }
 
+// pgPeerAs is a connection whose remote address reads as addr: what a
+// resolver that answers a loopback host's name with another address gives.
+type pgPeerAs struct {
+	net.Conn
+	addr net.Addr
+}
+
+func (c pgPeerAs) RemoteAddr() net.Addr { return c.addr }
+
+// A connection without TLS is used only to a peer at a loopback address:
+// the host localhost, answered by the resolver with another address, is
+// closed after the dial with nothing sent on it, the password least of
+// all. The same dial to a loopback peer sends the startup message.
+func TestADisabledTLSConnectionToAPeerOffLoopbackIsRefused(t *testing.T) {
+	cases := []struct {
+		name     string
+		peer     net.Addr
+		admitted bool
+	}{
+		{"a peer off loopback", &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 5432}, false},
+		{"an IPv6 peer off loopback", &net.TCPAddr{IP: net.ParseIP("2001:db8::10"), Port: 5432}, false},
+		{"a peer that is no TCP address", &net.UnixAddr{Name: "socket", Net: "unix"}, false},
+		{"an IPv4 loopback peer", &net.TCPAddr{IP: net.ParseIP("127.0.0.2"), Port: 5432}, true},
+		{"an IPv6 loopback peer", &net.TCPAddr{IP: net.IPv6loopback, Port: 5432}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake, dsn := newPgFake(t, func(f *pgFakeConn) {})
+			address := net.JoinHostPort(dsn.host, dsn.port)
+			dial := pgDial
+			t.Cleanup(func() { pgDial = dial })
+			pgDial = func(_ string, deadline time.Time) (net.Conn, error) {
+				c, err := dial(address, deadline)
+				if err != nil {
+					return nil, err
+				}
+				return pgPeerAs{c, tc.peer}, nil
+			}
+			text := "postgresql://u:pw-of-the-test@localhost:" + dsn.port + "/d?sslmode=disable"
+			d, err := parsePgDSN(text)
+			if err != nil {
+				t.Fatalf("the host localhost with sslmode=disable: %v", err)
+			}
+			c, err := pgConnect(d, time.Now().Add(10*time.Second))
+			if err == nil {
+				c.close()
+			}
+			fake.ln.Close()
+			<-fake.done
+			sent := fake.clientSent()
+			if tc.admitted {
+				if len(sent) == 0 {
+					t.Fatalf("a loopback peer was sent nothing: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "not a loopback address") {
+				t.Fatalf("a connection without TLS to %v: %v", tc.peer, err)
+			}
+			if len(sent) != 0 {
+				t.Fatalf("a peer off loopback was sent %d bytes", len(sent))
+			}
+		})
+	}
+}
+
+// An error the server reports reaches the caller as its SQLSTATE alone:
+// the message, the detail, the hint and every other field the server
+// filled -- where it quotes a statement's values, a caller's bytes -- are
+// not in it.
+func TestAServerErrorReachesTheCallerWithNoneOfItsText(t *testing.T) {
+	const marker = "caller-bytes-marker"
+	const password = "pw-of-the-test"
+	_, dsn := newPgFake(t, func(f *pgFakeConn) {
+		if !(scramServer{password: password, iterations: 4096}).run(f) {
+			return
+		}
+		f.auth(0, nil)
+		f.ready()
+		var body []byte
+		for _, field := range []string{"SERROR", "VERROR", "C22P02", "Minvalid input syntax for type integer: \"" + marker + "\"",
+			"D" + marker + " in the detail", "H" + marker + " in the hint", "W" + marker + " in the context", "n" + marker + "_constraint",
+			"t" + marker + "_table", "c" + marker + "_column", "s" + marker + "_schema"} {
+			body = append(append(body, field...), 0)
+		}
+		for {
+			kind, _, err := f.receive()
+			if err != nil {
+				return
+			}
+			switch kind {
+			case 'S':
+				f.send('E', append(body, 0))
+				f.ready()
+			case 'Q':
+				f.send('E', append(body, 0))
+				f.ready()
+			case 'X':
+				return
+			}
+		}
+	})
+	c, err := pgConnect(dsn, time.Now().Add(20*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.close()
+	_, execErr := c.exec(`SELECT $1::text::int`, marker)
+	scriptErr := c.script(`SELECT 1`)
+	for name, err := range map[string]error{"a statement": execErr, "a script": scriptErr} {
+		if err == nil || pgCode(err) != "22P02" || !strings.Contains(err.Error(), "SQLSTATE 22P02") {
+			t.Fatalf("%s the server refused: %v", name, err)
+		}
+		if strings.Contains(err.Error(), "marker") || strings.Contains(err.Error(), "invalid input") {
+			t.Fatalf("%s's error quotes the server's text: %v", name, err)
+		}
+	}
+}
+
 // pgSQLText is the SQL the kind sends and carries: its migration files and
 // every string literal of the Go files that hold its statements.
 func pgSQLText(t *testing.T) map[string]string {

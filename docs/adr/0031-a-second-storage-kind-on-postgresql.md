@@ -66,14 +66,19 @@ the maintainer (below).
 1. **The client** (`go/pgwire.go`). A connection string is a `postgresql://` URL naming a host, a
    user and a database, with `sslmode=verify-full` (the default) or, to a loopback host alone,
    `disable`, and no parameter but `sslrootcert` and `connect_timeout`; any other parameter is
-   refused, never ignored. The login is SCRAM-SHA-256 alone: a server that asks for a password in
+   refused, never ignored. A loopback host is a literal loopback address or the name `localhost`,
+   and under `disable` either is held after the dial: a connection whose remote address is not a
+   loopback address is closed before a byte is sent on it, since a resolver need not answer
+   `localhost` with one (#440). The login is SCRAM-SHA-256 alone: a server that asks for a password in
    the clear or by MD5 is refused before the password leaves the gateway, and one that admits a
    login the connection string gives a password for without the exchange, or whose final
    signature is not the one the password's verifier makes, is refused. Every value is bound as a
    parameter in the binary format; the simple query form runs only the schema files the binary
    carries. A value is bounded (64 MiB) and so is a message. A parsed connection string prints as
    a fixed phrase, and every error is a fixed sentence naming its class or SQLSTATE, quoting
-   nothing of the host, port, user, database, password or the server's text.
+   nothing of the host, port, user, database, password or the server's text: of an error the
+   server reports, the SQLSTATE alone is kept, and its message, detail, hint and the names it
+   gives are not, since the server quotes a statement's values there (#440).
 
 2. **Selecting the kind in configuration** is not in this change; the decision recorded for it is
    this. A new engine configuration version adds a `store` member naming the kind; without it the
@@ -212,6 +217,13 @@ the maintainer (below).
   Nor is a lease's document kept from being rewritten by the database: the kind's document space
   refuses it (`leaseDocumentsReserved`), and the run-time login, which may replace any document of
   its scope, could rewrite one by a statement of its own.
+- Bad, because the CI job's second run, as an administrator that may make roles and databases
+  and nothing more (CREATEROLE, CREATEDB), cannot set up three cases: a run-time login given
+  BYPASSRLS (the migration's refusal and the start's), and a setting of `gateway.scope` stored on
+  the run-time role, since only a superuser gives BYPASSRLS or stores a setting of a parameter no
+  module defines. Those three run in the first run, as a superuser, alone; the second skips them by
+  one message and fails on any other skip. Every other test, the harness's own setup and teardown
+  included, runs in both (#440).
 - Bad, because a series' name is one across scopes: a scope asking to make a series another scope
   holds learns that the name is taken, though nothing of its rows.
 - Bad, because the kind is not selectable yet: this change adds the kind, its schema and its

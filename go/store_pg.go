@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -451,6 +450,9 @@ func (x pgIndexed) listSeries() ([]string, error) {
 }
 
 func (x pgIndexed) listEntries(series string) ([]string, error) {
+	if !validListedSeries(series) {
+		return nil, pgRefused("list-entries", "not a series' name")
+	}
 	var names []string
 	there := false
 	err := x.k.transact(pgRead, func(tx pgTx) error {
@@ -479,8 +481,11 @@ func (x pgIndexed) listEntries(series string) ([]string, error) {
 }
 
 func (x pgIndexed) getEntry(series, entry string) ([]byte, error) {
-	if entry == "" || strings.ContainsAny(entry, `/\`) {
-		return nil, pgRefused("get-entry", fmt.Sprintf("%q is not an entry's name", entry))
+	if !validListedSeries(series) {
+		return nil, pgRefused("get-entry", "not a series' name")
+	}
+	if !validListedEntry(entry) {
+		return nil, pgRefused("get-entry", "not an entry's name")
 	}
 	var data []byte
 	found := false
@@ -655,6 +660,9 @@ func newRevision() (string, error) {
 }
 
 func (d pgDocuments) getDocument(name string) ([]byte, string, error) {
+	if !validStoreName(name) {
+		return nil, noRevision, pgRefused("get-document", "not a document's name")
+	}
 	var data []byte
 	revision := noRevision
 	found := false
@@ -777,6 +785,9 @@ func (s pgSecrets) putSecret(name string, value []byte) error {
 }
 
 func (s pgSecrets) getSecret(name string) ([]byte, error) {
+	if !validStoreName(name) {
+		return nil, pgRefused("get-secret", "not a secret's name")
+	}
 	var value []byte
 	found := false
 	err := s.k.transact(pgRead, func(tx pgTx) error {

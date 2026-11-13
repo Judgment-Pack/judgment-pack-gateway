@@ -178,6 +178,12 @@ func migratePostgres(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout time.
 	if err := c.conn.SetDeadline(deadline); err != nil {
 		return nil, pgTransport(err)
 	}
+	// The search path is pinned before the first check: a name the checks
+	// leave unqualified -- an operator, an aggregate -- is resolved in
+	// pg_catalog, never in a schema a role's setting puts ahead of it.
+	if _, err := c.exec(`SELECT pg_catalog.set_config('search_path', 'pg_catalog', false)`); err != nil {
+		return nil, err
+	}
 	if err := pgServerHolds(c); err != nil {
 		return nil, err
 	}
