@@ -54,6 +54,7 @@
     {"name": "verify-ts-conform", "run": "go build -buildvcs=false -o gateway . && ./gateway conform --impl ../verify-ts/impl", "toolchain": "go", "cwd": "go", "summary": "vectors|disagreement", "timeout": 3000},
     {"name": "verify-ts-witness-chain", "run": "GATEWAY_VERIFY_TS_IMPL=\"$PWD/../verify-ts/impl\" go test -count=1 -run '^TestWitnessServedChainReadsCleanly$' -v .", "toolchain": "go", "cwd": "go", "summary": "^(ok|FAIL|---) ", "timeout": 3000},
     {"name": "image-checks-test", "run": "python3 .github/test_image_checks.py", "toolchain": "python", "summary": "^(Ran |OK|FAILED)", "timeout": 600},
+    {"name": "engine-image-test", "run": "python3 build/test_engine_image.py", "toolchain": "python", "summary": "^(Ran |OK|FAILED)", "timeout": 600},
     {"name": "image-build", "run": "DOCKER_BUILDKIT=1 docker build --tag engine:ci .", "toolchain": "shell", "timeout": 1800},
     {"name": "image-corpus", "run": "docker run --rm engine:ci conform --corpus /usr/share/engine/corpus", "toolchain": "shell", "timeout": 600},
     {"name": "image-filesystem", "run": "scripts/checks/image-filesystem.sh", "toolchain": "shell", "timeout": 1200},
@@ -61,6 +62,8 @@
     {"name": "image-runs", "run": "scripts/checks/image-runs.sh", "toolchain": "shell", "timeout": 1200},
     {"name": "image-evaluates", "run": "scripts/checks/image-evaluates.sh", "toolchain": "shell", "timeout": 1200},
     {"name": "image-launch-overrides", "run": "scripts/checks/image-launch-overrides.sh", "toolchain": "shell", "timeout": 600},
+    {"name": "image-sandbox-start", "run": "scripts/checks/image-sandbox-start.sh", "toolchain": "shell", "timeout": 1200},
+    {"name": "image-platforms", "run": "scripts/checks/image-platforms.sh", "toolchain": "shell", "timeout": 3000},
     {"name": "witness-scenario", "run": "../scripts/checks/witness-scenario.sh", "toolchain": "go", "cwd": "go", "summary": "^(ok|FAIL|---) ", "timeout": 3000},
     {"name": "both-paths-agree", "run": "export GOWORK=off AGREEMENT_RUNTIME=docker; go test -count=1 -timeout 25m -run TestBothPathsAgreeOnAFreshFetch -v ./agreement/", "toolchain": "go", "cwd": "adapters", "summary": "^(ok|FAIL|---) ", "timeout": 3000}
   ],

@@ -27,6 +27,10 @@ which is what CI's capability check exists to catch.
 | `/usr/share/engine/runtime/` | the runtime's `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES`, and its `CONFORMANCE.md` — the conformance statement every evaluation payload points the reader at, stated in full and only there | from the same image |
 | `/usr/share/engine/catalog/` | the binding files ([catalog/](../../catalog/README.md)) | by content; each is referenced by digest from the configuration |
 | `/usr/share/engine/corpus/` | the frozen corpus, so `gateway conform` runs inside the image | by content |
+| `/usr/bin/bwrap` | bubblewrap 0.13.1, the source sandbox's launcher: one static executable linked with musl and libcap, no program interpreter; root's, mode 0755, no set-user-id bit, no capability | built in the `Dockerfile` from the release tarball, fetched by its SHA-256, on the pinned Alpine base; the build refuses library versions other than the ones its notices name ([ADR-0030](../adr/0030-the-engine-image-carries-the-sandbox-launcher.md)) |
+| `/bin/true` | a static one-line program, which bubblewrap's start check runs | the same stage |
+| `/usr/share/engine/bubblewrap/` | bubblewrap's `COPYING` and the exact source tarball it was built from, musl's `COPYRIGHT`, libcap's `License`, and a README naming what is linked | the tarball by content; the two library texts from `build/notices/` |
+| `/usr/share/engine/LICENSE`, `/usr/share/engine/THIRD_PARTY_NOTICES` | the gateway's licence and the notices of the modules its programs link | the checkout's, byte for byte |
 | `/etc/passwd` | the signer's user `engine` (uid 65532), the MCP server's user `engine-mcp` (uid 65533) and eight platform users `engine-1` … `engine-8` (uids 65601 … 65608), each with a home of its own alone | written at build |
 
 Not yet in the image, and said so here rather than promised: a container runtime
@@ -55,7 +59,10 @@ platform users are a convention of the image: a configuration names one per plat
 operator who needs more derives an image with more; the engine refuses a platform whose user is
 root, the signer's, or another platform's, whatever the image carries.
 
-CI builds the image from every commit and never pushes it: what it checks is that it builds
+CI builds the image from every commit and pushes it nowhere public: it builds both
+architectures with the release's own script and pushes them to a registry on the runner's
+loopback (`scripts/checks/image-platforms.sh`), and a release pushes the image past its gate
+(Provenance, below). What CI checks is that it builds
 from the pinned bases, that the core inside it agrees with the corpus it carries, and that the
 filesystem a container created from the image unpacks to — `docker export`, the runtime's own
 unpacking, not a model of the layers, so that what is judged is what runs and a bypass would have
@@ -95,13 +102,17 @@ capabilities: it holds whatever the container runtime gives root, which is a dep
 this note's claim.
 
 **The source sandbox.** The image carries `adapter-sandbox`, through which an engine
-configuration of version 13 or later launches every source, and no bubblewrap: the `Dockerfile`
-copies none into it. A restricted source in a container made from the image is therefore
-confined by Landlock or not at all, as the kernel and the container's syscall filter allow, and
-an image derived to add bubblewrap needs `/bin/true` too, which bubblewrap's start check
-runs. Where no backend can be had the engine starts and serves, `gateway posture --config`
-reports each such source `not-enforced`, and each of its restricted launches refuses with
-`sandbox-not-enforced`. What each backend needs of the kernel is in
+configuration of version 13 or later launches every source, bubblewrap at `/usr/bin/bwrap`, the
+first of the fixed locations the helper looks in, and `/bin/true` for bubblewrap's start check.
+bubblewrap carries no set-user-id bit: it makes a user namespace as the source's user, which the
+container's runtime gives or refuses. Docker's default seccomp profile refuses it to a container
+without `CAP_SYS_ADMIN`, and on some Docker versions refuses Landlock's calls too; the
+[quickstart](../engine-quickstart.md) shows what posture says then and what to change. Where no
+backend can be had the engine starts and serves, `gateway posture --config` reports each such
+source `not-enforced`, and each of its restricted launches refuses with `sandbox-not-enforced`;
+with `measureSandboxAtStart` (engine version 23) the engine does not start instead. CI runs the
+image as built under a seccomp setting that leaves it no backend and holds the start to that
+(`scripts/checks/image-sandbox-start.sh`). What each backend needs of the kernel is in
 [engine-config.md](engine-config.md#source-sandbox-policy-engine-version-13), "When the sandbox
 cannot be had".
 
@@ -249,13 +260,17 @@ digest-shaped filename satisfies nothing. The verdict is the JSON, never the exi
 
 ## Provenance
 
-The release workflow publishes the binaries ([releasing.md](../releasing.md)) and does not yet
-publish the image: CI builds it from every commit and never pushes it. When the workflow does, it
-is to publish the image digest, a software bill of materials for both modules,
-and the runtime pin the `Dockerfile` names, in the same `checksums.txt` that names the binaries, so that an operator pins
-the image by digest and can name the tagged state it was built from, as
-[CONTRIBUTING.md](../../CONTRIBUTING.md#tags) already says of the binary. Until then the digest of
-a build is what a deployment pins, and this note is what it means.
+The release workflow publishes the image with the binaries ([releasing.md](../releasing.md),
+[ADR-0030](../adr/0030-the-engine-image-carries-the-sandbox-launcher.md)): built from the tagged
+commit for `linux/amd64` and `linux/arm64`, its image index's bytes a release asset whose SHA-256,
+the image digest, is in the same `checksums.txt` that names the binaries and under the same
+attestation, and pushed to `ghcr.io/judgment-pack/judgment-pack-gateway` under the version, by
+that digest, only past the `production` gate. The index's annotations name the source
+repository, the commit (`org.opencontainers.image.revision`) and the version, so that an
+operator pins the image by digest and can name the tagged state it was built from, as
+[CONTRIBUTING.md](../../CONTRIBUTING.md#tags) already says of the binary; that commit's
+`Dockerfile` names the runtime pin and every base. No software bill of materials is published
+yet, and that is a gap, not a claim.
 
 ## What is deliberately not in the image
 

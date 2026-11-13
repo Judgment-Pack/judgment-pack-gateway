@@ -16,7 +16,12 @@ every home is reached through directories owned by root that nobody else
 may write, with no link on the way; the adapters, the runtime, the
 catalog and the corpus are root's and unwritable by others, the catalog
 and corpus byte for byte the checkout's and the runtime byte for byte
-the released binary the Dockerfile pins, when that binary is given; every
+the released binary the Dockerfile pins, when that binary is given; the
+source sandbox's launcher at /usr/bin/bwrap and the /bin/true its start
+check runs, root's, unwritable by others, executable by everyone and
+needing no program interpreter, which the base does not have, with their
+notices and source beside them; the gateway's licence and third-party
+notices, byte for byte the checkout's; every
 home is its user's alone at 0700; the users are in /etc/passwd with their
 uids; the helper that made the homes is gone; and the image's
 configuration starts the gateway as engine with serve --config
@@ -206,6 +211,31 @@ UNSHIPPED = ("etc/engine", "var/lib/engine", "run/secrets")
 ADAPTERS = ("usr/local/bin/adapter-airbyte", "usr/local/bin/adapter-mcp", "usr/local/bin/adapter-http", "usr/local/bin/adapter-document")
 RUNTIME = "usr/local/bin/jpack"
 RUNTIME_DOCUMENTS = ("usr/share/engine/runtime/LICENSE", "usr/share/engine/runtime/NOTICE", "usr/share/engine/runtime/THIRD_PARTY_NOTICES", "usr/share/engine/runtime/CONFORMANCE.md")
+# The source sandbox's launcher, at the first of the fixed locations the
+# launcher looks in (adapters/internal/sandbox, bwrapLocations), and the
+# program its start check runs inside the sandbox; what they are and
+# where they came from, beside them (docs/adr/0030).
+LAUNCHER = "usr/bin/bwrap"
+LAUNCHER_CHECK = "bin/true"
+LAUNCHER_DOCUMENTS = tuple("usr/share/engine/bubblewrap/" + name for name in ("README", "bubblewrap-COPYING", "bubblewrap-source.tar.xz", "musl-COPYRIGHT", "libcap-License"))
+# The gateway's own licence and the notices of what its programs link, as
+# the release archives carry them, byte for byte the checkout's.
+GATEWAY_DOCUMENTS = ("LICENSE", "THIRD_PARTY_NOTICES")
+
+
+def program_interpreter(data):
+    """Whether an ELF executable names a program interpreter (PT_INTERP):
+    one that does needs a loader and a C library, which the base does not
+    carry. Only the 64-bit little-endian form the image is built in is read."""
+    if data[:4] != b"\x7fELF":
+        fail("an executable the image runs before any source is not an ELF file")
+    if data[4] != 2 or data[5] != 1:
+        fail("an executable the image runs before any source is not a 64-bit little-endian ELF file")
+    phoff, = struct.unpack_from("<Q", data, 32)
+    phentsize, phnum = struct.unpack_from("<HH", data, 54)
+    if phentsize < 4 or phoff + phentsize * phnum > len(data):
+        fail("an executable's program headers lie outside it")
+    return any(struct.unpack_from("<I", data, phoff + i * phentsize)[0] == 3 for i in range(phnum))
 
 
 def check(fs, archive, config, checkout, runtime=None):
@@ -255,6 +285,27 @@ def check(fs, archive, config, checkout, runtime=None):
         trusted_path(fs, name, readable=True)
         if not entry(fs, name).isfile:
             fail("%s is not a regular file" % name)
+    # The launcher and its check: root's on a root-owned path (trusted_path),
+    # executable by every platform user, and static -- the launcher's own
+    # check holds an interpreter to root as well, and there is none here to
+    # hold. Neither may be set-user-id or carry a capability, which the
+    # loop above already refuses of every file but the gateway.
+    for name in (LAUNCHER, LAUNCHER_CHECK):
+        trusted_path(fs, name, readable=True)
+        e = entry(fs, name)
+        if not e.isfile or e.mode & 0o111 != 0o111:
+            fail("%s is type %r mode %04o; it must be a regular file executable by every user" % (name, e.type, e.mode))
+        if program_interpreter(content(fs, archive, name)):
+            fail("%s names a program interpreter; the base carries none, so it must be static" % name)
+    for name in LAUNCHER_DOCUMENTS:
+        trusted_path(fs, name, readable=True)
+        if not entry(fs, name).isfile:
+            fail("%s is not a regular file" % name)
+    for name in GATEWAY_DOCUMENTS:
+        there = "usr/share/engine/" + name
+        trusted_path(fs, there, readable=True)
+        if content(fs, archive, there) != open(os.path.join(checkout, name), "rb").read():
+            fail("%s differs from the checkout's %s" % (there, name))
     # The catalog and the corpus: the checkout's trees exactly -- every
     # file of the checkout there and identical, and nothing there that the
     # checkout does not have -- each entry root's, unwritable by others and
@@ -329,7 +380,7 @@ def check(fs, archive, config, checkout, runtime=None):
     closed_to_the_frontend(fs)
     if config.get("Entrypoint") != ["/usr/local/bin/gateway"] or config.get("Cmd") != ["serve", "--config", "/etc/engine/engine.json"] or config.get("User") not in ("engine", "65532"):
         fail("the image starts %r %r as %r" % (config.get("Entrypoint"), config.get("Cmd"), config.get("User")))
-    return "the image holds: gateway with exactly CAP_SETUID, CAP_SETGID, CAP_KILL, 0700, engine's, on a root-owned path; the MCP server's copy of it root's, 0755, without a capability, the same bytes; nothing else privileged; %d homes at 0700 under a root-owned /home; adapters, runtime%s, catalog and corpus root's, unwritable by others, readable by all, the trees exactly the checkout's; users and groups as the engine reads them, engine-mcp in no group but its own, owning nothing outside its home, every entry under /home but its own closed to it and no link under /home, and no seed, store, configuration or credential path shipped; entrypoint and command" % (len(HOMES), " (the pinned binary, byte for byte)" if runtime is not None else "")
+    return "the image holds: gateway with exactly CAP_SETUID, CAP_SETGID, CAP_KILL, 0700, engine's, on a root-owned path; the MCP server's copy of it root's, 0755, without a capability, the same bytes; nothing else privileged; the sandbox launcher and its check static, root's, executable by all, with their notices; the gateway's licence and notices the checkout's; %d homes at 0700 under a root-owned /home; adapters, runtime%s, catalog and corpus root's, unwritable by others, readable by all, the trees exactly the checkout's; users and groups as the engine reads them, engine-mcp in no group but its own, owning nothing outside its home, every entry under /home but its own closed to it and no link under /home, and no seed, store, configuration or credential path shipped; entrypoint and command" % (len(HOMES), " (the pinned binary, byte for byte)" if runtime is not None else "")
 
 
 def closed_to_the_frontend(fs):

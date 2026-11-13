@@ -13,14 +13,22 @@ release adds the built programs for that state:
 - six archives, for Linux, macOS and Windows on `amd64` and `arm64`. Each holds `gateway`, every
   program under `adapters/cmd`, `SPEC.md`, the corpus, the catalog, `LICENSE`, `README.md`,
   `SECURITY.md` and `THIRD_PARTY_NOTICES`, and nothing else;
-- `checksums.txt`, the SHA-256 of each archive;
-- a build-provenance attestation for each archive, signed by GitHub for this workflow at the tagged
-  commit;
-- the notes a person wrote, from `docs/releases/<tag>.md`.
+- the engine image ([design/engine-image.md](design/engine-image.md)) for `linux/amd64` and
+  `linux/arm64`, built from the tagged commit, pushed to `ghcr.io/judgment-pack/judgment-pack-gateway`
+  under the version without its `v` (`0.28.0` for `v0.28.0`), and no `latest`. The bytes of its image
+  index are an asset, `judgment-pack-gateway_<version>_engine-image.index.json`, whose SHA-256 is the
+  image digest ([ADR-0030](adr/0030-the-engine-image-carries-the-sandbox-launcher.md));
+- `checksums.txt`, the SHA-256 of each archive and of the image index;
+- a build-provenance attestation for each archive and for the image index, signed by GitHub for
+  this workflow at the tagged commit, and one naming the image in the registry by that digest;
+- the notes a person wrote, from `docs/releases/<tag>.md`, and after them an "Engine image" section
+  the workflow writes: the image by its tag and by its digest.
 
 What a release is not:
 
-- **Not the engine image.** CI builds the image from every commit and never pushes it
+- **Not a moving image name.** No `latest` is pushed, and the version's tag is a name the registry
+  can move: a deployment pins the digest the release states.
+- **Not a software bill of materials.** None is built for the archives or the image
   ([design/engine-image.md](design/engine-image.md#provenance)).
 - **Not the n8n node.** It is published by its own workflow on its own tags
   (`n8n-nodes-judgment-pack@<version>`).
@@ -42,6 +50,7 @@ Releases up to `v0.4.0` were made by hand and carry notes only.
 | The adapters' tests (CI) | yes | no | vetted, not run |
 | The released archive, run: `gateway version`, `gateway conform` on the corpus it carries | `amd64` and `arm64` | `arm64` | `amd64` |
 | The released archive, run: three adapters start and print their usage line | `amd64` and `arm64` | `arm64` | no |
+| The engine image: built for both architectures, its index holding exactly one image of each and nothing else, pushed by digest and read back (CI to a registry on the runner; the release to the registry), pulled by digest and run: `gateway version`, `gateway posture` (CI) | `amd64` run, `arm64` built and not run | no | no |
 | The released archive, read and not run: it holds files and nothing else, each under its plain name and once; its documents, corpus and catalog are the commit's, byte for byte; each program is one program, built from the package of its name, for the archive's platform, at the lowest level of its architecture, and is the bytes the packer built; no file is there that a release does not hold; the archive reads to its end | `amd64` and `arm64` | `amd64` and `arm64` | `amd64` and `arm64` |
 
 What the reading of the archives is for: a mistake in the packaging, such as a pattern that
@@ -87,6 +96,13 @@ been shown to connect.
    workflow itself holds the tag to the commit the run was started for. The workflow does not read
    this setting. Where it is off, a published release's tag and assets can still be changed by
    whoever may write to the repository.
+
+3. After the first release that pushes the engine image, open the package
+   `judgment-pack-gateway` in the organisation's packages and check two things: that it is
+   connected to this repository, and that its visibility is public. A package a workflow creates
+   starts private, and an anonymous `docker pull` of it fails until a maintainer changes that.
+   The workflow does not read either setting. The organisation's package settings must allow a
+   public package.
 
 ## Prepare the release
 
@@ -152,17 +168,29 @@ Every job works on the commit the run was started for, by its digest, and not on
    no workspace, no recorded paths; `amd64` at `v1` and `arm64` at `v8.0`. The tag is written into
    `gateway`. File timestamps are set to the commit's. All six archives are then opened and read
    by `build/release_archives.py`, as the table above states. CI runs that script against sound
-   archives and against archives spoiled one way at a time.
+   archives and against archives spoiled one way at a time. The engine image is built from the
+   same commit by `build/engine-image.sh`, the script CI runs, for both architectures into an OCI
+   archive, and refused unless its index holds one image of each and nothing else. Its index's
+   bytes join the archives and `checksums.txt`, and the workflow appends the "Engine image"
+   section to the notes. The image archive is kept as an artifact of the run for the publish job
+   alone. Nothing is pushed.
 4. **Runs the archives of four targets**, each on a runner of its own platform, as the table above
    states.
 5. **Attests and drafts.** Only after every smoke test passes, and only if the tag still names the
-   commit, are the archives attested and a draft release created, with the notes from the commit.
+   commit, are the archives and the image index attested (one attestation over `checksums.txt`),
+   the image attested by its digest under its registry name, and a draft release created, with the
+   notes from the commit and the workflow's "Engine image" section.
    The job records the draft's release id for the publish job.
 6. **Waits at the `production` gate.** Review the draft on the Releases page: the notes and the
-   seven assets. Approve the pending deployment on the run.
+   eight assets. Approve the pending deployment on the run.
 7. **Holds the draft to the run, and publishes it by its id.** A draft can be changed while it
    waits, by whoever may write to the repository. So on the far side of the gate the tag is held to
-   the commit once more, and the run's own files are held to their checksums. The release the run
+   the commit once more, and the run's own files are held to their checksums. Then the image: the
+   archive's index is compared byte for byte with the run's asset, every manifest is pushed by its
+   digest under the version's tag, with the job's own token (`packages: write`, in this job alone,
+   handed to the copier in a file and never as an argument), and the tag is read back from the
+   registry and refused unless it names the digest the run built. A push that fails leaves the
+   draft unpublished. The release the run
    drafted is then read through the releases API by its id, without downloading anything: it must
    still be a draft under the tag, with the title the workflow gave it and the notes the commit
    holds (compared without the newlines either ends in), and the digest the API reports for each
@@ -211,7 +239,7 @@ What it reuses and what it still does at the release:
 | --- | --- | --- | --- |
 | `ubuntu-latest · Go 1.26`, `macos-latest · Go 1.26`, `windows-latest · Go 1.26`: the core's Go steps, natively | run, evidence recorded | run again | taken from each leg's evidence, never one leg for another |
 | `check`: the setup steps and every check of `dev.json`, the adapters, the release contents, the plugins, the second implementation, the image, the witness scenario, the agreement of the two paths | run, evidence recorded | run again | taken from its evidence |
-| The tag, `main`, the notes, the `production` reviewer rule; the notices with the release's toolchain, the packing, the checksums and the six archives read; the archives run on four platforms; the tag again and no release under it; the attestation; the draft; the approval; the draft and the published release held to the run's files | not run | run | run, unchanged and in the same order |
+| The tag, `main`, the notes, the `production` reviewer rule; the notices with the release's toolchain, the packing, the checksums and the six archives read; the engine image built and its index held; the archives run on four platforms; the tag again and no release under it; the attestations; the draft; the approval; the image pushed and read back; the draft and the published release held to the run's files | not run | run | run, unchanged and in the same order |
 
 No check of `ci.yml` depends on the tag, so nothing the gate takes is tag-sensitive. What a run
 depends on beyond the commit, and how the gate holds it:
@@ -220,7 +248,9 @@ depends on beyond the commit, and how the gate holds it:
   and `go.sum`, the lock files of the plugins and of the second implementation, the Python
   requirements of the setup step, `.goreleaser.yml`, the Dockerfile with its digest-pinned images,
   `.dockerignore` and the two programs it copies one by one (`build/setcap.go`, `build/mkhomes.go`),
-  the image check's builder image (`scripts/checks/image-root-unwritable.sh`), the witness
+  the image check's builder image (`scripts/checks/image-root-unwritable.sh`), the engine image's
+  builder and copier (`build/engine-image.sh`) and the registry CI pushes it to
+  (`scripts/checks/image-platforms.sh`), the witness
   scenario's pinned runtime (`scripts/checks/witness-scenario.sh`), and the images the agreement of
   the two paths starts: its world database (`adapters/agreement/agreement_test.go`) and the
   catalog's server images (`catalog/postgres.json`). The commit holds them, and the evidence
@@ -280,11 +310,12 @@ No maintainer token and no repository secret is used.
 
 ### What exists before the approval
 
-The gate is on the release. Three things exist before it and are not secret:
+The gate is on the release. Three things exist before it and are not secret, and nothing is in the
+registry:
 
-- the archives, as an artifact of the workflow run, which anyone who can read the repository's
-  runs can download for thirty days;
-- the attestation of those archives, which is recorded in a public transparency log when it is
+- the archives and the image's OCI archive, as artifacts of the workflow run, which anyone who can
+  read the repository's runs can download for thirty days;
+- the attestations of those archives, of the image index and of the image by its digest, which is recorded in a public transparency log when it is
   made. An attestation says which workflow built an archive, from which commit. It does not say a
   maintainer approved it: only a published release says that;
 - the draft, which those who can write to the repository can see.
@@ -301,6 +332,8 @@ What to do with a draft depends on which job failed:
 | `CI at the tag` | none was made | read the refusal: the step's last line, or the `release-evidence-<attempt>` artifact. Take the fresh route once: re-run **all** jobs of `main`'s CI run at the tagged commit (`gh run rerun <run id> --repo Judgment-Pack/judgment-pack-gateway`; a re-run of the failed jobs alone leaves the others' evidence in an earlier attempt and refuses), which also works after `main` has moved on and is the route for a run older than 48 hours or a newer runner image; when that run has completed, re-run the release run's failed jobs. `run-unfinished` means `main`'s run at the commit was still running: wait for it, then re-run the failed jobs. A second refusal, or evidence that cannot be made at that commit: fix the cause on `main` and release a new version. Nothing re-runs or dispatches CI by itself |
 | Any other job before `Attest and draft release` | none was made | re-run the failed jobs |
 | `Attest and draft release` | may exist, and may lack assets | read it, delete it by hand, then re-run the failed jobs. The job refuses to run while a release under the tag exists, draft or published, and refuses when it cannot find out |
+| `Publish release`, at `Push the engine image by its digest` | as it was made | read why. A failed copy or a read-back that names no digest is the registry's or the runner's: re-run the failed jobs, which pushes the same digest again. A read-back that names another digest means someone with write access to the package moved the tag in the moment between the copy and the read: treat it as the incident in the last row but one, and do not re-run |
+| `Publish release`, after the push and before publication | needs looking at, and the registry holds the image under the version's tag, the digest the run built and attested | as the row below; if the release is not published, the tag stays in the registry naming an image no release published. Release a new version; a maintainer may delete that package version by hand |
 | `Publish release`, before publication | needs looking at: it may be as it was made, changed, incomplete or gone | read why the job failed, and look at the Releases page. **Keep** a draft that is as it was made, and re-run the failed jobs: that job only publishes the release id the run drafted. Do not publish a draft that was changed or is incomplete. Where the draft cannot be published, release a new version |
 | `Publish release`, at `The published release holds what this run packaged`, with the message "the published release does not hold what this run packaged" and two digest sets | published, holding files this run did not package, or not published after the call | someone who can write to the repository changed the release in the window above. Treat it as an incident: tell the maintainers, point no one at the release, and release a new version from a new tag. Do not re-run |
 | `Publish release`, at the same step, with the message "the published release could not be verified" and no digest sets | published; a read after the call failed (an API or network error, or an empty answer), so nothing is known of its files | the release is unverified, not found changed: make no diagnosis. Read the same release id again and compare its asset digests with the run's: `gh api repos/Judgment-Pack/judgment-pack-gateway/releases/<id>/assets --jq '.[] | "\(.name) \(.digest)"'` (the id is in the job's log and the draft job's `release-id` output), against `checksums.txt` of the run's `release-dist` artifact and the `sha256` of each archive and of `checksums.txt` itself. If they match, the release is good. If they differ, treat it as the incident in the row above. Do not re-run the publish step |
@@ -328,6 +361,24 @@ it. None of it says that a maintainer approved the release: that is what its bei
 says. On macOS, `shasum -a 256 --check --ignore-missing checksums.txt`.
 `gh attestation verify` prints nothing when its output is not a terminal; add `--format json` in a
 script.
+
+The engine image is pinned by its digest, which is the SHA-256 of the release's image index:
+
+```bash
+sha256sum --check --ignore-missing checksums.txt
+gh attestation verify judgment-pack-gateway_<version>_engine-image.index.json \
+  --repo Judgment-Pack/judgment-pack-gateway \
+  --signer-workflow Judgment-Pack/judgment-pack-gateway/.github/workflows/release.yml \
+  --source-ref refs/tags/<tag> \
+  --source-digest <commit>
+docker pull "ghcr.io/judgment-pack/judgment-pack-gateway:<version>@sha256:$(sha256sum judgment-pack-gateway_<version>_engine-image.index.json | cut -d ' ' -f 1)"
+```
+
+The index is held as an archive is, and Docker holds what it pulls to the digest it is given, so
+the image pulled is the one the release attested whatever the tag names by then.
+`gh attestation verify oci://ghcr.io/judgment-pack/judgment-pack-gateway:<version>` with the same
+flags reads the attestation that names the image in the registry.
+[engine-quickstart.md](engine-quickstart.md) starts an engine from the image.
 
 A consumer that builds from source instead pins the tag and the commit it names, and builds with
 `-trimpath -buildvcs=false`, as Desk's bundle does.

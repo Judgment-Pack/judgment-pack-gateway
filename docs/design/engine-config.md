@@ -54,7 +54,7 @@ The file is read through the same strict parser the gateway uses for everything 
 duplicate member names refused, integers only, unknown members refused by name. A misspelled
 key is an error, never an intention silently dropped. `engineVersion`, `authority`, `seed`,
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
-`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox`, `delegation`, `sealOpenAtStart` and `acceptOtherHostsOverPlainHTTP` are optional; within a
+`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox`, `delegation`, `sealOpenAtStart`, `acceptOtherHostsOverPlainHTTP` and `measureSandboxAtStart` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
 `descriptors`, `operationDescriptors`, `descriptorStatements`, `decisionPolicy`,
 `parameters`, `grant`, `writeRequesters`, `scope` and `artifact` optional; each operation's `credentials`
@@ -62,7 +62,7 @@ entry is `{"file": …}`, and a live one's may carry `tokenStep` beside `file`. 
 absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"22"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"23"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
@@ -74,7 +74,8 @@ absolute.
   scope (engine version 20)", below), version 21 a live operation's
   `credentials.live.tokenStep` ("A live operation's token step (engine version 21)", below), and
   version 22 a platform's `artifact` ("A platform that keeps no payload (engine version 22)",
-  below). A
+  below), and version 23 `measureSandboxAtStart` ("Measuring the sandbox at the start (engine
+  version 23)", below). A
   file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -1363,9 +1364,13 @@ source is measured is passed over for Landlock. Landlock needs the kernel to ans
 and `landlock_restrict_self`. A container's syscall filter that refuses making those namespaces, or refuses the Landlock calls,
 takes that backend away; a profile that permits what a backend needs is what enforcement needs
 in a container, and loosening the profile is the operator's trade-off. The engine image carries
-`adapter-sandbox` and no bubblewrap ([engine-image.md](engine-image.md)).
+`adapter-sandbox`, bubblewrap at `/usr/bin/bwrap` and `/bin/true` for its check
+([engine-image.md](engine-image.md), "The source sandbox"); under Docker's default seccomp
+profile neither backend can be had there, which the engine image's quickstart
+([engine-quickstart.md](../engine-quickstart.md)) shows and says what to change.
 
-With neither backend, the engine still starts: the start holds the helper and each policy
+With neither backend, the engine still starts, unless the configuration sets
+`measureSandboxAtStart` (version 23, below): the start holds the helper and each policy
 file, as above, and measures nothing, so it prints nothing about the sandbox. `gateway posture
 --config <engine.json>`, run as the user the engine runs as, is the check. Each affected
 `programs` entry reads state `not-enforced`, with a reason that begins `sandbox-not-enforced`:
@@ -1819,6 +1824,40 @@ other bytes are `artifact-mismatch`. A verifier written before the member report
 keeping a platform's payloads, raise `engineVersion` to `"22"` and add `artifact` to the
 platform; a gateway older than this one refuses a version-22 file by its version. Payloads the
 platform kept before stay where they are.
+
+## Measuring the sandbox at the start (engine version 23)
+
+Version 23 adds the optional `measureSandboxAtStart` member, `true` or `false` and nothing else
+([ADR-0030](../adr/0030-the-engine-image-carries-the-sandbox-launcher.md), gateway #385). With
+it `true`, `serve --config`, once it knows it can switch to every source's user and before it
+loads an identity, opens a witness or makes the store, probes each source's sandbox as that
+source's user: the probe a launch takes, one source at a time, each under a launch's own twelve
+seconds, so the start is bounded by twelve seconds a source. The engine does not start where a
+launch of the source would be refused:
+
+- a probe that gives no report: `source <name>: its sandbox check as its user gave no report:`
+  and the cause, the path an operating-system error carries left out;
+- a restricted mode measured as not enforced: `source <name>: <mode> is not enforced under
+  <backend>:` and the helper's reason, `sandbox-not-enforced: no usable filesystem sandbox
+  backend` for one;
+- a source the configuration does not wrap, which under version 13 and later is none.
+
+Each such source is named, in name order, on one line that begins `start:
+measureSandboxAtStart:` and ends `the engine does not start`, and the process exits 1 with
+nothing made. Every other source passes as it launches: `enforced`, `partial` (Landlock's
+measured limits, or bubblewrap with a local socket seen reachable), and `danger-full-access`,
+which claims no boundary and which the operator chose. The start then prints `start:
+measureSandboxAtStart: measured` and, for each source, its name, mode, backend and state, and
+serves. A completed probe is kept for the source, as a posture report's is, so each launch
+after the start is bound to the posture the start measured; a change on the host after the
+start takes effect at the next start. Absent or `false`, the start does what it did before:
+it measures nothing, and each launch probes and refuses on its own. `gateway posture --config`
+is unchanged and is still the check that says why.
+
+**Upgrading.** A version 22 file loads unchanged under a gateway of this version. To have the
+start refuse a host that cannot enforce the sandbox, raise `engineVersion` to `"23"` and add
+`"measureSandboxAtStart": true`; a gateway older than this one refuses a version-23 file by its
+version, and a file of version 22 or earlier with the member is refused by name.
 
 ## Keyed actions (engine version 14 and later)
 
