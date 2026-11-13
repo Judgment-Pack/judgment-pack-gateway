@@ -508,8 +508,8 @@ func TestThePostgresKindReadsNoDatabaseClock(t *testing.T) {
 			}
 		}
 	}
-	if read != 4 {
-		t.Errorf("%d of the start lease's statements read the database's clock; take, holder, renew and fence do", read)
+	if read != 6 {
+		t.Errorf("%d of the start lease's statements read the database's clock; holder, take over, take first, renew, release and fence do", read)
 	}
 }
 

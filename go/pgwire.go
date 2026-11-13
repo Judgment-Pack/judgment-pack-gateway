@@ -265,9 +265,14 @@ type pgConn struct {
 
 // pgDial opens the TCP connection; a test replaces it.
 var pgDial = func(address string, deadline time.Time) (net.Conn, error) {
-	dialer := net.Dialer{Deadline: deadline}
+	dialer := net.Dialer{Deadline: deadline, KeepAliveConfig: pgKeepAlive}
 	return dialer.Dial("tcp", address)
 }
+
+// pgKeepAlive is the client's TCP keepalive on every connection: a server
+// or a path that went away is known within about 20 seconds of quiet, not
+// the hours of the system's default.
+var pgKeepAlive = net.KeepAliveConfig{Enable: true, Idle: 5 * time.Second, Interval: 5 * time.Second, Count: 3}
 
 // pgConnect opens a connection and logs in, within the deadline.
 func pgConnect(d pgDSN, deadline time.Time) (*pgConn, error) {
@@ -439,7 +444,10 @@ func (c *pgConn) startup(d pgDSN) error {
 	start := len(c.out)
 	c.out = append(c.out, 0, 0, 0, 0)
 	c.int32(pgProtocolVersion)
-	for _, kv := range [][2]string{{"user", d.user}, {"database", d.database}, {"client_encoding", "UTF8"}, {"application_name", "gateway"}} {
+	// The session's idle bound is set at its start, so even the moment
+	// between a BEGIN and the transaction's own settings is bounded.
+	idle := strconv.FormatInt(pgIdleInTransaction.Milliseconds(), 10)
+	for _, kv := range [][2]string{{"user", d.user}, {"database", d.database}, {"client_encoding", "UTF8"}, {"application_name", "gateway"}, {"idle_in_transaction_session_timeout", idle}} {
 		c.cstring(kv[0])
 		c.cstring(kv[1])
 	}

@@ -582,16 +582,19 @@ func TestAPostgresTransactionThatSetsNoScopeSeesNoRow(t *testing.T) {
 }
 
 // Every transaction of the kind sets its own synchronous commit, search
-// path and timeouts, and its scope: what a role or a database sets
+// path and bounds -- a statement's, a lock wait's, and how long the session
+// may sit idle within it -- and its scope: what a role or a database sets
 // otherwise decides nothing.
 func TestAPostgresTransactionSetsItsOwnSettings(t *testing.T) {
 	settings := func(t *testing.T, db *pgTestDB) []string {
 		t.Helper()
 		kind := db.open(t, nil)
+		kind.idle = 3 * time.Second
 		var got []string
 		if err := kind.transact(pgWriteCommitted, func(tx pgTx) error {
 			rows, err := tx.exec(`SELECT pg_catalog.current_setting('synchronous_commit'), pg_catalog.current_setting('search_path'),
-				pg_catalog.current_setting('statement_timeout'), pg_catalog.current_setting('lock_timeout'), pg_catalog.current_setting('gateway.scope')`)
+				pg_catalog.current_setting('statement_timeout'), pg_catalog.current_setting('lock_timeout'), pg_catalog.current_setting('gateway.scope'),
+				pg_catalog.current_setting('idle_in_transaction_session_timeout')`)
 			if err == nil {
 				for _, v := range rows.rows[0] {
 					got = append(got, string(v))
@@ -603,13 +606,14 @@ func TestAPostgresTransactionSetsItsOwnSettings(t *testing.T) {
 		}
 		return got
 	}
-	want := []string{"on", "pg_catalog", "30s", "30s", "none"}
+	want := []string{"on", "pg_catalog", "30s", "30s", "none", "3s"}
 	t.Run("settings a role holds", func(t *testing.T) {
 		_, db := pgTestKind(t, "", nil)
 		db.asAdmin(t,
 			"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET synchronous_commit = off",
 			"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET search_path = public",
 			"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET statement_timeout = 0",
+			"ALTER ROLE "+db.roles.runtime+" IN DATABASE "+db.database+" SET idle_in_transaction_session_timeout = 0",
 		)
 		if got := settings(t, db); !slices.Equal(got, want) {
 			t.Fatalf("a transaction's settings read %q, want %q", got, want)
