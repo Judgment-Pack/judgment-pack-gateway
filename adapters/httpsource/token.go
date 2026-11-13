@@ -389,6 +389,11 @@ func requestToken(ctx context.Context, client *http.Client, t *TokenStep, assert
 	if err != nil {
 		return obtainedToken{}, tokenFailure(TokenRefused, "the token endpoint's answer could not be read whole")
 	}
+	if throttles(resp.StatusCode) {
+		// Said by its own kind, as an answer of the source's endpoint is,
+		// with the same diagnostic: no token was obtained.
+		return obtainedToken{}, throttled(resp.StatusCode, resp.Header.Values("Retry-After"), time.Now(), fmt.Sprintf("the token endpoint refused the token request (%d)", resp.StatusCode))
+	}
 	if resp.StatusCode != http.StatusOK {
 		return obtainedToken{}, tokenFailure(TokenRefused, "the token endpoint refused the token request (%d)", resp.StatusCode)
 	}

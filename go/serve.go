@@ -1384,7 +1384,16 @@ func (g *gatewayService) runSourceUnder(ctx context.Context, cancel context.Canc
 		}
 		// The status is kept beside the text, which is unchanged: a token
 		// step's adapter reports its failure's kind by it (token_step.go).
-		return nil, "", "", &sourceExited{code: exitStatus(waitErr), text: "source failed: " + sourceFailureText(stderr.buf.String())}
+		code := exitStatus(waitErr)
+		if code == sourceExitThrottled && spec.shape == "http" {
+			// An http adapter's throttled answer, read from the report it
+			// wrote beside the status (source_throttled.go); a report out
+			// of its form is a failure as any other.
+			if throttled, ok := throttleReport(stdout.buf.Bytes()); ok {
+				return nil, "", "", throttled
+			}
+		}
+		return nil, "", "", &sourceExited{code: code, text: "source failed: " + sourceFailureText(stderr.buf.String())}
 	}
 	observedAt = nowStamp()
 	result, err = parseJSON(stdout.buf.Bytes())
@@ -1872,7 +1881,20 @@ func (g *gatewayService) handler() http.Handler {
 		}
 		var down unavailable
 		if errors.As(err, &down) {
+			// No Retry-After: a closure for maintenance lasts until its
+			// operator reopens admission, which the gateway cannot know.
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+			return
+		}
+		// A source whose endpoint answered 429 or 503 (source_throttled.go):
+		// that class, the gateway's sentence, and the reported wait as
+		// delta-seconds, written here from the number.
+		var throttled *sourceThrottled
+		if errors.As(err, &throttled) {
+			if throttled.retryAfter >= 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(throttled.retryAfter))
+			}
+			writeJSON(w, throttled.status, map[string]any{"error": throttled.Error()})
 			return
 		}
 		var caller badRequest

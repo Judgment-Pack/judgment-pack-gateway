@@ -120,7 +120,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// A token step's failure exits with its kind's status, which is how
 	// the gateway tells "no credential", "token refused" and "the source
 	// refused the token" apart without reading the text.
+	// A throttled answer (429 or 503, from the source's endpoint or the
+	// token step's) exits with its own status and reports the class and
+	// the bounded wait on stdout beside it, so the gateway can answer its
+	// caller with the class; the diagnostic on stderr is unchanged.
 	failed := func(err error) int {
+		var throttled *httpsource.Throttled
+		if errors.As(err, &throttled) {
+			stdout.Write(throttled.Report())
+			return httpsource.ThrottledStatus
+		}
 		var failure *httpsource.TokenFailure
 		if errors.As(err, &failure) {
 			return int(failure.Kind)

@@ -840,6 +840,12 @@ func TestTokenStepStandIn(t *testing.T) {
 			os.WriteFile(filepath.Join(dir, "once"), nil, 0o600)
 			os.Exit(tokenExitSealUnusable)
 		}
+	case "throttled":
+		// The source's endpoint answered 429, reported as adapter-http
+		// reports it (source_throttled.go).
+		os.Stderr.WriteString("stand-in-stderr-4e1a\n")
+		os.Stdout.WriteString(`{"throttled":{"retryAfter":45,"status":429}}`)
+		os.Exit(sourceExitThrottled)
 	}
 	os.Stdout.WriteString(`{"ok":true}`)
 	os.Exit(0)
