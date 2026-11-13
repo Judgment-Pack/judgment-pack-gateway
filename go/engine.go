@@ -55,16 +55,20 @@ import (
 // scope.go), and version 21 a live operation's optional
 // `credentials.live.tokenStep`, by which an http source obtains the access
 // token it sends (docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md;
-// token_step.go), and version 22 a platform's optional `artifact`, by which
+// token_step.go), version 22 a platform's optional `artifact`, by which
 // its sources keep no payload (docs/adr/0028-payloads-a-gateway-does-not-keep.md;
-// retention.go):
+// retention.go), and version 23 the optional `measureSandboxAtStart`, by
+// which the start measures every source's sandbox as its user and does not
+// start where a launch of one would be refused
+// (docs/adr/0030-the-engine-image-carries-the-sandbox-launcher.md;
+// sandbox_at_start.go):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "22"
+const engineVersion = "23"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -116,6 +120,10 @@ type engineConfig struct {
 	// an earlier process left open, after the interruption (SPEC.md §3c);
 	// off unless the configuration sets it.
 	sealOpenAtStart bool
+	// measureSandboxAtStart is the switch by which the start probes every
+	// source's sandbox and refuses to start unless each source would
+	// launch (sandbox_at_start.go); off unless the configuration sets it.
+	measureSandboxAtStart bool
 }
 
 // mcpConfig is the `mcp` member (docs/design/mcp-server.md): where the MCP
@@ -315,7 +323,7 @@ var engineMembers = map[string]bool{
 	"decisionRecords": true, "listen": true, "catalog": true, "platforms": true,
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
 	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
-	"sealOpenAtStart": false, "acceptOtherHostsOverPlainHTTP": false,
+	"sealOpenAtStart": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
 }
 
 var platformMembers = map[string]bool{
@@ -456,6 +464,16 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			return engineConfig{}, errors.New("engine configuration: sealOpenAtStart, when present, is true or false")
 		}
 		cfg.sealOpenAtStart = bool(on)
+	}
+	if value, present := obj.get("measureSandboxAtStart"); present {
+		if !versionAtLeast(version, "23") {
+			return engineConfig{}, fmt.Errorf("engine configuration: measureSandboxAtStart is a version-23 member; engineVersion %s has no measureSandboxAtStart", version)
+		}
+		on, ok := value.(vBool)
+		if !ok {
+			return engineConfig{}, errors.New("engine configuration: measureSandboxAtStart, when present, is true or false")
+		}
+		cfg.measureSandboxAtStart = bool(on)
 	}
 	for _, name := range []string{"rootSigner", "hostRuntime"} {
 		if _, present := obj.get(name); !present {

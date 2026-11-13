@@ -17,7 +17,7 @@
                  "adapters-not-into-core", "third-party-notices", "adapter-conform",
                  "verify-ts-test", "verify-ts-conform", "verify-ts-witness-chain", "witness-scenario",
                  "image-build", "image-corpus", "image-filesystem", "image-root-unwritable",
-                 "image-runs", "image-evaluates", "image-launch-overrides"]
+                 "image-runs", "image-evaluates", "image-launch-overrides", "image-sandbox-start"]
     },
     {
       "paths": ["corpus/**", "catalog/**"],
@@ -33,7 +33,7 @@
                  "adapter-conform", "adapters-not-into-core", "third-party-notices", "release-programs",
                  "no-publisher-registration", "both-paths-agree",
                  "image-build", "image-corpus", "image-filesystem", "image-root-unwritable",
-                 "image-runs", "image-evaluates", "image-launch-overrides"]
+                 "image-runs", "image-evaluates", "image-launch-overrides", "image-sandbox-start"]
     },
     {
       "paths": ["schema/**"],
@@ -81,7 +81,7 @@
       "checks": ["local-paths", "agent-docs", "diff-check",
                  "image-checks-test", "engine-image-test",
                  "image-build", "image-corpus", "image-filesystem", "image-root-unwritable",
-                 "image-runs", "image-evaluates", "image-launch-overrides", "image-platforms"]
+                 "image-runs", "image-evaluates", "image-launch-overrides", "image-sandbox-start", "image-platforms"]
     },
     {
       "paths": [".github/fixtures/**"],
@@ -119,7 +119,7 @@
       "paths": ["scripts/checks/image-*.sh"],
       "checks": ["local-paths", "agent-docs", "diff-check",
                  "image-build", "image-corpus", "image-filesystem", "image-root-unwritable",
-                 "image-runs", "image-evaluates", "image-launch-overrides", "image-platforms"]
+                 "image-runs", "image-evaluates", "image-launch-overrides", "image-sandbox-start", "image-platforms"]
     },
     {
       "paths": ["scripts/checks/witness-scenario.sh"],

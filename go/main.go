@@ -415,8 +415,20 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	// measureSandboxAtStart (engineVersion 23): each source's sandbox
+	// measured as its user, now that the switch to it is known to be
+	// there, and no start where a launch of one would be refused; nothing
+	// has been made yet (sandbox_at_start.go).
+	sandboxLine, err := sandboxAtStart(cfg, sources)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
 	for _, statement := range statements {
 		fmt.Fprintln(os.Stderr, "start:", statement)
+	}
+	if sandboxLine != "" {
+		fmt.Fprintln(os.Stderr, "start:", sandboxLine)
 	}
 	identity, err := loadIdentity(cfg.identity)
 	if err != nil {

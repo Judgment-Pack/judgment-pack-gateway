@@ -62,6 +62,7 @@
     {"name": "image-runs", "run": "scripts/checks/image-runs.sh", "toolchain": "shell", "timeout": 1200},
     {"name": "image-evaluates", "run": "scripts/checks/image-evaluates.sh", "toolchain": "shell", "timeout": 1200},
     {"name": "image-launch-overrides", "run": "scripts/checks/image-launch-overrides.sh", "toolchain": "shell", "timeout": 600},
+    {"name": "image-sandbox-start", "run": "scripts/checks/image-sandbox-start.sh", "toolchain": "shell", "timeout": 1200},
     {"name": "image-platforms", "run": "scripts/checks/image-platforms.sh", "toolchain": "shell", "timeout": 3000},
     {"name": "witness-scenario", "run": "../scripts/checks/witness-scenario.sh", "toolchain": "go", "cwd": "go", "summary": "^(ok|FAIL|---) ", "timeout": 3000},
     {"name": "both-paths-agree", "run": "export GOWORK=off AGREEMENT_RUNTIME=docker; go test -count=1 -timeout 25m -run TestBothPathsAgreeOnAFreshFetch -v ./agreement/", "toolchain": "go", "cwd": "adapters", "summary": "^(ok|FAIL|---) ", "timeout": 3000}
