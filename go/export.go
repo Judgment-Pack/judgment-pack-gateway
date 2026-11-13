@@ -2,7 +2,7 @@ package main
 
 // `gateway export` (docs/design/store-contract.md, "The audit export"):
 // one consistent cut of an engine's durable state -- the receipts and
-// artifacts, the registry, the decision records, the descriptor snapshots
+// artifacts and the store's removal records, the registry, the decision records, the descriptor snapshots
 // its platforms pin, and the observation journals its connection custody
 // exported -- written in the store layout SPEC.md §1.3 states, so
 // `gateway verify` reads an export, or a restore of one, as it reads a
@@ -142,7 +142,7 @@ func exportEngine(configPath, out string, observations []string) (*vObject, erro
 	}
 	kind := newFsKind(fsLayout{store: cfg.store, registry: cfg.registry})
 	return writeExport(exportInputs{
-		authority: cfg.authority, keyID: keyID, publicKey: publicKey, kind: kind,
+		authority: cfg.authority, keyID: keyID, publicKey: publicKey, kind: kind, storeRoot: cfg.store,
 		decisionRecords: cfg.decisionRecords, pins: pins, observations: journals,
 	}, out)
 }
@@ -266,8 +266,11 @@ type exportInputs struct {
 	keyID     string
 	// publicKey is the signer's key, by which the registry's first key is
 	// found when the registry holds a rotation (SPEC.md §3b); nil names none.
-	publicKey       ed25519.PublicKey
-	kind            storeKind
+	publicKey ed25519.PublicKey
+	kind      storeKind
+	// storeRoot is the directory the store's removal records are kept in
+	// (SPEC.md §1.3a, artifact-removals.jsonl); "" reads none.
+	storeRoot       string
 	decisionRecords string
 	pins            []exportPin
 	observations    [][]byte
@@ -376,6 +379,23 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 		hexSum, _ := blobHex(name)
 		if err := w.put("store/artifacts/"+hexSum, data); err != nil {
 			return nil, err
+		}
+	}
+	// The removal records (SPEC.md §1.3a), read after the artifacts: a
+	// removal appends its record before it removes the bytes, so bytes the
+	// export lacks because a removal took them after they were listed are
+	// named by a record read here. A file that is not there is none; one
+	// that is not a regular file, or cannot be read, stops the export, as
+	// it is no verdict to verify.
+	if in.storeRoot != "" {
+		data, present, err := readRemovals(in.storeRoot)
+		if err != nil {
+			return nil, err
+		}
+		if present {
+			if err := w.put("store/"+removalsFile, data); err != nil {
+				return nil, err
+			}
 		}
 	}
 	// the decision records, read after the cut, as verification walks them
@@ -671,6 +691,8 @@ func exportPathWritten(p string) bool {
 		return strings.HasSuffix(parts[3], ".json")
 	case len(parts) == 3 && parts[0] == "store" && parts[1] == "artifacts":
 		return isLowerHexOfLen(parts[2], 64)
+	case len(parts) == 2 && parts[0] == "store" && parts[1] == removalsFile:
+		return true
 	case len(parts) >= 2 && parts[0] == "decision-records":
 		return true
 	case len(parts) == 2 && parts[0] == "descriptors":

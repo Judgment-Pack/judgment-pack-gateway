@@ -115,7 +115,7 @@ func TestEveryCorpusStoreExportsAndARestoreVerifiesByteForByte(t *testing.T) {
 			live := verdictBytes(t, storeRoot, registryPath, vector.Authority, records, publicKey)
 			out := filepath.Join(t.TempDir(), "export")
 			kind := newFsKind(fsLayout{store: storeRoot, registry: registryPath})
-			if _, err := writeExport(exportInputs{authority: vector.Authority, keyID: keyIDFor(publicKey), kind: kind, decisionRecords: records}, out); err != nil {
+			if _, err := writeExport(exportInputs{authority: vector.Authority, keyID: keyIDFor(publicKey), kind: kind, storeRoot: storeRoot, decisionRecords: records}, out); err != nil {
 				t.Fatalf("export: %v", err)
 			}
 			restored := filepath.Join(t.TempDir(), "restored")
