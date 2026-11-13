@@ -294,14 +294,22 @@ start refuses a table it was not restored on.
 Append-only by privilege: nothing but a document and the start lease's row is changed once written,
 and nothing but a document is removed; a scope identifier, once recorded, stays. The login holds no
 TRUNCATE, REFERENCES or TRIGGER (nor, from PostgreSQL 17, MAINTAIN), and makes, changes and drops
-nothing. No function is defined in the schema. An append to the registry takes a transaction
-advisory lock (`pg_advisory_xact_lock`, which every role may call unless the operator took it back);
-the migration takes another. Both keys are constants of the schema, so leave them to the gateway in
-this database.
+no table, schema, policy or other object in a schema. No function is defined in the schema. An
+append to the registry takes a transaction advisory lock (`pg_advisory_xact_lock`, which every role
+may call unless the operator took it back); the migration takes another. Both keys are constants of
+the schema, so leave them to the gateway in this database.
 
 The kind's start refuses a database where any of this differs: a privilege more or less, by table
 or by column; a table, view, sequence, function, trigger, rule or type beside the store's; row
 security not enabled and forced on a scoped table, or a policy other than the scope's.
+
+What every role may do in a database it connects to, the run-time login may do too, and the
+gateway does none of it: create a large object, which stays in the database until it is unlinked;
+`LISTEN` and `NOTIFY`; take a session advisory lock, which a session holds until it ends, so one
+held on the registry's key makes every append wait and fail at the lock timeout; and set
+`row_security` off for its own session, after which its statements on a scoped table fail rather
+than read past the policy. Whoever holds the run-time login's password can do these; keep it to the
+gateway.
 
 ## Scope identifiers
 
