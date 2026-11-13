@@ -27,3 +27,7 @@ go/testdata/export/** -text
 # every runner of CI's matrix: a Windows checkout must not convert their line endings.
 .github/ci-evidence.json -text
 scripts/dev/release_evidence.py -text
+
+# The PostgreSQL storage kind's schema files are recorded by digest (store_pg/SHA256SUMS), and a
+# database refuses a migration whose bytes changed: a checkout never converts their line endings.
+go/store_pg/** -text
