@@ -1890,15 +1890,15 @@ func (g *gatewayService) admit(sessionID, scope string) error {
 		state = &sessionState{scope: scope}
 		g.sessions[sessionID] = state
 	}
+	if state.sealed {
+		return badRequest{fmt.Errorf("session is sealed: %s", sessionID)}
+	}
 	// The session's receipts are of one scope on such a kind: the view of
 	// another scope could not stamp into it (its series is the first
 	// scope's), and the source is not run for a receipt it cannot have.
 	// The refusal names neither scope.
 	if g.keeper != nil && state.scope != scope {
 		return badRequest{fmt.Errorf(refusalOtherScope, sessionID)}
-	}
-	if state.sealed {
-		return badRequest{fmt.Errorf("session is sealed: %s", sessionID)}
 	}
 	state.inFlight++
 	g.gate.admitLocked()

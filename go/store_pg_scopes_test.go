@@ -421,6 +421,10 @@ func TestThePostgresKindServesScopedPlatformsAndExportsWhatTheFilesystemKindWoul
 			t.Fatalf("seal %s: %d %v", session, code, body)
 		}
 	}
+	// a sealed session is refused as sealed, whatever the scope asking
+	if code, got := post(t, server, "/acquire", `{"session":"s-a","source":"never","arguments":{"q":"acme"}}`); code != http.StatusBadRequest || fmt.Sprint(got["error"]) != "session is sealed: s-a" {
+		t.Fatalf("an acquisition of no scope into sealed s-a: %d %v", code, got)
+	}
 
 	// each scope's rows, as the run-time login reads them in that scope
 	c := db.runtimeConn(t)

@@ -78,12 +78,13 @@ const (
 var leftInStoreBatch = 64
 
 // leftInStore's scope is the scope identifier of the source an acquisition
-// is for ("" for none), and acquiring says it is one; a seal names no scope. On a kind
-// that keeps each scope's rows apart (scopeKeeper), a session of the name
-// is looked for in every scope the kind records, since a session's name is
-// one across scopes: an acquisition into one of another scope is refused
-// whatever it holds (refusalOtherScope), since its stamp could not be made
-// there; one of its own scope, and a seal, are judged by its receipts.
+// is for ("" for none), and acquiring says it is one; a seal names no
+// scope. On a kind that keeps each scope's rows apart (scopeKeeper), a
+// session of the name is looked for in every scope the kind records, since
+// a session's name is one across scopes: an acquisition into one of another
+// scope is refused whatever it holds (refusalOtherScope), since its stamp
+// could not be made there; one of its own scope, and a seal, are judged by
+// its receipts.
 func (g *gatewayService) leftInStore(sessionID, scope string, acquiring bool) string {
 	refused := func(why string) string { return fmt.Sprintf(why, sessionID) }
 	if g.keeper != nil {
