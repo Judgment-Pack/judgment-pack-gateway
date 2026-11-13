@@ -595,3 +595,43 @@ func TestRemoveKeptBytesRefusesBytesThatAreNotTheDigests(t *testing.T) {
 		t.Fatalf("nothing there: gone %v: %v", gone, err)
 	}
 }
+
+// A record is written only where a verifier would load it and take it as
+// naming the receipt: a version 2 receipt whose signature is in uppercase
+// hexadecimal passes the ladder, and a record cannot name it (its
+// receiptSignature is lowercase by its form), so nothing is appended and
+// no byte is removed -- removed, they would leave the receipt
+// artifact-missing with no record that names it.
+func TestRemoveArtifactWritesNoRecordAVerifierWouldNotLoad(t *testing.T) {
+	t.Setenv(envSourceHelper, "1")
+	root := t.TempDir()
+	g, err := newGatewayService(filepath.Join(root, "store"), testSeed, "gateway:test", filepath.Join(root, "registry.jsonl"),
+		map[string]sourceSpec{"kept": {argv: []string{os.Args[0]}, env: helperEnv}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.receiptVersion = receiptVersion
+	server := httptest.NewServer(g.handler())
+	if code, out := post(t, server, "/acquire", `{"session":"r","source":"kept","arguments":{"q":"a"}}`); code != http.StatusOK {
+		t.Fatalf("acquire: %d %v", code, out)
+	}
+	server.Close()
+	path := filepath.Join(g.storeRoot, "receipts", "r", "0.json")
+	text := readFile(t, path)
+	at := strings.Index(text, `"signature":"`) + len(`"signature":"`)
+	text = text[:at] + strings.ToUpper(text[at:at+128]) + text[at+128:]
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ok, said := verdictOf(t, g); !strings.HasPrefix(said["0"], "ok") {
+		t.Fatalf("the receipt does not pass the ladder: %v %v", ok, said)
+	}
+	tree := storeTree(t, g.storeRoot)
+	code, stdout, stderr := removeOn(t, g, writeSeedFile(t, t.TempDir(), testSeed), "--receipt", "r/0", "--by", "operator-1")
+	if want := unlockedLine() + "remove-artifact: receipt r/0: a removal record for it would not name it as a verifier reads it, and nothing was removed\n"; code != 1 || stdout != "" || stderr != want {
+		t.Fatalf("exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+	}
+	if !sameEntries(storeTree(t, g.storeRoot), tree) {
+		t.Fatal("the store changed")
+	}
+}
