@@ -1663,7 +1663,13 @@ assertion (RFC 7523).
   - `federatedTokenFile` is an absolute path to a file whose text, read at each token request,
     is sent as the assertion. It is held as the credentials file is: owned by the platform's
     user, readable by that user alone, not a directory, on a way no other user may replace; the
-    path the adapter is given is the one the engine resolved at start.
+    path the adapter is given is the one the engine resolved at start, and it is not resolved
+    again. A token renewed by rewriting that file, or by renaming a new one onto it, is read at
+    the next token request; one renewed by swapping a link on the configured path (as some platforms
+    renew a mounted token, through a `..data` directory link) leaves the resolved path gone, and every acquisition then fails as
+    having no credential until the gateway is restarted. Point `federatedTokenFile` at a regular
+    file the platform's user owns and that is renewed in place, such as a copy a helper rewrites,
+    not at a path through a link that is swapped.
   - `x5t` and `x5t#S256`, at most one, beside `privateKey` only: the certificate's SHA-1 or
     SHA-256 thumbprint, unpadded base64url, placed in the assertion's header as written.
   - `requestScope` is sent as the token request's `scope`: scope tokens (RFC 6749 §3.3)
@@ -1682,7 +1688,8 @@ assertion (RFC 7523).
   POST.
 - **The answer.** Status 200, at most 64 KiB, `application/json`, no member named twice;
   `access_token` a string of RFC 6750's token form of at most 16 KiB; `token_type` `Bearer`, in
-  any case; `expires_in`, when present, an integer from 1 to 86400. A token stating no lifetime
+  any case; `expires_in`, when present, an integer from 1 to 86400, or a string of its decimal
+  digits and nothing else. A token stating no lifetime
   serves the one acquisition it was obtained for. The request is bounded to ten seconds, a
   redirect is refused and not followed, and the endpoint is reached over TLS 1.2 or later
   against the system's roots.
@@ -1690,9 +1697,18 @@ assertion (RFC 7523).
   user, under the source sandbox, and holds what it answers: the token sealed under a key the
   platform's credential derives, which the signer cannot open. It holds one per source and
   scope identifier, in memory alone; one token request runs at a time per source, and
-  acquisitions arriving meanwhile wait for it; it is obtained again 60 seconds before the
-  stated expiry, and a token stating 60 seconds or less, or nothing, is not kept. Each
-  acquisition is handed the sealed token in `ADAPTER_HTTP_SEALED_TOKEN`. The check `connect`
+  acquisitions arriving meanwhile wait for it and take its token, or, when it failed, its
+  failure, without a request of their own; it is obtained again 60 seconds before the stated
+  expiry, and a token stating 60 seconds or less, or nothing, is not kept. Each acquisition is
+  handed the sealed token in `ADAPTER_HTTP_SEALED_TOKEN`.
+- **One deadline.** The source's timeout, 30 seconds, bounds the whole acquisition: the wait for a token request, the token request, the source, and the token
+  request and run once more after a token the adapter could not open. Past it, the acquisition
+  fails as a source that did not finish within its timeout does. So an acquisition with a token
+  step takes no longer than one without, and the MCP side's forward bound holds for both.
+- **The request first.** A request whose `path` is not one of the operation's `paths`, or whose
+  `method` (POST when it names none) is not one of its `methods`, is refused before any token is
+  requested for it: `source NAME: the request does not name a path and a method the source's
+  operation allows; no token was requested`. The check `connect`
   runs obtains a token of its own, and sends it with `checkPath` when the binding names one.
 - **What fails, and how.** Each failure is one fixed sentence naming the source and nothing the
   adapter or the token endpoint wrote:

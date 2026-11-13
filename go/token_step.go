@@ -12,6 +12,7 @@ package main
 // refuses it.
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -184,6 +185,10 @@ const (
 	errTokenRefused      = "source %s: the token endpoint refused the token request, or answered with no token the gateway takes"
 	errTokenRejected     = "source %s: the source refused the access token the token step obtained; the token is dropped, and the request was not sent again"
 	errTokenAnswer       = "source %s: the token step did not answer with a sealed token"
+	// errTokenRequestNotAdmitted is a request naming a path or a method
+	// the source's operation does not allow, refused before a token is
+	// obtained for it.
+	errTokenRequestNotAdmitted = "source %s: the request does not name a path and a method the source's operation allows; no token was requested"
 )
 
 // tokenRefreshMargin is how long before its stated expiry a sealed token is
@@ -204,20 +209,33 @@ type tokenKey struct{ source, scope string }
 // tokenCache is the sealed tokens the signer holds, in memory and nowhere
 // else, one per source. Its zero value is ready to use.
 type tokenCache struct {
+	// mu guards entries and every entry's members.
 	mu      sync.Mutex
 	entries map[tokenKey]*tokenEntry
 	// now is the clock, for a test; nil is time.Now.
 	now func() time.Time
 }
 
-// tokenEntry is one source's sealed token. flight is held while it is
-// obtained, so concurrent acquisitions wait for one token request and do
-// not each send their own.
+// tokenEntry is one source's sealed token, and the token request in
+// progress for it, nil when none is: concurrent acquisitions wait for that
+// one request and do not each send their own.
 type tokenEntry struct {
-	flight    sync.Mutex
 	sealed    string
 	refreshAt time.Time
+	flight    *tokenFlight
 }
+
+// tokenFlight is one token request. done is closed when it has ended; err
+// is then why it failed, nil when it obtained a token.
+type tokenFlight struct {
+	done chan struct{}
+	err  error
+}
+
+// errTokenFlightEnded is what the acquisitions waiting on a token request
+// are told when the request ended without a result, its fetch having
+// panicked.
+var errTokenFlightEnded = errors.New("the token step ended without a result")
 
 func (c *tokenCache) clock() time.Time {
 	if c.now != nil {
@@ -226,9 +244,8 @@ func (c *tokenCache) clock() time.Time {
 	return time.Now()
 }
 
-func (c *tokenCache) entry(key tokenKey) *tokenEntry {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// entryLocked is the key's entry, made when there is none; c.mu is held.
+func (c *tokenCache) entryLocked(key tokenKey) *tokenEntry {
 	if c.entries == nil {
 		c.entries = map[tokenKey]*tokenEntry{}
 	}
@@ -242,22 +259,59 @@ func (c *tokenCache) entry(key tokenKey) *tokenEntry {
 
 // obtain is the source's sealed token: the one held, until the margin
 // before its expiry, or else one fetch obtains, held when its lifetime is
-// longer than the margin. One fetch runs at a time per source; whoever
-// waited on it takes what it held.
-func (c *tokenCache) obtain(key tokenKey, fetch func() (string, int, error)) (string, error) {
-	e := c.entry(key)
-	e.flight.Lock()
-	defer e.flight.Unlock()
-	if e.sealed != "" && c.clock().Before(e.refreshAt) {
-		return e.sealed, nil
+// longer than the margin. One fetch runs at a time per source. Whoever
+// waited on it takes the token it held; when it failed, each of them is
+// told its failure and none fetches again, so a token endpoint that hangs
+// or refuses costs the acquisitions waiting one token request, not one
+// each in turn. A later acquisition, which did not wait on that one, tries
+// again. Waiting ends with ctx, whose error is then returned.
+func (c *tokenCache) obtain(ctx context.Context, key tokenKey, fetch func() (string, int, error)) (string, error) {
+	for {
+		c.mu.Lock()
+		e := c.entryLocked(key)
+		if e.sealed != "" && c.clock().Before(e.refreshAt) {
+			sealed := e.sealed
+			c.mu.Unlock()
+			return sealed, nil
+		}
+		if f := e.flight; f != nil {
+			c.mu.Unlock()
+			select {
+			case <-f.done:
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+			if f.err != nil {
+				return "", f.err
+			}
+			// It obtained a token: held, or, one not kept, of the one use
+			// it was obtained for. Look again.
+			continue
+		}
+		f := &tokenFlight{done: make(chan struct{})}
+		e.sealed, e.flight = "", f
+		c.mu.Unlock()
+		return c.fly(e, f, fetch)
 	}
-	e.sealed = ""
-	sealed, expiresIn, err := fetch()
+}
+
+// fly runs the fetch of the flight f for the entry e, and ends the flight
+// with its result, whatever the fetch does.
+func (c *tokenCache) fly(e *tokenEntry, f *tokenFlight, fetch func() (string, int, error)) (sealed string, err error) {
+	expiresIn := 0
+	err = errTokenFlightEnded
+	defer func() {
+		c.mu.Lock()
+		e.flight, f.err = nil, err
+		if lifetime := time.Duration(expiresIn) * time.Second; err == nil && lifetime > tokenRefreshMargin {
+			e.sealed, e.refreshAt = sealed, c.clock().Add(lifetime-tokenRefreshMargin)
+		}
+		c.mu.Unlock()
+		close(f.done)
+	}()
+	sealed, expiresIn, err = fetch()
 	if err != nil {
 		return "", err
-	}
-	if lifetime := time.Duration(expiresIn) * time.Second; lifetime > tokenRefreshMargin {
-		e.sealed, e.refreshAt = sealed, c.clock().Add(lifetime-tokenRefreshMargin)
 	}
 	return sealed, nil
 }
@@ -265,10 +319,9 @@ func (c *tokenCache) obtain(key tokenKey, fetch func() (string, int, error)) (st
 // drop forgets the source's sealed token when it is still the one given,
 // so a token obtained since by another acquisition is kept.
 func (c *tokenCache) drop(key tokenKey, sealed string) {
-	e := c.entry(key)
-	e.flight.Lock()
-	defer e.flight.Unlock()
-	if e.sealed == sealed {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e := c.entryLocked(key); e.sealed == sealed {
 		e.sealed = ""
 	}
 }
@@ -311,19 +364,37 @@ func exitStatus(waitErr error) int {
 // the adapter could not open -- its credential renewed since -- is dropped
 // and obtained once more, and the acquisition run once more; no request was
 // sent the first time.
+//
+// A request naming a path or a method the source's operation does not
+// allow is refused before anything runs, as the adapter would refuse it,
+// so it costs the token endpoint nothing. The source's one timeout bounds
+// the whole acquisition -- the wait for a token request, the token
+// request, the source, and the run once more -- as it bounds one run of a
+// source with no token step, so what /acquire and the MCP side's forward
+// bound (mcpForwardTimeout) are sized for holds here too.
 func (g *gatewayService) runAcquisitionSource(source string, spec sourceSpec, stdin []byte) (value, string, string, error) {
 	if !spec.tokenStep {
 		return g.runSource(source, spec, stdin)
 	}
+	if err := tokenStepAdmits(source, spec, stdin); err != nil {
+		return nil, "", "", err
+	}
+	ctx, timeout, cancel := g.sourceRunContext(source, spec)
+	defer cancel()
 	key := tokenKey{source: source, scope: spec.scope}
 	for attempt := 0; ; attempt++ {
-		sealed, err := g.tokens.obtain(key, func() (string, int, error) { return g.obtainToken(source, spec) })
+		sealed, err := g.tokens.obtain(ctx, key, func() (string, int, error) { return g.obtainToken(ctx, timeout, source, spec) })
 		if err != nil {
+			if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+				// The deadline passed while it waited on another's token
+				// request.
+				err = acquisitionEnded(ctx, timeout)
+			}
 			return nil, "", "", err
 		}
 		run := spec
 		run.env = append(append([]string(nil), spec.env...), sealedTokenVariable+"="+sealed)
-		result, digest, observedAt, err := g.runSource(source, run, stdin)
+		result, digest, observedAt, err := g.runOnce(ctx, timeout, source, run, stdin)
 		switch exitCodeOf(err) {
 		case tokenExitRejectedBySource:
 			g.tokens.drop(key, sealed)
@@ -345,15 +416,72 @@ func (g *gatewayService) runAcquisitionSource(source string, spec sourceSpec, st
 	}
 }
 
+// acquisitionEnded is the failure of an acquisition whose context ended
+// before a run of it began, nil while it has not: past its deadline, said
+// as a source that did not finish within its timeout is; otherwise, the
+// gateway stopping, as a source that could not be started.
+func acquisitionEnded(ctx context.Context, timeout time.Duration) error {
+	switch err := ctx.Err(); {
+	case err == nil:
+		return nil
+	case errors.Is(err, context.DeadlineExceeded):
+		return sourceTimeoutError(timeout)
+	default:
+		return &sourceNotStarted{fmt.Errorf("source could not be started: %v", err)}
+	}
+}
+
+// runOnce is one run of a token step's acquisition under the acquisition's
+// context, ended by an overflow of its output alone.
+func (g *gatewayService) runOnce(ctx context.Context, timeout time.Duration, source string, spec sourceSpec, stdin []byte) (value, string, string, error) {
+	if err := acquisitionEnded(ctx, timeout); err != nil {
+		return nil, "", "", err
+	}
+	run, cancel := context.WithCancel(ctx)
+	defer cancel()
+	return g.runSourceUnder(run, cancel, timeout, source, spec, stdin)
+}
+
+// tokenStepAdmits holds a token step's request to its operation's paths and
+// methods, as adapter-http holds it: an object whose path, a string, is one
+// of the paths, and whose method, POST when it names none, is one of the
+// methods. Anything else is refused by one fixed sentence, before a token
+// is obtained for it.
+func tokenStepAdmits(source string, spec sourceSpec, stdin []byte) error {
+	refused := fmt.Errorf(errTokenRequestNotAdmitted, source)
+	args, err := parseJSON(stdin)
+	if err != nil {
+		return refused
+	}
+	request, ok := args.(*vObject)
+	if !ok {
+		return refused
+	}
+	path, ok := memberString(request, "path")
+	if !ok || !contains(spec.requestPaths, path) {
+		return refused
+	}
+	method := "POST"
+	if _, present := request.get("method"); present {
+		if method, ok = memberString(request, "method"); !ok {
+			return refused
+		}
+	}
+	if !contains(spec.requestMethods, method) {
+		return refused
+	}
+	return nil
+}
+
 // obtainToken runs adapter-http --token-only for the source, as the source
-// is run, and reads its answer: exactly a sealed token and the lifetime the
-// endpoint stated, null or 1 to 86400 seconds. A failure of the step is one
-// of the fixed results; a source that could not start or did not finish is
-// said as runSource says it.
-func (g *gatewayService) obtainToken(source string, spec sourceSpec) (string, int, error) {
+// is run, under the acquisition's context, and reads its answer: exactly a
+// sealed token and the lifetime the endpoint stated, null or 1 to 86400
+// seconds. A failure of the step is one of the fixed results; a source that
+// could not start or did not finish is said as runSource says it.
+func (g *gatewayService) obtainToken(ctx context.Context, timeout time.Duration, source string, spec sourceSpec) (string, int, error) {
 	run := spec
 	run.argv = append(append([]string(nil), spec.argv...), "--token-only")
-	result, _, _, err := g.runSource(source, run, nil)
+	result, _, _, err := g.runOnce(ctx, timeout, source, run, nil)
 	switch exitCodeOf(err) {
 	case tokenExitNoCredential:
 		return "", 0, fmt.Errorf(errTokenNoCredential, source)

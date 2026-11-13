@@ -303,16 +303,26 @@ alone, on a way no other user may replace. The signer reads neither, nor the ass
 access token: the adapter answers the token sealed with AES-256-GCM under a key HKDF derives from
 the credential, bound to the source's configuration, and the signer holds that ciphertext, in
 memory alone, per source and scope identifier, and hands it to the next acquisition, where the
-adapter opens it. Under `rootSigner` accepted, the signer can read every credential and so could
-derive that key; otherwise it cannot. The token endpoint is held to the endpoint form
+adapter opens it. What the seal holds is the signer as written: it never reads the credential or
+the token in the clear, so neither is in its memory, a dump of it or anything it writes. It is
+not a boundary against a compromised signer: one that can read every credential, as under
+`rootSigner`, or switch users, as a non-root signer holding `CAP_SETUID` can (below), can derive
+the key as the platform's user does. The token endpoint is held to the endpoint form
 above, follows no redirect, is bounded to 64 KiB and ten seconds, and is reached against the
 system's roots; an answer is taken only as a `Bearer` `access_token` with an `expires_in` of at
 most a day, or none. Each failure — no credential, a refused or malformed token answer, a token the
 source refused — is one fixed sentence that names the source and quotes nothing of the endpoint's
-answer, and none of the key, the federated token, the assertion, the token or the sealed token is
-written to a receipt, a record, `/posture`, a response, an error or a log line. A source that
+answer, and nothing the gateway or the adapter writes of its own — a receipt's members, a record,
+`/posture`, a response, an error, a log line — carries the key, the federated token, the
+assertion, the token or the sealed token. A source whose answer quotes the request's headers
+back puts the token in the result the receipt attests, as it would a static bearer; what a
+source answers is the source's. A source that
 answered 401 to the token is not asked again under the same receipt: the token is dropped and the
-acquisition fails. The token step does not establish which identity the token was issued to, or
+acquisition fails. Acquisitions waiting on a token request that fails are each told its failure
+rather than sending one each, and the source's one timeout bounds the whole acquisition, the
+token request included, so a token endpoint that hangs holds an acquisition no longer than a
+source that hangs. A request naming a path or a method the operation does not allow is refused
+before a token is requested for it. The token step does not establish which identity the token was issued to, or
 that the token endpoint is the one the source trusts; it changes how the credential is obtained,
 not what the receipt says.
 

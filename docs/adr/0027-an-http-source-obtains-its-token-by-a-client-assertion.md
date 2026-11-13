@@ -64,7 +64,11 @@ holder (the adapter's user) of every secret with no process kept running.
    `http` shape or sends its credential under `credentialHeader`, and a platform with one may not
    set `ADAPTER_HTTP_SEALED_TOKEN` in its `environment`. The federated token file is held as a
    credentials file is: owned by the platform's user, readable by that user alone, on a way no
-   other user may replace, and the path given to the adapter is the one resolved at start.
+   other user may replace, and the path given to the adapter is the one resolved at start. It is
+   not resolved again: a token renewed in place, or renamed onto that path, is read at the next
+   token request, while one renewed by swapping a link on the configured path leaves the
+   resolved path gone and every acquisition failing as having no credential until a restart.
+   The operator points the member at a regular file renewed in place.
 2. **The assertion.** With `privateKey`, a JWT the adapter signs: RS256 for an RSA key of 2048
    bits or more, ES256 for a P-256 key, the algorithm taken from the key (a PKCS #8 `PRIVATE
    KEY` PEM block); the header `alg`, `typ` `JWT` and the thumbprint given; the claims `iss` and
@@ -74,8 +78,8 @@ holder (the adapter's user) of every secret with no process kept running.
    `urn:ietf:params:oauth:client-assertion-type:jwt-bearer`, as a form POST.
 3. **The answer.** Status 200, at most 64 KiB, `application/json`, no member named twice;
    `access_token` a string of RFC 6750's token form of at most 16 KiB; `token_type` `Bearer` in
-   any case; `expires_in` an integer from 1 to 86400 or absent, when the token serves the one
-   acquisition it was obtained for. Ten seconds bound the request; a redirect is not followed;
+   any case; `expires_in` an integer from 1 to 86400, or a string of its decimal digits as some
+   endpoints answer it, or absent, when the token serves the one acquisition it was obtained for. Ten seconds bound the request; a redirect is not followed;
    TLS 1.2 or later against the system's roots.
 4. **Sealing.** `adapter-http --token-only` answers `{"sealed": …, "expiresIn": N | null}`: the
    token sealed with AES-256-GCM under a key HKDF-SHA256 derives from the step's credential (the
@@ -85,26 +89,38 @@ holder (the adapter's user) of every secret with no process kept running.
    configuration or credential, or past its time, is refused.
 5. **The holding.** The signer holds each source's sealed token in memory alone, keyed by source
    and the platform's scope identifier; one token request runs at a time per source and
-   concurrent acquisitions wait for it; it is obtained again 60 seconds before the stated
-   expiry, and one stating 60 seconds or less, or nothing, is not kept. The acquisition is handed
-   it in `ADAPTER_HTTP_SEALED_TOKEN`.
-6. **The failures.** adapter-http exits 3 for no credential, 4 for a token request refused or
+   concurrent acquisitions wait for it, taking its token or, when it failed, its failure, with
+   no request of their own; it is obtained again 60 seconds before the stated expiry, and one
+   stating 60 seconds or less, or nothing, is not kept. The acquisition is handed it in
+   `ADAPTER_HTTP_SEALED_TOKEN`. A request naming a path or a method the operation does not allow
+   is refused before any of this, so it costs the token endpoint nothing.
+6. **One deadline.** The source's timeout, 30 seconds, bounds the whole acquisition: the wait for
+   another acquisition's token request, the token request, the source, and the token request and
+   run once more after a status 6. It is the same number a source without a token step runs
+   under, and not one deadline per run, because the MCP side's forward bound (45 seconds) is
+   sized for one: that deadline, the five-second wait for a source's pipes, and a margin. With a
+   deadline per run, four runs could take four deadlines, and a forward the MCP side had given up
+   on could still mint a receipt. The token request's own ten seconds fall inside it, leaving the
+   source at least twenty when the token endpoint is slow.
+7. **The failures.** adapter-http exits 3 for no credential, 4 for a token request refused or
    answered with no token it takes, 5 when the source answered 401 to the token, and 6 for a
    sealed token it does not open; the signer answers fixed sentences that name the source and
    nothing the adapter wrote. On 5 the sealed token is dropped and the acquisition fails, since
    sending the request again would read the source twice under one receipt; the next acquisition
    obtains a new token. On 6 the sealed token is dropped, a new one obtained and the acquisition
    run once more, since nothing was sent; a second 6 is the refused sentence.
-7. **`connect`** has no flag for the member; `--replace` keeps it, and refuses a replacement it
+8. **`connect`** has no flag for the member; `--replace` keeps it, and refuses a replacement it
    would not fit.
-8. **Nothing else moves.** No receipt member, no `/posture` member, no binding version, no
+9. **Nothing else moves.** No receipt member, no `/posture` member, no binding version, no
    change to a source without a token step.
 
 ### Consequences
 
 - Good: the private key, the federated token, the assertion and the access token stay with the
-  platform's user, as a static credential does; the signer holds only ciphertext it cannot open,
-  and a configuration without a token step is unchanged.
+  platform's user, as a static credential does; the signer as written holds only ciphertext and
+  never reads the token in the clear, and a configuration without a token step is unchanged.
+  The seal is not a boundary against a compromised signer, which can read the credential or
+  switch to the platform's user and derive the key, as it can reach every credential.
 - Good: a provider that issues tokens only against a certificate or a federated identity can be
   read without a process outside the gateway rewriting a credentials file.
 - Bad: a token request costs an extra adapter process, and each acquisition opens the sealed

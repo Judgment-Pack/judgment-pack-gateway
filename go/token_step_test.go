@@ -207,7 +207,7 @@ func TestTokenCacheHoldsOneTokenPerSourceAndScope(t *testing.T) {
 	}
 	obtain := func(key tokenKey, fetch func() (string, int, error), want string) {
 		t.Helper()
-		got, err := c.obtain(key, fetch)
+		got, err := c.obtain(context.Background(), key, fetch)
 		if err != nil || got != want {
 			t.Fatalf("obtain %v: %q %v, want %q", key, got, err, want)
 		}
@@ -235,7 +235,7 @@ func TestTokenCacheHoldsOneTokenPerSourceAndScope(t *testing.T) {
 	obtain(short, next(61), "sealed-10")
 	refused := errors.New("refused")
 	now = now.Add(time.Hour)
-	if _, err := c.obtain(records, func() (string, int, error) { return "", 0, refused }); !errors.Is(err, refused) {
+	if _, err := c.obtain(context.Background(), records, func() (string, int, error) { return "", 0, refused }); !errors.Is(err, refused) {
 		t.Fatalf("a failed fetch: %v", err)
 	}
 	obtain(records, next(600), "sealed-11")
@@ -254,7 +254,7 @@ func TestTokenCacheObtainsOneTokenForConcurrentAcquisitions(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			got[i], _ = c.obtain(key, func() (string, int, error) {
+			got[i], _ = c.obtain(context.Background(), key, func() (string, int, error) {
 				fetches.Add(1)
 				<-release
 				return "sealed-1", 600, nil
@@ -543,13 +543,11 @@ func TestTokenStepDrivesTheHTTPAdapterEndToEnd(t *testing.T) {
 	var sealed []string
 	held := func(source string) string {
 		service.tokens.mu.Lock()
+		defer service.tokens.mu.Unlock()
 		e := service.tokens.entries[tokenKey{source: source}]
-		service.tokens.mu.Unlock()
 		if e == nil {
 			return ""
 		}
-		e.flight.Lock()
-		defer e.flight.Unlock()
 		if e.sealed != "" {
 			sealed = append(sealed, e.sealed)
 		}
@@ -571,8 +569,18 @@ func TestTokenStepDrivesTheHTTPAdapterEndToEnd(t *testing.T) {
 		return body
 	}
 
-	// One token request serves two acquisitions.
+	// A path the binding does not name, with no token held: refused, and no
+	// token requested for it.
 	beforeRequests, beforeHits := counts()
+	code, body := post(t, server, "/acquire", `{"session":"tok-elsewhere","source":"records/live","arguments":{"path":"/elsewhere","method":"GET"}}`)
+	keep(body)
+	if requested, hit := counts(); code == http.StatusOK || !strings.Contains(fmt.Sprint(body), fmt.Sprintf(errTokenRequestNotAdmitted, "records/live")) ||
+		held("records/live") != "" || !reflect.DeepEqual(requested, beforeRequests) || !reflect.DeepEqual(hit, beforeHits) {
+		t.Fatalf("a path not in the binding: %d %v; %v token requests, %v requests to the API", code, body, requested, hit)
+	}
+
+	// One token request serves two acquisitions.
+	beforeRequests, beforeHits = counts()
 	first := succeeds("the first acquisition", "records/live")
 	succeeds("the second acquisition", "records/live")
 	requested, hit := counts()
@@ -667,7 +675,7 @@ func TestTokenStepDrivesTheHTTPAdapterEndToEnd(t *testing.T) {
 		outputs = append(outputs, string(body))
 	}
 	outputs = append(outputs, logs.String())
-	for _, root := range []string{cfg.store, cfg.registry} {
+	for _, root := range []string{cfg.store, cfg.registry, cfg.decisionRecords} {
 		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 			if err == nil && !d.IsDir() {
 				data, _ := os.ReadFile(p)
@@ -767,14 +775,21 @@ func TestTokenStepStandIn(t *testing.T) {
 		f.WriteString(line + "\n")
 		f.Close()
 	}
+	pause := func(name string) {
+		if d, err := time.ParseDuration(os.Getenv(name)); err == nil {
+			time.Sleep(d)
+		}
+	}
 	if os.Args[len(os.Args)-1] == "--token-only" {
 		appendTo("token-runs", "run")
+		pause("TOKEN_STAND_IN_TOKEN_PAUSE")
 		os.Stderr.WriteString("stand-in-stderr-4e1a\n")
 		os.Stdout.WriteString(os.Getenv("TOKEN_STAND_IN_ANSWER"))
 		n, _ := strconv.Atoi(os.Getenv("TOKEN_STAND_IN_EXIT"))
 		os.Exit(n)
 	}
 	appendTo("acquisitions", os.Getenv(sealedTokenVariable))
+	pause("TOKEN_STAND_IN_RUN_PAUSE")
 	switch os.Getenv("TOKEN_STAND_IN_RUN") {
 	case "rejected":
 		os.Exit(tokenExitRejectedBySource)
@@ -790,6 +805,148 @@ func TestTokenStepStandIn(t *testing.T) {
 	os.Exit(0)
 }
 
+// tokenStandInRequest is a request the stand-in's operation allows.
+var tokenStandInRequest = []byte(`{"method":"GET","path":"/r"}`)
+
+// standInSpec is a token step's source that TestTokenStepStandIn stands in
+// for, its operation's one path /r by GET, recording in dir.
+func standInSpec(dir, answer string, exit int, run string, env ...string) sourceSpec {
+	return sourceSpec{argv: []string{os.Args[0], "-test.run=^TestTokenStepStandIn$", "--"}, shape: "http", tokenStep: true,
+		requestPaths: []string{"/r"}, requestMethods: []string{"GET"},
+		env: append([]string{"TOKEN_STAND_IN_DIR=" + dir, "TOKEN_STAND_IN_ANSWER=" + answer, fmt.Sprintf("TOKEN_STAND_IN_EXIT=%d", exit), "TOKEN_STAND_IN_RUN=" + run}, env...)}
+}
+
+// standInLines are the lines the stand-in recorded in dir's file name.
+func standInLines(dir, name string) []string {
+	data, _ := os.ReadFile(filepath.Join(dir, name))
+	return strings.Fields(string(data))
+}
+
+// Acquisitions that waited on a token request that failed are each told
+// its failure, in its one fixed sentence, and none sends a token request of
+// its own; a later acquisition tries again. One waiting on a request that
+// does not end gives up at its own deadline.
+func TestTokenCacheSharesAFailedTokenRequest(t *testing.T) {
+	var c tokenCache
+	key := tokenKey{source: "records/live"}
+	refused := fmt.Errorf(errTokenRefused, "records/live")
+	var fetches atomic.Int64
+	release := make(chan struct{})
+	errs := make([]error, 5)
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = c.obtain(context.Background(), key, func() (string, int, error) {
+				fetches.Add(1)
+				<-release
+				return "", 0, refused
+			})
+		}()
+	}
+	for fetches.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	if fetches.Load() != 1 || slices.ContainsFunc(errs, func(err error) bool { return err != refused }) {
+		t.Fatalf("%d token requests for 5 acquisitions on a failing one: %v", fetches.Load(), errs)
+	}
+	if got, err := c.obtain(context.Background(), key, func() (string, int, error) { return "sealed-1", 600, nil }); err != nil || got != "sealed-1" {
+		t.Fatalf("a later acquisition: %q %v", got, err)
+	}
+
+	// A waiter's own deadline ends its wait.
+	hung := tokenKey{source: "hung/live"}
+	stuck := make(chan struct{})
+	defer close(stuck)
+	started := make(chan struct{})
+	go c.obtain(context.Background(), hung, func() (string, int, error) {
+		close(started)
+		<-stuck
+		return "", 0, refused
+	})
+	<-started
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	begun := time.Now()
+	if _, err := c.obtain(ctx, hung, func() (string, int, error) { return "sealed-2", 600, nil }); !errors.Is(err, context.DeadlineExceeded) || time.Since(begun) > 5*time.Second {
+		t.Fatalf("a waiter past its deadline: %v after %v", err, time.Since(begun))
+	}
+}
+
+// One deadline, the source's timeout, bounds the whole of a token step's
+// acquisition: the token request, the source, and a token request and run
+// once more. Acquisitions waiting on a token request that hangs share the
+// one request and end with it, at its deadline, with nothing sent to the
+// source; a token request and a source that each fit the timeout but not
+// together fail as one acquisition past its timeout.
+func TestTokenStepOneDeadlineBoundsTheAcquisition(t *testing.T) {
+	service, _ := testService(t)
+	const good = `{"sealed":"c2VhbGVk","expiresIn":600}`
+	timedOut := sourceTimeoutError(time.Second).Error()
+
+	dir := t.TempDir()
+	spec := standInSpec(dir, good, 0, "ok", "TOKEN_STAND_IN_TOKEN_PAUSE=60s")
+	spec.timeout = time.Second
+	errs := make([]error, 5)
+	begun := time.Now()
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, _, errs[i] = service.runAcquisitionSource("hung/live", spec, tokenStandInRequest)
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(begun)
+	if runs := standInLines(dir, "token-runs"); len(runs) != 1 || elapsed > 4*time.Second ||
+		slices.ContainsFunc(errs, func(err error) bool { return err == nil || err.Error() != timedOut }) {
+		t.Fatalf("5 acquisitions on a token request that hangs: %d token runs in %v: %v", len(runs), elapsed, errs)
+	}
+	if handed := standInLines(dir, "acquisitions"); len(handed) != 0 {
+		t.Fatalf("a token request that hung sent %d requests to the source", len(handed))
+	}
+
+	dir = t.TempDir()
+	spec = standInSpec(dir, good, 0, "ok", "TOKEN_STAND_IN_TOKEN_PAUSE=600ms", "TOKEN_STAND_IN_RUN_PAUSE=700ms")
+	spec.timeout = time.Second
+	if _, _, _, err := service.runAcquisitionSource("slow/live", spec, tokenStandInRequest); err == nil || err.Error() != timedOut {
+		t.Fatalf("a token request and a source together past the timeout: %v", err)
+	}
+}
+
+// A request naming a path or a method the source's operation does not
+// allow is refused before any token is requested for it.
+func TestTokenStepRefusesARequestBeforeTheTokenStep(t *testing.T) {
+	service, _ := testService(t)
+	dir := t.TempDir()
+	spec := standInSpec(dir, `{"sealed":"c2VhbGVk","expiresIn":600}`, 0, "ok")
+	spec.requestMethods = []string{"GET", "POST"}
+	for _, request := range []string{
+		`{"path":"/w","method":"GET"}`, `{"path":"/r","method":"PUT"}`, `{"path":"/r/","method":"GET"}`,
+		`{"path":"/w"}`, `{"method":"GET"}`, `{"path":["/r"],"method":"GET"}`, `{"path":"/r","method":1}`, `["/r"]`, `"/r"`, ``,
+	} {
+		if _, _, _, err := service.runAcquisitionSource("records/live", spec, []byte(request)); err == nil || err.Error() != fmt.Sprintf(errTokenRequestNotAdmitted, "records/live") {
+			t.Fatalf("%s: %v", request, err)
+		}
+	}
+	if runs := standInLines(dir, "token-runs"); len(runs) != 0 {
+		t.Fatalf("refused requests made %d token requests", len(runs))
+	}
+	for _, request := range []string{`{"path":"/r","method":"GET"}`, `{"path":"/r"}`, `{"body":{},"path":"/r","method":"POST"}`} {
+		if _, _, _, err := service.runAcquisitionSource("records/live", spec, []byte(request)); err != nil {
+			t.Fatalf("%s: %v", request, err)
+		}
+	}
+	if runs := standInLines(dir, "token-runs"); len(runs) != 1 {
+		t.Fatalf("allowed requests made %d token requests", len(runs))
+	}
+}
+
 // The signer reads the adapter's sealed answer strictly -- exactly a
 // sealed token of base64url and a lifetime of 1 to 86400 seconds or null --
 // and maps each status to its own sentence, quoting nothing the adapter
@@ -800,8 +957,7 @@ func TestTokenStepReadsTheAdaptersAnswerStrictly(t *testing.T) {
 	service, _ := testService(t)
 	standIn := func(answer string, exit int, run string) (sourceSpec, string) {
 		dir := t.TempDir()
-		return sourceSpec{argv: []string{os.Args[0], "-test.run=^TestTokenStepStandIn$", "--"}, shape: "http", tokenStep: true,
-			env: []string{"TOKEN_STAND_IN_DIR=" + dir, "TOKEN_STAND_IN_ANSWER=" + answer, fmt.Sprintf("TOKEN_STAND_IN_EXIT=%d", exit), "TOKEN_STAND_IN_RUN=" + run}}, dir
+		return standInSpec(dir, answer, exit, run), dir
 	}
 	lines := func(dir, name string) []string {
 		data, _ := os.ReadFile(filepath.Join(dir, name))
@@ -829,7 +985,7 @@ func TestTokenStepReadsTheAdaptersAnswerStrictly(t *testing.T) {
 		{"a seal status from the token step", good, tokenExitSealUnusable, errTokenRefused},
 	} {
 		spec, _ := standIn(c.answer, c.exit, "ok")
-		sealed, expiresIn, err := service.obtainToken("records/live", spec)
+		sealed, expiresIn, err := service.obtainToken(context.Background(), time.Minute, "records/live", spec)
 		switch {
 		case c.want == "" && (err != nil || sealed != "c2VhbGVk" || (expiresIn != 600 && expiresIn != 0)):
 			t.Fatalf("%s: %q %d %v", c.name, sealed, expiresIn, err)
@@ -839,7 +995,7 @@ func TestTokenStepReadsTheAdaptersAnswerStrictly(t *testing.T) {
 	}
 	// A failure that is not the token step's is said as any source's.
 	spec, _ := standIn(good, 1, "ok")
-	if _, _, err := service.obtainToken("records/live", spec); err == nil || !strings.HasPrefix(err.Error(), "source failed: ") {
+	if _, _, err := service.obtainToken(context.Background(), time.Minute, "records/live", spec); err == nil || !strings.HasPrefix(err.Error(), "source failed: ") {
 		t.Fatalf("a source that failed otherwise: %v", err)
 	}
 
@@ -847,7 +1003,7 @@ func TestTokenStepReadsTheAdaptersAnswerStrictly(t *testing.T) {
 	// from the cache.
 	spec, dir := standIn(good, 0, "ok")
 	for i := 0; i < 2; i++ {
-		if result, _, _, err := service.runAcquisitionSource("ok/live", spec, []byte("{}")); err != nil || result == nil {
+		if result, _, _, err := service.runAcquisitionSource("ok/live", spec, tokenStandInRequest); err != nil || result == nil {
 			t.Fatalf("an acquisition handed the sealed token: %v", err)
 		}
 	}
@@ -857,24 +1013,24 @@ func TestTokenStepReadsTheAdaptersAnswerStrictly(t *testing.T) {
 	// The source refused the token: dropped, not sent again, and the next
 	// acquisition obtains another.
 	spec, dir = standIn(good, 0, "rejected")
-	if _, _, _, err := service.runAcquisitionSource("rejected/live", spec, []byte("{}")); err == nil || err.Error() != fmt.Sprintf(errTokenRejected, "rejected/live") {
+	if _, _, _, err := service.runAcquisitionSource("rejected/live", spec, tokenStandInRequest); err == nil || err.Error() != fmt.Sprintf(errTokenRejected, "rejected/live") {
 		t.Fatalf("a token the source refused: %v", err)
 	}
 	if len(lines(dir, "acquisitions")) != 1 {
 		t.Fatalf("a token the source refused was sent again: %d acquisitions", len(lines(dir, "acquisitions")))
 	}
-	service.runAcquisitionSource("rejected/live", spec, []byte("{}"))
+	service.runAcquisitionSource("rejected/live", spec, tokenStandInRequest)
 	if len(lines(dir, "token-runs")) != 2 {
 		t.Fatalf("a refused token was kept: %d token runs", len(lines(dir, "token-runs")))
 	}
 	// A sealed token the adapter could not open: obtained again, and the
 	// acquisition run once more.
 	spec, dir = standIn(good, 0, "unusable-once")
-	if _, _, _, err := service.runAcquisitionSource("renewed/live", spec, []byte("{}")); err != nil || len(lines(dir, "token-runs")) != 2 || len(lines(dir, "acquisitions")) != 2 {
+	if _, _, _, err := service.runAcquisitionSource("renewed/live", spec, tokenStandInRequest); err != nil || len(lines(dir, "token-runs")) != 2 || len(lines(dir, "acquisitions")) != 2 {
 		t.Fatalf("a sealed token not opened once: %v, %d token runs, %d acquisitions", err, len(lines(dir, "token-runs")), len(lines(dir, "acquisitions")))
 	}
 	spec, dir = standIn(good, 0, "unusable")
-	if _, _, _, err := service.runAcquisitionSource("unusable/live", spec, []byte("{}")); err == nil || err.Error() != fmt.Sprintf(errTokenRefused, "unusable/live") ||
+	if _, _, _, err := service.runAcquisitionSource("unusable/live", spec, tokenStandInRequest); err == nil || err.Error() != fmt.Sprintf(errTokenRefused, "unusable/live") ||
 		len(lines(dir, "token-runs")) != 2 || len(lines(dir, "acquisitions")) != 2 {
 		t.Fatalf("a sealed token never opened: %v, %d token runs, %d acquisitions", err, len(lines(dir, "token-runs")), len(lines(dir, "acquisitions")))
 	}

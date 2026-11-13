@@ -1398,7 +1398,12 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.live.http.checkPath != "" {
 				check = []string{"--check-path=" + b.live.http.checkPath}
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: httpSourceArgv(adapter("adapter-http"), *b.live.http, p.credentials["live"], p.tokenStep), env: env, user: p.user, shape: "http", binding: p.binding, check: check, scope: p.scope, tokenStep: p.tokenStep != nil}
+			spec := sourceSpec{argv: httpSourceArgv(adapter("adapter-http"), *b.live.http, p.credentials["live"], p.tokenStep), env: env, user: p.user, shape: "http", binding: p.binding, check: check, scope: p.scope, tokenStep: p.tokenStep != nil}
+			if spec.tokenStep {
+				spec.requestPaths = append([]string(nil), b.live.http.paths...)
+				spec.requestMethods = append([]string(nil), b.live.http.methods...)
+			}
+			sources[p.name+"/live"] = spec
 		} else if b.live != nil {
 			argv := mcpServerArgv(adapter("adapter-mcp"), *b.live, p.credentials["live"], cfg.runtime, p.endpoint, p.name+"/"+b.live.name, append(ownerFileArguments(cfg, p, b.live), approvedArguments(cfg, p, b.live)...)...)
 			// Each as one word, flag=value: a value of "--" as its own word
