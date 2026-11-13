@@ -77,13 +77,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	assertionX5T := fs.String("assertion-x5t", "", "token step, with --assertion-key: the certificate's SHA-1 thumbprint, base64url, sent as the assertion header's x5t")
 	assertionX5TS256 := fs.String("assertion-x5t-s256", "", "token step, with --assertion-key: the certificate's SHA-256 thumbprint, base64url, sent as the assertion header's x5t#S256")
 	federatedTokenFile := fs.String("federated-token-file", "", "token step: a file whose content, read at each token request, is the client assertion, in place of --assertion-key")
+	federatedTokenDir := fs.String("federated-token-dir", "", "token step, with --federated-token-file: the directory the file is found again under at each token request, its links followed within it; the file's own directory when not given")
 	tokenScope := fs.String("token-scope", "", "token step: the scope the token request asks for")
 	tokenOnly := fs.Bool("token-only", false, "token step: obtain an access token and write it on stdout sealed under a key derived from the step's credential, instead of reading a request; an acquisition is then handed it in "+httpsource.SealedTokenVariable)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 0 || *endpoint == "" || *paths == "" {
-		fmt.Fprintln(stderr, "usage: adapter-http --endpoint URL --paths /A,/B [--check [--check-path /P]] [--credentials FILE (--bearer MEMBER | --credential-header NAME=MEMBER)] [--header NAME=VALUE]... [--methods GET,POST] [--ca-file FILE] [--max-output BYTES] [--timeout D] [--token-endpoint URL --client-id ID (--assertion-key MEMBER [--assertion-x5t T | --assertion-x5t-s256 T] | --federated-token-file FILE) [--token-scope S] [--token-only]]")
+		fmt.Fprintln(stderr, "usage: adapter-http --endpoint URL --paths /A,/B [--check [--check-path /P]] [--credentials FILE (--bearer MEMBER | --credential-header NAME=MEMBER)] [--header NAME=VALUE]... [--methods GET,POST] [--ca-file FILE] [--max-output BYTES] [--timeout D] [--token-endpoint URL --client-id ID (--assertion-key MEMBER [--assertion-x5t T | --assertion-x5t-s256 T] | --federated-token-file FILE [--federated-token-dir DIR]) [--token-scope S] [--token-only]]")
 		return 2
 	}
 	if *checkPath != "" && !*check {
@@ -99,9 +100,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		Headers: headers, Paths: split(*paths), Methods: split(*methods), MaxOutput: *maxOutput, CAFile: *caFile,
 		CheckPath: *checkPath,
 	}
-	if *tokenEndpoint != "" || *clientID != "" || *assertionKey != "" || *federatedTokenFile != "" || *assertionX5T != "" || *assertionX5TS256 != "" || *tokenScope != "" || *tokenOnly {
+	if *tokenEndpoint != "" || *clientID != "" || *assertionKey != "" || *federatedTokenFile != "" || *federatedTokenDir != "" || *assertionX5T != "" || *assertionX5TS256 != "" || *tokenScope != "" || *tokenOnly {
 		cfg.Token = &httpsource.TokenStep{Endpoint: *tokenEndpoint, ClientID: *clientID, KeyMember: *assertionKey, FederatedTokenFile: *federatedTokenFile,
-			X5T: *assertionX5T, X5TS256: *assertionX5TS256, Scope: *tokenScope}
+			FederatedTokenDir: *federatedTokenDir, X5T: *assertionX5T, X5TS256: *assertionX5TS256, Scope: *tokenScope}
 		// A sealed token is for an acquisition; a check and the token
 		// step alone obtain their own.
 		if !*check && !*tokenOnly {

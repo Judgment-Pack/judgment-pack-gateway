@@ -1863,11 +1863,26 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 			}
 		}
 		// A token step's federated token is a credential as the file is: held
-		// to the same rules, and the path used from here on the resolved one.
+		// to the same rules. It is not pinned to the file it resolves to now:
+		// a projected token is renewed by re-pointing a link, so the adapter
+		// finds the file again at each token request, from the directory the
+		// configured path is named in, resolved and held here and fixed from
+		// here on, never leaving it, and holds what it finds to these same
+		// rules (adapters/httpsource/federated.go). A file that already lies
+		// outside that directory is refused now rather than at the first
+		// token request.
 		if t := p.tokenStep; t != nil && t.federatedTokenFile != "" {
-			resolved, err := trustedFile(t.federatedTokenFile, uid, linkOwners{other: -1}, host)
+			configured := filepath.Clean(t.federatedTokenFile)
+			resolved, err := trustedFile(configured, uid, linkOwners{other: -1}, host)
 			if err != nil {
 				return nil, fmt.Errorf("platform %s: credentials.live.tokenStep.federatedTokenFile: %v", p.name, err)
+			}
+			dir, err := walkPath(filepath.Dir(configured), host, func(d string) error { return holdDirectory(d, uid, host.fileOwner) })
+			if err != nil {
+				return nil, fmt.Errorf("platform %s: credentials.live.tokenStep.federatedTokenFile: %v", p.name, err)
+			}
+			if !withinDirectory(dir, resolved) {
+				return nil, fmt.Errorf("platform %s: credentials.live.tokenStep.federatedTokenFile %s resolves to %s, outside %s, the directory it is named in", p.name, configured, resolved, dir)
 			}
 			owner, err := host.fileOwner(resolved)
 			if err != nil {
@@ -1882,7 +1897,7 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 				return nil, fmt.Errorf("platform %s: credentials.live.tokenStep.federatedTokenFile %s is readable beyond its owner (mode %04o); chmod 600 %s", p.name, resolved, owner.mode, resolved)
 			}
 			step := *t
-			step.federatedTokenFile = resolved
+			step.federatedTokenFile, step.federatedTokenDir = configured, dir
 			p.tokenStep = &step
 		}
 	}
@@ -1943,6 +1958,12 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 func trustedFile(path string, uid int, links linkOwners, host engineHost) (string, error) {
 	hold := func(dir string) error { return holdDirectory(dir, uid, host.fileOwner) }
 	return walkComponents(path, host, hold, links, true)
+}
+
+// withinDirectory is whether path is dir or lies under it, both clean.
+func withinDirectory(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 // linkOwners says whose links a walk follows: root's always, and other's,

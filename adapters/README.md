@@ -773,7 +773,7 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   its key under a name of its own. A refusal names no member, since a member's name may be
   another member's value. An endpoint that needs no credential is given none of the three.
 - `--token-endpoint URL --client-id ID`, with `--assertion-key MEMBER` or
-  `--federated-token-file PATH`, is the token step (engine configuration version 21,
+  `--federated-token-file PATH [--federated-token-dir DIR]`, is the token step (engine configuration version 21,
   `credentials.live.tokenStep`; [ADR-0027](../docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md)):
   in place of a static member, the adapter obtains an access token from the token endpoint by the
   client-credentials grant with a client assertion (RFC 7523) and sends it as
@@ -781,7 +781,14 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   the PKCS #8 key under that member of the credentials file — RS256 for an RSA key of 2048 bits or
   more, ES256 for a P-256 key — and `--assertion-x5t` or `--assertion-x5t-s256` places a fixed
   thumbprint in its header; with `--federated-token-file`, it is that file's text, read at each
-  token request. `--token-scope` is sent as the request's `scope`. The token endpoint is held to
+  token request. The file is found again at each request under `--federated-token-dir` (the
+  file's own directory when not given): from there through each link on the way, owned by root
+  and its target never out of the directory, and each directory on the way, owned by root or by
+  the adapter's user and writable by no one else unless sticky, to a file opened once, not
+  following a link at its name, and held by the open handle: a regular file the adapter's user
+  owns and alone may read. A rewrite in place and a link swap inside the directory are followed;
+  anything else is no credential. Where the system reports no owner, the owner and the bits are
+  not held. `--token-scope` is sent as the request's `scope`. The token endpoint is held to
   the `--endpoint` form, reached against the system's roots (not `--ca-file`'s) within ten
   seconds, and a redirect is refused; its answer is taken only as at most 64 KiB of
   `application/json` with `access_token`, `token_type` `Bearer` in any case and an `expires_in`

@@ -299,7 +299,12 @@ holds the token sealed** (engine configuration version 21; gateway #421;
 sends from a token endpoint the configuration fixes, by a client assertion: a JWT it signs with a
 key held as a member of the platform's live credentials file, or a federated identity token read
 from a file held as that credentials file is — owned by the platform's user, readable by that user
-alone, on a way no other user may replace. The signer reads neither, nor the assertion, nor the
+alone, on a way no other user may replace. That file is found again at each token request under
+the directory it is named in, fixed at start: a link on the way is followed only when root owns
+it and only within that directory, so a rewrite in place and a link swap inside the directory, as
+a platform renews a projected token, are both followed, and a target outside it is refused as no
+credential; the file is opened once and held by its open handle, a regular file the platform's
+user owns and alone may read. The signer reads neither, nor the assertion, nor the
 access token: the adapter answers the token sealed with AES-256-GCM under a key HKDF derives from
 the credential, bound to the source's configuration, and the signer holds that ciphertext, in
 memory alone, per source and scope identifier, and hands it to the next acquisition, where the

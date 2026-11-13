@@ -273,10 +273,13 @@ func TestTokenCacheObtainsOneTokenForConcurrentAcquisitions(t *testing.T) {
 }
 
 // A federated token is a credential as a credentials file is: owned by
-// the platform's user, readable by that user alone, not a directory; the
-// path the adapter is given is the one resolved. One owned by another
-// platform's user -- a writing platform's -- is refused, so a token step
-// never authenticates with another platform's credential.
+// the platform's user, readable by that user alone, not a directory. One
+// owned by another platform's user -- a writing platform's -- is refused,
+// so a token step never authenticates with another platform's credential.
+// The adapter is given the path as configured and its directory as
+// resolved, not the file it resolves to now, so it finds a projected
+// token again after a link swap; a configured path that resolves outside
+// its directory is refused.
 func TestTokenStepFederatedTokenIsHeldAsACredentialsFile(t *testing.T) {
 	sep := string(filepath.Separator)
 	seed := filepath.Join(sep, "var", "lib", "engine", "gateway.seed")
@@ -301,8 +304,45 @@ func TestTokenStepFederatedTokenIsHeldAsACredentialsFile(t *testing.T) {
 		return fs
 	}
 	held := ptr(cfg)
-	if _, err := engineRefusals(held, host(filesystem(nil))); err != nil || held.platforms[0].tokenStep.federatedTokenFile != federated {
+	if _, err := engineRefusals(held, host(filesystem(nil))); err != nil || held.platforms[0].tokenStep.federatedTokenFile != federated ||
+		held.platforms[0].tokenStep.federatedTokenDir != filepath.Dir(federated) {
 		t.Fatalf("a private federated token of the platform's user: %v", err)
+	}
+
+	// A projected token: the configured name a root link to ..data/NAME,
+	// ..data a root link to a timestamped directory. The adapter is handed
+	// the name and the directory, never the timestamped file.
+	dir := filepath.Dir(federated)
+	stamped := filepath.Join(dir, "..2026_11_13_a")
+	projected := func(fs ownership) {
+		fs[federated] = fileOwnership{uid: 0, mode: 0o777, link: true}
+		fs[filepath.Join(dir, "..data")] = fileOwnership{uid: 0, mode: 0o777, link: true}
+		fs[stamped] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+		fs[filepath.Join(stamped, "records.jwt")] = fileOwnership{uid: 1002, mode: 0o600}
+	}
+	linkTargets[federated] = filepath.Join("..data", "records.jwt")
+	linkTargets[filepath.Join(dir, "..data")] = "..2026_11_13_a"
+	defer delete(linkTargets, federated)
+	defer delete(linkTargets, filepath.Join(dir, "..data"))
+	held = ptr(cfg)
+	if _, err := engineRefusals(held, host(filesystem(projected))); err != nil {
+		t.Fatalf("a projected token: %v", err)
+	}
+	argv := tokenStepArgv(held.platforms[0].tokenStep)
+	if !slices.Contains(argv, "--federated-token-file="+federated) || !slices.Contains(argv, "--federated-token-dir="+dir) ||
+		slices.ContainsFunc(argv, func(a string) bool { return strings.Contains(a, "..2026") }) {
+		t.Fatalf("a projected token is handed as configured, with its directory: %q", argv)
+	}
+	// ..data re-pointed outside the directory: refused at start, as the
+	// adapter refuses it at a token request.
+	outside := filepath.Join(sep, "run", "elsewhere")
+	linkTargets[filepath.Join(dir, "..data")] = outside
+	if _, err := engineRefusals(ptr(cfg), host(filesystem(func(fs ownership) {
+		projected(fs)
+		fs[outside] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+		fs[filepath.Join(outside, "records.jwt")] = fileOwnership{uid: 1002, mode: 0o600}
+	}))); err == nil || !strings.Contains(err.Error(), "outside "+dir+", the directory it is named in") {
+		t.Fatalf("a projected token linked outside its directory: %v", err)
 	}
 	for _, c := range []struct {
 		name string

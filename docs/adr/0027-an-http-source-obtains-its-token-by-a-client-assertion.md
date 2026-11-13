@@ -64,11 +64,16 @@ holder (the adapter's user) of every secret with no process kept running.
    `http` shape or sends its credential under `credentialHeader`, and a platform with one may not
    set `ADAPTER_HTTP_SEALED_TOKEN` in its `environment`. The federated token file is held as a
    credentials file is: owned by the platform's user, readable by that user alone, on a way no
-   other user may replace, and the path given to the adapter is the one resolved at start. It is
-   not resolved again: a token renewed in place, or renamed onto that path, is read at the next
-   token request, while one renewed by swapping a link on the configured path leaves the
-   resolved path gone and every acquisition failing as having no credential until a restart.
-   The operator points the member at a regular file renewed in place.
+   other user may replace. What is fixed at start is the configured path, cleaned, and the
+   directory it is named in, resolved; a path that resolves outside that directory is refused.
+   The file is found again at each token request: from that directory, through each link on the
+   way, owned by root and its target never out of the directory, and each directory on the way,
+   held as at start, to a file opened once and held by the open handle, a regular file the
+   platform's user owns and alone may read. So a token rewritten in place, renamed onto the
+   path, or renewed by a link swap inside the directory (as a platform that projects an identity
+   token into a volume re-points a `..data` link to a new directory and removes the old one) is
+   read at the next token request; a target outside the directory, or a file that fails a hold,
+   is refused as no credential.
 2. **The assertion.** With `privateKey`, a JWT the adapter signs: RS256 for an RSA key of 2048
    bits or more, ES256 for a P-256 key, the algorithm taken from the key (a PKCS #8 `PRIVATE
    KEY` PEM block); the header `alg`, `typ` `JWT` and the thumbprint given; the claims `iss` and
@@ -126,8 +131,11 @@ holder (the adapter's user) of every secret with no process kept running.
 - Bad: a token request costs an extra adapter process, and each acquisition opens the sealed
   token.
 - Bad: a token the source revoked before its stated expiry costs one acquisition, which fails;
-  the caller retries, not the gateway. A federated token renewed in place costs one extra
-  process (status 6, then a new token).
+  the caller retries, not the gateway. A federated token renewed, rewritten in place or swapped
+  in by a link, costs one extra process (status 6, then a new token).
+- Bad: in federated mode the way to the file is walked again at each token request, a few
+  system calls per request; it is what lets a link swap be followed without following a link
+  anywhere else.
 - Bad: the token endpoint is reached against the system's roots; the source's own CA file does
   not apply to it. In federated mode the live credentials file is still required, though nothing
   of it is sent, and under a token step the binding's `bearer` member is not read.

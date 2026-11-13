@@ -35,7 +35,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -48,7 +48,9 @@ import (
 // endpoint and a client identifier, and exactly one of KeyMember, the
 // credentials member holding a PKCS#8 private key the adapter signs the
 // assertion with, and FederatedTokenFile, a file whose content is the
-// assertion. X5T and X5TS256 are a fixed certificate thumbprint for the
+// assertion, found again at each token request under FederatedTokenDir,
+// its directory as resolved when the step was configured (the file's own
+// directory as written when empty; federated.go). X5T and X5TS256 are a fixed certificate thumbprint for the
 // assertion's header, at most one, beside KeyMember only. Scope, when
 // given, is sent as the request's scope.
 type TokenStep struct {
@@ -56,6 +58,7 @@ type TokenStep struct {
 	ClientID           string
 	KeyMember          string
 	FederatedTokenFile string
+	FederatedTokenDir  string
 	X5T                string
 	X5TS256            string
 	Scope              string
@@ -156,6 +159,12 @@ func holdTokenStep(t *TokenStep) (*url.URL, error) {
 	switch {
 	case (t.KeyMember == "") == (t.FederatedTokenFile == ""):
 		return nil, errors.New("a token step takes exactly one of --assertion-key and --federated-token-file")
+	case t.FederatedTokenFile == "" && t.FederatedTokenDir != "":
+		return nil, errors.New("--federated-token-dir is the directory of --federated-token-file, and only beside it")
+	case t.FederatedTokenFile != "" && (!filepath.IsAbs(t.FederatedTokenFile) || filepath.Clean(t.FederatedTokenFile) != t.FederatedTokenFile):
+		return nil, errors.New("--federated-token-file is an absolute path, written clean")
+	case t.FederatedTokenDir != "" && (!filepath.IsAbs(t.FederatedTokenDir) || filepath.Clean(t.FederatedTokenDir) != t.FederatedTokenDir):
+		return nil, errors.New("--federated-token-dir is an absolute path, written clean")
 	case t.KeyMember == "" && (t.X5T != "" || t.X5TS256 != ""):
 		return nil, errors.New("a certificate thumbprint is for an assertion this adapter signs, with --assertion-key")
 	case t.X5T != "" && t.X5TS256 != "":
@@ -215,9 +224,9 @@ type tokenSigner struct {
 // TokenNoCredential, and the refusal quotes nothing of it.
 func readTokenCredential(t *TokenStep, members map[string]string) (*tokenSigner, error) {
 	if t.FederatedTokenFile != "" {
-		file, err := os.Open(t.FederatedTokenFile)
+		file, err := openFederatedToken(t)
 		if err != nil {
-			return nil, tokenFailure(TokenNoCredential, "the token step's federated token file could not be read")
+			return nil, err
 		}
 		defer file.Close()
 		raw, err := io.ReadAll(io.LimitReader(file, maxFederatedToken+1))
@@ -440,13 +449,22 @@ type sealed struct {
 	NotAfter int64  `json:"notAfter"`
 }
 
+// federatedOrNone is the directory a federated token is held under, ""
+// for a step that signs its own assertion.
+func federatedOrNone(t *TokenStep) string {
+	if t.FederatedTokenFile == "" {
+		return ""
+	}
+	return federatedDir(t)
+}
+
 // sealAAD binds a sealed token to the configuration it was obtained under:
 // the source's endpoint, the token endpoint, the client, the kind of
 // assertion and the scope asked for. A token sealed for one is not opened
 // under another, whatever hands it in.
 func sealAAD(cfg Config) []byte {
 	t := cfg.Token
-	out, _ := json.Marshal([]string{sealInfo, cfg.Endpoint, t.Endpoint, t.ClientID, t.KeyMember, t.FederatedTokenFile, t.X5T, t.X5TS256, t.Scope})
+	out, _ := json.Marshal([]string{sealInfo, cfg.Endpoint, t.Endpoint, t.ClientID, t.KeyMember, t.FederatedTokenFile, federatedOrNone(t), t.X5T, t.X5TS256, t.Scope})
 	return out
 }
 

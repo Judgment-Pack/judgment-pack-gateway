@@ -29,6 +29,10 @@ import (
 // most one, only beside privateKey.
 type tokenStepConfig struct {
 	endpoint, clientID, privateKey, federatedTokenFile, x5t, x5tS256, requestScope string
+	// federatedTokenDir is not written: it is the directory federatedTokenFile
+	// is named in, as engineRefusals resolved it, which the adapter finds
+	// the file again under at each token request.
+	federatedTokenDir string
 }
 
 var tokenStepMembers = map[string]bool{
@@ -150,6 +154,9 @@ func tokenStepArgv(t *tokenStepConfig) []string {
 		argv = append(argv, "--assertion-key="+t.privateKey)
 	} else {
 		argv = append(argv, "--federated-token-file="+t.federatedTokenFile)
+		if t.federatedTokenDir != "" {
+			argv = append(argv, "--federated-token-dir="+t.federatedTokenDir)
+		}
 	}
 	if t.x5t != "" {
 		argv = append(argv, "--assertion-x5t="+t.x5t)

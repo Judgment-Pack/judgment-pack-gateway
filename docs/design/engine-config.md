@@ -419,7 +419,7 @@ way:
 | `<platform>/history` | `adapter-airbyte` | `--image=<history.image> --credentials=<credentials.history.file> --runtime=<runtime> [--endpoint=<endpoint>]` |
 | `<platform>/live` | `adapter-mcp` | `--image=<live.server.image> --credentials=<credentials.live.file> --runtime=<runtime> --tools=<live.tools, comma-joined> [--endpoint=<endpoint>] [-- <live.server.args>]` |
 | `<platform>/write` | `adapter-mcp` | `--image=<write.server.image> --credentials=<credentials.write.file> --runtime=<runtime> --tools=<write.tools, comma-joined> --error-results [--endpoint=<endpoint>] [-- <write.server.args>]` — derived only for a platform whose configuration sets `write: true`; it is what the executor runs ([executor.md](executor.md)) and never a source `/acquire` may name |
-| `<platform>/live` of an `http` binding | `adapter-http` | `--endpoint=<live.endpoint> --paths=<live.paths, comma-joined> --methods=<live.methods, comma-joined> --credentials=<credentials.live.file> (--bearer=<live.bearer> \| --credential-header=<live.credentialHeader> \| --token-endpoint=<tokenStep.endpoint> --client-id=<tokenStep.clientId> (--assertion-key=<tokenStep.privateKey> \| --federated-token-file=<tokenStep.federatedTokenFile>) [--assertion-x5t=<tokenStep.x5t> \| --assertion-x5t-s256=<tokenStep.x5t#S256>] [--token-scope=<tokenStep.requestScope>]) [--header=<NAME=VALUE>]...` — no runtime, no tools and no platform endpoint ([below](#an-http-api-as-a-platforms-live-operation)); the token step's flags in place of `--bearer` when `credentials.live` carries one ([below](#a-live-operations-token-step-engine-version-21)) |
+| `<platform>/live` of an `http` binding | `adapter-http` | `--endpoint=<live.endpoint> --paths=<live.paths, comma-joined> --methods=<live.methods, comma-joined> --credentials=<credentials.live.file> (--bearer=<live.bearer> \| --credential-header=<live.credentialHeader> \| --token-endpoint=<tokenStep.endpoint> --client-id=<tokenStep.clientId> (--assertion-key=<tokenStep.privateKey> \| --federated-token-file=<tokenStep.federatedTokenFile> --federated-token-dir=<its directory, resolved at start>) [--assertion-x5t=<tokenStep.x5t> \| --assertion-x5t-s256=<tokenStep.x5t#S256>] [--token-scope=<tokenStep.requestScope>]) [--header=<NAME=VALUE>]...` — no runtime, no tools and no platform endpoint ([below](#an-http-api-as-a-platforms-live-operation)); the token step's flags in place of `--bearer` when `credentials.live` carries one ([below](#a-live-operations-token-step-engine-version-21)) |
 
 For an operation whose binding names a remote server (below), `live` and `write` are derived
 as `--url=<server.url> --credentials=<credentials.<operation>.file> --bearer=<server.bearer>
@@ -1662,14 +1662,17 @@ assertion (RFC 7523).
     signed ES256. The algorithm is the key's; nothing else selects it.
   - `federatedTokenFile` is an absolute path to a file whose text, read at each token request,
     is sent as the assertion. It is held as the credentials file is: owned by the platform's
-    user, readable by that user alone, not a directory, on a way no other user may replace; the
-    path the adapter is given is the one the engine resolved at start, and it is not resolved
-    again. A token renewed by rewriting that file, or by renaming a new one onto it, is read at
-    the next token request; one renewed by swapping a link on the configured path (as some platforms
-    renew a mounted token, through a `..data` directory link) leaves the resolved path gone, and every acquisition then fails as
-    having no credential until the gateway is restarted. Point `federatedTokenFile` at a regular
-    file the platform's user owns and that is renewed in place, such as a copy a helper rewrites,
-    not at a path through a link that is swapped.
+    user, readable by that user alone, not a directory, on a way no other user may replace, and
+    a path that resolves outside the directory it is named in is refused. That path, cleaned, and
+    that directory, resolved, are fixed at start and passed to the adapter, which finds the file
+    again at each token request: from the directory, through each link on the way (owned by
+    root, its target never out of the directory) and each directory on the way (held as at
+    start), to a file it opens once and holds by the open handle, a regular file the platform's
+    user owns and alone may read. A token rewritten in place, renamed onto the path, or renewed
+    by a link swap inside the directory (as a platform renews a projected token, re-pointing a
+    `..data` link to a new directory and removing the old one) is read at the next token request;
+    a target outside the directory, or a file that fails a hold, is refused as having no
+    credential, and that acquisition fails.
   - `x5t` and `x5t#S256`, at most one, beside `privateKey` only: the certificate's SHA-1 or
     SHA-256 thumbprint, unpadded base64url, placed in the assertion's header as written.
   - `requestScope` is sent as the token request's `scope`: scope tokens (RFC 6749 §3.3)
