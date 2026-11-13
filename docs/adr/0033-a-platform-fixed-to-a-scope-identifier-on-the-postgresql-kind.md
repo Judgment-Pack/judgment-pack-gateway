@@ -84,7 +84,10 @@ since a session's name is one across scopes and a view sees only its own scope's
    every scope's sealed sessions, and `gateway verify` reads the chain from an export, which holds
    every line. When a scope's rows are removed (condition h, its own issue) its seals stay: the chain
    needs every line, and a seal holds none of the scope's rows. Whether a seal names its scope is
-   issue #442; this change adds no member to a seal or a receipt.
+   issue #442; this change adds no member to a seal or a receipt. Nor does it change who may seal:
+   `/seal` names a session alone, as on the filesystem kind, so a caller the gateway admits may seal
+   a session of any scope, or of none, that this process holds; one it does not hold is refused,
+   as on the filesystem kind (#447). Whether a seal is held to a scope is #442's too.
 
 6. **The export's layout is the filesystem kind's.** The cut is every scope's rows: a session once,
    under its name, which the series' key holds to one scope; a payload two scopes hold alike once,
@@ -113,6 +116,11 @@ since a session's name is one across scopes and a view sees only its own scope's
 - Bad, because an identifier, once recorded, stays: a scope dropped from the configuration is still
   exported, as its rows are still held, and only the removal of its rows (condition h) may remove
   it.
+- Bad, because the export, and the start's and an acquisition's questions, read only the scopes
+  recorded: rows of a scope never recorded -- written outside the gateway, by the run-time login
+  itself, or brought back by a partial restore -- are not read by any of them, and no login without
+  BYPASSRLS can see that they are there (#447). The gateway records an identifier before its view
+  writes anything, so it writes no such row itself.
 - Revisit when a login per scope identifier is chosen (ADR-0031, "More information"), when #442
   binds sessions or seals to a scope, or when condition h removes a scope's rows.
 
