@@ -155,7 +155,6 @@ place:
 | `sealOpenAtStart` | the configuration's load | it reads the sessions on disk |
 | a platform's `write: true`; `/act` | the configuration's load; `/act` answers 501 | an action keeps its journal and evidence on disk |
 | a platform's `descriptorStatements`; descriptor provenance; a descriptor capture by `gateway connect` | the load; the start; `connect` before any adapter is asked | the signed snapshot is read from the store on disk (`gateway connect --no-descriptors` connects a platform without one) |
-| a platform's `scope` | the configuration's load | the kind is served as the view of no scope |
 | `/verify` | answers 501 | it verifies the store on disk: export the store and verify the export |
 | `gateway seal-open --config`, `gateway remove-artifact --config` | the command | they read the sessions, and keep removal records, on disk |
 | `gateway rotate-key` | the start refuses a rotation under way beside the seed | the rotation keeps the registry at a path |
@@ -243,7 +242,7 @@ the run-time role, before anything is applied. It prints, as canonical JSON, wha
 part of the connection string:
 
 ```json
-{"applied":[1,2],"migrations":"sha256:…","schemaVersion":2}
+{"applied":[1,2,3],"migrations":"sha256:…","schemaVersion":3}
 ```
 
 A second run applies nothing (`"applied":[]`). A schema newer than the binary's migrations is
@@ -287,9 +286,10 @@ start refuses a table it was not restored on.
 | `gateway.secrets` | SELECT, INSERT | every one |
 | `gateway.schema_migrations` | SELECT | every one |
 | `gateway.start_lease` (one row: the instance that serves) | SELECT, INSERT, UPDATE | every one: it carries no scope |
+| `gateway.scope_identifiers` (schema version 3: the scope identifiers recorded) | SELECT, INSERT | no scope's: every row is of no scope |
 
 Append-only by privilege: nothing but a document and the start lease's row is changed once
-written, and nothing but a document is removed. The login
+written, and nothing but a document is removed; a scope identifier, once recorded, stays. The login
 holds no TRUNCATE, REFERENCES or TRIGGER, and makes, changes and drops nothing. No function is
 defined in the schema. An append to the registry takes a transaction advisory lock
 (`pg_advisory_xact_lock`, which every role may call unless the operator took it back); the
@@ -302,15 +302,68 @@ security not enabled and forced on a scoped table, or a policy other than the sc
 
 ## Scope identifiers
 
-Rows of the scoped tables hold their scope as `scope:` and the scope identifier, or `none` for no
-scope. Each scoped table has row security enabled and forced and one policy, for every command and
-role: `scope = current_setting('gateway.scope', true)`. The gateway sets `gateway.scope` for each
-transaction alone, and names its scope in every statement besides.
+A platform fixed to a scope identifier (its `scope`, engine configuration version 20,
+[ADR-0026](adr/0026-a-scope-identifier-fixed-on-a-platform.md)) is served by this kind as by the
+filesystem kind: each `/acquire` repeats the identifier, and the receipt carries it in its `scope`
+member. What this kind adds is where the rows are kept
+([ADR-0033](adr/0033-a-platform-fixed-to-a-scope-identifier-on-the-postgresql-kind.md)).
 
-- A transaction that sets no scope sees no row and writes none, whether the setting was never set
-  on its connection or was set by an earlier transaction for itself.
-- A session's name is one across scopes: a scope cannot make a session another scope holds, and
-  learns that the name is taken.
+**How the scope is set.** Rows of the scoped tables hold their scope as `scope:` and the scope
+identifier, or `none` for no scope. Each scoped table has row security enabled and forced and one
+policy, for every command and role: `scope = current_setting('gateway.scope', true)`. The start,
+once it holds the start lease, opens the kind's view of each scope identifier a platform is fixed
+to; a source of that platform keeps its payloads and receipts through that view, and a source of
+no scope through the view of no scope. Every transaction of a view sets `gateway.scope` to the
+view's form for itself alone (`set_config(…, true)`), and names its scope in every statement
+besides.
+
+**How it maps to records.** For a source fixed to the scope identifier `scope-a`:
+
+| Record | Where | Row's `scope` |
+|---|---|---|
+| the payload (a retained artifact) | `gateway.blobs` | `scope:scope-a` |
+| the session | `gateway.series` | `scope:scope-a` |
+| each receipt, whose `scope` member is `scope-a` | `gateway.entries` | `scope:scope-a` |
+| the identifier itself | `gateway.scope_identifiers`, `identifier` | `none` |
+| a seal of the session | `gateway.log_records` | none: the registry carries no scope |
+
+A source of no scope writes rows of `none`, and its receipts carry no `scope` member, as before.
+The kind keeps no removal record: `gateway remove-artifact` is refused with it ("Not available
+with this kind yet").
+
+- **Rows of no scope** are reached by the value `none`, which a transaction sets as a scope's
+  transaction sets its own: a transaction of a scope identifier never sees one, and a transaction
+  of no scope sees no scope's row.
+- **A transaction that sets no scope** sees no row and writes none, whether the setting was never
+  set on its connection or was set by an earlier transaction for itself: a pooled connection
+  carries no scope from one transaction to the next.
+- **A session's receipts are of one scope.** A session's name is one across scopes: a scope
+  cannot make a session another scope holds, and learns that the name is taken. An acquisition
+  into a session that holds the receipts of another scope, or of none, is refused `400` before its
+  source runs: `session <id> holds the receipts of a scope other than this source's (another
+  scope identifier, or none): with the PostgreSQL storage kind a session's receipts are of one
+  scope, so acquire into a new session`. The refusal names neither scope. (The filesystem kind
+  keeps one layout for every scope and takes such an acquisition.)
+- **The record of the scope identifiers** (`gateway.scope_identifiers`, schema version 3) holds
+  each scope identifier a start has opened a view for, written by that start before the view
+  writes anything, and never changed or removed. Its rows are of no scope, so no scope's
+  transaction reads another's identifier from it. What must reach every scope's rows reads it and
+  then each scope in its turn, in one transaction whose every statement is of one scope, the
+  setting changed between statements for the transaction alone: the export, the start's question
+  whether the store holds a session before it makes an empty registry, and an acquisition's or a
+  seal's question whether a session of its name is held in some scope. No statement is admitted
+  to the rows of two scopes at once, and no login, policy or function admits every scope.
+- **The registry** is one chain across scopes: its tables carry no scope column, and every view
+  reads the whole registry. Its lines are seals (SPEC.md §3, §3c): a session's id, its count of
+  receipts, its time, the key's identifier and a signature. None carries a receipt, a payload, an
+  argument or a scope identifier, so a seal of a scoped session is a line of no scope. A gateway
+  of one scope reads every seal: the ids and counts of every scope's sealed sessions, and nothing
+  more of their rows. `gateway verify` reads the chain from an export, which holds every line.
+  Whether a seal names its scope is issue #442.
+- **The export** reads every scope recorded, whichever scopes the configuration names now, and
+  writes the layout of SPEC.md §1.3 the filesystem kind writes: a session once, under its name; a
+  payload two scopes hold alike once, its bytes read from each and compared, and refused where
+  they differ; documents of no scope alone, since an export writes none.
 - Row security keeps apart what the gateway does. It is not a boundary against the run-time login
   itself, which may set `gateway.scope` as it likes in a transaction of its own; a login per scope
   identifier is an open decision (ADR-0031).
@@ -328,7 +381,7 @@ The database's backup and restore are the operator's, with PostgreSQL's own tool
 database made as above, with the same roles; the kind's start holds a restored database to every
 condition on this page. A verifier reads a store of this kind through its export, which writes the
 layout it reads; the export of a store holds the same bytes as the filesystem kind's for
-the same work (a test).
+the same work, of no scope and of scope identifiers alike (a test).
 
 ## Not supported
 

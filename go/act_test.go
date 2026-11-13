@@ -286,14 +286,14 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	// not mint, and the action is refused at admission as it was at the
 	// session step. A session holding receipts this process did not mint
 	// is not admitted at all (gateway #381).
-	if err := restarted.admit("act-2"); err == nil || err.Error() != fmt.Sprintf(refusalLeftOpen, "act-2") {
+	if err := restarted.admit("act-2", ""); err == nil || err.Error() != fmt.Sprintf(refusalLeftOpen, "act-2") {
 		t.Fatalf("a reservation of a session an earlier process left open: %v", err)
 	}
 	if err := os.Mkdir(filepath.Join(service.storeRoot, "receipts", "act-14"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	reserved := strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-14"`, 1)
-	if err := restarted.admit("act-14"); err != nil {
+	if err := restarted.admit("act-14", ""); err != nil {
 		t.Fatal(err)
 	}
 	if code, body := authed(t, restartedServer, "/act", reserved, token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "predates this start") {

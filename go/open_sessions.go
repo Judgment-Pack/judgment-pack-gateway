@@ -45,6 +45,11 @@ const (
 	refusalLeftOpen = "session %s was left open by an earlier process: the store holds receipts in it that this process did not mint, and no seal closes it; its chain is not continued from an empty memory, nor is it sealed here from a count on disk, so acquire into a new session (gateway verify reports this one unregistered-session, and observes it session-open while its receipts are whole; gateway seal-open, with the gateway stopped, seals it as sealed after an interruption)"
 	refusalNotADir  = "session %s is in the store as something other than a session directory, which this process did not make; nothing is taken up there"
 	refusalUnread   = "session %s could not be read in the store, so whether an earlier process left receipts in it is not known; it is refused rather than taken for empty"
+	// refusalOtherScope is an acquisition's, on a kind that keeps each scope
+	// identifier's rows apart (scopeKeeper), into a session whose receipts
+	// are of another scope than the source's: held by this process or left
+	// in the store, with receipts or none. It names neither scope.
+	refusalOtherScope = "session %s holds the receipts of a scope other than this source's (another scope identifier, or none): with the PostgreSQL storage kind a session's receipts are of one scope, so acquire into a new session"
 )
 
 // leftInStore is why this process may not take up a session it does not
@@ -72,8 +77,30 @@ const (
 // file system, whatever order it lists entries in.
 var leftInStoreBatch = 64
 
-func (g *gatewayService) leftInStore(sessionID string) string {
+// leftInStore's scope is the scope identifier of the source an acquisition
+// is for ("" for none), and acquiring says it is one; a seal names no
+// scope. On a kind that keeps each scope's rows apart (scopeKeeper), a
+// session of the name is looked for in every scope the kind records, since
+// a session's name is one across scopes: an acquisition into one of another
+// scope is refused whatever it holds (refusalOtherScope), since its stamp
+// could not be made there; one of its own scope, and a seal, are judged by
+// its receipts.
+func (g *gatewayService) leftInStore(sessionID, scope string, acquiring bool) string {
 	refused := func(why string) string { return fmt.Sprintf(why, sessionID) }
+	if g.keeper != nil {
+		held, ofScope, receipts, err := g.keeper.seriesHeld(sessionID, scope)
+		switch {
+		case err != nil:
+			return refused(refusalUnread)
+		case !held:
+			return ""
+		case acquiring && !ofScope:
+			return refused(refusalOtherScope)
+		case receipts:
+			return refused(refusalLeftOpen)
+		}
+		return ""
+	}
 	if g.kind != nil {
 		// the kind's series, through the contract: no series is no receipt
 		entries, err := g.store.receipts.listEntries(sessionID)

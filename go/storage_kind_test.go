@@ -135,7 +135,6 @@ func TestWhatReadsTheStoreOnDiskIsRefusedByNameWithThePostgreSQLKind(t *testing.
 		{"sealOpenAtStart", `,"sealOpenAtStart":true`, ``, "sealOpenAtStart, which reads the sessions on disk,"},
 		{"a platform's writes", ``, `,"write":true`, "platform crm's write: true, whose actions keep their journal and evidence on disk,"},
 		{"a platform's descriptor statements", ``, `,"descriptorStatements":{"live":"` + statement + `"}`, "platform crm's descriptorStatements, whose snapshot is read from the store on disk,"},
-		{"a platform's scope", ``, `,"scope":"scope-a"`, "platform crm's scope, since the kind is served as the view of no scope,"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			platforms := ``
@@ -151,6 +150,37 @@ func TestWhatReadsTheStoreOnDiskIsRefusedByNameWithThePostgreSQLKind(t *testing.
 			}
 			if _, err := parseEngineConfig([]byte(storageConfig(t, ``, tc.extra, platforms))); err != nil {
 				t.Fatalf("without storage the same configuration is read: %v", err)
+			}
+		})
+	}
+}
+
+// A platform's scope is admitted with the PostgreSQL kind, and its sources
+// carry it; what reads the store on disk stays refused by name beside it (a
+// platform with a scope allows no write with either kind).
+func TestAPlatformsScopeIsAdmittedWithThePostgreSQLKind(t *testing.T) {
+	binding := "postgres@sha256:" + strings.Repeat("b", 64)
+	platforms := platformJSON(t, "crm", binding, "gw-crm", `,"scope":"scope-a"`) + `,` + platformJSON(t, "erp", binding, "gw-erp", ``)
+	cfg, err := parseEngineConfig([]byte(storageConfig(t, storageByFile(t), ``, platforms)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopes := map[string]string{}
+	for _, p := range cfg.platforms {
+		scopes[p.name] = p.scope
+	}
+	if scopes["crm"] != "scope-a" || scopes["erp"] != "" {
+		t.Fatalf("the platforms' scopes: %v", scopes)
+	}
+	statement := "sha256:" + strings.Repeat("a", 64)
+	for _, tc := range []struct{ name, extra, platform, want string }{
+		{"sealOpenAtStart", `,"sealOpenAtStart":true`, `,"scope":"scope-a"`, "sealOpenAtStart, which reads the sessions on disk,"},
+		{"a scoped platform's descriptor statements", ``, `,"scope":"scope-a","descriptorStatements":{"live":"` + statement + `"}`, "platform crm's descriptorStatements, whose snapshot is read from the store on disk,"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseEngineConfig([]byte(storageConfig(t, storageByFile(t), tc.extra, platformJSON(t, "crm", binding, "gw-crm", tc.platform))))
+			if !errors.Is(err, errStorageKindUnsupported) || !strings.Contains(err.Error(), "storage-kind-unsupported: "+tc.want+" is not available with the PostgreSQL storage kind yet") {
+				t.Fatalf("got %v", err)
 			}
 		})
 	}

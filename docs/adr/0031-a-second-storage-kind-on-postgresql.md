@@ -208,7 +208,9 @@ the maintainer (below).
     and refuses to start while another gateway holds it, until the registry's seal is decided in
     the database. *Amended 2026-11-13 (#430, ADR-0032, decision 4): built as the start lease, one
     row of `gateway.start_lease` with an expiry by the database's clock, renewed while the
-    instance serves, removed on a clean stop, and held by every write transaction.*
+    instance serves, removed on a clean stop, and held by every write transaction.* *Amended
+    2026-11-13 (#430, ADR-0033, decision 3): the start's question whether the store holds a
+    session is asked of every scope identifier the kind records, one scope at a time.*
 
 ### Consequences
 
@@ -256,7 +258,8 @@ the maintainer (below).
     is a change to ADR-0026 and to SPEC.md (recommended before service mode is offered).
   - An export across scopes: an export login holding SELECT under a policy that admits every
     scope (recommended), or an export per scope, which leaves out the seals counting the other
-    scopes' receipts.
+    scopes' receipts. *Decided 2026-11-13 by ADR-0033, decision 3: the run-time login, in one
+    transaction whose statements each set one scope recorded in `gateway.scope_identifiers`.*
   - Removing one scope's rows (#434): the run-time login holds no DELETE on append-only tables;
     the removal would run as a login of its own, or as the owner through a migration-like step.
   - A lease's expiry with more than one gateway: decided in the statement by the database's clock
@@ -266,6 +269,7 @@ the maintainer (below).
   - The registry's start with scopes: whether any session is held, asked of every scope, by a
     statement on the series' names under a policy of its own for a login meant for it
     (recommended), or the registry made by the operator's migration before the first start.
+    *Decided 2026-11-13 by ADR-0033, decision 3, as the export is.*
 - `docs/postgresql-store.md` is the operator's page: the roles to make, the migration, what the
   run-time login may do, backup and restore, and what is not supported.
 - `docs/design/store-contract.md` describes the contract and the filesystem kind; its list of

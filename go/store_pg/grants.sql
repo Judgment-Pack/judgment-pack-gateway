@@ -8,10 +8,11 @@
 -- run ends where the first did. It creates no role and defines no function:
 -- the block below is anonymous and leaves nothing behind.
 --
--- Append-only by privilege: blobs, series, entries, logs, log_records and
--- secrets are SELECT and INSERT alone. Documents alone are replaced and
--- removed, and the start lease's one row (schema version 2) is taken,
--- renewed and released. Nothing is TRUNCATE, REFERENCES, TRIGGER or DDL.
+-- Append-only by privilege: blobs, series, entries, logs, log_records,
+-- secrets and the scope identifiers (schema version 3) are SELECT and
+-- INSERT alone. Documents alone are replaced and removed, and the start
+-- lease's one row (schema version 2) is taken, renewed and released.
+-- Nothing is TRUNCATE, REFERENCES, TRIGGER or DDL.
 
 DO $grants$
 DECLARE
@@ -21,7 +22,7 @@ BEGIN
     EXECUTE pg_catalog.format('REVOKE ALL ON SCHEMA gateway FROM %I', runtime);
     EXECUTE pg_catalog.format('GRANT USAGE ON SCHEMA gateway TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT ON gateway.schema_migrations TO %I', runtime);
-    EXECUTE pg_catalog.format('GRANT SELECT, INSERT ON gateway.blobs, gateway.series, gateway.entries, gateway.logs, gateway.log_records, gateway.secrets TO %I', runtime);
+    EXECUTE pg_catalog.format('GRANT SELECT, INSERT ON gateway.blobs, gateway.series, gateway.entries, gateway.logs, gateway.log_records, gateway.secrets, gateway.scope_identifiers TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT, INSERT, UPDATE, DELETE ON gateway.documents TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT, INSERT, UPDATE ON gateway.start_lease TO %I', runtime);
 END
