@@ -120,7 +120,8 @@ A version-24 engine configuration names the kind in `storage`, in place of `stor
   removes from its own environment, so no program it starts inherits it. Both, neither, or the
   string itself are refused.
 - `connections`, 1 to 64, 4 without it; `operationSeconds`, 1 to 600, 30 without it: the pool's
-  bound and each operation's deadline (ADR-0031, decision 3).
+  bound and each operation's deadline (ADR-0031, decision 3). An instance holds one connection
+  more, its start lease's own ("One instance per database"): `connections` + 1 in all.
 - `store` or `registry` beside `storage` is refused by name, and so is `storage` in a
   configuration of version 23 or earlier.
 - `gateway mcp` under such a configuration is denied the connection file, and refuses to start if
@@ -166,27 +167,55 @@ place:
 
 One gateway instance serves a database at a time, and the database says which, by a start lease:
 the one row of `gateway.start_lease`, which holds the instance's identifier, drawn at its start,
-and the lease's expiry by the database's clock.
+when it last renewed the lease and when the lease expires, both by the database's clock. A lease
+runs at most ten minutes from its renewal; the row refuses any later expiry, and infinity.
 
 - **The start** takes the lease where there is none or it has expired, before it writes anything.
   While another instance's lease is live the start is refused, and exits 1, with
-  `start-lease-held`, the other instance's identifier and how many seconds its lease runs.
-- **While it serves**, the instance renews the lease every 10 seconds; each renewal runs the lease
-  30 seconds from that moment by the database's clock and is bounded by 10 seconds. A renewal that
-  finds the lease taken or expired, or failures that leave less than one renewal's interval of
-  the lease certainly held (two in a row), stop the instance: it stops serving and exits 1 with
-  `start-lease-lost`.
-- **Every write** of the instance first holds the lease's row, unexpired and its own, until the
-  write commits (`FOR KEY SHARE`). A write after the lease is gone fails with `start-lease-lost`
-  and writes nothing; a takeover waits for a write that holds the row to end, so no write of the
-  old instance lands after the new one's start. A renewal does not wait on the instance's own
-  writes.
-- **A clean stop** (SIGINT or SIGTERM) releases the lease, so the next start is admitted at once.
-  A crashed instance's lease expires at most 30 seconds after its last renewal.
+  `start-lease-held`, the other instance's identifier and how many seconds its lease runs. It
+  reads the row first and takes it only where it expired, and then without waiting: a start that
+  is refused holds nothing the running instance waits for, however its connection ends.
+- **While it serves**, the instance renews the lease every 10 seconds on a connection of its own,
+  never one of the pool's; each renewal runs the lease 30 seconds from the renewal's statement by
+  the database's clock and is bounded by 5 seconds, opening that connection again where it failed.
+  A renewal that finds the lease taken or expired stops the instance, and so does a failure that
+  leaves less than one renewal's interval of the lease certainly held: it stops serving and exits
+  1 with `start-lease-lost`.
+- **Every write** of the instance holds the lease's row, as its last statement before its commit,
+  `FOR KEY SHARE`, and only where the row is its own with more than 11 seconds of the lease left
+  by the database's clock, read once the row is held; otherwise the write fails with
+  `start-lease-lost` and writes nothing. A renewal does not wait on the instance's own writes.
+- **A clean stop** (SIGINT or SIGTERM) expires the lease, so the next start is admitted at once.
 
-The periods are constants of this version: 30 seconds tolerates two failed renewals in a row, and
-bounds the wait after a crash. The lease decides which instance serves; it does not make several
-instances safe, which is not supported (ADR-0031, decision 10).
+**The sessions are bounded.** Every session the instance opens is ended by the server once it sits
+idle within a transaction for 10 seconds (`idle_in_transaction_session_timeout`, set at the
+session's start and in every transaction); every statement and every lock wait is bounded by the
+operation's deadline (`statement_timeout`, `lock_timeout`), and, from PostgreSQL 17, so is every
+transaction (`transaction_timeout`). The start checks that the server holds these as set, and is
+refused otherwise. The client probes a quiet connection after 5 seconds, every 5 seconds, three
+times (TCP keepalive). A paused, partitioned or crashed instance therefore holds no row or lock
+past those bounds.
+
+**The timing**, from the moment the last renewal that took effect was sent, at 0 s:
+
+| When | What |
+|---|---|
+| 10 s, 20 s | the next renewals are sent; each ends within 5 s |
+| 11 s before the expiry (19 s to 24 s) on | less than 11 s of the lease is left; every write fails at its last statement |
+| 20 s to 25 s | when both renewals failed, the instance stops serving, with at least 5 s of the lease left |
+| 30 s to 35 s | the lease expires, 30 s from that renewal's statement by the database's clock |
+| at most 45 s | a second instance is admitted: from the expiry on, or, when a later renewal stopped between its statement and its commit, once the server ended that session, within 10 s more |
+
+No write of the old instance commits after a second instance took the lease. A write passes its
+last statement only with more than 11 seconds of the lease left, and its commit is sent within
+the 10 seconds the server allows an idle transaction, or the server ends the session and the
+write with it. Until the write's transaction ends it holds the row, and a takeover, which would
+wait for it, is refused at once instead: `start-lease-held`, naming the old instance, and "start
+again". A write whose statements outlast the lease fails at that last statement and writes
+nothing; a write whose last statement waited for the row reads the clock once it holds it.
+
+The periods are constants of this version. The lease decides which instance serves; it does not
+make several instances safe, which is not supported (ADR-0031, decision 10).
 
 **Replacing an instance** (an upgrade, a move to another host) is a rolling replacement in this
 order:
@@ -196,7 +225,8 @@ order:
 3. start the new instance.
 
 If the old instance cannot be stopped cleanly (its host is gone), the new start is refused until
-the old lease expires, within 30 seconds; start it again then. A start that finds the lease held
+the old lease expires and its sessions are ended, within 45 seconds of its last renewal; start it
+again then. A start that finds the lease held
 names the holder: do not remove the row by hand while that instance may be running.
 
 ## The migration command
@@ -256,10 +286,10 @@ start refuses a table it was not restored on.
 | `gateway.logs`, `gateway.log_records` (the seal registry) | SELECT, INSERT | every one: the registry is one chain |
 | `gateway.secrets` | SELECT, INSERT | every one |
 | `gateway.schema_migrations` | SELECT | every one |
-| `gateway.start_lease` (one row: the instance that serves) | SELECT, INSERT, UPDATE, DELETE | every one: it carries no scope |
+| `gateway.start_lease` (one row: the instance that serves) | SELECT, INSERT, UPDATE | every one: it carries no scope |
 
-Append-only by privilege: nothing but a document and the start lease's row is changed or removed
-once written. The login
+Append-only by privilege: nothing but a document and the start lease's row is changed once
+written, and nothing but a document is removed. The login
 holds no TRUNCATE, REFERENCES or TRIGGER, and makes, changes and drops nothing. No function is
 defined in the schema. An append to the registry takes a transaction advisory lock
 (`pg_advisory_xact_lock`, which every role may call unless the operator took it back); the

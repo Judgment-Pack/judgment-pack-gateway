@@ -154,8 +154,8 @@ the maintainer (below).
    the log and its records, and secrets; SELECT, INSERT, UPDATE and DELETE on documents alone;
    SELECT on the migrations' record. It holds no TRUNCATE, REFERENCES or TRIGGER, no CREATE on any
    schema, and no TEMPORARY on the database. No function is defined, SECURITY DEFINER or not.
-   *Amended 2026-11-13 (#430, ADR-0032): and SELECT, INSERT, UPDATE and DELETE on the start
-   lease's one row (`gateway.start_lease`, schema version 2).*
+   *Amended 2026-11-13 (#430, ADR-0032): and SELECT, INSERT and UPDATE on the start lease's one
+   row (`gateway.start_lease`, schema version 2), which it expires and never removes.*
 
 7. **Migrations.** The schema is plain SQL files, `go/store_pg/migrations/NNNN_name.sql` numbered
    from 1 with no gap, and `go/store_pg/grants.sql`, carried in the binary and recorded by digest

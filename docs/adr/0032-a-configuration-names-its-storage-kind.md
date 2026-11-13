@@ -62,17 +62,33 @@ gateway instance, and only one, serves a database.
    start's check (ADR-0031, decision 8) stays the gate at the start.
 
 4. **One instance per database, by a start lease.** Schema version 2 adds `gateway.start_lease`,
-   one row: the holder, an identifier the instance draws at its start, and the expiry by the
-   database's clock (`clock_timestamp()` in the statement, so instances on different hosts agree
-   on one clock). The start takes the row where it is absent or expired, before it writes
-   anything, and is refused with `start-lease-held`, naming the holder, while it is live. The
-   instance renews it every 10 seconds, each renewal running the lease 30 seconds from that
-   moment and bounded by 10 seconds; a renewal that finds the lease gone, or failures that leave
-   less than one interval certainly held, stop the instance with `start-lease-lost`. Every write
-   transaction first holds the row, unexpired and its own, `FOR KEY SHARE`; the holder is a unique
-   key, so a takeover, which changes it, waits for such a write to end, while a renewal, which
-   changes only the expiry, does not wait on the instance's own writes. A clean stop removes the
-   row. Several live instances remain unsupported: the lease decides which one serves.
+   one row: the holder, an identifier the instance draws at its start, its last renewal and its
+   expiry by the database's clock (`clock_timestamp()` in the statement, so instances on different
+   hosts agree on one clock); the row refuses an expiry more than ten minutes past its renewal,
+   and infinity. The start reads the row and takes it where it is absent or expired, without
+   waiting (`FOR UPDATE NOWAIT`), before it writes anything; it is refused with
+   `start-lease-held`, naming the holder, while the lease is live or a write of the old holder
+   still holds the row, and a refused start holds no lock. The instance renews the lease every
+   10 seconds on a connection of its own, outside the pool; each renewal runs the lease
+   30 seconds from its statement and is bounded by 5 seconds; a renewal that finds the lease
+   gone, or a failure that leaves less than one interval certainly held, stops the instance with
+   `start-lease-lost`. Every write transaction holds the row as its last statement before its
+   commit, `FOR KEY SHARE`, only where it is its own with more than 11 seconds left by the clock
+   read once the row is held. Every session is bounded by the server: 10 seconds idle within a
+   transaction (`idle_in_transaction_session_timeout`, set at the session's start and in each
+   transaction), the operation's deadline for a statement and a lock wait, and, from
+   PostgreSQL 17, for the transaction (`transaction_timeout`); the start checks that the server
+   holds them, and the client turns on TCP keepalive (5 seconds, every 5, three probes). So a
+   write's commit is sent before the lease runs out or the server ends the write, the row stays
+   held against a takeover until the write ends, and no write of an instance commits after
+   another took the lease. A renewal changes only the times and does not wait on the instance's
+   own writes. A clean stop expires the row; the run-time login holds no DELETE on it. Several
+   live instances remain unsupported: the lease decides which one serves. The timing, from the
+   last renewal that took effect: renewals at 10 and 20 seconds; writes refused from 11 seconds
+   before the expiry; the instance stopped by 25 seconds when both failed; the expiry at 30 to
+   35 seconds; a second instance admitted by 45 seconds, 10 seconds past the expiry when a
+   later renewal stopped between its statement and its commit (docs/postgresql-store.md, "The
+   timing").
 
 5. **ADR-0031, decision 9, amended**: the start lease's expiry is the database's clock, as that
    decision anticipated for more than one gateway; receipt and seal times stay the gateway's, and
@@ -84,13 +100,16 @@ gateway instance, and only one, serves a database.
   runs as before; the corpus, the vectors and the filesystem kind's bytes are unchanged.
 - Good, because the connection string has one way in, by reference, and a test greps every
   stream and file a run produces for a marker password.
-- Good, because a second instance is refused while the first lives, a crashed one's lease expires
-  within 30 seconds of its last renewal, and a write after the lease is gone fails rather than
-  landing beside another instance's.
+- Good, because a second instance is refused while the first lives, a crashed one is replaced
+  within 45 seconds of its last renewal, and no write of an instance commits after another took
+  the lease: a write fails at its last statement with less than 11 seconds of the lease left, and
+  the server ends a write whose commit does not follow within 10 seconds.
 - Bad, because a share of the gateway is not available with this kind yet (decision 2); each
   refusal names what to do instead where there is something.
-- Bad, because the periods are constants of this version, not configuration; a write that holds
-  the lease's row delays a takeover by up to that write's deadline (`operationSeconds`).
+- Bad, because the periods are constants of this version, not configuration; a takeover while a
+  write of the old instance still holds the row is refused and is started again, and a client
+  idle for 10 seconds within a transaction loses that transaction.
+- Bad, because an instance holds one connection more than `connections`, its lease's own.
 - Bad, because the end-to-end check in CI drives the binary for the migration and the export, and
   serves in the test's process: `serve --config` takes a platform whose source runs as a user of
   its own, which only a start as root switches to.
