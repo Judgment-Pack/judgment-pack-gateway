@@ -785,7 +785,7 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   the `--endpoint` form, reached against the system's roots (not `--ca-file`'s) within ten
   seconds, and a redirect is refused; its answer is taken only as at most 64 KiB of
   `application/json` with `access_token`, `token_type` `Bearer` in any case and an `expires_in`
-  from 1 to 86400 or none. `--bearer` and `--credential-header` are refused beside it.
+  from 1 to 86400, as a number or a string of its digits, or none. `--bearer` and `--credential-header` are refused beside it.
   `--token-only` obtains a token and writes it sealed, `{"sealed", "expiresIn"}`, AES-256-GCM under
   a key derived from the credential; an acquisition handed a sealed token in
   `ADAPTER_HTTP_SEALED_TOKEN` opens and sends it without a token request, which is how the engine

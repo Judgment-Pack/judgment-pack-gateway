@@ -366,7 +366,14 @@ func TestTokenStepReadsTheAnswerStrictly(t *testing.T) {
 		{"expires_in zero", json(`{` + tok + `,"token_type":"Bearer","expires_in":0}`)},
 		{"expires_in negative", json(`{` + tok + `,"token_type":"Bearer","expires_in":-5}`)},
 		{"expires_in past the bound", json(`{` + tok + `,"token_type":"Bearer","expires_in":86401}`)},
-		{"expires_in a string", json(`{` + tok + `,"token_type":"Bearer","expires_in":"3600"}`)},
+		{"expires_in a string with a sign", json(`{` + tok + `,"token_type":"Bearer","expires_in":"+3600"}`)},
+		{"expires_in a string with a space", json(`{` + tok + `,"token_type":"Bearer","expires_in":" 3600"}`)},
+		{"expires_in a string with a fraction", json(`{` + tok + `,"token_type":"Bearer","expires_in":"3600.5"}`)},
+		{"expires_in an empty string", json(`{` + tok + `,"token_type":"Bearer","expires_in":""}`)},
+		{"expires_in a string of zero", json(`{` + tok + `,"token_type":"Bearer","expires_in":"0"}`)},
+		{"expires_in a string past the bound", json(`{` + tok + `,"token_type":"Bearer","expires_in":"86401"}`)},
+		{"expires_in a string past an int", json(`{` + tok + `,"token_type":"Bearer","expires_in":"99999999999999999999"}`)},
+		{"expires_in null", json(`{` + tok + `,"token_type":"Bearer","expires_in":null}`)},
 		{"expires_in a fraction", json(`{` + tok + `,"token_type":"Bearer","expires_in":3600.5}`)},
 		{"a member twice", json(`{` + tok + `,"token_type":"Bearer",` + tok + `}`)},
 	} {
@@ -392,6 +399,7 @@ func TestTokenStepReadsTheAnswerStrictly(t *testing.T) {
 	}{
 		{"bearer in lower case, at the bound", `{` + tok + `,"token_type":"bearer","expires_in":86400}`, `"expiresIn":86400`},
 		{"no expires_in", `{` + tok + `,"token_type":"BEARER"}`, `"expiresIn":null`},
+		{"expires_in a string of digits", `{` + tok + `,"token_type":"Bearer","expires_in":"3599"}`, `"expiresIn":3599`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			stub := newTokenStub(t, &ecKey.PublicKey)
@@ -494,6 +502,14 @@ func TestTokenStepSealsTheTokenToItsConfiguration(t *testing.T) {
 	otherClient := handed
 	otherClient.Token = &TokenStep{Endpoint: stub.token.URL + "/token", ClientID: "client-8", KeyMember: "CLIENT_KEY"}
 	unusable["another client"] = otherClient
+	otherSource := handed
+	otherSource.Endpoint = "http://127.0.0.1:9"
+	unusable["another source endpoint"] = otherSource
+	otherScope := handed
+	scoped := *handed.Token
+	scoped.Scope = "another.scope"
+	otherScope.Token = &scoped
+	unusable["another requestScope"] = otherScope
 	otherKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	rekeyed := stub.tokenConfig(t, pkcs8PEM(t, otherKey))
 	rekeyed.SealedToken = answer.Sealed

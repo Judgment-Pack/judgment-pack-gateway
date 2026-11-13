@@ -137,6 +137,9 @@ var (
 	scopeToken = regexp.MustCompile(`^[\x21\x23-\x5b\x5d-\x7e]+$`)
 	// base64urlText is unpadded base64url, the form of a JOSE thumbprint.
 	base64urlText = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	// decimalDigits is an expires_in answered as a string: its digits and
+	// nothing else.
+	decimalDigits = regexp.MustCompile(`^[0-9]+$`)
 )
 
 // holdTokenStep holds the step's configuration to its rules, before any
@@ -345,8 +348,8 @@ func tokenClient() *http.Client {
 // requestToken sends the one token request and reads the answer strictly:
 // status 200, at most 64 KiB, JSON, no member named twice; access_token a
 // string of RFC 6750's token form of at most 16 KiB; token_type Bearer, in
-// any case; expires_in, when present, an integer from 1 to 86400. Any
-// other answer is TokenRefused, and the refusal names the status at most,
+// any case; expires_in, when present, an integer from 1 to 86400, or a
+// string of its decimal digits. Any other answer is TokenRefused, and the refusal names the status at most,
 // never the body.
 func requestToken(ctx context.Context, client *http.Client, t *TokenStep, assertion string) (obtainedToken, error) {
 	form := url.Values{}
@@ -412,7 +415,16 @@ func parseTokenAnswer(raw []byte) (obtainedToken, error) {
 		return obtainedToken{}, malformed
 	}
 	if expires, present := members["expires_in"]; present {
-		n, err := strconv.Atoi(string(bytes.TrimSpace(expires)))
+		text := string(bytes.TrimSpace(expires))
+		// Some token endpoints answer the lifetime as a string of its
+		// decimal digits; that is taken as the number, under the same
+		// bounds, and nothing else spelled as a string is.
+		if digits, ok := strings.CutPrefix(text, `"`); ok {
+			if text, ok = strings.CutSuffix(digits, `"`); !ok || !decimalDigits.MatchString(text) {
+				return obtainedToken{}, malformed
+			}
+		}
+		n, err := strconv.Atoi(text)
 		if err != nil || n < 1 || n > maxExpiresIn {
 			return obtainedToken{}, malformed
 		}
