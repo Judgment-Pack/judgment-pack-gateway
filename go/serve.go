@@ -194,11 +194,16 @@ type gatewayService struct {
 	registry                *registryWriter
 	storeRoot               string
 	regPath                 string
-	authority               string
-	publicKey               ed25519.PublicKey
-	keyID                   string
-	sources                 map[string]sourceSpec
-	maxSourceOutput         int64
+	// kind is the PostgreSQL kind that keeps the store and the registry
+	// (engineVersion 24, storage_kind.go); nil for the filesystem kind at
+	// storeRoot and regPath, which are then the paths, and "" otherwise.
+	// What reads the filesystem store directly asks it first.
+	kind            storeKind
+	authority       string
+	publicKey       ed25519.PublicKey
+	keyID           string
+	sources         map[string]sourceSpec
+	maxSourceOutput int64
 	// maxRequest bounds an /acquire body, from --max-request; /seal and /act
 	// keep maxRequestBody.
 	maxRequest int64
@@ -304,21 +309,8 @@ var startHook = func() {}
 
 func newGatewayService(storeRoot string, seed []byte, authority, registryPath string,
 	sources map[string]sourceSpec) (*gatewayService, error) {
-	// A shape is one of §1.2a's or nothing: a receipt minted under any other
-	// would be malformed to every verifier, so it is refused here, whatever
-	// built the configuration.
-	for name, spec := range sources {
-		if spec.descriptorProvenance != nil && spec.shape != "mcp" {
-			return nil, fmt.Errorf("source %s: descriptor provenance requires MCP", name)
-		}
-		if spec.shape != "" && !adapterShapes[spec.shape] {
-			return nil, fmt.Errorf("source %s: unknown adapter shape %q", name, spec.shape)
-		}
-		// A scope identifier the receipt carries is of its form, or every
-		// verifier would read the receipt as malformed.
-		if spec.scope != "" && !isScopeIdentifier(spec.scope) {
-			return nil, fmt.Errorf("source %s: scope is not a scope identifier: %s", name, scopeForm)
-		}
+	if err := holdSourceForms(sources); err != nil {
+		return nil, err
 	}
 	// the registry's spelling is judged before the store is made: a start
 	// that would refuse it leaves nothing behind (SPEC.md §4.1)
@@ -343,6 +335,66 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 	if err != nil {
 		return nil, err
 	}
+	return newServiceAround(st, reg, storeRoot, registryPath, authority, sources), nil
+}
+
+// holdSourceForms refuses a source the receipts could not be minted for.
+func holdSourceForms(sources map[string]sourceSpec) error {
+	// A shape is one of §1.2a's or nothing: a receipt minted under any other
+	// would be malformed to every verifier, so it is refused here, whatever
+	// built the configuration.
+	for name, spec := range sources {
+		if spec.descriptorProvenance != nil && spec.shape != "mcp" {
+			return fmt.Errorf("source %s: descriptor provenance requires MCP", name)
+		}
+		if spec.shape != "" && !adapterShapes[spec.shape] {
+			return fmt.Errorf("source %s: unknown adapter shape %q", name, spec.shape)
+		}
+		// A scope identifier the receipt carries is of its form, or every
+		// verifier would read the receipt as malformed.
+		if spec.scope != "" && !isScopeIdentifier(spec.scope) {
+			return fmt.Errorf("source %s: scope is not a scope identifier: %s", name, scopeForm)
+		}
+	}
+	return nil
+}
+
+// pgRegistryName names the registry the PostgreSQL kind keeps, in messages.
+const pgRegistryName = "the registry the PostgreSQL storage kind keeps"
+
+// newGatewayServiceOn is the service over a kind other than the filesystem
+// one at a path (engineVersion 24): its store and its registry are the
+// kind's spaces, and a registry that is not there is made only for a kind
+// that holds no session, as at a path.
+func newGatewayServiceOn(kind storeKind, seed []byte, authority string, sources map[string]sourceSpec) (*gatewayService, error) {
+	if err := holdSourceForms(sources); err != nil {
+		return nil, err
+	}
+	for name, spec := range sources {
+		if spec.descriptorProvenance != nil {
+			return nil, fmt.Errorf("source %s: %w", name, storageUnsupported("descriptor provenance, whose snapshot is read from the store on disk,"))
+		}
+	}
+	if len(seed) != seedBytes {
+		return nil, fmt.Errorf("an Ed25519 signing seed is %d bytes", seedBytes)
+	}
+	st := newStoreOn("", kind.artifacts(), kind.receipts(), seed, authority)
+	startHook()
+	receipts := kind.receipts()
+	reg, err := newRegistryWriterOn(kind.registry(), pgRegistryName, seed, func() (bool, error) {
+		held, err := receipts.listSeries()
+		return len(held) > 0, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	g := newServiceAround(st, reg, "", "", authority, sources)
+	g.kind = kind
+	return g, nil
+}
+
+// newServiceAround is the service around a store and a registry made.
+func newServiceAround(st *store, reg *registryWriter, storeRoot, registryPath, authority string, sources map[string]sourceSpec) *gatewayService {
 	g := &gatewayService{
 		store: st, registry: reg, storeRoot: storeRoot, regPath: registryPath,
 		authority: authority, publicKey: st.publicKey, keyID: st.keyID,
@@ -368,7 +420,35 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 			break
 		}
 	}
-	return g, nil
+	return g
+}
+
+// engineSeals is the registry's seals under the gateway's key, as its own
+// walk reads them (engineWalk): from the file at regPath, or from the log
+// the kind keeps.
+func (g *gatewayService) engineSeals() (map[string]seal, error) {
+	if g.kind == nil {
+		return loadEngineSeals(g.regPath, g.publicKey)
+	}
+	w, err := g.kindRegistryWalk()
+	if err != nil {
+		return nil, err
+	}
+	return w.seals, nil
+}
+
+// kindRegistryWalk is engineWalk over the registry the kind keeps, which
+// the engine made at its start: one that is not there is a refusal, never
+// an empty registry.
+func (g *gatewayService) kindRegistryWalk() (*registryWalk, error) {
+	data, err := g.registry.log.readLog(0)
+	if faultOf(err) == faultAbsent {
+		return nil, fmt.Errorf("the registry the engine made at its start is not there: %s", g.registry.path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return engineWalk(data, g.publicKey)
 }
 
 // provenanceKeys is the registry's reached keys for descriptor provenance,
@@ -1692,7 +1772,7 @@ func (g *gatewayService) sealedElsewhere(sessionID string) string {
 	if held {
 		return ""
 	}
-	seals, err := loadEngineSeals(g.regPath, g.publicKey)
+	seals, err := g.engineSeals()
 	if err != nil {
 		return registryRefusal(err)
 	}
@@ -1808,6 +1888,9 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 }
 
 func (g *gatewayService) verify() (map[string]any, error) {
+	if g.kind != nil {
+		return nil, storageUnsupported("/verify, which verifies the store on disk; export the store and verify the export,")
+	}
 	rep, err := verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
 	if err != nil {
 		return nil, err
@@ -2061,6 +2144,13 @@ func (g *gatewayService) handler() http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": errNoRequester.Error() + "; this engine has no identity configured", "refusedAt": "requester"})
 			return
 		}
+		// An action reads its session, its journal and its evidence on
+		// disk (act.go): with another kind keeping the store, it is refused
+		// before the body is read, never answered from an empty directory.
+		if g.kind != nil {
+			writeJSON(w, http.StatusNotImplemented, map[string]any{"error": storageUnsupported("/act, whose session, journal and evidence are on disk,").Error(), "refusedAt": "storage"})
+			return
+		}
 		limitBody(w, r)
 		// Every member is read at its own step of the ladder (act), the
 		// string-valued ones included: a member of the wrong type is a
@@ -2211,6 +2301,10 @@ func (g *gatewayService) handler() http.Handler {
 			return
 		}
 		out, err := g.verify()
+		if errors.Is(err, errStorageKindUnsupported) {
+			writeJSON(w, http.StatusNotImplemented, map[string]any{"error": err.Error()})
+			return
+		}
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -2233,7 +2327,7 @@ func (g *gatewayService) handler() http.Handler {
 		// not drain, since any caller can ask.
 		data, err := g.registry.log.readLog(0)
 		if faultOf(err) == faultAbsent {
-			err = fmt.Errorf("the registry the engine made at its start is not there: %s", g.regPath)
+			err = fmt.Errorf("the registry the engine made at its start is not there: %s", g.registry.path)
 		}
 		if err != nil {
 			g.reports.trafficf("serve: /registry answered 500: %v", err)

@@ -152,6 +152,11 @@ func checkDescriptorProvenance(root string, p descriptorProvenance, authority, s
 }
 
 func retainConnectedCapture(cfg engineConfig, data []byte, operation string) (descriptorProvenance, error) {
+	// the capture is retained in the store on disk, which another kind
+	// keeping the store has none of: never in a directory "" names
+	if err := refuseUnderPostgreSQL(cfg, connectCaptureUnsupported); err != nil {
+		return descriptorProvenance{}, err
+	}
 	seed, err := loadSeed(cfg.seed)
 	if err != nil {
 		return descriptorProvenance{}, err

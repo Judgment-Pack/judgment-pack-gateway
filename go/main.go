@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -317,22 +318,49 @@ func loadSeed(path string) ([]byte, error) {
 // buildService is the part of cmdServe between a parsed command line and a
 // listening socket, separated so the wiring can be checked without one.
 func buildService(storeRoot string, seed []byte, authority, registryPath string, opts serveOptions) (*gatewayService, error) {
-	// A witness named for a trail (ADR-0014) is held before anything is
-	// made: never this gateway's own key, by the key's bytes, and only
-	// where receipts are of version 3.
-	if len(opts.witnessedBy) > 0 {
-		if len(seed) != ed25519.SeedSize {
-			return nil, fmt.Errorf("seed is not %d bytes", ed25519.SeedSize)
-		}
-		own := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
-		if err := holdWitnessedBy(opts.witnessedBy, own, opts.receiptVersion); err != nil {
-			return nil, err
-		}
+	if err := holdServedWitnesses(seed, opts); err != nil {
+		return nil, err
 	}
 	service, err := newGatewayService(storeRoot, seed, authority, registryPath, opts.sources)
 	if err != nil {
 		return nil, err
 	}
+	applyServeOptions(service, opts)
+	return service, nil
+}
+
+// buildServiceOn is buildService over a kind that keeps the store and the
+// registry in place of the filesystem kind at their paths (storage_kind.go).
+func buildServiceOn(kind storeKind, seed []byte, authority string, opts serveOptions) (*gatewayService, error) {
+	if err := holdServedWitnesses(seed, opts); err != nil {
+		return nil, err
+	}
+	service, err := newGatewayServiceOn(kind, seed, authority, opts.sources)
+	if err != nil {
+		return nil, err
+	}
+	applyServeOptions(service, opts)
+	return service, nil
+}
+
+// holdServedWitnesses holds a witness named for a trail (ADR-0014) before
+// anything is made: never this gateway's own key, by the key's bytes, and
+// only where receipts are of version 3.
+func holdServedWitnesses(seed []byte, opts serveOptions) error {
+	if len(opts.witnessedBy) > 0 {
+		if len(seed) != ed25519.SeedSize {
+			return fmt.Errorf("seed is not %d bytes", ed25519.SeedSize)
+		}
+		own := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+		if err := holdWitnessedBy(opts.witnessedBy, own, opts.receiptVersion); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyServeOptions sets on a service made what the options say.
+func applyServeOptions(service *gatewayService, opts serveOptions) {
 	service.maxSourceOutput = opts.maxSourceOutput
 	if opts.maxRequest > 0 {
 		service.maxRequest = opts.maxRequest
@@ -343,7 +371,6 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 	service.decisionRecords = opts.decisionRecords
 	service.witnessedBy = opts.witnessedBy
 	service.seedPath = opts.seedPath
-	return service, nil
 }
 
 // engineStart is what serve --config judges before it loads the seed, in
@@ -365,7 +392,7 @@ func engineStart(cfg *engineConfig, bindings map[string]binding, host engineHost
 	if err := holdAdapterSources(sources, host); err != nil {
 		return nil, nil, err
 	}
-	if err := preflightPaths(cfg.store, cfg.registry, cfg.decisionRecords); err != nil {
+	if err := preflightPathsOf(cfg.store, cfg.registry, cfg.decisionRecords, cfg.storage == nil); err != nil {
 		return nil, nil, err
 	}
 	return statements, sources, nil
@@ -407,7 +434,7 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	// a rotation under way beside the seed is finished first (SPEC.md §3b)
-	if err := rotationPendingBesideAny(seedNames, cfg.registry); err != nil {
+	if err := rotationPendingAtStart(cfg, seedNames); err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
@@ -439,6 +466,9 @@ func cmdServeEngine(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
+	}
+	if cfg.storage != nil {
+		return serveEngineOnKind(cfg, seed, sources, identity, delegation)
 	}
 	// A witness is opened before the store and the registry are made: its
 	// start-up checks refuse a start that a repair, a log copy or a new key
@@ -488,6 +518,11 @@ func cmdServeEngine(args []string) int {
 		}
 	}
 	service.witness = witness
+	return serveEngineService(service, cfg, delegation)
+}
+
+// serveEngineService serves a service made, until a signal ends it.
+func serveEngineService(service *gatewayService, cfg engineConfig, delegation *delegationService) int {
 	service.attachDelegation(delegation)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -500,6 +535,52 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// rotationPendingAtStart is the start's look for a rotation under way
+// beside the seed (SPEC.md §3b). With the PostgreSQL kind keeping the
+// registry, gateway rotate-key, which takes the registry's path, cannot
+// finish one, and a rotation's file beside the seed is a start refused by
+// name all the same: it never starts beside a rotation it cannot see the
+// end of.
+func rotationPendingAtStart(cfg engineConfig, seedNames []string) error {
+	if cfg.storage == nil {
+		return rotationPendingBesideAny(seedNames, cfg.registry)
+	}
+	for _, seedPath := range seedNames {
+		for _, suffix := range []string{recordSuffix, nextSeedSuffix} {
+			if _, err := os.Lstat(seedPath + suffix); err == nil || !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("%w: %s is there, and %w", errRotationPending, seedPath+suffix, storageUnsupported("gateway rotate-key, which keeps the registry at a path,"))
+			}
+		}
+	}
+	return nil
+}
+
+// serveEngineOnKind is the rest of serve --config where storage names the
+// PostgreSQL kind (storage_kind.go): the kind opened and held to its
+// conditions, the service built over it, and the registry it keeps walked
+// as holdEngineRegistry walks the file, before anything is served. What
+// the start makes in the kind is the registry, empty, where it is not there
+// and no session is held (newRegistryWriterOn).
+func serveEngineOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, identity *identityConfig, delegation *delegationService) int {
+	kind, err := openStorageKind(cfg.storage)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	defer kind.close()
+	service, err := buildServiceOn(kind, seed, cfg.authority, engineServeOptions(cfg, sources, identity))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	if _, err := service.kindRegistryWalk(); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	fmt.Fprintln(os.Stderr, "start:", storageStartLine(cfg.storage))
+	return serveEngineService(service, cfg, delegation)
 }
 
 // writeNewSeed creates path exclusively. O_EXCL is the whole point and a

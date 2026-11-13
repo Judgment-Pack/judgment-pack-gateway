@@ -61,14 +61,17 @@ import (
 // which the start measures every source's sandbox as its user and does not
 // start where a launch of one would be refused
 // (docs/adr/0030-the-engine-image-carries-the-sandbox-launcher.md;
-// sandbox_at_start.go):
+// sandbox_at_start.go), and version 24 the optional `storage`, by which
+// the PostgreSQL storage kind keeps the store and the registry in place of
+// the store and registry paths (docs/adr/0032-a-configuration-names-its-storage-kind.md;
+// storage_kind.go):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "23"
+const engineVersion = "24"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -124,6 +127,11 @@ type engineConfig struct {
 	// source's sandbox and refuses to start unless each source would
 	// launch (sandbox_at_start.go); off unless the configuration sets it.
 	measureSandboxAtStart bool
+	// storage names the PostgreSQL kind that keeps the store and the
+	// registry (engineVersion 24, storage_kind.go); nil when the filesystem
+	// kind keeps them at store and registry, as before the member. With it,
+	// store and registry are "".
+	storage *storageSpec
 }
 
 // mcpConfig is the `mcp` member (docs/design/mcp-server.md): where the MCP
@@ -319,7 +327,9 @@ type fileOwnership struct {
 // engineMembers lists every member the configuration may carry and whether
 // it must.
 var engineMembers = map[string]bool{
-	"engineVersion": true, "authority": true, "seed": true, "store": true, "registry": true,
+	// store and registry are required unless storage is given, and absent
+	// when it is (parseEngineConfig)
+	"engineVersion": true, "authority": true, "seed": true, "store": false, "registry": false, "storage": false,
 	"decisionRecords": true, "listen": true, "catalog": true, "platforms": true,
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
 	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
@@ -346,6 +356,16 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	if err := exactlyMembers(obj, engineMembers, "engine configuration"); err != nil {
 		return engineConfig{}, err
 	}
+	// Without storage the filesystem kind keeps the store and the registry
+	// at their paths, which are then required, as they were before the
+	// member, and refused as missing where exactlyMembers refused them.
+	if _, withStorage := obj.get("storage"); !withStorage {
+		for _, name := range []string{"store", "registry"} {
+			if _, given := obj.get(name); !given {
+				return engineConfig{}, fmt.Errorf("engine configuration: missing member %q", name)
+			}
+		}
+	}
 	var cfg engineConfig
 	version, _ := memberString(obj, "engineVersion")
 	if !engineVersions[version] {
@@ -367,6 +387,30 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	if _, present := obj.get("mcp"); present && version == "1" {
 		return engineConfig{}, errors.New("engine configuration: mcp is a version-2 member; engineVersion 1 has no mcp")
 	}
+	// With storage, neither the store's path nor the registry's is given.
+	paths := []struct {
+		name string
+		into *string
+	}{
+		{"seed", &cfg.seed}, {"store", &cfg.store}, {"registry", &cfg.registry},
+		{"decisionRecords", &cfg.decisionRecords}, {"catalog", &cfg.catalog},
+	}
+	if storageValue, present := obj.get("storage"); present {
+		spec, err := parseStorage(storageValue, version)
+		if err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
+		}
+		for _, name := range []string{"store", "registry"} {
+			if _, given := obj.get(name); given {
+				return engineConfig{}, fmt.Errorf("engine configuration: %s is the filesystem kind's; with storage naming the %s kind, store and registry are not given", name, storagePostgreSQL)
+			}
+		}
+		cfg.storage = spec
+		paths = []struct {
+			name string
+			into *string
+		}{{"seed", &cfg.seed}, {"decisionRecords", &cfg.decisionRecords}, {"catalog", &cfg.catalog}}
+	}
 	authority, err := requireString(obj, "authority")
 	if err != nil || authority == "" {
 		return engineConfig{}, errors.New("engine configuration: authority must be a non-empty string")
@@ -374,13 +418,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	cfg.authority = authority
 	// Every path is absolute: a path relative to wherever the engine was
 	// started names nothing an operator can reason about.
-	for _, m := range []struct {
-		name string
-		into *string
-	}{
-		{"seed", &cfg.seed}, {"store", &cfg.store}, {"registry", &cfg.registry},
-		{"decisionRecords", &cfg.decisionRecords}, {"catalog", &cfg.catalog},
-	} {
+	for _, m := range paths {
 		s, err := requireAbsolutePath(obj, m.name)
 		if err != nil {
 			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
@@ -410,6 +448,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	if witnessValue, present := obj.get("witness"); present {
 		if !versionAtLeast(version, "6") {
 			return engineConfig{}, fmt.Errorf("engine configuration: witness is a version-6 member; engineVersion %s has no witness", version)
+		}
+		if cfg.storage != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %w", storageUnsupported("witness, which keeps its files beside the registry on disk,"))
 		}
 		// A submission is authenticated, by a bearer token from the
 		// configured issuer (ADR-0013 §4): a witness with no issuer would
@@ -704,6 +745,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			pc.notRetained = true
 		}
 		cfg.platforms = append(cfg.platforms, pc)
+	}
+	if err := storageRefusals(&cfg); err != nil {
+		return engineConfig{}, fmt.Errorf("engine configuration: %w", err)
 	}
 	return cfg, nil
 }
@@ -1621,6 +1665,14 @@ func mcpServerArgv(adapter string, op operation, credentials, runtime, endpoint,
 // the same before any adapter is run, so it does not succeed where the
 // next start would fail. Nothing is made here.
 func preflightPaths(store, registry, decisionRecords string) error {
+	return preflightPathsOf(store, registry, decisionRecords, true)
+}
+
+// preflightPathsOf is preflightPaths, judging the store and the registry
+// only where withStore says the filesystem kind keeps them at their paths:
+// with another kind keeping them (storage_kind.go) there are none, and the
+// decision-record directory alone is judged.
+func preflightPathsOf(store, registry, decisionRecords string, withStore bool) error {
 	// present is what is at a path -- the target of a link, when it is
 	// one that leads somewhere -- or nil for absence; anything else that
 	// goes wrong on the way is an error.
@@ -1677,61 +1729,65 @@ func preflightPaths(store, registry, decisionRecords string) error {
 	// the registry and the decision-record directory are read by their
 	// spelling: one the platform could resolve otherwise is a start that
 	// fails, as the reader and the writer would refuse it (SPEC.md §4.1)
-	if err := requirePlainSpelling(registry, true); err != nil {
-		return fmt.Errorf("registry: %w", err)
+	if withStore {
+		if err := requirePlainSpelling(registry, true); err != nil {
+			return fmt.Errorf("registry: %w", err)
+		}
 	}
 	if err := requirePlainSpelling(decisionRecords, false); err != nil {
 		return fmt.Errorf("decisionRecords: %w", err)
 	}
-	info, err := present("store", store)
-	if err != nil {
-		return err
-	}
-	switch {
-	case info == nil:
-		if err := makeable("store", store); err != nil {
+	if withStore {
+		info, err := present("store", store)
+		if err != nil {
 			return err
 		}
-	case !info.IsDir():
-		return fmt.Errorf("store %s is not a directory", store)
-	default:
-		// The store's own directories, which serve makes on start and
-		// writes into: a file or a dangling link in the place of either
-		// is a start that fails, and so is one this process may not
-		// write in, or may not make.
-		for _, child := range []string{"artifacts", "receipts"} {
-			path := filepath.Join(store, child)
-			info, err := present("store", path)
-			if err != nil {
+		switch {
+		case info == nil:
+			if err := makeable("store", store); err != nil {
 				return err
 			}
-			switch {
-			case info == nil:
-				if !canWrite(store) {
-					return fmt.Errorf("store %s: %s cannot be made: this process may not write in the store", store, child)
+		case !info.IsDir():
+			return fmt.Errorf("store %s is not a directory", store)
+		default:
+			// The store's own directories, which serve makes on start and
+			// writes into: a file or a dangling link in the place of either
+			// is a start that fails, and so is one this process may not
+			// write in, or may not make.
+			for _, child := range []string{"artifacts", "receipts"} {
+				path := filepath.Join(store, child)
+				info, err := present("store", path)
+				if err != nil {
+					return err
 				}
-			case !info.IsDir():
-				return fmt.Errorf("store %s: %s is not a directory", store, child)
-			case !canWrite(path):
-				return fmt.Errorf("store %s: this process may not write in %s", store, child)
+				switch {
+				case info == nil:
+					if !canWrite(store) {
+						return fmt.Errorf("store %s: %s cannot be made: this process may not write in the store", store, child)
+					}
+				case !info.IsDir():
+					return fmt.Errorf("store %s: %s is not a directory", store, child)
+				case !canWrite(path):
+					return fmt.Errorf("store %s: this process may not write in %s", store, child)
+				}
 			}
 		}
-	}
-	info, err = judged("registry", registry, "the registry is a link that leads nowhere")
-	if err != nil {
-		return err
-	}
-	switch {
-	case info == nil:
-		if err := makeable("registry", registry); err != nil {
+		info, err = judged("registry", registry, "the registry is a link that leads nowhere")
+		if err != nil {
 			return err
 		}
-	case !info.Mode().IsRegular():
-		return fmt.Errorf("registry %s is not a regular file", registry)
-	case !canWrite(registry):
-		return fmt.Errorf("registry %s: this process may not write it", registry)
+		switch {
+		case info == nil:
+			if err := makeable("registry", registry); err != nil {
+				return err
+			}
+		case !info.Mode().IsRegular():
+			return fmt.Errorf("registry %s is not a regular file", registry)
+		case !canWrite(registry):
+			return fmt.Errorf("registry %s: this process may not write it", registry)
+		}
 	}
-	info, err = judged("decisionRecords", decisionRecords, "the decision-record directory is a link that leads nowhere")
+	info, err := judged("decisionRecords", decisionRecords, "the decision-record directory is a link that leads nowhere")
 	if err != nil {
 		return err
 	}
@@ -1858,6 +1914,17 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 		return nil, fmt.Errorf("seed: %v", err)
 	}
 	cfg.seed = seed
+	// The storage kind's connection file, where it names one, holds a
+	// password as the seed's file holds the key: its way is held as the
+	// seed's is, and the path read from here on is the resolved one
+	// (storageConnection opens it as loadSeed opens the seed).
+	if cfg.storage != nil && cfg.storage.file != "" {
+		resolved, err := trustedFile(cfg.storage.file, host.euid, linkOwners{other: host.euid}, host)
+		if err != nil {
+			return nil, fmt.Errorf("storage.connection.file: %v", err)
+		}
+		cfg.storage.file = resolved
+	}
 	// The decision-record directory, whose records a write is held to: a
 	// record found there stands for one the runtime wrote only as far as
 	// nobody else could have written it there.

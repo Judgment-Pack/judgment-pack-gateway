@@ -256,6 +256,9 @@ func parseSealOpen(args []string) (sealOpenOptions, string) {
 		if err != nil {
 			return sealOpenOptions{}, err.Error()
 		}
+		if err := refuseUnderPostgreSQL(cfg, "gateway seal-open, which reads the sessions on disk,"); err != nil {
+			return sealOpenOptions{}, err.Error()
+		}
 		o.store, o.registry, o.authority, o.seedNames = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}
 		// the seed by the name it resolves to as well, as serve --config
 		// looks for a rotation under way beside both

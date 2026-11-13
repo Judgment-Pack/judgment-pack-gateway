@@ -124,6 +124,8 @@ func exportEngine(configPath, out string, observations []string) (*vObject, erro
 	}
 	publicKey := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
 	keyID := keyIDFor(publicKey)
+	// the PostgreSQL kind's "" names no directory, and exportOutside
+	// judges none for it
 	if err := exportOutside(out, cfg.store, cfg.decisionRecords); err != nil {
 		return nil, err
 	}
@@ -140,7 +142,18 @@ func exportEngine(configPath, out string, observations []string) (*vObject, erro
 		}
 		journals = append(journals, journal)
 	}
-	kind := newFsKind(fsLayout{store: cfg.store, registry: cfg.registry})
+	var kind storeKind = newFsKind(fsLayout{store: cfg.store, registry: cfg.registry})
+	if cfg.storage != nil {
+		// the store's cut is the kind's own (pgKind.snapshot); it keeps no
+		// removal records, which gateway remove-artifact makes on disk
+		// alone, and storeRoot "" says so to writeExport
+		pg, err := openStorageKind(cfg.storage)
+		if err != nil {
+			return nil, err
+		}
+		defer pg.close()
+		kind = pg
+	}
 	return writeExport(exportInputs{
 		authority: cfg.authority, keyID: keyID, publicKey: publicKey, kind: kind, storeRoot: cfg.store,
 		decisionRecords: cfg.decisionRecords, pins: pins, observations: journals,

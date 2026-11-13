@@ -23,14 +23,18 @@ type mcpReachHost struct {
 	groups func() ([]int, error)
 	caps   func() (empty bool, reason string)
 	open   func(path string) error
+	// lookupEnv reads this process's environment, for the storage kind's
+	// connection variable (storage_kind.go)
+	lookupEnv func(name string) (string, bool)
 }
 
 func osMCPReachHost() mcpReachHost {
 	return mcpReachHost{
-		euid:   os.Geteuid(),
-		gid:    os.Getegid(),
-		groups: os.Getgroups,
-		caps:   capabilitySetsEmpty,
+		euid:      os.Geteuid(),
+		gid:       os.Getegid(),
+		groups:    os.Getgroups,
+		caps:      capabilitySetsEmpty,
+		lookupEnv: os.LookupEnv,
 		open: func(path string) error {
 			f, err := os.Open(path)
 			if err == nil {
@@ -68,7 +72,21 @@ func mcpReachCheck(cfg engineConfig, host mcpReachHost) error {
 			return fmt.Errorf("the MCP server is in supplementary group %d; it runs in its own group and no other", g)
 		}
 	}
-	paths := map[string]string{"the seed": cfg.seed, "the store": cfg.store}
+	paths := map[string]string{"the seed": cfg.seed}
+	switch {
+	case cfg.storage == nil:
+		paths["the store"] = cfg.store
+	case cfg.storage.file != "":
+		// the kind's store is reached by its connection string alone
+		paths["the storage connection file"] = cfg.storage.file
+	default:
+		if host.lookupEnv == nil {
+			return errors.New("the MCP server cannot read its own environment for the storage connection variable")
+		}
+		if _, set := host.lookupEnv(cfg.storage.environment); set {
+			return fmt.Errorf("the MCP server's environment holds %s, the variable that holds the storage connection string; it must not", cfg.storage.environment)
+		}
+	}
 	for _, p := range cfg.platforms {
 		ops := make([]string, 0, len(p.credentials))
 		for op := range p.credentials {
