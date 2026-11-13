@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -318,11 +319,15 @@ func TestTheConnectionStringIsReadByItsReferenceAndNamedInNoRefusal(t *testing.T
 	if err != nil || d.password != marker || d.user != "gateway_run" || d.tls {
 		t.Fatalf("by file: %v %v", err, d.user)
 	}
-	if err := os.Chmod(file, 0o640); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := storageConnection(&storageSpec{file: file}); err == nil || !strings.Contains(err.Error(), "is held as the seed's file is") || strings.Contains(err.Error(), marker) {
-		t.Fatalf("a file others may read: %v", err)
+	// Mode bits are not the seed's protection on Windows (spawn_other.go
+	// says so at start): the refusal of a file others may read is Unix only.
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(file, 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := storageConnection(&storageSpec{file: file}); err == nil || !strings.Contains(err.Error(), "is held as the seed's file is") || strings.Contains(err.Error(), marker) {
+			t.Fatalf("a file others may read: %v", err)
+		}
 	}
 	if err := os.WriteFile(file, []byte("postgresql://gateway_run:"+marker+"@db.example:5432/gateway?sslmode=disable"), 0o600); err != nil {
 		t.Fatal(err)
