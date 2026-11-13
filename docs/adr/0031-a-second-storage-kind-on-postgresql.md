@@ -86,6 +86,9 @@ the maintainer (below).
    names the connection string by reference only, a file (held, as the seed's file is, to its mode
    and owner) or an environment variable, and the stored configuration version keeps the
    reference, never the string. The kind's bounds (below) are members of it with these defaults.
+   *Amended 2026-11-13 (#430, [ADR-0032](0032-a-configuration-names-its-storage-kind.md)):
+   built at engine configuration version 24, as a member named `storage`, since `store` already
+   names the filesystem kind's path.*
 
 3. **Pool bounds.** A kind holds at most 4 connections unless configured otherwise, and never more
    than 64. Each operation has one deadline, 30 seconds unless configured otherwise (1 second to
@@ -151,6 +154,8 @@ the maintainer (below).
    the log and its records, and secrets; SELECT, INSERT, UPDATE and DELETE on documents alone;
    SELECT on the migrations' record. It holds no TRUNCATE, REFERENCES or TRIGGER, no CREATE on any
    schema, and no TEMPORARY on the database. No function is defined, SECURITY DEFINER or not.
+   *Amended 2026-11-13 (#430, ADR-0032): and SELECT, INSERT, UPDATE and DELETE on the start
+   lease's one row (`gateway.start_lease`, schema version 2).*
 
 7. **Migrations.** The schema is plain SQL files, `go/store_pg/migrations/NNNN_name.sql` numbered
    from 1 with no gap, and `go/store_pg/grants.sql`, carried in the binary and recorded by digest
@@ -185,6 +190,9 @@ the maintainer (below).
    holds only while the clocks agree within the lease's margin, so the change that supports them
    decides expiry with the database's clock in the statement (below). No statement the kind sends
    or schema file it carries names one of the database's clock functions (a test).
+   *Amended 2026-11-13 (#430, ADR-0032, decision 4): the start lease's statements read the
+   database's clock (`clock_timestamp()`), and no other statement does (the same test); a
+   store-contract lease still expires by the gateway's clock.*
 
 10. **More than one gateway on one database.** Safe now: every contract operation is atomic in the
     database, so two gateways on one database lose no write, never take one index of a series or
@@ -198,7 +206,9 @@ the maintainer (below).
     rotation files, the action journal, the removal records, descriptor snapshots, the witness's
     files) is on each gateway's own disk. The configuration that selects the kind takes a lease of no scope at start
     and refuses to start while another gateway holds it, until the registry's seal is decided in
-    the database.
+    the database. *Amended 2026-11-13 (#430, ADR-0032, decision 4): built as the start lease, one
+    row of `gateway.start_lease` with an expiry by the database's clock, renewed while the
+    instance serves, removed on a clean stop, and held by every write transaction.*
 
 ### Consequences
 
@@ -227,7 +237,8 @@ the maintainer (below).
 - Bad, because a series' name is one across scopes: a scope asking to make a series another scope
   holds learns that the name is taken, though nothing of its rows.
 - Bad, because the kind is not selectable yet: this change adds the kind, its schema and its
-  conditions, and the configuration that selects it is the next.
+  conditions, and the configuration that selects it is the next. *Amended 2026-11-13: selectable
+  at engine configuration version 24 (ADR-0032).*
 - Revisit when sessions are bound to one scope identifier (ADR-0026's "Bad" list), when a second
   gateway must seal on one database, or when the maintainer prefers a driver to the client.
 

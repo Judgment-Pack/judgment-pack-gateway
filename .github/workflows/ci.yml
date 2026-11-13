@@ -273,6 +273,10 @@ jobs:
             echo "the run as an administrator that is no superuser skipped ${skipped} tests, ${explained} of them for want of a superuser; want 3 and 3"
             exit 1
           fi
+      - name: The storage kinds through the binary
+        env:
+          GATEWAY_TEST_POSTGRES_DSN: postgresql://gateway_test_admin:synthetic-ci-password@127.0.0.1:5432/gateway_test_admin?sslmode=disable
+        run: ../scripts/checks/storage-scenario.sh
       - name: Record exact CI inputs and coverage
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         working-directory: .
