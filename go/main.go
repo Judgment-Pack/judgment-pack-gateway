@@ -45,7 +45,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | seal-open | journal | mcp | posture | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | seal-open | remove-artifact | journal | mcp | posture | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -73,6 +73,8 @@ func main() {
 		os.Exit(cmdRotateKey(os.Args[2:], os.Stdout, os.Stderr))
 	case "seal-open":
 		os.Exit(cmdSealOpen(os.Args[2:], os.Stdout, os.Stderr))
+	case "remove-artifact":
+		os.Exit(cmdRemoveArtifact(os.Args[2:], os.Stdout, os.Stderr))
 	case "journal":
 		os.Exit(cmdJournal(os.Args[2:], os.Stdout, os.Stderr))
 	case "mcp":

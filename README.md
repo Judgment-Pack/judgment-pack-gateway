@@ -141,6 +141,17 @@ gateway seals into. The store then verifies, with the observation `sealed-after-
 consumer that accepts only counts the minting process sealed (in a later place the option is
 a usage error). A session that is not whole is named and left as it is.
 
+A payload the gateway kept can be removed later without its receipt failing: with the
+gateway stopped, `./gateway remove-artifact --store ./store --seed gateway.seed --registry
+./registry.jsonl --authority gateway:demo --receipt s1/0 --by operator-1` appends a signed
+removal record to the store's `artifact-removals.jsonl`, then removes the bytes, and prints
+the record (SPEC.md §1.3a and §6). The receipt then verifies `ok` with the observation
+`artifact-removed`; bytes put back are re-digested, and bytes gone with no record are
+`artifact-missing`, as before. It refuses a receipt that does not verify, an action, one whose
+call kept nothing, one whose `scope` `--scope` does not give, and one whose bytes another
+receipt or a descriptor in the store still reads. `--by` is a label, recorded and checked
+against nothing.
+
 **One gateway per store and registry.** Run one gateway on a store and its registry at a time.
 On Unix a running gateway holds an exclusive `flock(2)` lock on its registry file, taken at the
 start once the registry is there and held until the gateway exits. A second gateway on the same

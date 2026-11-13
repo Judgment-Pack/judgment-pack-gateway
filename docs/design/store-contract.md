@@ -154,6 +154,7 @@ manifest.json                       the authority, the key by its id, every file
 registry                            the registry at the cut, when there was one
 store/receipts/<session>/<n>.json   every session at the cut, an empty one too, and its receipts
 store/artifacts/<hex>               every artifact at the cut, as held
+store/artifact-removals.jsonl       the store's removal records (SPEC.md §1.3a), read after the artifacts, when the file was there
 decision-records/...                every regular file verification would read (links never followed), when the directory was there
 descriptors/<hex>.json              each snapshot a platform pins, for itself or for one of its operations, digested to its pin
 observations/<i>.json               each journal given
@@ -164,7 +165,11 @@ operation's (`operationDescriptors`), the operation; `sessions` name every sessi
 too, since a directory is no file.
 
 The decision records are the runtime's files, in no space of a kind; they are read after the cut,
-so a record written before an action receipt the cut holds is in the export. The export copies
+so a record written before an action receipt the cut holds is in the export. The removal records are
+read after the artifacts too: `gateway remove-artifact` appends a record before it removes the
+bytes, so an export that holds no bytes for a receipt holds the record that names it, when one was
+made. The file is read as verification reads it: one that is there and is not a regular file
+refuses the export. The export copies
 what is there, damage included: a receipt that is misfiled, an artifact that does not digest, a
 session with no receipt are exported as they are, so verification of the export says what it says
 of the store. A receipt or an artifact that is a link refuses the export: no file of the store is

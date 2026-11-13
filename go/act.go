@@ -969,7 +969,10 @@ func parseDecision(v value) (decision, error) {
 // passing the ladder under a key this engine's own reading of its registry
 // reached (SPEC.md §3b) -- its own, or one it rotated from -- since an
 // action that relied on a receipt this engine would not stand behind relied
-// on nothing.
+// on nothing. The artifact step reads the store's removal records, as
+// verify does (SPEC.md §1.3a): a receipt whose call kept no payload, or
+// whose payload a record says was removed, resolves, and the action reads
+// no cited payload; one whose bytes are gone with no record does not.
 func (g *gatewayService) resolveCitation(c citation, keys []reachedKey) string {
 	sessions, err := os.ReadDir(filepath.Join(g.storeRoot, "receipts"))
 	if err != nil {
@@ -990,7 +993,14 @@ func (g *gatewayService) resolveCitation(c citation, keys []reachedKey) string {
 	if err != nil {
 		return "the receipt cannot be read"
 	}
-	r, status := checkReceiptUnder(data, g.storeRoot, c.sessionID, fileName, g.authority, keys)
+	removals, err := loadRemovals(g.storeRoot, keys)
+	if err != nil {
+		return "the store's removal records cannot be read"
+	}
+	r, status, err := checkReceiptWith(data, g.storeRoot, c.sessionID, fileName, g.authority, keys, &retention{removals: removals})
+	if err != nil {
+		return "the receipt cannot be read"
+	}
 	if status != "ok" {
 		return "the receipt does not verify under this engine's keys (" + status + ")"
 	}
