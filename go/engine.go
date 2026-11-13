@@ -55,14 +55,16 @@ import (
 // scope.go), and version 21 a live operation's optional
 // `credentials.live.tokenStep`, by which an http source obtains the access
 // token it sends (docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md;
-// token_step.go):
+// token_step.go), and version 22 a platform's optional `artifact`, by which
+// its sources keep no payload (docs/adr/0028-payloads-a-gateway-does-not-keep.md;
+// retention.go):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "21"
+const engineVersion = "22"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -187,6 +189,11 @@ type platformConfig struct {
 	// token_step.go): how the platform's http live source obtains the access
 	// token it sends; nil when the source sends a member of its file.
 	tokenStep *tokenStepConfig
+	// notRetained is artifact: "not-retained" (engineVersion 22, SPEC.md
+	// §1.3a): the platform's history and live sources write no payload to
+	// the store, and their receipts say so; false when the platform keeps
+	// every payload, as before the member.
+	notRetained bool
 }
 
 // identitySpec is the identity member as written: the token issuer, the
@@ -315,7 +322,7 @@ var platformMembers = map[string]bool{
 	"binding": true, "credentials": true, "user": true,
 	"endpoint": false, "environment": false, "write": false, "descriptors": false, "operationDescriptors": false, "descriptorStatements": false,
 	"decisionPolicy": false, "parameters": false, "grant": false, "writeRequesters": false,
-	"scope": false,
+	"scope": false, "artifact": false,
 }
 
 // parseEngineConfig holds the file to the shape the design note states.
@@ -672,9 +679,33 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 				return engineConfig{}, err
 			}
 		}
+		if artifactValue, present := p.get("artifact"); present {
+			if err := parsePlatformArtifact(artifactValue, name, version, pc.write); err != nil {
+				return engineConfig{}, err
+			}
+			pc.notRetained = true
+		}
 		cfg.platforms = append(cfg.platforms, pc)
 	}
 	return cfg, nil
+}
+
+// parsePlatformArtifact reads a platform's artifact (engineVersion 22,
+// ADR-0028): the one value "not-retained", on a platform that allows no
+// write, since /act and its recovery read an action's result back from the
+// store. A refusal names the platform and the form, and quotes nothing of
+// the value.
+func parsePlatformArtifact(v value, name, version string, write bool) error {
+	if !versionAtLeast(version, "22") {
+		return fmt.Errorf("engine configuration: platform %s: artifact is a version-22 member; engineVersion %s has no artifact", name, version)
+	}
+	if s, ok := stringOf(v); !ok || s != artifactNotRetained {
+		return fmt.Errorf("engine configuration: platform %s: artifact must be the string %q, the one value it has; a platform that keeps its payloads gives no artifact", name, artifactNotRetained)
+	}
+	if write {
+		return fmt.Errorf("engine configuration: platform %s: artifact %q keeps no payload, and the platform sets write: true, whose results /act and its recovery read back from the store; a platform that keeps no payload allows no write", name, artifactNotRetained)
+	}
+	return nil
 }
 
 // parsePlatformScope reads a platform's scope (engineVersion 20, ADR-0026):
@@ -1386,7 +1417,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if p.endpoint != "" {
 				argv = append(argv, "--endpoint="+p.endpoint)
 			}
-			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte", grant: grant, scope: p.scope}
+			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte", grant: grant, scope: p.scope, notRetained: p.notRetained}
 		}
 		if b.live != nil && b.live.http != nil {
 			// adapter-http as `serve --source-shape NAME=http` runs it, as
@@ -1398,7 +1429,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.live.http.checkPath != "" {
 				check = []string{"--check-path=" + b.live.http.checkPath}
 			}
-			spec := sourceSpec{argv: httpSourceArgv(adapter("adapter-http"), *b.live.http, p.credentials["live"], p.tokenStep), env: env, user: p.user, shape: "http", binding: p.binding, check: check, scope: p.scope, tokenStep: p.tokenStep != nil}
+			spec := sourceSpec{argv: httpSourceArgv(adapter("adapter-http"), *b.live.http, p.credentials["live"], p.tokenStep), env: env, user: p.user, shape: "http", binding: p.binding, check: check, scope: p.scope, tokenStep: p.tokenStep != nil, notRetained: p.notRetained}
 			if spec.tokenStep {
 				spec.requestPaths = append([]string(nil), b.live.http.paths...)
 				spec.requestMethods = append([]string(nil), b.live.http.methods...)
@@ -1421,7 +1452,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if len(b.live.command) > 0 {
 				argv = append(append(argv, "--"), b.live.command...)
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", binding: p.binding, tools: b.live.tools, check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live"), approval: approvalOf(p, b.live), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.live), grant: grant, scope: p.scope}
+			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", binding: p.binding, tools: b.live.tools, check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live"), approval: approvalOf(p, b.live), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.live), grant: grant, scope: p.scope, notRetained: p.notRetained}
 		}
 		// The write operation, for a platform that allows writes: the
 		// executor is adapter-mcp on the binding's write server with the

@@ -129,6 +129,11 @@ type sourceSpec struct {
 	// sends (engineVersion 21, token_step.go): an acquisition is then handed
 	// the source's sealed token, held in tokens.
 	tokenStep bool
+	// notRetained is whether the source keeps no payload (engineVersion 22,
+	// SPEC.md §1.3a): its result is returned and digested, nothing is
+	// written under artifacts/, and its version 3 receipt carries artifact
+	// "not-retained". false for a source that keeps every payload.
+	notRetained bool
 	// requestPaths and requestMethods are, for a source with a token step,
 	// its operation's paths and methods: a request naming another is
 	// refused before a token is obtained for it (token_step.go).
@@ -1081,9 +1086,16 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	// An artifact is content-addressed and may be shared by receipts, so
 	// a failure after this point leaves it in place rather than removing
 	// what another receipt may cite; nothing cites it until a receipt is
-	// stamped.
-	resultDigest, err := g.store.retain(canon(result))
-	if err != nil {
+	// stamped. A source that keeps no payload writes nothing: the digest is
+	// of the bytes returned, and the receipt says nothing was kept (SPEC.md
+	// §1.3a), which only a version 3 receipt can.
+	var resultDigest string
+	if spec.notRetained {
+		if g.receiptVersion != receiptVersion3 {
+			return nil, fmt.Errorf("source %s keeps no payload, which only a version 3 receipt can say; this gateway mints version %s", source, g.receiptVersion)
+		}
+		resultDigest = "sha256:" + digestOfBytes(canon(result))
+	} else if resultDigest, err = g.store.retain(canon(result)); err != nil {
 		return nil, err
 	}
 
@@ -1127,7 +1139,7 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 		arguments: canonicalArgs, argumentsSalt: argsSalt, argumentsSeed: g.store.seed,
 		who: who, witness: witness, kind: "acquisition", detail: acquisition,
 		delegation: delegationMember, reconciler: reconcilerMember,
-		scope: spec.scope,
+		scope: spec.scope, notRetained: spec.notRetained,
 	})
 
 	if g.beforeStamp != nil {

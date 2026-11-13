@@ -434,7 +434,11 @@ short-lived access tokens against a certificate or a federated identity, the pla
 `credentials.live.tokenStep` (engine configuration version 21) has `adapter-http` obtain the token
 by a client assertion, with a key held in that credentials file or a federated token read from a
 file; the signer holds the token only sealed, and never reads the key or the token
-([ADR-0027](docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md)). With an
+([ADR-0027](docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md)). A
+platform whose results the operator should not hold sets `artifact: "not-retained"` (engine
+configuration version 22): its acquisitions return the bytes, the store keeps only their digest,
+and the receipt says so under its signature
+([ADR-0028](docs/adr/0028-payloads-a-gateway-does-not-keep.md)). With an
 `identity` in the configuration — an issuer, the audience the engine is named as, and a file of
 the issuer's public keys — every request that acquires, seals or verifies carries a bearer token
 the issuer signed, and the receipt names the caller it proved; without one, every receipt carries
