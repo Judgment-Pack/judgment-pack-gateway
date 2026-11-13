@@ -118,6 +118,12 @@ type sourceSpec struct {
 	// before the arguments are read; nil where the platform gives no
 	// writeRequesters, and then every authenticated requester may.
 	requesters *writeRequesters
+	// scope is the scope identifier the configuration fixes the source's
+	// platform to (engineVersion 20, ADR-0026): a request to the source must
+	// name it, byte for byte, and its receipt carries it. "" for a source
+	// fixed to none, whose requests name none and whose receipts are those
+	// it minted before the member existed.
+	scope string
 }
 
 // adapterShapes are the shapes --source-shape may declare: every shape of
@@ -290,6 +296,11 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 		}
 		if spec.shape != "" && !adapterShapes[spec.shape] {
 			return nil, fmt.Errorf("source %s: unknown adapter shape %q", name, spec.shape)
+		}
+		// A scope identifier the receipt carries is of its form, or every
+		// verifier would read the receipt as malformed.
+		if spec.scope != "" && !isScopeIdentifier(spec.scope) {
+			return nil, fmt.Errorf("source %s: scope is not a scope identifier: %s", name, scopeForm)
 		}
 	}
 	// the registry's spelling is judged before the store is made: a start
@@ -746,6 +757,59 @@ func requestTrail(members map[string]json.RawMessage) (string, error) {
 	return "", errors.New("trail must be a trail identity, 32 lowercase hexadecimal characters")
 }
 
+// withMember is the member set with names added, as a new set: the base
+// is shared by every request and is never written.
+func withMember(base map[string]bool, names ...string) map[string]bool {
+	out := make(map[string]bool, len(base)+len(names))
+	for k, v := range base {
+		out[k] = v
+	}
+	for _, k := range names {
+		out[k] = true
+	}
+	return out
+}
+
+// requestedScope is the scope identifier an /acquire request names
+// (ADR-0026): named false where it names none.
+type requestedScope struct {
+	value string
+	named bool
+}
+
+// requestScope reads /acquire's scope member, which a gateway reads only
+// where its configuration fixes some source to a scope identifier: absent,
+// or a string, held to nothing else here, since it is compared with the
+// source's whole. null and every other value are refused, and the refusal
+// quotes nothing of the request.
+func requestScope(members map[string]json.RawMessage) (requestedScope, error) {
+	raw, present := members["scope"]
+	if !present {
+		return requestedScope{}, nil
+	}
+	v, err := parseJSON(raw)
+	if s, isString := v.(vString); err == nil && isString {
+		return requestedScope{value: string(s), named: true}, nil
+	}
+	return requestedScope{}, errors.New("scope must be a string, the scope identifier of the source the request is for")
+}
+
+// scopeRefusal is the one refusal of a request whose scope is not its
+// source's: one that names none for a source fixed to one, one that names
+// another, and one that names any for a source fixed to none. It is the
+// same sentence for each and quotes no scope identifier, the source's or the
+// request's, so a caller learns from it only that the two differ.
+const scopeRefusal = "scope: the request's scope does not match the source's"
+
+// scopeHolds is whether a request's scope is its source's: both none, or
+// both the same bytes. Nothing is folded, trimmed or normalized.
+func scopeHolds(spec sourceSpec, asked requestedScope) bool {
+	if spec.scope == "" {
+		return !asked.named
+	}
+	return asked.named && asked.value == spec.scope
+}
+
 // memberText reads a string-valued member of a request envelope, or "" when
 // the envelope does not carry it and when it carries it as null -- which is
 // what the endpoint's own refusal then speaks about, as it did when these
@@ -768,6 +832,13 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 	return g.acquireForTrail(sessionID, source, "", arguments, who)
 }
 
+// acquireScoped is an acquisition whose request named a scope identifier,
+// or none (ADR-0026): held to the source's before anything else of the
+// source is looked at.
+func (g *gatewayService) acquireScoped(sessionID, source, trail string, scope requestedScope, arguments value, who *caller) (map[string]any, error) {
+	return g.acquireWithScope(sessionID, source, trail, scope, arguments, who, nil)
+}
+
 // acquireForTrail is an acquisition whose request named a trail, or ""
 // when it named none (ADR-0014): the receipt names the witness the
 // configuration names for that trail, and a trail it names none for is
@@ -787,7 +858,14 @@ type readBackRefused struct {
 
 func (r *readBackRefused) Error() string { return r.err.Error() }
 
+// acquireWithReconciliation is an acquisition that names no scope
+// identifier: a read-back, and every caller but /acquire's handler. A source
+// fixed to a scope identifier refuses it.
 func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail string, arguments value, who *caller, reconciliation *actionReconciliationRequest) (map[string]any, error) {
+	return g.acquireWithScope(sessionID, source, trail, requestedScope{}, arguments, who, reconciliation)
+}
+
+func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope requestedScope, arguments value, who *caller, reconciliation *actionReconciliationRequest) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err} // refuse before running anything
 	}
@@ -796,6 +874,18 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 		// A write source is the executor's alone (executor.md): a read
 		// that writes is not a read, and /acquire names no such source.
 		return nil, badRequest{fmt.Errorf("unknown source: %s", requestText(source))}
+	}
+	// The scope identifier the source is fixed to (ADR-0026), held first:
+	// before the trail's witness, the publisher policy, the grant, the session's
+	// admission, a delegation's count and the source. The refusal is one
+	// sentence whatever differs, and names neither identifier.
+	if !scopeHolds(spec, scope) {
+		return nil, badRequest{errors.New(scopeRefusal)}
+	}
+	if spec.scope != "" && g.receiptVersion != receiptVersion3 {
+		// Version 2 has no scope member: a receipt minted without it
+		// would read as one of a source fixed to none.
+		return nil, fmt.Errorf("source %s is fixed to a scope identifier and needs receipt version 3", requestText(source))
 	}
 	// A call under a delegation: an acquisition the delegation admits, or
 	// the read-back of a delegated key's uncertain action, which any sender
@@ -1023,6 +1113,7 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 		arguments: canonicalArgs, argumentsSalt: argsSalt, argumentsSeed: g.store.seed,
 		who: who, witness: witness, kind: "acquisition", detail: acquisition,
 		delegation: delegationMember, reconciler: reconcilerMember,
+		scope: spec.scope,
 	})
 
 	if g.beforeStamp != nil {
@@ -1784,14 +1875,17 @@ func (g *gatewayService) handler() http.Handler {
 		if g.delegation == nil {
 			return base
 		}
-		out := map[string]bool{}
-		for k, v := range base {
-			out[k] = v
+		return withMember(base, delegated...)
+	}
+	// scoped is whether the configuration fixes any source to a scope
+	// identifier (ADR-0026): /acquire reads a scope member only then, and a
+	// gateway fixing none reads it as any member it does not know, as it did
+	// before the member existed.
+	scoped := false
+	for _, spec := range g.sources {
+		if spec.scope != "" {
+			scoped = true
 		}
-		for _, k := range delegated {
-			out[k] = true
-		}
-		return out
 	}
 	// presented holds a chain the caller sends beside its credential to the
 	// bound chain, byte for byte (step 0); a chain sent with anything but a
@@ -1824,7 +1918,11 @@ func (g *gatewayService) handler() http.Handler {
 			return
 		}
 		limitBodyTo(w, r, g.maxRequest)
-		body, err := requestMembers(r.Body, members(acquireRequestMembers, "delegation"))
+		allowed := members(acquireRequestMembers, "delegation")
+		if scoped {
+			allowed = withMember(allowed, "scope")
+		}
+		body, err := requestMembers(r.Body, allowed)
 		if err != nil {
 			fail(w, badRequest{err})
 			return
@@ -1856,7 +1954,12 @@ func (g *gatewayService) handler() http.Handler {
 			fail(w, badRequest{err})
 			return
 		}
-		out, err := g.acquireForTrail(session, source, trail, arguments, who)
+		scope, err := requestScope(body)
+		if err != nil {
+			fail(w, badRequest{err})
+			return
+		}
+		out, err := g.acquireScoped(session, source, trail, scope, arguments, who)
 		if err != nil {
 			fail(w, err)
 			return

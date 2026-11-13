@@ -332,6 +332,17 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 			return out, fmt.Errorf("platform %s carries writeRequesters, which --replace keeps: %v", req.platform, err)
 		}
 	}
+	// So is scope (engineVersion 20, ADR-0026), which connect has no flag
+	// for: an entry written without it would serve requests that name no
+	// scope identifier from the platform's sources, so the entry replaced
+	// keeps it, and a replacement that sets --write, which a scope refuses,
+	// is refused, never written without it.
+	if previous != nil && previous.scope != "" {
+		if entry.write {
+			return out, fmt.Errorf("platform %s carries a scope, which --replace keeps, and a platform with a scope allows no write; remove scope from the file first, or replace the entry without --write", req.platform)
+		}
+		entry.scope = previous.scope
+	}
 	// The entry as it is written, kept apart: judging the configuration
 	// below replaces each credentials path in the entry with the path it
 	// resolves to, which is not what the file will say.
@@ -833,10 +844,10 @@ func checkedAdapter(report []byte) (string, json.RawMessage, error) {
 // pin, and parameters are a version-8 member, so it is raised to version 8
 // exactly when the entry carries them; otherwise its version stays as it
 // was found, and a later one is never lowered. The entry replaced keeps its
-// decisionPolicy and its writeRequesters as written, which connect has no
-// flag for (ADR-0011; write_requesters.go); parameters are the ones
-// connect resolved the binding with, the entry's own on --replace when
-// none were given.
+// decisionPolicy, its writeRequesters and its scope as written, which
+// connect has no flag for (ADR-0011; write_requesters.go; ADR-0026);
+// parameters are the ones connect resolved the binding with, the entry's
+// own on --replace when none were given.
 func renderPlatformEntry(data []byte, req connectRequest, ref, pin string, parameters map[string]string) ([]byte, error) {
 	v, err := parseJSON(data)
 	if err != nil {
@@ -908,6 +919,9 @@ func renderPlatformEntry(data []byte, req connectRequest, ref, pin string, param
 			}
 			if requesters, ok := replacedObj.get("writeRequesters"); ok {
 				entry.set("writeRequesters", requesters)
+			}
+			if scope, ok := replacedObj.get("scope"); ok {
+				entry.set("scope", scope)
 			}
 		}
 	}

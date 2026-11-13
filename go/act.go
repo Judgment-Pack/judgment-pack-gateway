@@ -73,6 +73,13 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	if !known {
 		return nil, actRefusal{"platform", fmt.Sprintf("platform %s allows no writes: a write source is derived only for a platform whose configuration sets write: true and whose binding states a write operation", requestText(platform))}
 	}
+	if spec.scope != "" {
+		// A platform fixed to a scope identifier allows no write (ADR-0026),
+		// and the configuration refuses one that sets write: true. /act takes
+		// no scope, so a write source that carried one is refused here
+		// rather than run under a receipt that would not name it.
+		return nil, actRefusal{"platform", fmt.Sprintf("platform %s is fixed to a scope identifier, and /act takes none", requestText(platform))}
+	}
 	tool, err := parseString("tool", toolRaw)
 	if err != nil {
 		return nil, actRefusal{"tool", err.Error()}

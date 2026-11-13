@@ -57,18 +57,19 @@ key is an error, never an intention silently dropped. `engineVersion`, `authorit
 `runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox`, `delegation`, `sealOpenAtStart` and `acceptOtherHostsOverPlainHTTP` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
 `descriptors`, `operationDescriptors`, `descriptorStatements`, `decisionPolicy`,
-`parameters`, `grant` and `writeRequesters` optional. Every path is absolute.
+`parameters`, `grant`, `writeRequesters` and `scope` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"19"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"20"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
   `operationDescriptors`, version 12 `descriptorStatements`, version 13 `sandbox`, version
   14 a required `actionKey`, version 15 `delegation`, version 16 a platform's `grant`,
-  version 17 `sealOpenAtStart`, version 18 a platform's `writeRequesters`, and version 19
+  version 17 `sealOpenAtStart`, version 18 a platform's `writeRequesters`, version 19
   `acceptOtherHostsOverPlainHTTP`, without which `listen` is a loopback address ("Listening off
-  loopback (engine version 19)", below). A file of an earlier version still loads without the
+  loopback (engine version 19)", below), and version 20 a platform's `scope` ("A platform's
+  scope (engine version 20)", below). A file of an earlier version still loads without the
   member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -1560,6 +1561,61 @@ listener does close a connection idle for a minute, bound a request's headers at
 the answer of `/registry` and of `/publickey` 30 seconds each to be written, a per-answer deadline
 rather than a server-wide write timeout, since an `/acquire` or an `/act` has no fixed longest
 run.
+
+## A platform's scope (engine version 20)
+
+Version 20 adds a platform's optional `scope` member
+([ADR-0026](../adr/0026-a-scope-identifier-fixed-on-a-platform.md), SPEC.md §1.2a, `scope`, and
+§6, `/acquire`, gateway #420): a scope identifier the platform's sources are fixed to, which a
+request to one of them repeats and its receipts carry under the signature, so that the receipts
+of one operator's sources can be told apart by the party each serves.
+
+```json
+"warehouse-east": {
+  "binding": "postgres@sha256:…",
+  "credentials": {"history": {"file": "/run/secrets/east-history"}, "live": {"file": "/run/secrets/east-live"}},
+  "user": "engine-east",
+  "scope": "east-ledger"
+}
+```
+
+- **The form.** A string of 1 to 128 bytes of UTF-8 that holds no code point display policy 1
+  refuses ([tool-descriptors.md](tool-descriptors.md): controls, bidirectional controls, default
+  ignorables, private use, unassigned and noncharacters, as Unicode 15.0.0 assigns them) and
+  neither tab nor line feed. Anything else, a string out of that form, `null` or another type,
+  is refused naming the platform and the form; the refusal quotes nothing of the value.
+- **Opaque.** The identifier means nothing to the engine. It is compared as written, byte for
+  byte, and never case-folded, trimmed or normalized, so write it as requests will.
+- **What it fixes.** The platform's `history` and `live` sources. A request to either names the
+  identifier in `/acquire`'s `scope`; one that names none or another is refused `400` before
+  the source runs, the session is admitted or a delegation counts the call, with one fixed
+  sentence, `scope: the request's scope does not match the source's`, that names no identifier
+  and writes no line on stderr. So is a request that names a scope for a source of a platform
+  without one. A gateway whose platforms give no `scope` refuses the request member as unknown,
+  as it did before.
+- **The receipt** of such a source carries the identifier as its top-level `scope`. A platform
+  without the member mints the receipts it minted before, byte for byte; a seal and a registry
+  line carry no scope.
+- **When the file is loaded** (`serve`, `connect`, `connect --replace`, `posture`), the member is
+  refused at a version before 20, on a platform that sets `write: true` (`/act` takes no scope),
+  and in a file with `mcp` (the MCP server forwards a call naming no scope). `gateway serve`
+  from the command line has no flag for it.
+- **`connect --replace`** keeps the member as written, since an entry written without it would
+  serve requests that name no scope, and refuses a replacement that sets `--write` before
+  anything is asked. `connect` has no flag for it: write it in the file, at version 20.
+- **`/posture`** reports nothing of it.
+
+It establishes that the operator fixed the source to the identifier and that the request named
+the same one, and nothing more: it is a label and not a credential, so any caller the gateway
+admits that names a source's identifier is served by it; nothing holds a session to one
+identifier; and every scope shares the gateway's key, store and registry. A verifier written
+before the member reads such a receipt as it read one without it and holds the member to no
+form (SPEC.md §1.2a).
+
+**Upgrading.** A version 19 file loads unchanged under a gateway of this version. To fix a
+platform to a scope identifier, raise `engineVersion` to `"20"` and add `scope` to the platform;
+a gateway older than this one refuses a version-20 file by its version. Callers of the
+platform's sources then add `scope` to each `/acquire`; until they do, each is refused.
 
 ## Keyed actions (engine version 14 and later)
 

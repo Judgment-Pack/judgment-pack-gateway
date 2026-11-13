@@ -24,6 +24,10 @@ type receiptInput struct {
 	// call made under no delegation, whose receipt is then the one it was
 	// before they existed.
 	delegation, reconciler *vObject
+	// scope is the scope identifier the source is fixed to (ADR-0026): ""
+	// for a source fixed to none, whose receipt is then the one it was
+	// before the member existed.
+	scope string
 }
 
 // buildReceipt assembles the unsigned core. keyId and signature remain the
@@ -59,6 +63,9 @@ func buildReceipt(in receiptInput) *vObject {
 		}
 		if in.reconciler != nil {
 			core.set("reconciler", in.reconciler)
+		}
+		if in.scope != "" {
+			core.set("scope", vString(in.scope))
 		}
 		core.set(in.kind, in.detail)
 	} else {

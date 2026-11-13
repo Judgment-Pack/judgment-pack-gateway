@@ -50,14 +50,16 @@ import (
 // (SPEC.md §6; write_requesters.go), and version 19 the optional
 // `acceptOtherHostsOverPlainHTTP`, without which `listen` is a loopback
 // address (docs/adr/0025-serve-config-listens-off-loopback-with-an-identity-when-acknowledged.md;
-// engineListen):
+// engineListen), and version 20 a platform's optional `scope`, the scope
+// identifier its sources are fixed to (docs/adr/0026-a-scope-identifier-fixed-on-a-platform.md;
+// scope.go):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "19"
+const engineVersion = "20"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -174,6 +176,10 @@ type platformConfig struct {
 	// (engineVersion 18, write_requesters.go); nil when the platform gives
 	// no writeRequesters, and then every authenticated requester may.
 	requesters *writeRequesters
+	// scope is the scope identifier the platform's sources are fixed to
+	// (engineVersion 20, scope.go): a request to one of them names it, and
+	// its receipts carry it; "" when the platform gives none.
+	scope string
 }
 
 // identitySpec is the identity member as written: the token issuer, the
@@ -302,6 +308,7 @@ var platformMembers = map[string]bool{
 	"binding": true, "credentials": true, "user": true,
 	"endpoint": false, "environment": false, "write": false, "descriptors": false, "operationDescriptors": false, "descriptorStatements": false,
 	"decisionPolicy": false, "parameters": false, "grant": false, "writeRequesters": false,
+	"scope": false,
 }
 
 // parseEngineConfig holds the file to the shape the design note states.
@@ -645,9 +652,39 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 				return engineConfig{}, err
 			}
 		}
+		if scopeValue, present := p.get("scope"); present {
+			if pc.scope, err = parsePlatformScope(scopeValue, name, version, pc.write, cfg.mcp != nil); err != nil {
+				return engineConfig{}, err
+			}
+		}
 		cfg.platforms = append(cfg.platforms, pc)
 	}
 	return cfg, nil
+}
+
+// parsePlatformScope reads a platform's scope (engineVersion 20, ADR-0026):
+// a scope identifier of its form, on a platform that allows no write, in a
+// configuration with no MCP server. A refusal names the platform and the
+// form, and quotes nothing of the value.
+func parsePlatformScope(v value, name, version string, write, mcp bool) (string, error) {
+	if !versionAtLeast(version, "20") {
+		return "", fmt.Errorf("engine configuration: platform %s: scope is a version-20 member; engineVersion %s has no scope", name, version)
+	}
+	s, ok := stringOf(v)
+	if !ok || !isScopeIdentifier(s) {
+		return "", fmt.Errorf("engine configuration: platform %s: scope must be a scope identifier, %s", name, scopeForm)
+	}
+	// /act takes no scope: a write the platform allowed would be run
+	// under a receipt that does not name it.
+	if write {
+		return "", fmt.Errorf("engine configuration: platform %s: scope fixes the platform's reads to a scope identifier, /act takes none, and the platform sets write: true; a platform with a scope allows no write", name)
+	}
+	// The MCP server forwards an acquisition with no scope member, so it
+	// could serve none of the platform's sources.
+	if mcp {
+		return "", fmt.Errorf("engine configuration: platform %s: scope is refused beside mcp, since the MCP server names no scope identifier when it forwards a call", name)
+	}
+	return s, nil
 }
 
 // parsePlatformParameters reads a platform's parameters: an object of at
@@ -1334,7 +1371,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if p.endpoint != "" {
 				argv = append(argv, "--endpoint="+p.endpoint)
 			}
-			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte", grant: grant}
+			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte", grant: grant, scope: p.scope}
 		}
 		if b.live != nil && b.live.http != nil {
 			// adapter-http as `serve --source-shape NAME=http` runs it, as
@@ -1346,7 +1383,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.live.http.checkPath != "" {
 				check = []string{"--check-path=" + b.live.http.checkPath}
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: httpSourceArgv(adapter("adapter-http"), *b.live.http, p.credentials["live"]), env: env, user: p.user, shape: "http", binding: p.binding, check: check}
+			sources[p.name+"/live"] = sourceSpec{argv: httpSourceArgv(adapter("adapter-http"), *b.live.http, p.credentials["live"]), env: env, user: p.user, shape: "http", binding: p.binding, check: check, scope: p.scope}
 		} else if b.live != nil {
 			argv := mcpServerArgv(adapter("adapter-mcp"), *b.live, p.credentials["live"], cfg.runtime, p.endpoint, p.name+"/"+b.live.name, append(ownerFileArguments(cfg, p, b.live), approvedArguments(cfg, p, b.live)...)...)
 			// Each as one word, flag=value: a value of "--" as its own word
@@ -1364,7 +1401,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if len(b.live.command) > 0 {
 				argv = append(append(argv, "--"), b.live.command...)
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", binding: p.binding, tools: b.live.tools, check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live"), approval: approvalOf(p, b.live), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.live), grant: grant}
+			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", binding: p.binding, tools: b.live.tools, check: check, endpoint: b.live.url, descriptorProvenance: platformProvenance(p, b, "live"), approval: approvalOf(p, b.live), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.live), grant: grant, scope: p.scope}
 		}
 		// The write operation, for a platform that allows writes: the
 		// executor is adapter-mcp on the binding's write server with the
@@ -1390,7 +1427,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.write.url != "" {
 				endpoint, transport = b.write.url, "http"
 			}
-			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.write), grant: grant, requesters: p.requesters}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.write), grant: grant, requesters: p.requesters, scope: p.scope}
 		}
 	}
 	if cfg.sandbox != nil {
