@@ -1,0 +1,26 @@
+{
+  "name": "v3-scope-valid",
+  "note": "A sealed session of two acquisitions, each carrying a scope identifier (SPEC.md §1.2a, scope): \"scope-a\", and \"équipe 北\", non-ASCII and holding a space, each of the form. Both are ok: a verifier holds the member to its form and compares no scope identifier with another, so the two receipts of one session differing in it is nothing it reports.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+    "receipts/s2/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"scope\":\"scope-a\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"3ccc838e1abc7003b29aaa6737108359a5fccd8f9671a2b15324e451e9019e65d0cb7d080d3b7ecea42306f5b603691f0863d630849a8c398bc8ede9e856d60e\",\"source\":\"corpus\"}\n",
+    "receipts/s2/1.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":\"3ccc838e1abc7003b29aaa6737108359a5fccd8f9671a2b15324e451e9019e65d0cb7d080d3b7ecea42306f5b603691f0863d630849a8c398bc8ede9e856d60e\",\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"scope\":\"équipe 北\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"667c289a672f2b14e9527cc5fcbec8c59f8c26ae08af03a985c3194347d35c110e5be4a72ef07ef2cf3bf67de8db01fa08ea850dc2ad266052f251d91b357406\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"s2\",\"signature\":\"33c22c1d588cff03e38a83679fa9dbfb62f2a2e086ae1c33b4496dfe12dad8c88f72930916e54d2a8a16c5a5803e4d0366d1dd5fc1667909fa702aa80ed8e503\"}\n",
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s2",
+        "status": "ok"
+      },
+      {
+        "callIndex": 1,
+        "sessionId": "s2",
+        "status": "ok"
+      }
+    ]
+  }
+}

@@ -164,6 +164,7 @@ Two forms recur and are named once:
 | `witness` | object (below) — **optional**, on either kind |
 | `delegation` | object (§11.7) — **optional**, on either kind: present exactly when the call was dispatched under a delegation |
 | `reconciler` | object (§11.7) — **optional**: present only on a read-back (§1.2b) of an action reserved under a delegation |
+| `scope` | string (below) — **optional**, on either kind: present exactly when the operator's configuration fixes the source to a scope identifier |
 
 `argumentsDigest` does not exist in version 3.
 
@@ -493,6 +494,49 @@ establishes is §8.8's, under the key the reader used; with a key the origin ser
 rather than one the reader pinned, no independence beyond the operator's choice of
 witness.
 
+**`scope`** — optional: the scope identifier the gateway's operator fixed on the
+platform whose source the receipt was minted for
+(`docs/adr/0026-a-scope-identifier-fixed-on-a-platform.md`; `docs/design/engine-config.md`,
+`scope`), so that receipts of one operator's sources can be told apart by the party
+each source serves without reading anything but the receipt. A top-level string of
+1 to 128 bytes of UTF-8 that holds no code point display policy 1 refuses
+(`docs/design/tool-descriptors.md`: `General_Category=Cc`, `Bidi_Control`,
+`Default_Ignorable_Code_Point`, `Co`, `Cn` and `Noncharacter_Code_Point`, as
+Unicode 15.0.0 assigns them) and neither tab (U+0009) nor line feed (U+000A), which
+policy 1 admits in a description and an identifier, one line, does not. The member
+is opaque: the gateway and a verifier compare it as written, byte for byte, and
+never case-fold, trim or normalize it, so two scope identifiers a person would read
+alike — a confusable letter, or a composed and a decomposed character — are two
+scope identifiers. A verifier checks its form and nothing else. It is signed with
+every other member. The gateway sets it from its operator's configuration: a request
+to a source the configuration fixes to a scope identifier names that identifier, and
+is refused before the source runs where it names none or another (§6, `/acquire`), so
+the identifier the receipt carries is the configuration's and the request's alike. A
+receipt of a source the configuration fixes to no scope identifier is the receipt it
+was before the member existed. The format admits the member on either kind; this
+gateway mints it on acquisitions alone, since a platform fixed to a scope identifier
+allows no write. A seal (§3) never carries it, and a registry line names none.
+
+**What `scope` establishes.** On a receipt that verifies under the operator's gateway
+key: that the holder of that key, minting the receipt, held the source it names fixed
+to this scope identifier, and that the request it served named the same one. It does
+not establish who or what the identifier stands for; that the caller was entitled to
+it — a scope identifier is a label the operator fixes and a request repeats, not a
+credential, and any caller the gateway admits that names a source's identifier is
+served by that source; that no other source, platform or gateway is fixed to the same
+identifier; that the receipts of one session share one scope identifier, which nothing
+holds them to; or anything about the operator's honesty. A receipt without the member
+establishes nothing about a scope, and not that its source was fixed to none. The
+member is unrelated to a delegation's scope (§11.5) and to an action key's first scope
+(§1.2b).
+
+**A verifier written before the member** tolerates it, as it tolerates any signed
+member it does not know: on a receipt carrying a scope identifier it reaches the
+verdict it reached before, reports no scope, and holds the member to no form, so it
+answers `ok` for a receipt, signed under the key it trusts, whose `scope` a verifier
+of this version reports `malformed`. A scope identifier added to a receipt, removed
+from it or changed after signing is `signature-mismatch` under either.
+
 **What the signature covers** — `"judgment-pack-gateway/receipt/3:"` followed by
 `canon` of the receipt object with **the receipt's own top-level `signature`
 member removed and every other member retained** — every nested member
@@ -736,7 +780,7 @@ statuses of the ladder and do not replace it.)
 
 | Order | Status | Condition |
 |---|---|---|
-| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `decision.recordBytes` present and not `"exact"`, `witness` present and not an object whose `origin`, `keyId` and `trail` are each of their stated forms, `delegation` or `reconciler` present and not of its stated form (§11.7) — and never a relational one but the comparisons within one receipt that §11.7 states: `caller` `null` or naming another issuer or subject than `delegation.subject`, an action's `requester` likewise, and `reconciler` on a receipt that is not an acquisition carrying `reconciliation` |
+| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `decision.recordBytes` present and not `"exact"`, `witness` present and not an object whose `origin`, `keyId` and `trail` are each of their stated forms, `delegation` or `reconciler` present and not of its stated form (§11.7), `scope` present and not a string of its stated form — and never a relational one but the comparisons within one receipt that §11.7 states: `caller` `null` or naming another issuer or subject than `delegation.subject`, an action's `requester` likewise, and `reconciler` on a receipt that is not an acquisition carrying `reconciliation` |
 | 2 | `unsupported-version` | `receiptVersion` is neither `"2"` nor `"3"` |
 | 3 | `key-mismatch` | `keyId` is not the key id of a key the verifier reached (§3b): the key it pinned, or a key a rotation it followed rotated to |
 | 4 | `signature-mismatch` | the signature does not verify, under the key `keyId` names, over the input §1.2 or §1.2a defines for the receipt's version |
@@ -1424,6 +1468,12 @@ not itself a finding.
   verifier that trusts the gateway's registry over the store**. It does not defend a
   compromised gateway (key disclosure forges anything), and it is a single-identity,
   single-operator reference — not a multi-tenant or federated trust root.
+- A **scope identifier** (§1.2a, `scope`) tells one source's receipts from another's
+  under that one identity and that one operator. It is a label the operator fixes on a
+  platform and a request repeats: not a key, a store or a registry of its own, and not
+  a credential. Receipts of every scope identifier share the gateway's key, store and
+  registry, a session may hold receipts of several, and a caller the gateway admits is
+  served by any source whose identifier it names.
 - Scope not claimed: no availability/HA guarantees, no authenticated transport
   (binds a loopback address unless `gateway serve --listen` names another, or a version-19
   engine configuration's `listen` does, beside an `identity` and
@@ -1546,7 +1596,7 @@ HTTP: the gateway terminates no TLS on either form.
 
 | Method | Path        | Body / result |
 |--------|-------------|---------------|
-| POST   | `/acquire`  | `{session, source, arguments, trail}`, `trail` optional → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, an empty registry and any discarded line establishing no seal — so a seal stays final across a restart; a seal made after an interruption (§3c) is such a seal. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal — and so is a registry that is not there, since the gateway made it when it started (§3); a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. A session this process does not hold and the registry does not seal is then looked up in the store, and is refused `400` before the source runs where the store holds a receipt in it — any entry of its directory whose name ends in `.json`, whatever it holds — where the store holds it as anything but a directory, a link included, and where the store cannot show it, which is never taken for empty: a gateway keeps a session's chain in memory, so one an earlier process left open is not continued from the store, whose last receipts may have been taken away (§2), and stays `unregistered-session` (§4 step 3). A session directory that holds no receipt is taken up. |
+| POST   | `/acquire`  | `{session, source, arguments, trail, scope}`, `trail` and `scope` optional → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, an empty registry and any discarded line establishing no seal — so a seal stays final across a restart; a seal made after an interruption (§3c) is such a seal. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal — and so is a registry that is not there, since the gateway made it when it started (§3); a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. A session this process does not hold and the registry does not seal is then looked up in the store, and is refused `400` before the source runs where the store holds a receipt in it — any entry of its directory whose name ends in `.json`, whatever it holds — where the store holds it as anything but a directory, a link included, and where the store cannot show it, which is never taken for empty: a gateway keeps a session's chain in memory, so one an earlier process left open is not continued from the store, whose last receipts may have been taken away (§2), and stays `unregistered-session` (§4 step 3). A session directory that holds no receipt is taken up. |
 | POST   | `/seal`     | `{session}` → seals the session's final count; returns the seal record. A session this process does not hold is refused `400`: one sealed in the registry as sealed, the registry read as for `/acquire` (one that cannot be read refuses), one the store holds receipts in, or holds as anything but a directory, or cannot show, as `/acquire` refuses it — its count is not sealed from the store, for the reason `/acquire` does not continue it; `gateway seal-open`, with the gateway stopped, seals it as a seal made after an interruption (§3c) — and any other as no such session. |
 
 A gateway minting version 3 receipts answers `/acquire` with `{result, receipt,
@@ -1564,7 +1614,17 @@ never a witness, an origin or a key: those are the configuration's. The trail is
 request's: a caller can name another trail than the record that will cite the
 receipt, and the witness named is still the configuration's for the trail named,
 which a reader holds to the record's own trail ("Reading the witness a receipt
-names", below). `POST /act` mints one of kind `"action"` (the engine of
+names", below). A request to a source the operator's configuration fixes to a scope
+identifier (§1.2a, `scope`) names that identifier in `scope`, a string, which the
+gateway compares with the configuration's byte for byte. A request that names none, or
+another, is refused `400` before the source runs, before the session is admitted and
+before a delegation counts the call, and so is a request that names one for a source
+the configuration fixes to none; each is refused with the same sentence, which names
+no scope identifier, neither the source's nor the request's. A `scope` that is not a
+string is refused `400` too. A gateway whose configuration fixes no source to a scope
+identifier reads `scope` as any member `/acquire` does not read, and refuses it, as it
+did before the member existed. `POST /act` takes no scope: a platform fixed to a scope
+identifier allows no write. `POST /act` mints one of kind `"action"` (the engine of
 `docs/adr/0001-one-engine-four-processes.md`, described in
 `docs/design/executor.md`): from an authenticated request naming a platform's
 write tool, the decision record the write relies on and the receipts that

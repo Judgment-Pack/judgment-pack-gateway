@@ -127,6 +127,14 @@ func validateVersion3(obj *vObject, r *receipt) error {
 			return err
 		}
 	}
+	// The scope identifier the configuration fixed the source to (ADR-0026):
+	// optional, on either kind, and of its form when present. Nothing else of
+	// it is checked: no receipt's scope is compared with another's.
+	if v, present := obj.get("scope"); present {
+		if s, ok := stringOf(v); !ok || !isScopeIdentifier(s) {
+			return errors.New("scope is not a scope identifier: " + scopeForm)
+		}
+	}
 	r.kind = kind
 	return nil
 }

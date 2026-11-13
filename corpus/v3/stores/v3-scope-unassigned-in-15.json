@@ -1,0 +1,20 @@
+{
+  "name": "v3-scope-unassigned-in-15",
+  "note": "A scope identifier holding U+2FFC, unassigned in Unicode 15.0.0 and assigned in a later version: display policy 1 refuses Cn as Unicode 15.0.0 assigns it, so it is malformed at order 1, and a verifier that reads its runtime's own, later, Unicode tables is caught. Signed with the member.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+    "receipts/s2/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"scope\":\"scope\u2ffca\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"f95afc85c97259a7ec10f983a8dcbf4c8095c85165365508cde90da17bc1018fb3def5c3e208d85aa12ece689cbb73faeed286f32250341467b67b9d3a69c608\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"s2\",\"signature\":\"195514b9eacf1a97f7315a59892c615817bb2cb0132db54efd0909600e57742e7c28a67fc2171070e6e4ec894d2533011758e4cfb0148b736f8ae195518cc601\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "file": "0.json",
+        "sessionId": "s2",
+        "status": "malformed"
+      }
+    ]
+  }
+}
