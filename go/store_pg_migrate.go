@@ -403,6 +403,7 @@ var pgTables = []string{"blobs", "documents", "entries", "log_records", "logs", 
 // security is enabled and forced on each.
 var pgScopedTables = []string{"blobs", "documents", "entries", "series"}
 
+// pgTablePrivileges are the privileges a table has (pgPrivilegesHold).
 var pgTablePrivileges = []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"}
 
 // holdsItsConditions is the kind's start: the server, the login it runs as,
@@ -419,8 +420,8 @@ func (k *pgKind) holdsItsConditions(set pgMigrationSet) error {
 		rows, err := tx.exec(`SELECT
 			(SELECT ` + pgRoleWithout + ` FROM pg_catalog.pg_roles r WHERE r.rolname = current_user),
 			EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE (` + pgRoleWithout + ` OR r.oid = n.nspowner) AND pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER')),
-			pg_catalog.has_database_privilege(pg_catalog.current_database(), 'CREATE'),
-			pg_catalog.has_schema_privilege(n.oid, 'CREATE')
+			pg_catalog.has_database_privilege(pg_catalog.current_database(), 'CREATE') OR pg_catalog.has_database_privilege(pg_catalog.current_database(), 'TEMPORARY'),
+			EXISTS (SELECT 1 FROM pg_catalog.pg_namespace m WHERE pg_catalog.has_schema_privilege(m.oid, 'CREATE'))
 			FROM pg_catalog.pg_namespace n WHERE n.nspname = 'gateway'`)
 		if err != nil {
 			return err
@@ -436,10 +437,10 @@ func (k *pgKind) holdsItsConditions(set pgMigrationSet) error {
 			return errors.New("store: the run-time login is, or reaches, the schema's owner or a role past its privileges")
 		}
 		if create, _ := pgBool(row[2]); create {
-			return errors.New("store: the run-time login may create schemas in the database; it holds table privileges alone")
+			return errors.New("store: the run-time login may create schemas or temporary tables in the database; it holds table privileges alone")
 		}
 		if create, _ := pgBool(row[3]); create {
-			return errors.New("store: the run-time login may create objects in the schema gateway; it holds table privileges alone")
+			return errors.New("store: the run-time login may create objects in a schema of the database; it holds table privileges alone")
 		}
 		records, err := pgAppliedMigrationsTx(tx)
 		if err != nil {
@@ -451,39 +452,130 @@ func (k *pgKind) holdsItsConditions(set pgMigrationSet) error {
 		if len(records) != len(set.versions) {
 			return fmt.Errorf("store: the database's schema is at version %d and this gateway's is %d; run gateway store-migrate", len(records), len(set.versions))
 		}
-		for _, table := range pgTables {
-			for _, privilege := range pgTablePrivileges {
-				held, err := tx.exec(`SELECT pg_catalog.has_table_privilege(c.oid, $2) FROM pg_catalog.pg_class c
-					JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'gateway' AND c.relname = $1`, table, privilege)
-				if err != nil {
-					return err
-				}
-				if len(held.rows) != 1 {
-					return fmt.Errorf("store: the table gateway.%s is not there", table)
-				}
-				has, _ := pgBool(held.rows[0][0])
-				if want := contains(pgPrivileges[table], privilege); has != want {
-					if has {
-						return fmt.Errorf("store: the run-time login holds %s on gateway.%s, which the store does not give it", privilege, table)
-					}
-					return fmt.Errorf("store: the run-time login lacks %s on gateway.%s; run gateway store-migrate naming it", privilege, table)
-				}
-			}
-		}
-		secured, err := tx.exec(`SELECT c.relname, c.relrowsecurity AND c.relforcerowsecurity
-			FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-			WHERE n.nspname = 'gateway' AND c.relkind IN ('r', 'p')
-			AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'scope' AND NOT a.attisdropped)`)
-		if err != nil {
+		if err := pgPrivilegesHold(tx); err != nil {
 			return err
 		}
-		for _, row := range secured.rows {
-			if on, _ := pgBool(row[1]); !on {
-				return fmt.Errorf("store: row security is not enabled and forced on gateway.%s", row[0])
-			}
-		}
-		return nil
+		return pgSchemaHolds(tx)
 	})
+}
+
+// pgPrivilegesHold holds the run-time login to exactly the privileges
+// pgPrivileges names on each table, by table and by column alike: a column
+// privilege (UPDATE of one column, say) is a privilege the store does not
+// give as much as the table's is.
+func pgPrivilegesHold(tx pgTx) error {
+	held, err := tx.exec(`SELECT c.relname, p.privilege, pg_catalog.has_table_privilege(c.oid, p.privilege),
+		p.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES') AND pg_catalog.has_any_column_privilege(c.oid, p.privilege)
+		FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+		CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')) AS p (privilege)
+		WHERE n.nspname = 'gateway' AND c.relkind = 'r'`)
+	if err != nil {
+		return err
+	}
+	seen := map[string]int{}
+	for _, row := range held.rows {
+		table, privilege := string(row[0]), string(row[1])
+		onTable, _ := pgBool(row[2])
+		onColumn, _ := pgBool(row[3])
+		want := contains(pgPrivileges[table], privilege)
+		columnar := privilege == "SELECT" || privilege == "INSERT" || privilege == "UPDATE" || privilege == "REFERENCES"
+		if onTable && !want || onColumn && !want {
+			return fmt.Errorf("store: the run-time login holds %s on gateway.%s, which the store does not give it", privilege, table)
+		}
+		if want && (!onTable || columnar && !onColumn) {
+			return fmt.Errorf("store: the run-time login lacks %s on gateway.%s; run gateway store-migrate naming it", privilege, table)
+		}
+		seen[table]++
+	}
+	for _, table := range pgTables {
+		if seen[table] != len(pgTablePrivileges) {
+			return fmt.Errorf("store: the table gateway.%s is not there", table)
+		}
+	}
+	return nil
+}
+
+// pgScopePolicy is the one policy on each table whose rows carry a scope
+// identifier, as the server prints it under the search path the kind sets.
+const pgScopePolicy = `(scope = COALESCE(current_setting('gateway.scope'::text, true), ''::text))`
+
+// pgSchemaHolds holds the schema to what the migrations made: the store's
+// tables and their indexes alone, with no view, sequence, function,
+// trigger or rule beside them; row security enabled and forced on every
+// table with a column scope, and on each of those one policy, the scope's,
+// for every command and every role; and on no other table any policy.
+func pgSchemaHolds(tx pgTx) error {
+	objects, err := tx.exec(`SELECT c.relname, c.relkind::text,
+		EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'scope' AND NOT a.attisdropped),
+		c.relrowsecurity AND c.relforcerowsecurity
+		FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'gateway' ORDER BY c.relname`)
+	if err != nil {
+		return err
+	}
+	tables := []string{}
+	for _, row := range objects.rows {
+		name, kind := string(row[0]), string(row[1])
+		scoped, _ := pgBool(row[2])
+		secured, _ := pgBool(row[3])
+		switch kind {
+		case "i":
+			continue
+		case "r":
+		default:
+			return fmt.Errorf("store: the schema gateway holds %s, which is not one of the store's tables", name)
+		}
+		tables = append(tables, name)
+		if scoped != contains(pgScopedTables, name) {
+			return fmt.Errorf("store: the table gateway.%s carries a scope identifier other than the store's tables do", name)
+		}
+		if scoped && !secured {
+			return fmt.Errorf("store: row security is not enabled and forced on gateway.%s", name)
+		}
+	}
+	if strings.Join(tables, " ") != strings.Join(pgTables, " ") {
+		return fmt.Errorf("store: the schema gateway holds the tables %v, and the store's are %v", tables, pgTables)
+	}
+	others, err := tx.exec(`SELECT
+		(SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'gateway')::int8,
+		(SELECT count(*) FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+			JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'gateway' AND NOT t.tgisinternal)::int8,
+		(SELECT count(*) FROM pg_catalog.pg_rewrite w JOIN pg_catalog.pg_class c ON c.oid = w.ev_class
+			JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'gateway')::int8,
+		(SELECT count(*) FROM pg_catalog.pg_type y JOIN pg_catalog.pg_namespace n ON n.oid = y.typnamespace
+			WHERE n.nspname = 'gateway' AND y.typrelid = 0 AND y.typelem = 0)::int8`)
+	if err != nil {
+		return err
+	}
+	for i, what := range []string{"a function", "a trigger", "a rule", "a type"} {
+		if n, _ := pgInt8(others.rows[0][i]); n != 0 {
+			return fmt.Errorf("store: the schema gateway holds %s, and the store's schema holds none", what)
+		}
+	}
+	policies, err := tx.exec(`SELECT c.relname, p.polname, p.polpermissive, p.polcmd::text, p.polroles = '{0}'::oid[],
+		pg_catalog.pg_get_expr(p.polqual, p.polrelid), pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid)
+		FROM pg_catalog.pg_policy p JOIN pg_catalog.pg_class c ON c.oid = p.polrelid
+		JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'gateway'`)
+	if err != nil {
+		return err
+	}
+	held := map[string]bool{}
+	for _, row := range policies.rows {
+		table := string(row[0])
+		permissive, _ := pgBool(row[2])
+		everyone, _ := pgBool(row[4])
+		if !contains(pgScopedTables, table) || held[table] || string(row[1]) != "scope_of_the_transaction" ||
+			!permissive || string(row[3]) != "*" || !everyone || string(row[5]) != pgScopePolicy || string(row[6]) != pgScopePolicy {
+			return fmt.Errorf("store: gateway.%s holds the policy %s, which is not the store's scope policy", table, row[1])
+		}
+		held[table] = true
+	}
+	for _, table := range pgScopedTables {
+		if !held[table] {
+			return fmt.Errorf("store: gateway.%s holds no scope policy", table)
+		}
+	}
+	return nil
 }
 
 func pgAppliedMigrationsTx(tx pgTx) ([]pgRecord, error) {
