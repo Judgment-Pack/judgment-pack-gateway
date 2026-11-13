@@ -1811,6 +1811,52 @@ stdin and emits a JSON result on stdout. The gateway attaches no transport of it
 — it attests whatever bytes a configured source returns, which is exactly the inline
 core's boundary: **proof of the bytes, not proof of their truth.**
 
+### When an acquisition does not happen
+
+An `/acquire` that is refused, or whose source fails, mints nothing, retains nothing and
+holds no session open: no receipt, no artifact, no registry line, and a session the request
+would have begun is not begun, so the same session can be named again. A refusal of a call
+under a delegation answers as §11.5 states. Every other such answer is
+`Content-Type: application/json` with a body of exactly one member, `error`, a string:
+
+- **`400`** for a request refused before the source runs (above), and for a source that
+  failed: its text begins `source failed: ` and goes on with the first 200 bytes of what the
+  source wrote on stderr, each byte outside printable ASCII replaced by `?`; or it is another
+  of the gateway's sentences for a source that did not finish within its timeout, ran past its
+  output bound, could not be started or answered with no result the gateway takes. This
+  includes a source whose endpoint answered with any status this section does not name below
+  — a `500`, a `502`, a `504` — and one whose endpoint could not be reached.
+- **`429`** or **`503`**, the class the source reported, for a source of shape `http` whose
+  adapter reported a throttled answer ("Adapter sources", below): its endpoint, or its token
+  step's token endpoint (`docs/design/engine-config.md`), answered `429` or `503`. The body is
+  exactly, for `429`,
+
+  `{"error":"source failed: the source's endpoint answered 429 Too Many Requests; nothing was retained or minted"}`
+
+  and for `503` the same sentence with `503 Service Unavailable` in place of
+  `429 Too Many Requests`, whatever the endpoint's answer held: nothing of its body or its other headers, and nothing
+  of the adapter's stderr, reaches the caller. When the adapter reported a wait, the answer
+  carries `Retry-After` as delta-seconds, the decimal digits of a whole number from 0 to 3600
+  that the gateway writes from the number reported, never the endpoint's bytes; when it
+  reported none, the answer carries no `Retry-After`. The text begins as a failed source's
+  does, so a reader that reads only the text reads it as one.
+- **`503`** with `{"error":"admission is closed for maintenance; nothing was admitted"}` while
+  the gateway's admission is closed (`docs/design/mcp-server.md`, "Rotation"). It carries no
+  `Retry-After`: the closure ends when its operator reopens admission, which the gateway does
+  not know in advance.
+
+An acquisition is one receipted read, however many runs of its adapter it takes: a token
+step's token request, the request, and the token request and run once more after a sealed
+token the adapter could not open (`docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md`).
+A throttled answer at any of them is the answer of the whole acquisition, and nothing of it is
+receipted. A throttled token request leaves no token held, so the next acquisition requests
+one again; a throttled request to the source leaves the sealed token held, since the source did
+not refuse it. The gateway does not retry, wait or queue: the caller decides whether and when to
+ask again, and a request it sends again is a new acquisition, receipted as its own if it
+succeeds. The MCP front (`docs/design/mcp-server.md`) lists no tool of a platform whose `live`
+is of shape `http`, so no forward of it reaches such a source; its error result for a refused
+forward carries the signer's status, as before, and no `Retry-After`.
+
 ### Payloads a gateway does not keep
 
 **`/acquire` on a source that keeps no payload** (§1.3a) answers as on any source: `result`
@@ -1997,6 +2043,35 @@ declared, and refuses the acquisition if one is configured in process. The envel
 keeps the contract of one request and one result: what an adapter reports rides
 inside the result it was always allowed to write, and the gateway, not the adapter,
 decides what of it is signed.
+
+**A throttled answer, shape `http`.** An adapter refuses by exiting with a status other
+than 0, and the gateway reads nothing of its stdout then — with one exception. An adapter
+of a source declared `http` whose endpoint, or whose token step's token endpoint, answered
+`429` or `503` may exit with status **7** and write on stdout exactly
+
+```json
+{"throttled": {"status": 429, "retryAfter": 30}}
+```
+
+— one member, `throttled`, an object of exactly `status`, `429` or `503`, the class the
+endpoint answered, and `retryAfter`, the wait it asked for in whole seconds, an integer from
+0 to 3600, or `null` for none; each member once, the whole one JSON value in the canonical
+domain (§1.1) and nothing after it. The gateway reads stdout beside status 7 from a source
+declared `http` and from no other, and answers the acquisition with that class ("When an
+acquisition does not happen", above). Status 7 from a source of another shape, or from a bare
+command, status 7 beside anything else on stdout — a member more or missing, another class, a
+wait past 3600 or below 0, a number of another form — and the report beside any other status
+are a failed source, answered `400` with the stderr text, as before the report existed. So an
+adapter written before it, which never wrote the report, is answered as it was.
+
+How the adapter reads the wait from the endpoint's `Retry-After` (RFC 9110 §10.2.3) is its own,
+and `adapter-http`'s is: exactly one `Retry-After` line, either delta-seconds — one or more ASCII
+digits, leading zeros allowed — or an HTTP-date of any of the three forms RFC 9110 §5.6.7 has a
+recipient accept, the date counted from the adapter's clock up to the next whole second; a
+wait past 3600 seconds is 3600; and no line, two or more, a value of neither form (a sign, a
+fraction, a list, a word) and a date at or before the adapter's clock are no wait (`null`),
+never a wait the endpoint did not state. Its stderr for the answer is the diagnostic it wrote for
+any refusing answer, unchanged.
 
 ### Witness endpoints
 

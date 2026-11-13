@@ -884,6 +884,38 @@ An acquisition's arguments are the adapter's request, `{"path", "method"?, "quer
 the path one of `paths`, the method one of `methods`; anything else is refused by the adapter
 before a connection is made.
 
+**A throttled answer** (gateway #425, [ADR-0029](../adr/0029-a-throttled-source-is-answered-with-its-class.md)).
+When the endpoint, or the token step's token endpoint, answers `429` or `503`, `/acquire` answers
+that class with the gateway's own sentence and, when the endpoint's `Retry-After` was one line of
+delta-seconds or an HTTP-date in the future, `Retry-After` in whole seconds, at most 3600 (SPEC.md
+§6, "When an acquisition does not happen"). Nothing is minted or retained, a throttled token
+request leaves no token held, and the gateway does not retry. Every other refusing answer — a
+`500`, a `502`, a `504`, an endpoint that cannot be reached — is answered `400` as before.
+
+**Paging is the caller's** (gateway #389). The engine keeps no cursor, no high-water mark and no
+"since" for a source of this shape, or for any generic source: each `/acquire` is one request to
+the endpoint and one receipt, for the page or the window the request names, and the caller keeps
+where it is between them. A caller paging through a source names each page in the request's
+`query` or `body`, on a path and by a method the binding admits, and takes the next cursor from
+the page it was answered:
+
+```json
+{"session": "orders-2026-11-13", "source": "orders/live",
+ "arguments": {"path": "/orders", "method": "GET", "query": {"since": "2026-11-12T00:00:00Z", "limit": "100"}}}
+```
+
+The answer's `result.body` is the endpoint's page, `{"items": [...], "next": "c-2"}` say; the
+caller sends the next request with `"cursor": "c-2"` in `query`, in the same session, and stops
+when the page names no next cursor. Each page is its own receipt, `callIndex` 0, 1, 2 and so on,
+whose `statement` commits to the query that page was asked with; `/seal` after the last page
+fixes the session's count, so a verifier holds the pages as one sealed sequence with none
+removed. The high-water mark, here `since`, is the caller's to record, from the pages it holds;
+the gateway reads nothing in a result. A page answered `429` or `503` is not receipted and takes
+no `callIndex`: the caller waits the `Retry-After` it was given, or its own back-off when none
+was, and asks for the same page again in the same session, which is not sealed until it has.
+The recurring observations of the one built-in provider that has them
+([recurring-source-observations.md](recurring-source-observations.md)) are unchanged.
+
 An `http` live operation is its binding's only operation, and the binding's version is 1: no
 owner taxonomy is defined for an operation whose acquisitions name no tool, so a
 `bindingVersion` 2 or 3 binding naming the shape is refused, and the current admission's

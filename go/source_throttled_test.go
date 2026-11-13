@@ -55,6 +55,12 @@ func TestThrottleReportIsReadStrictly(t *testing.T) {
 			t.Errorf("%s: %+v %v", c.report, got, ok)
 		}
 	}
+	// adapter-conform classes the answer as the adapter's own refusal.
+	for _, status := range []int{429, 503} {
+		if class := sourceRefusalClass((&sourceThrottled{status: status, retryAfter: -1}).Error()); class != refusalSourceFailed {
+			t.Errorf("%d is classed %s", status, class)
+		}
+	}
 }
 
 // TestThrottleStandIn is an adapter standing in for adapter-http when
