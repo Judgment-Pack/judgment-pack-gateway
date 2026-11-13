@@ -308,11 +308,16 @@ func printableASCII(s string) bool {
 // httpSourceArgv is adapter-http's command line for an http operation, each
 // flag and its value one word: the endpoint, the paths and the methods the
 // binding fixes, the platform's credentials file for live, the member sent
-// and how, and the fixed headers. The adapter's own bounds -- a 1 MiB
+// and how -- or, with a token step, the step that obtains the token sent as
+// the bearer -- and the fixed headers. The adapter's own bounds -- a 1 MiB
 // envelope, a 20 second request -- lie inside the engine's on every source.
-func httpSourceArgv(adapter string, op httpOperation, credentials string) []string {
+func httpSourceArgv(adapter string, op httpOperation, credentials string, token *tokenStepConfig) []string {
 	argv := []string{adapter, "--endpoint=" + op.endpoint, httpPathsWord(op.paths), "--methods=" + strings.Join(op.methods, ","), "--credentials=" + credentials}
-	if op.bearer != "" {
+	if token != nil {
+		// The token the step obtains is the bearer, in place of the member
+		// the binding names (tokenStepMatch holds the binding to bearer).
+		argv = append(argv, tokenStepArgv(token)...)
+	} else if op.bearer != "" {
 		argv = append(argv, "--bearer="+op.bearer)
 	} else {
 		argv = append(argv, "--credential-header="+op.credentialHeader)

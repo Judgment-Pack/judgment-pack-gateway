@@ -343,6 +343,22 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		}
 		entry.scope = previous.scope
 	}
+	// So is a live operation's tokenStep (engineVersion 21, token_step.go),
+	// which connect has no flag for: an entry written without it would send
+	// the member the binding names in place of the token the step obtains,
+	// so the entry replaced keeps it, and a replacement it would not fit --
+	// no live credentials file, or a binding whose live operation is not of
+	// the http shape or sends its credential under a header -- is refused,
+	// never written without it.
+	if previous != nil && previous.tokenStep != nil {
+		if _, live := entry.credentials["live"]; !live {
+			return out, fmt.Errorf("platform %s carries credentials.live.tokenStep, which --replace keeps, and the entry replacing it names no live credentials file; remove tokenStep from the file first, or give --credentials-file live=PATH", req.platform)
+		}
+		entry.tokenStep = previous.tokenStep
+		if err := tokenStepMatch(entry, b); err != nil {
+			return out, fmt.Errorf("platform %s carries credentials.live.tokenStep, which --replace keeps: %v", req.platform, err)
+		}
+	}
 	// The entry as it is written, kept apart: judging the configuration
 	// below replaces each credentials path in the entry with the path it
 	// resolves to, which is not what the file will say.
@@ -844,8 +860,9 @@ func checkedAdapter(report []byte) (string, json.RawMessage, error) {
 // pin, and parameters are a version-8 member, so it is raised to version 8
 // exactly when the entry carries them; otherwise its version stays as it
 // was found, and a later one is never lowered. The entry replaced keeps its
-// decisionPolicy, its writeRequesters and its scope as written, which
-// connect has no flag for (ADR-0011; write_requesters.go; ADR-0026);
+// decisionPolicy, its writeRequesters, its scope and its live operation's
+// tokenStep as written, which connect has no flag for (ADR-0011;
+// write_requesters.go; ADR-0026; ADR-0027);
 // parameters are the ones connect resolved the binding with, the entry's
 // own on --replace when none were given.
 func renderPlatformEntry(data []byte, req connectRequest, ref, pin string, parameters map[string]string) ([]byte, error) {
@@ -870,9 +887,28 @@ func renderPlatformEntry(data []byte, req connectRequest, ref, pin string, param
 		ops = append(ops, op)
 	}
 	sort.Strings(ops)
+	var replacedObj *vObject
+	if replaced, ok := platforms.get(req.platform); ok {
+		replacedObj, _ = replaced.(*vObject)
+	}
 	for _, op := range ops {
 		file := newObject()
 		file.set("file", vString(req.credentials[op]))
+		// The token step the entry replaced kept, as written (connect
+		// refused a replacement it would not fit).
+		if replacedObj != nil {
+			if was, ok := replacedObj.get("credentials"); ok {
+				if wasObj, ok := was.(*vObject); ok {
+					if wasOp, ok := wasObj.get(op); ok {
+						if wasOpObj, ok := wasOp.(*vObject); ok {
+							if step, ok := wasOpObj.get("tokenStep"); ok {
+								file.set("tokenStep", step)
+							}
+						}
+					}
+				}
+			}
+		}
 		credentials.set(op, file)
 	}
 	entry.set("credentials", credentials)

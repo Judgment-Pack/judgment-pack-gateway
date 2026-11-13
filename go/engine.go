@@ -50,16 +50,19 @@ import (
 // (SPEC.md §6; write_requesters.go), and version 19 the optional
 // `acceptOtherHostsOverPlainHTTP`, without which `listen` is a loopback
 // address (docs/adr/0025-serve-config-listens-off-loopback-with-an-identity-when-acknowledged.md;
-// engineListen), and version 20 a platform's optional `scope`, the scope
+// engineListen), version 20 a platform's optional `scope`, the scope
 // identifier its sources are fixed to (docs/adr/0026-a-scope-identifier-fixed-on-a-platform.md;
-// scope.go):
+// scope.go), and version 21 a live operation's optional
+// `credentials.live.tokenStep`, by which an http source obtains the access
+// token it sends (docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md;
+// token_step.go):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "20"
+const engineVersion = "21"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -180,6 +183,10 @@ type platformConfig struct {
 	// (engineVersion 20, scope.go): a request to one of them names it, and
 	// its receipts carry it; "" when the platform gives none.
 	scope string
+	// tokenStep is credentials.live.tokenStep (engineVersion 21,
+	// token_step.go): how the platform's http live source obtains the access
+	// token it sends; nil when the source sends a member of its file.
+	tokenStep *tokenStepConfig
 }
 
 // identitySpec is the identity member as written: the token issuer, the
@@ -524,11 +531,16 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			if err != nil {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: %v", name, err)
 			}
-			if err := exactlyMembers(entry, map[string]bool{"file": true}, "platform "+name+" credentials."+op); err != nil {
+			if err := exactlyMembers(entry, map[string]bool{"file": true, "tokenStep": false}, "platform "+name+" credentials."+op); err != nil {
 				return engineConfig{}, err
 			}
 			if pc.credentials[op], err = requireAbsolutePath(entry, "file"); err != nil {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: credentials.%s.%v", name, op, err)
+			}
+			if stepValue, present := entry.get("tokenStep"); present {
+				if pc.tokenStep, err = parseTokenStep(stepValue, name, op, version); err != nil {
+					return engineConfig{}, err
+				}
 			}
 		}
 		if pc.user, err = requireString(p, "user"); err != nil || pc.user == "" {
@@ -551,6 +563,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 				}
 				if sameEnvKey(key, "HOME") || sameEnvKey(key, "PATH") {
 					return engineConfig{}, fmt.Errorf("engine configuration: platform %s: environment may not set %s; HOME is the user's own and PATH the engine's", name, key)
+				}
+				if pc.tokenStep != nil && sameEnvKey(key, sealedTokenVariable) {
+					return engineConfig{}, fmt.Errorf("engine configuration: platform %s: environment may not set %s, in which the signer hands the token step's sealed token to the adapter", name, key)
 				}
 				pc.environment = append(pc.environment, key+"="+value)
 			}
@@ -1383,7 +1398,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.live.http.checkPath != "" {
 				check = []string{"--check-path=" + b.live.http.checkPath}
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: httpSourceArgv(adapter("adapter-http"), *b.live.http, p.credentials["live"]), env: env, user: p.user, shape: "http", binding: p.binding, check: check, scope: p.scope}
+			sources[p.name+"/live"] = sourceSpec{argv: httpSourceArgv(adapter("adapter-http"), *b.live.http, p.credentials["live"], p.tokenStep), env: env, user: p.user, shape: "http", binding: p.binding, check: check, scope: p.scope, tokenStep: p.tokenStep != nil}
 		} else if b.live != nil {
 			argv := mcpServerArgv(adapter("adapter-mcp"), *b.live, p.credentials["live"], cfg.runtime, p.endpoint, p.name+"/"+b.live.name, append(ownerFileArguments(cfg, p, b.live), approvedArguments(cfg, p, b.live)...)...)
 			// Each as one word, flag=value: a value of "--" as its own word
@@ -1841,6 +1856,29 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 			if owner.mode&0o077 != 0 {
 				return nil, fmt.Errorf("platform %s: credentials.%s %s is readable beyond its owner (mode %04o); chmod 600 %s", p.name, op, credentials, owner.mode, credentials)
 			}
+		}
+		// A token step's federated token is a credential as the file is: held
+		// to the same rules, and the path used from here on the resolved one.
+		if t := p.tokenStep; t != nil && t.federatedTokenFile != "" {
+			resolved, err := trustedFile(t.federatedTokenFile, uid, linkOwners{other: -1}, host)
+			if err != nil {
+				return nil, fmt.Errorf("platform %s: credentials.live.tokenStep.federatedTokenFile: %v", p.name, err)
+			}
+			owner, err := host.fileOwner(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("platform %s: credentials.live.tokenStep.federatedTokenFile: %v", p.name, err)
+			}
+			switch {
+			case owner.dir:
+				return nil, fmt.Errorf("platform %s: credentials.live.tokenStep.federatedTokenFile %s is a directory", p.name, resolved)
+			case owner.uid != uid:
+				return nil, fmt.Errorf("platform %s: credentials.live.tokenStep.federatedTokenFile %s must be owned by %s, the user its adapters run as", p.name, resolved, p.user)
+			case owner.mode&0o077 != 0:
+				return nil, fmt.Errorf("platform %s: credentials.live.tokenStep.federatedTokenFile %s is readable beyond its owner (mode %04o); chmod 600 %s", p.name, resolved, owner.mode, resolved)
+			}
+			step := *t
+			step.federatedTokenFile = resolved
+			p.tokenStep = &step
 		}
 	}
 	// The custody a platform's delegated calls are admitted under is read
@@ -2442,6 +2480,9 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
 		if err := httpPlatformMatch(*p, b); err != nil {
+			return nil, fmt.Errorf("platform %s: %v", p.name, err)
+		}
+		if err := tokenStepMatch(*p, b); err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
 		// write: true says an executor may be pointed at the platform; a

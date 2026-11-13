@@ -125,6 +125,10 @@ type sourceSpec struct {
 	// fixed to none, whose requests name none and whose receipts are those
 	// it minted before the member existed.
 	scope string
+	// tokenStep is whether the source's adapter-http obtains the token it
+	// sends (engineVersion 21, token_step.go): an acquisition is then handed
+	// the source's sealed token, held in tokens.
+	tokenStep bool
 }
 
 // adapterShapes are the shapes --source-shape may declare: every shape of
@@ -280,6 +284,9 @@ type gatewayService struct {
 	// (ADR-0014), which a receipt minted for that trail names in its
 	// witness member; empty, no receipt names one. No request sets it.
 	witnessedBy map[string]namedWitness
+	// tokens are the sealed tokens of the sources with a token step
+	// (token_step.go), in memory only.
+	tokens tokenCache
 }
 
 // startHook runs between making the store and opening the registry; a test
@@ -1023,7 +1030,7 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 		}
 	}
 
-	result, adapterDigest, observedAt, err := g.runSource(source, spec, canonicalArgs)
+	result, adapterDigest, observedAt, err := g.runAcquisitionSource(source, spec, canonicalArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -1335,7 +1342,9 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 			// it was killed is not why it failed.
 			return nil, "", "", fmt.Errorf("source did not finish within its %d-second timeout", int64(timeout/time.Second))
 		}
-		return nil, "", "", fmt.Errorf("source failed: %s", sourceFailureText(stderr.buf.String()))
+		// The status is kept beside the text, which is unchanged: a token
+		// step's adapter reports its failure's kind by it (token_step.go).
+		return nil, "", "", &sourceExited{code: exitStatus(waitErr), text: "source failed: " + sourceFailureText(stderr.buf.String())}
 	}
 	observedAt = nowStamp()
 	result, err = parseJSON(stdout.buf.Bytes())

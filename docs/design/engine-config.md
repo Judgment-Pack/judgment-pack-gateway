@@ -57,10 +57,12 @@ key is an error, never an intention silently dropped. `engineVersion`, `authorit
 `runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness`, `witnessedBy`, `sandbox`, `delegation`, `sealOpenAtStart` and `acceptOtherHostsOverPlainHTTP` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
 `descriptors`, `operationDescriptors`, `descriptorStatements`, `decisionPolicy`,
-`parameters`, `grant`, `writeRequesters` and `scope` optional. Every path is absolute.
+`parameters`, `grant`, `writeRequesters` and `scope` optional; each operation's `credentials`
+entry is `{"file": …}`, and a live one's may carry `tokenStep` beside `file`. Every path is
+absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"20"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"21"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
@@ -68,9 +70,10 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   14 a required `actionKey`, version 15 `delegation`, version 16 a platform's `grant`,
   version 17 `sealOpenAtStart`, version 18 a platform's `writeRequesters`, version 19
   `acceptOtherHostsOverPlainHTTP`, without which `listen` is a loopback address ("Listening off
-  loopback (engine version 19)", below), and version 20 a platform's `scope` ("A platform's
-  scope (engine version 20)", below). A file of an earlier version still loads without the
-  member and is refused by name with it.
+  loopback (engine version 19)", below), version 20 a platform's `scope` ("A platform's
+  scope (engine version 20)", below), and version 21 a live operation's
+  `credentials.live.tokenStep` ("A live operation's token step (engine version 21)", below). A
+  file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
   it never lowers one — so a signer older than version 3 goes on reading every file `connect` has
@@ -416,7 +419,7 @@ way:
 | `<platform>/history` | `adapter-airbyte` | `--image=<history.image> --credentials=<credentials.history.file> --runtime=<runtime> [--endpoint=<endpoint>]` |
 | `<platform>/live` | `adapter-mcp` | `--image=<live.server.image> --credentials=<credentials.live.file> --runtime=<runtime> --tools=<live.tools, comma-joined> [--endpoint=<endpoint>] [-- <live.server.args>]` |
 | `<platform>/write` | `adapter-mcp` | `--image=<write.server.image> --credentials=<credentials.write.file> --runtime=<runtime> --tools=<write.tools, comma-joined> --error-results [--endpoint=<endpoint>] [-- <write.server.args>]` — derived only for a platform whose configuration sets `write: true`; it is what the executor runs ([executor.md](executor.md)) and never a source `/acquire` may name |
-| `<platform>/live` of an `http` binding | `adapter-http` | `--endpoint=<live.endpoint> --paths=<live.paths, comma-joined> --methods=<live.methods, comma-joined> --credentials=<credentials.live.file> (--bearer=<live.bearer> \| --credential-header=<live.credentialHeader>) [--header=<NAME=VALUE>]...` — no runtime, no tools and no platform endpoint ([below](#an-http-api-as-a-platforms-live-operation)) |
+| `<platform>/live` of an `http` binding | `adapter-http` | `--endpoint=<live.endpoint> --paths=<live.paths, comma-joined> --methods=<live.methods, comma-joined> --credentials=<credentials.live.file> (--bearer=<live.bearer> \| --credential-header=<live.credentialHeader> \| --token-endpoint=<tokenStep.endpoint> --client-id=<tokenStep.clientId> (--assertion-key=<tokenStep.privateKey> \| --federated-token-file=<tokenStep.federatedTokenFile>) [--assertion-x5t=<tokenStep.x5t> \| --assertion-x5t-s256=<tokenStep.x5t#S256>] [--token-scope=<tokenStep.requestScope>]) [--header=<NAME=VALUE>]...` — no runtime, no tools and no platform endpoint ([below](#an-http-api-as-a-platforms-live-operation)); the token step's flags in place of `--bearer` when `credentials.live` carries one ([below](#a-live-operations-token-step-engine-version-21)) |
 
 For an operation whose binding names a remote server (below), `live` and `write` are derived
 as `--url=<server.url> --credentials=<credentials.<operation>.file> --bearer=<server.bearer>
@@ -896,6 +899,10 @@ delegated acquisition of it, with a delegation credential presented or not, is r
 `grant-unknown` (SPEC.md §10, rule 3) before the scope check, the custody, the issuing host or the
 adapter is reached. The MCP server lists no tool of the platform; a client reaches it through
 `/acquire`, authenticated as every source is.
+
+A source whose provider issues short-lived tokens against a certificate or a federated identity,
+and takes no static credential, is given a token step in the platform's `credentials.live`
+("A live operation's token step (engine version 21)", below).
 
 No engine version is added: the configuration's members are unchanged, and every release before
 this one refuses a binding that names the `http` shape by name, when it loads the binding and
@@ -1616,6 +1623,100 @@ form (SPEC.md §1.2a).
 platform to a scope identifier, raise `engineVersion` to `"20"` and add `scope` to the platform;
 a gateway older than this one refuses a version-20 file by its version. Callers of the
 platform's sources then add `scope` to each `/acquire`; until they do, each is refused.
+
+## A live operation's token step (engine version 21)
+
+Version 21 adds `tokenStep` to a platform's `credentials.live`
+([ADR-0027](../adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md), gateway
+#421): for an `http` live operation whose provider issues short-lived access tokens against a
+certificate or a federated identity and takes no static credential, how `adapter-http` obtains
+the token it sends as the bearer, by the OAuth 2.0 client-credentials grant with a client
+assertion (RFC 7523).
+
+```json
+"records": {
+  "binding": "records@sha256:…",
+  "credentials": {"live": {
+    "file": "/run/secrets/records-live",
+    "tokenStep": {
+      "endpoint": "https://login.example/oauth2/token",
+      "clientId": "records-reader",
+      "privateKey": "SIGNING_KEY",
+      "x5t#S256": "…",
+      "requestScope": "records.read"
+    }
+  }},
+  "user": "engine-records"
+}
+```
+
+- **The members.** `endpoint` and `clientId` are required, and exactly one of `privateKey` and
+  `federatedTokenFile`; `x5t`, `x5t#S256` and `requestScope` are optional. Any other member is
+  refused by name, and a refusal repeats no value.
+  - `endpoint` is the token endpoint: `https`, or `http` at a loopback address written as one,
+    with no user, query, fragment or placeholder.
+  - `clientId` is the client identifier, 1 to 256 printable ASCII characters without spaces,
+    sent as `client_id` and as the assertion's `iss` and `sub`.
+  - `privateKey` names the member of the live credentials file holding the key, one PKCS #8
+    `PRIVATE KEY` PEM block: an RSA key of 2048 bits or more, signed RS256, or a P-256 key,
+    signed ES256. The algorithm is the key's; nothing else selects it.
+  - `federatedTokenFile` is an absolute path to a file whose text, read at each token request,
+    is sent as the assertion. It is held as the credentials file is: owned by the platform's
+    user, readable by that user alone, not a directory, on a way no other user may replace; the
+    path the adapter is given is the one the engine resolved at start.
+  - `x5t` and `x5t#S256`, at most one, beside `privateKey` only: the certificate's SHA-1 or
+    SHA-256 thumbprint, unpadded base64url, placed in the assertion's header as written.
+  - `requestScope` is sent as the token request's `scope`: scope tokens (RFC 6749 §3.3)
+    separated by single spaces, at most 1024 bytes. It is not the platform's `scope`.
+- **Where it is taken.** Under `credentials.live` alone, of a binding whose live operation is
+  of the `http` shape and sends its credential as `bearer`: under `history` or `write`, beside a
+  binding of another shape or one sending `credentialHeader`, or in a file before version 21, it
+  is refused. The binding's `bearer` member is not read; the token is the bearer. In federated
+  mode the live credentials file is still required, and nothing of it is sent. A platform with a
+  token step may not set `ADAPTER_HTTP_SEALED_TOKEN` in its `environment`.
+- **The assertion.** With `privateKey`, a JWT: header `alg`, `typ` `JWT` and the thumbprint
+  given; claims `iss` and `sub` the client identifier, `aud` the token endpoint as written, a
+  random `jti`, `iat` and `nbf` now, `exp` five minutes on. It is sent with
+  `grant_type=client_credentials`, `client_id`, `client_assertion_type`
+  `urn:ietf:params:oauth:client-assertion-type:jwt-bearer` and `client_assertion`, as a form
+  POST.
+- **The answer.** Status 200, at most 64 KiB, `application/json`, no member named twice;
+  `access_token` a string of RFC 6750's token form of at most 16 KiB; `token_type` `Bearer`, in
+  any case; `expires_in`, when present, an integer from 1 to 86400. A token stating no lifetime
+  serves the one acquisition it was obtained for. The request is bounded to ten seconds, a
+  redirect is refused and not followed, and the endpoint is reached over TLS 1.2 or later
+  against the system's roots.
+- **Held sealed, by the signer.** The engine runs `adapter-http --token-only` as the platform's
+  user, under the source sandbox, and holds what it answers: the token sealed under a key the
+  platform's credential derives, which the signer cannot open. It holds one per source and
+  scope identifier, in memory alone; one token request runs at a time per source, and
+  acquisitions arriving meanwhile wait for it; it is obtained again 60 seconds before the
+  stated expiry, and a token stating 60 seconds or less, or nothing, is not kept. Each
+  acquisition is handed the sealed token in `ADAPTER_HTTP_SEALED_TOKEN`. The check `connect`
+  runs obtains a token of its own, and sends it with `checkPath` when the binding names one.
+- **What fails, and how.** Each failure is one fixed sentence naming the source and nothing the
+  adapter or the token endpoint wrote:
+  - `source NAME: the token step has no credential: …; no token was requested` — the key member
+    or the federated token is not there, or is not one the adapter can authenticate with.
+  - `source NAME: the token endpoint refused the token request, or answered with no token the
+    gateway takes`.
+  - `source NAME: the source refused the access token the token step obtained; the token is
+    dropped, and the request was not sent again` — the source answered 401. The acquisition is
+    not retried, since that would read the source twice under one receipt; the next one obtains
+    a new token.
+
+  A held token the adapter cannot open — its credential renewed since — is dropped, a new one
+  obtained, and the acquisition run once more, since nothing was sent.
+- **What is written.** Nothing of the key, the federated token, the assertion, the access token,
+  the sealed token or the token endpoint's answer reaches a receipt, a record, `/posture`, a
+  response, an error or a log line. The receipt is the one the static form mints: no member is
+  added.
+- **`connect`** has no flag for it: write it in the file, at version 21. `--replace` keeps it,
+  and refuses a replacement whose binding it would not fit, before anything is asked.
+
+**Upgrading.** A version 20 file loads unchanged under a gateway of this version. To give an
+http source a token step, raise `engineVersion` to `"21"` and add `tokenStep` to the platform's
+`credentials.live`; a gateway older than this one refuses a version-21 file by its version.
 
 ## Keyed actions (engine version 14 and later)
 
