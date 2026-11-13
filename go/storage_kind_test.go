@@ -453,7 +453,7 @@ func pgTestURL(d pgDSN) string {
 // configuration names, then exported and verified: the run-time login's
 // password, the marker, is in no response, no line said, and no file the
 // run made but the connection file itself.
-func TestThePostgreSQLKindServesAndExportsWithTheConnectionStringInNoOutput(t *testing.T) {
+func TestThePostgresKindServesAndExportsWithTheConnectionStringInNoOutput(t *testing.T) {
 	db := newPgTestDB(t)
 	db.migrate(t)
 	marker := db.runtime.password
