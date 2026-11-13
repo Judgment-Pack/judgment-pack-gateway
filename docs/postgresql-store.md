@@ -187,10 +187,13 @@ The kind's tests take a server from the environment:
   `gateway.scope` stored on the run-time role -- and the second run skips those three, by one
   message, and fails on any other skip (ADR-0031, "Consequences").
 
-Locally, a throwaway container from the same image, on loopback:
+Locally, one throwaway container from the same image, on loopback, kept for every run and removed
+with its volumes at the end. Its data directory is a tmpfs, so the image's data volume is never
+made on disk; `-v` on the removal removes any anonymous volume all the same:
 
 ```sh
 docker run --rm -d --name gateway-pg-test -p 127.0.0.1:55432:5432 \
+  --tmpfs /var/lib/postgresql/data \
   -e POSTGRES_USER=gateway_test_admin -e POSTGRES_PASSWORD=synthetic-password \
   -e POSTGRES_DB=gateway_test_admin \
   postgres@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
@@ -198,5 +201,5 @@ cd go
 GATEWAY_TEST_POSTGRES_DSN='postgresql://gateway_test_admin:synthetic-password@127.0.0.1:55432/gateway_test_admin?sslmode=disable' \
 GATEWAY_TEST_POSTGRES_REQUIRED=1 \
   go test -count=1 -run '^(TestStoreKindsConform|TestPostgres.*|TestAPostgres.*|TestThePostgres.*|TestEveryCorpusStoreExportsFromThePostgresKindByteForByte)$' .
-docker rm -f gateway-pg-test
+docker rm -f -v gateway-pg-test
 ```
