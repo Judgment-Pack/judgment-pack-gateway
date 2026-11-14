@@ -149,7 +149,8 @@
         "Only a push to main is evidence: ci.yml has no dispatch, so the fresh route is a re-run of all jobs of main's run.",
         "Every job and every matrix leg is required; none is skipped on main. The go legs include native adapter sandbox boundary tests and run the workflow's own steps,",
         "not dev.json's, so their checks are none: the job's success is the API's, and the evidence adds the leg's",
-        "platform and toolchain. The check job runs every dev.json check and setup step."
+        "platform and toolchain. The check job runs every dev.json check and setup step.",
+        "Before its checks the check job turns kernel.apparmor_restrict_unprivileged_userns off on its runner, so that image-sandbox-start can require bubblewrap enforced."
       ],
       "path": ".github/workflows/ci.yml",
       "name": "CI",

@@ -22,11 +22,20 @@
 #   the host's mandatory access control profile relaxed as well where
 #   `docker info` lists one (apparmor=unconfined for AppArmor,
 #   label=disable for SELinux), since such a profile may refuse the
-#   mounts bubblewrap makes in its namespace, posture says workspace-write bubblewrap enforced and the start with the
-#   member on says the same. Anything else -- Landlock, partial, none -- is
-#   a fallback and fails this step. What seccomp=unconfined alone gives is
-#   printed beside it where a profile was relaxed.
+#   mounts bubblewrap makes in its namespace, posture says workspace-write
+#   bubblewrap enforced and the start with the member on says the same.
+#   Anything else -- Landlock, partial, none -- is a fallback and fails
+#   this step. What seccomp=unconfined alone gives is printed beside it
+#   where a profile was relaxed. A host whose kernel restricts unprivileged
+#   user namespaces under AppArmor (kernel.apparmor_restrict_unprivileged_userns
+#   = 1, a default on some current distributions) falls back to Landlock
+#   even with the container's seccomp and AppArmor profiles relaxed; CI turns that setting off before its checks
+#   (.github/workflows/ci.yml). Where it reads 1 and CI is unset, on a
+#   developer's host, this one leg is skipped and says so, since turning
+#   the setting off takes root on the host; with CI set it is always run.
+#   USERNS_RESTRICTION names the file the setting is read from, for tests.
 set -e
+userns_restriction="${USERNS_RESTRICTION:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}"
 dir="$(mktemp -d)"
 containers=()
 cleanup() {
@@ -135,6 +144,12 @@ else
   printf '%s\n' "${log}" | grep -qx "start: measureSandboxAtStart: measured records/live ${posture}" || { echo "posture says ${posture}, and the start says otherwise: ${log}"; exit 1; }
 fi
 
+restricted=""
+[ ! -r "${userns_restriction}" ] || [ "$(cat "${userns_restriction}")" != 1 ] || restricted=1
+if [ -n "${restricted}" ] && [ -z "${CI:-}" ]; then
+  echo "image-sandbox-start: SKIP the leg that requires bubblewrap enforced: ${userns_restriction} reads 1, under which the launcher falls back to Landlock, and CI is unset (as root: sysctl -w kernel.apparmor_restrict_unprivileged_userns=0); with measureSandboxAtStart on the engine starts only where its posture says the source would launch (unconfined here: ${posture})"
+  exit 0
+fi
 relaxed=(seccomp=unconfined)
 security="$(docker info --format '{{json .SecurityOptions}}')"
 case "${security}" in *name=apparmor*) relaxed+=(apparmor=unconfined) ;; esac
@@ -144,9 +159,10 @@ enforcing="$(measured "${relaxed[@]}")"
 host() {
   echo "  docker security options: ${security}"
   local f
-  for f in /proc/sys/kernel/apparmor_restrict_unprivileged_userns /proc/sys/kernel/unprivileged_userns_clone /proc/sys/user/max_user_namespaces; do
+  for f in "${userns_restriction}" /proc/sys/kernel/unprivileged_userns_clone /proc/sys/user/max_user_namespaces; do
     [ ! -r "${f}" ] || echo "  ${f}: $(cat "${f}")"
   done
+  [ -z "${restricted}" ] || echo "  likely cause: ${userns_restriction} reads 1: under it the launcher falls back to Landlock even with the container's seccomp and AppArmor profiles relaxed; turn kernel.apparmor_restrict_unprivileged_userns off on the host (CI does, in ci.yml)"
 }
 if [ "${enforcing}" != "${want}" ]; then
   echo "under ${relaxed[*]} posture says ${enforcing:-nothing} for records/live, not ${want}: the launcher falls back on this host"
@@ -161,4 +177,4 @@ fi
 printf '%s\n' "${log}" | grep -qx "start: measureSandboxAtStart: measured records/live ${want}" || { echo "under ${relaxed[*]} posture says ${want}, and the start says otherwise: ${log}"; exit 1; }
 alone=""
 [ "${#relaxed[@]}" = 1 ] || alone="; seccomp=unconfined alone: $(measured seccomp=unconfined)"
-echo "with measureSandboxAtStart on the engine starts only where its posture says the source would launch (unconfined here: ${posture}); the launcher enforces under ${relaxed[*]}${alone}"
+echo "image-sandbox-start: with measureSandboxAtStart on the engine starts only where its posture says the source would launch (unconfined here: ${posture}); the launcher enforces under ${relaxed[*]}${alone}"

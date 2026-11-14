@@ -179,6 +179,21 @@ jobs:
         run: |
           set -o pipefail
           scripts/dev/check.sh --setup | tee "${RUNNER_TEMP}/setup.log"
+      # The runner's kernel restricts unprivileged user namespaces under AppArmor
+      # (kernel.apparmor_restrict_unprivileged_userns = 1), under which the engine image's
+      # bubblewrap falls back to Landlock even with the container's seccomp and AppArmor
+      # profiles relaxed. image-sandbox-start requires bubblewrap enforced, so the setting is
+      # turned off for this job's runner, which lives as long as the job. A kernel without the
+      # key has nothing to turn off.
+      - name: Let the engine image's launcher make its user namespace
+        run: |
+          set -eu
+          key=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "${key}" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          else
+            echo "${key} is absent: nothing to turn off"
+          fi
       # A pull request runs the checks jpdev.json maps its changed paths to, and the whole list
       # when a path is unmapped or the mapping, dev.json or the runner changed. A push to main runs
       # the whole list, and only that run is what a release is held to.

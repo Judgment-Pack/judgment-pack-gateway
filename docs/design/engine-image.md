@@ -112,15 +112,21 @@ configuration of version 13 or later launches every source, bubblewrap at `/usr/
 first of the fixed locations the helper looks in, and `/bin/true` for bubblewrap's start check.
 bubblewrap carries no set-user-id bit: it makes a user namespace as the source's user, which the
 container's runtime gives or refuses. Docker's default seccomp profile refuses it to a container
-without `CAP_SYS_ADMIN`, and on some Docker versions refuses Landlock's calls too; a mandatory
-access control profile the host applies to containers (AppArmor or SELinux) may refuse the mounts
-bubblewrap makes as well. The [quickstart](../engine-quickstart.md) shows what posture says then
-and what to change. Where no
+without `CAP_SYS_ADMIN`, and on some Docker versions refuses Landlock's calls too. A host whose
+kernel restricts unprivileged user namespaces under AppArmor
+(`kernel.apparmor_restrict_unprivileged_userns = 1`) passes bubblewrap over for Landlock even
+with the container's seccomp and AppArmor profiles relaxed: measured on CI's runner under `seccomp=unconfined` and
+`apparmor=unconfined`, posture reads `workspace-write landlock partial`, and `bubblewrap
+enforced` there needs the setting turned off on the host (or, possibly, a host AppArmor profile
+that lets the container's processes make user namespaces; not tested). Whether the container's
+own AppArmor or SELinux profile also refuses bubblewrap once the setting is off is not measured.
+The [quickstart](../engine-quickstart.md) shows what posture says then and what to change. Where no
 backend can be had the engine starts and serves, `gateway posture --config` reports each such
 source `not-enforced`, and each of its restricted launches refuses with `sandbox-not-enforced`;
 with `measureSandboxAtStart` (engine version 23) the engine does not start instead. CI runs the
 image as built under a seccomp setting that leaves it no backend and holds the start to that,
-and under `seccomp=unconfined`, with the host's mandatory access control profile relaxed where
+and, with the kernel setting above turned off on its runner (`.github/workflows/ci.yml`), under
+`seccomp=unconfined` with the container's mandatory access control profile relaxed where
 `docker info` lists one, where it requires posture to say `workspace-write bubblewrap enforced`
 and the start with the member on to say the same: a fallback to Landlock or to none fails the
 step (`scripts/checks/image-sandbox-start.sh`). What each backend needs of the kernel is in
