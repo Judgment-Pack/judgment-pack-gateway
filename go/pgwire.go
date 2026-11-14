@@ -265,6 +265,9 @@ type pgConn struct {
 	status byte // the last ReadyForQuery's transaction status
 	broken bool
 	params map[string]string
+	// version is server_version_num as the server answers it to a query
+	// on this connection (pgConn.serverVersion); 0 until it is read
+	version int
 }
 
 // pgDial opens the TCP connection; a test replaces it.

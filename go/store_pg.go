@@ -284,17 +284,47 @@ const (
 		pg_catalog.set_config('transaction_timeout', $2, true)`
 )
 
-// pgServerFrom is whether c's server is version at least.
-func pgServerFrom(c *pgConn, version int) bool {
-	n, known := pgServerVersion(c.params)
-	return known && n >= version
+// pgServerFrom is whether c's server is version at least, by the number
+// the server answers on c (pgConn.serverVersion).
+func pgServerFrom(c *pgConn, version int) (bool, error) {
+	n, err := c.serverVersion()
+	if err != nil {
+		return false, err
+	}
+	return n >= version, nil
+}
+
+// serverVersion is the server's server_version_num as it answers it to a
+// query on c, read once and kept on the connection. The checks that depend
+// on the version (MAINTAIN, transaction_timeout) use it, never the
+// parameters the server reports at the login, which the client takes as
+// they come, before the login exchange has ended (#440). The start holds
+// the two to agree (pgServerHolds).
+func (c *pgConn) serverVersion() (int, error) {
+	if c.version > 0 {
+		return c.version, nil
+	}
+	rows, err := c.exec(`SELECT pg_catalog.current_setting('server_version_num')`)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	if len(rows.rows) == 1 && len(rows.rows[0]) == 1 {
+		n, err = strconv.Atoi(string(rows.rows[0][0]))
+	}
+	if err != nil || n <= 0 {
+		return 0, errors.New("store: the server's version did not read")
+	}
+	c.version = n
+	return n, nil
 }
 
 // pgServerVersion is the server's version as server_version_num writes it
-// (170012 for 17.12), read from what the login's parameters report. A
-// server reports server_version, not server_version_num, at the login, so
-// the number is read from its leading major and minor: "17.12", "16.15
-// (Debian 16.15-1)", "18beta1" (#440: without it no server read as 17).
+// (170012 for 17.12), read from what the login's parameters report: the
+// version the start holds the queried number to (pgServerHolds). A server
+// reports server_version, not server_version_num, at the login, so the
+// number is read from its leading major and minor: "17.12", "16.15
+// (Debian 16.15-1)", "18beta1".
 func pgServerVersion(params map[string]string) (int, bool) {
 	if n, err := strconv.Atoi(params["server_version_num"]); err == nil {
 		return n, true
@@ -326,10 +356,14 @@ func pgServerVersion(params map[string]string) (int, bool) {
 // settings sets this view's settings for the transaction c has begun.
 func (k *pgKind) settings(c *pgConn) error {
 	query := pgSettings
-	if pgServerFrom(c, pgTransactionTimeoutVersion) {
+	from17, err := pgServerFrom(c, pgTransactionTimeoutVersion)
+	if err != nil {
+		return err
+	}
+	if from17 {
 		query = pgSettingsFrom17
 	}
-	_, err := c.exec(query, k.row, strconv.FormatInt(k.operation.Milliseconds(), 10), strconv.FormatInt(k.idle.Milliseconds(), 10))
+	_, err = c.exec(query, k.row, strconv.FormatInt(k.operation.Milliseconds(), 10), strconv.FormatInt(k.idle.Milliseconds(), 10))
 	return err
 }
 

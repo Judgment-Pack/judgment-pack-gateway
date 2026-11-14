@@ -15,7 +15,10 @@ the operator who runs one.
 - PostgreSQL 16 is the major version the kind is tested on: CI runs the tests against
   `postgres:16-alpine` (PostgreSQL 16.15) pinned by digest
   `sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea`. The kind does not
-  start on a server older than 16, or on a database whose encoding is not UTF-8.
+  start on a server older than 16, or on a database whose encoding is not UTF-8. The version is
+  the `server_version_num` the server answers to a query on each connection: the checks that
+  depend on PostgreSQL 17 (`MAINTAIN`, `transaction_timeout`) use it, and the start is refused,
+  naming both, when it disagrees with the `server_version` the server reported at the login.
 - Logins use SCRAM-SHA-256 (`password_encryption = scram-sha-256`, the default since
   PostgreSQL 14, and `scram-sha-256` in `pg_hba.conf` for the gateway's logins). The gateway
   refuses a server that asks for a password in the clear or by MD5, before it sends the password,
