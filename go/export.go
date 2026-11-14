@@ -118,6 +118,17 @@ func exportEngine(configPath, out string, observations []string) (*vObject, erro
 	if err != nil {
 		return nil, err
 	}
+	// the storage kind's connection file is held as serve and store
+	// migrate hold it: its way, links at its own name included, held as
+	// the seed's is, and the resolved path read from here on (#444)
+	if cfg.storage != nil && cfg.storage.file != "" {
+		euid := os.Geteuid()
+		resolved, err := trustedFile(cfg.storage.file, euid, linkOwners{other: euid}, osEngineHost())
+		if err != nil {
+			return nil, fmt.Errorf("storage.connection.file: %v", err)
+		}
+		cfg.storage.file = resolved
+	}
 	seed, err := loadSeed(cfg.seed)
 	if err != nil {
 		return nil, fmt.Errorf("seed: %v", err)
