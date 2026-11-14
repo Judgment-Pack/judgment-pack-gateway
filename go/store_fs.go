@@ -37,7 +37,12 @@ var (
 	_ secretSpace   = fsSecrets{}
 	_ leaseSpace    = documentLeases{}
 	_ storeKind     = (*fsKind)(nil)
+	_ oneLayout     = (*fsKind)(nil)
 )
+
+// keepsOneLayout: the filesystem kind keeps every scope's receipts in one
+// layout (storeFor).
+func (*fsKind) keepsOneLayout() {}
 
 // validStoreName reports whether a name is one a space may keep: a flat
 // token, the session rule of SPEC.md §3a, never "." or "..".

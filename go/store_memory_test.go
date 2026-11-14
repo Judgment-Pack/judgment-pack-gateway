@@ -19,6 +19,10 @@ import (
 
 var _ storeKind = (*memoryKind)(nil)
 
+// keepsOneLayout: the kind in memory keeps every scope's receipts in one
+// layout, as the filesystem kind does (storeFor).
+func (*memoryKind) keepsOneLayout() {}
+
 type memoryDocument struct {
 	data     []byte
 	revision int64

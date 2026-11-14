@@ -64,13 +64,13 @@ migration files the binary carries, SCRAM-SHA-256 and TLS. Choosing a driver ins
 the maintainer (below).
 
 1. **The client** (`go/pgwire.go`). A connection string is a `postgresql://` URL naming a host, a
-   user and a database, with `sslmode=verify-full` (the default) or, to a loopback host alone,
-   `disable`, and no parameter but `sslrootcert` and `connect_timeout`; any other parameter is
-   refused, never ignored. A loopback host is a literal loopback address or the name `localhost`,
+   user, a password and a database, with `sslmode=verify-full` (the default) or, to a loopback host
+   alone, `disable`, and no parameter but `sslrootcert` and `connect_timeout`; any other parameter
+   is refused, never ignored. A loopback host is a literal loopback address or the name `localhost`,
    and under `disable` either is held after the dial: a connection whose remote address is not a
    loopback address is closed before a byte is sent on it, since a resolver need not answer
-   `localhost` with one (#440). The login is SCRAM-SHA-256 alone: a server that asks for a password in
-   the clear or by MD5 is refused before the password leaves the gateway, and one that admits a
+   `localhost` with one (#440). The login is SCRAM-SHA-256 alone: a server that asks for a password
+   in the clear or by MD5 is refused before the password leaves the gateway, and one that admits a
    login the connection string gives a password for without the exchange, or whose final
    signature is not the one the password's verifier makes, is refused. Every value is bound as a
    parameter in the binary format; the simple query form runs only the schema files the binary
@@ -152,8 +152,9 @@ the maintainer (below).
      reaches no other role.
    Append-only by privilege: the run-time login holds SELECT and INSERT on blobs, series, entries,
    the log and its records, and secrets; SELECT, INSERT, UPDATE and DELETE on documents alone;
-   SELECT on the migrations' record. It holds no TRUNCATE, REFERENCES or TRIGGER, no CREATE on any
-   schema, and no TEMPORARY on the database. No function is defined, SECURITY DEFINER or not.
+   SELECT on the migrations' record. It holds no TRUNCATE, REFERENCES or TRIGGER (nor, from
+   PostgreSQL 17, MAINTAIN: #440), no CREATE on any schema, and no TEMPORARY on the database. No
+   function is defined, SECURITY DEFINER or not.
    *Amended 2026-11-13 (#430, ADR-0032): and SELECT, INSERT and UPDATE on the start lease's one
    row (`gateway.start_lease`, schema version 2), which it expires and never removes.*
 

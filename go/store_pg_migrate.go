@@ -421,8 +421,23 @@ var pgTables = []string{"blobs", "documents", "entries", "log_records", "logs", 
 // each of no scope (schema version 3), held by the same policy.
 var pgScopedTables = []string{"blobs", "documents", "entries", "scope_identifiers", "series"}
 
-// pgTablePrivileges are the privileges a table has (pgPrivilegesHold).
+// pgTablePrivileges are the privileges a table has (pgPrivilegesHold); from
+// PostgreSQL 17 a table has MAINTAIN besides (pgTablePrivilegesOn).
 var pgTablePrivileges = []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"}
+
+// pgMaintainVersion is the server version from which a table has the
+// privilege MAINTAIN (VACUUM, ANALYZE, REINDEX, REFRESH MATERIALIZED VIEW,
+// CLUSTER and LOCK TABLE on it).
+const pgMaintainVersion = 170000
+
+// pgTablePrivilegesOn are the privileges a table has on the server c is
+// connected to: a server that does not know MAINTAIN refuses its name.
+func pgTablePrivilegesOn(c *pgConn) []string {
+	if pgServerFrom(c, pgMaintainVersion) {
+		return append(append([]string{}, pgTablePrivileges...), "MAINTAIN")
+	}
+	return pgTablePrivileges
+}
 
 // holdsItsConditions is the kind's start: the server, the login it runs as,
 // the schema's migrations and its row security are held to what the kind
@@ -526,10 +541,13 @@ func (k *pgKind) boundsHold(tx pgTx) error {
 // privilege (UPDATE of one column, say) is a privilege the store does not
 // give as much as the table's is.
 func pgPrivilegesHold(tx pgTx) error {
+	privileges := pgTablePrivilegesOn(tx.c)
+	// the list is the constants above, never a value from outside
+	values := "('" + strings.Join(privileges, "'), ('") + "')"
 	held, err := tx.exec(`SELECT c.relname, p.privilege, pg_catalog.has_table_privilege(c.oid, p.privilege),
 		p.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES') AND pg_catalog.has_any_column_privilege(c.oid, p.privilege)
 		FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-		CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')) AS p (privilege)
+		CROSS JOIN (VALUES ` + values + `) AS p (privilege)
 		WHERE n.nspname = 'gateway' AND c.relkind = 'r'`)
 	if err != nil {
 		return err
@@ -550,7 +568,7 @@ func pgPrivilegesHold(tx pgTx) error {
 		seen[table]++
 	}
 	for _, table := range pgTables {
-		if seen[table] != len(pgTablePrivileges) {
+		if seen[table] != len(privileges) {
 			return fmt.Errorf("store: the table gateway.%s is not there", table)
 		}
 	}

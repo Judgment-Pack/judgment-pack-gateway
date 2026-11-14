@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,6 +127,54 @@ func TestThePostgresStartLeaseOfACrashedInstanceExpires(t *testing.T) {
 	}
 	if err := expired.renew(); !errors.Is(err, errStartLeaseLost) {
 		t.Fatalf("a renewal after the lease expired: %v", err)
+	}
+}
+
+// A source fixed to a scope identifier writes through the kind's view of
+// its scope, which holds the start lease's fence as the kind does: once
+// another instance took the lease, the scoped acquisition is refused and
+// writes nothing, no payload and no receipt, in its scope's rows (#447).
+func TestThePostgresScopedAcquisitionIsFencedByTheStartLease(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	first, second := db.open(t, nil), db.open(t, nil)
+	lease, err := first.takeStartLease(newTestLeaseHolder(t), pgStartLeasePeriod, pgStartLeaseRenewal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envSourceHelper, "1")
+	scoped := sourceSpec{argv: []string{os.Args[0]}, env: helperEnv, scope: "scope-a"}
+	service, err := newGatewayServiceOn(first, testSeed, "gateway:test", map[string]sourceSpec{"screening-a": scoped})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(service.handler())
+	t.Cleanup(server.Close)
+	if code, body := post(t, server, "/acquire", `{"session":"held-1","source":"screening-a","scope":"scope-a","arguments":{"q":"acme"}}`); code != http.StatusOK {
+		t.Fatalf("a scoped acquisition under the lease: %d %v", code, body)
+	}
+	if err := lease.release(); err != nil {
+		t.Fatal(err)
+	}
+	pgTakeForTest(t, second, pgStartLeasePeriod, pgStartLeaseRenewal)
+	a, err := second.inScope("scope-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobsBefore, err := a.artifacts().listBlobs()
+	if err != nil || len(blobsBefore) == 0 {
+		t.Fatalf("the scope's payloads under the lease: %v %v", blobsBefore, err)
+	}
+	if code, body := post(t, server, "/acquire", `{"session":"fenced-1","source":"screening-a","scope":"scope-a","arguments":{"q":"other"}}`); code == http.StatusOK {
+		t.Fatalf("a scoped acquisition of the instance that lost the lease was taken: %v", body)
+	}
+	series, err := a.receipts().listSeries()
+	if err != nil || contains(series, "fenced-1") || !contains(series, "held-1") {
+		t.Fatalf("the scope's sessions once the lease was taken: %v %v", series, err)
+	}
+	blobsAfter, err := a.artifacts().listBlobs()
+	if err != nil || len(blobsAfter) != len(blobsBefore) {
+		t.Fatalf("the fenced acquisition left payloads: %v, before %v (%v)", blobsAfter, blobsBefore, err)
 	}
 }
 

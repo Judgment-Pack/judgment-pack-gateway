@@ -286,8 +286,41 @@ const (
 
 // pgServerFrom is whether c's server is version at least.
 func pgServerFrom(c *pgConn, version int) bool {
-	n, err := strconv.Atoi(c.params["server_version_num"])
-	return err == nil && n >= version
+	n, known := pgServerVersion(c.params)
+	return known && n >= version
+}
+
+// pgServerVersion is the server's version as server_version_num writes it
+// (170012 for 17.12), read from what the login's parameters report. A
+// server reports server_version, not server_version_num, at the login, so
+// the number is read from its leading major and minor: "17.12", "16.15
+// (Debian 16.15-1)", "18beta1" (#440: without it no server read as 17).
+func pgServerVersion(params map[string]string) (int, bool) {
+	if n, err := strconv.Atoi(params["server_version_num"]); err == nil {
+		return n, true
+	}
+	text := params["server_version"]
+	var parts [2]int
+	part, digits := 0, 0
+	for i := 0; i < len(text) && part < len(parts); i++ {
+		switch b := text[i]; {
+		case b >= '0' && b <= '9' && digits < 4:
+			parts[part] = parts[part]*10 + int(b-'0')
+			digits++
+		case b == '.' && digits > 0:
+			part, digits = part+1, 0
+		default:
+			if part == 0 && digits == 0 {
+				return 0, false
+			}
+			part = len(parts)
+		}
+	}
+	if parts[0] < 10 {
+		// before PostgreSQL 10 the number is major, minor and patch
+		return 0, false
+	}
+	return parts[0]*10000 + parts[1], true
 }
 
 // settings sets this view's settings for the transaction c has begun.

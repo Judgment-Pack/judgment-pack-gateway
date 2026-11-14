@@ -12,8 +12,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -675,5 +678,125 @@ func TestAPostgresStoreAtSchemaTwoMigratesWithItsRowsOfNoScope(t *testing.T) {
 	}
 	if second := db.fingerprint(t); second != first {
 		t.Fatalf("the second run changed the database:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+// pgCountingConn counts the statements a connection sends after its login:
+// one Parse message each, as pgConn.exec sends one per statement.
+type pgCountingConn struct {
+	net.Conn
+	statements *atomic.Int64
+	pending    []byte
+}
+
+func (c *pgCountingConn) Write(p []byte) (int, error) {
+	c.pending = append(c.pending, p...)
+	for len(c.pending) >= 5 {
+		n := 1 + int(binary.BigEndian.Uint32(c.pending[1:]))
+		if len(c.pending) < n {
+			break
+		}
+		if c.pending[0] == 'P' {
+			c.statements.Add(1)
+		}
+		c.pending = c.pending[n:]
+	}
+	return c.Conn.Write(p)
+}
+
+// An admission into a session the process does not hold, of the source's
+// own scope, costs the same statements with 200 scope identifiers recorded
+// as with one: the source's scope is asked first, and the others only for a
+// name it does not hold. The refusals are as they were: a session in the
+// store of another scope identifier, or of none, is refused without naming
+// either, and one of its own scope left with receipts is refused as left
+// open, at 200 identifiers as at one.
+func TestAPostgresAdmissionIntoItsOwnScopesSessionDoesNotGrowWithTheScopesRecorded(t *testing.T) {
+	_, db := pgTestKind(t, "", nil)
+	single, err := openPgKind(pgOptions{dsn: db.runtime, connections: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer single.close()
+	t.Setenv(envSourceHelper, "1")
+	scopedA := sourceSpec{argv: []string{os.Args[0]}, env: helperEnv, scope: "scope-a"}
+	service, err := newGatewayServiceOn(single, testSeed, "gateway:test", map[string]sourceSpec{"screening-a": scopedA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the pool's one connection, open and idle: every statement of the
+	// service's is sent on it, and counted
+	if len(single.pool.idle) != 1 {
+		t.Fatalf("the pool holds %d idle connections: the test counts one", len(single.pool.idle))
+	}
+	var statements atomic.Int64
+	single.pool.idle[0].conn = &pgCountingConn{Conn: single.pool.idle[0].conn, statements: &statements}
+	a, err := single.inScope("scope-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitting := func(session string) (int64, error) {
+		t.Helper()
+		before := statements.Load()
+		err := service.admit(session, "scope-a")
+		if err == nil {
+			service.release(session)
+		}
+		return statements.Load() - before, err
+	}
+	measure := func(round string) (empty, left int64) {
+		t.Helper()
+		if _, err := a.receipts().makeSeries("own-empty-" + round); err != nil {
+			t.Fatal(err)
+		}
+		stampSession(t, newStoreOn("", a.artifacts(), a.receipts(), testSeed, "gateway:test"), "own-left-"+round, 1)
+		empty, err := admitting("own-empty-" + round)
+		if err != nil {
+			t.Fatalf("an empty session of the source's scope: %v", err)
+		}
+		left, err = admitting("own-left-" + round)
+		if err == nil || err.Error() != fmt.Sprintf(refusalLeftOpen, "own-left-"+round) {
+			t.Fatalf("a session of the source's scope left with receipts: %v", err)
+		}
+		return empty, left
+	}
+	emptyAtOne, leftAtOne := measure("1")
+
+	identifiers := []string{}
+	for i := range 199 {
+		identifiers = append(identifiers, fmt.Sprintf("scope-%03d", i))
+	}
+	views, err := single.scopeViews(identifiers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := views["scope-150"].receipts().makeSeries("of-another"); err != nil {
+		t.Fatal(err)
+	}
+	emptyAtMany, leftAtMany := measure("200")
+	if emptyAtMany != emptyAtOne || leftAtMany != leftAtOne {
+		t.Fatalf("an admission into the source's own session sends %d and %d statements with 200 scope identifiers recorded, and %d and %d with one", emptyAtMany, leftAtMany, emptyAtOne, leftAtOne)
+	}
+	if emptyAtOne == 0 {
+		t.Fatal("no statement was counted: the test counts nothing")
+	}
+
+	// the walk is still made where the name is not the source's scope's: a
+	// session in the store of another scope identifier, or of none, is
+	// refused, naming neither
+	if _, err := single.receipts().makeSeries("of-none"); err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range []string{"of-another", "of-none"} {
+		if _, err := admitting(session); err == nil || err.Error() != fmt.Sprintf(refusalOtherScope, session) {
+			t.Fatalf("the session %s, with 200 scope identifiers recorded: %v", session, err)
+		}
+	}
+	fresh, err := admitting("fresh-1")
+	if err != nil {
+		t.Fatalf("a new session: %v", err)
+	}
+	if fresh <= 2*199 {
+		t.Fatalf("a new session's admission sent %d statements: it asks every scope recorded, two statements each", fresh)
 	}
 }
