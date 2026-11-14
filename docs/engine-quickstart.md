@@ -118,8 +118,12 @@ had").
 
 ## A running engine
 
-The sandbox needs a syscall filter that lets the source's user make a user namespace. The
-broadest choice is no filter, `--security-opt seccomp=unconfined`. That also lifts the filter from
+In a container, bubblewrap's `enforced` boundary needs two things of the container: a syscall
+filter that lets the source's user make a user namespace, and, on a host whose kernel refuses a
+fresh `/proc` under Docker's masked paths (CI's runner is one), the container's system paths
+unconfined.
+
+The broadest filter is none, `--security-opt seccomp=unconfined`. That also lifts the filter from
 the signer: its boundary is its own user and its three capabilities, not seccomp, but the
 container then has no syscall filter at all. A narrower choice is a profile of your own: Docker's
 default with `clone`, `clone3` and `unshare` allowed to make a user namespace, and the `mount`,
@@ -127,8 +131,44 @@ default with `clone`, `clone3` and `unshare` allowed to make a user namespace, a
 not tested one, and what a profile allows is the operator's to review. `--init` gives the engine
 an init, which reaps an orphaned descendant of a source ([SECURITY.md](../SECURITY.md)).
 
+bubblewrap mounts a fresh `/proc` for the source. Docker masks some entries of a container's
+`/proc` and `/sys` and makes others read-only, and the kernel refuses a fresh `/proc` mount in
+such a container. `--security-opt systempaths=unconfined`, in Docker's words, turns off
+confinement for system paths (masked paths, read-only paths) for the container. That is what
+the operator gives up: in the engine's container, entries Docker otherwise hides (among them
+`/proc/kcore`, `/proc/keys`, `/proc/timer_list`, `/proc/acpi` and `/sys/firmware`) are no longer
+hidden, and entries it otherwise mounts read-only (among them `/proc/sys` and
+`/proc/sysrq-trigger`) are no longer read-only. Whether a process can then read or write one is
+left to the kernel's own permissions for that entry and the process's user and capabilities.
+The engine runs as its own non-root user and each source as its platform user; a container run as
+root, or given added capabilities, gets more from the unmasked paths. `docker inspect` lists a
+container's paths as `MaskedPaths` and `ReadonlyPaths`.
+
+Measured on CI's runner, whose Docker lists AppArmor: under `seccomp=unconfined` and
+`apparmor=unconfined` bubblewrap's start check said `Can't mount proc on /proc: Operation not
+permitted` and posture read `workspace-write landlock partial`; with `systempaths=unconfined`
+added, posture read `workspace-write bubblewrap enforced`, with
+`kernel.apparmor_restrict_unprivileged_userns` at the runner's default. All three options were
+needed there: without `apparmor=unconfined`, or without `systempaths=unconfined`, posture read
+`workspace-write landlock partial`. So on a host whose Docker lists AppArmor, add
+`--security-opt apparmor=unconfined` to the command above, which takes Docker's AppArmor
+profile off the engine's container. An SELinux label (`--security-opt label=disable` relaxes it)
+was not measured for this guide. On one host whose Docker lists seccomp alone,
+`seccomp=unconfined` was enough without `systempaths=unconfined`. Without the system paths
+unconfined, where the kernel refuses the mount, the engine starts with the Landlock posture,
+`partial`: file-content writes, truncation and directory changes are restricted; metadata
+changes such as `chmod`, and connections to local sockets, are not
+([below](#reading-the-sandboxs-state)). CI starts the image under `seccomp=unconfined` and
+`systempaths=unconfined`, with the container's profile relaxed where its runner lists one, and
+fails unless the start says bubblewrap enforced (`scripts/checks/image-sandbox-start.sh`).
+
+Kubernetes's counterpart is the container's `securityContext.procMount: Unmasked`, which
+Kubernetes's documentation says requires the pod's `spec.hostUsers: false`, a user namespace
+for the pod. This guide has not tested the image that way.
+
 ```sh
-docker run -d --name engine --init --security-opt seccomp=unconfined "${mounts[@]}" "$IMAGE"
+docker run -d --name engine --init --security-opt seccomp=unconfined \
+  --security-opt systempaths=unconfined "${mounts[@]}" "$IMAGE"
 docker logs engine
 ```
 
@@ -161,9 +201,9 @@ in the image").
   file-content writes, truncation and directory changes are restricted; metadata changes such as
   `chmod`, and connections to local sockets, are not. Under bubblewrap, a listening socket was
   seen that no mask hides. A source in this state launches, and `measureSandboxAtStart` lets the
-  engine start. A host whose security module restricts unprivileged user namespaces (Ubuntu's
-  AppArmor setting from 24.04, for one) may pass bubblewrap over for Landlock even under
-  `seccomp=unconfined`. That case is not shown here.
+  engine start. CI's runner, whose Docker lists AppArmor, reported this state under
+  `seccomp=unconfined` and `apparmor=unconfined` without `systempaths=unconfined`, where
+  bubblewrap could not mount its `/proc` ([A running engine](#a-running-engine), above).
 - **`not-enforced`**: no backend holds the selected mode. Every restricted launch of the source
   refuses, before anything is started, and with `measureSandboxAtStart` the engine does not
   start. The one exception is a policy that selects `danger-full-access`: the operator chose no

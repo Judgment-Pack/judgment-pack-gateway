@@ -27,7 +27,7 @@ which is what CI's capability check exists to catch.
 | `/usr/share/engine/runtime/` | the runtime's `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES`, and its `CONFORMANCE.md` — the conformance statement every evaluation payload points the reader at, stated in full and only there | from the same image |
 | `/usr/share/engine/catalog/` | the binding files ([catalog/](../../catalog/README.md)) | by content; each is referenced by digest from the configuration |
 | `/usr/share/engine/corpus/` | the frozen corpus, so `gateway conform` runs inside the image | by content |
-| `/usr/bin/bwrap` | bubblewrap 0.13.1, the source sandbox's launcher: one static executable linked with musl and libcap, no program interpreter; root's, mode 0755, no set-user-id bit, no capability | built in the `Dockerfile` from the release tarball, fetched by its SHA-256, on the pinned Alpine base; the build refuses library versions other than the ones its notices name ([ADR-0030](../adr/0030-the-engine-image-carries-the-sandbox-launcher.md)) |
+| `/usr/bin/bwrap` | bubblewrap 0.13.1, the source sandbox's launcher: one static executable linked with musl and libcap, no program interpreter; root's, mode 0755, no set-user-id bit, no capability | built in the `Dockerfile` from the release tarball, fetched by its SHA-256, on the pinned Alpine base; the compiler and the two libraries come from that Alpine release's signed repository at build time, not pinned by content, and the build refuses library versions other than the ones its notices name ([ADR-0030](../adr/0030-the-engine-image-carries-the-sandbox-launcher.md)) |
 | `/bin/true` | a static one-line program, which bubblewrap's start check runs | the same stage |
 | `/usr/share/engine/bubblewrap/` | bubblewrap's `COPYING` and the exact source tarball it was built from, musl's `COPYRIGHT`, libcap's `License`, and a README naming what is linked | the tarball by content; the two library texts from `build/notices/` |
 | `/usr/share/engine/LICENSE`, `/usr/share/engine/THIRD_PARTY_NOTICES` | the gateway's licence and the notices of the modules its programs link | the checkout's, byte for byte |
@@ -89,7 +89,13 @@ check's own tests hold each invariant with a negative case of its own, one thing
 so that no other refusal can mask the one under test. The image is unpacked and run on a
 case-sensitive filesystem: a case-folding one, under which two spellings name one directory, is
 not supported, and the check does not model it. It then starts the image as built, with no
-override, and holds the two launch overrides below to what is stated here.
+override, and holds the two launch overrides below to what is stated here. That run is of the
+image CI builds for its own host. The image the release script builds for both architectures is
+held by the same check, each architecture's filesystem apart (`build/engine-image.sh check`, run
+by CI and by the release before its push): each platform's image is pulled from the loopback
+registry by its manifest's digest and created as a container, which unpacks it and runs nothing,
+and its export, its saved layers and the pinned runtime for that platform are judged as above.
+No `arm64` code is executed; the write probes and the start are of the host's image alone.
 
 **Launch overrides.** With every capability dropped (`--cap-drop ALL`) the kernel refuses to
 execute the gateway at all — the binary's attribute has the effective bit set, which demands its
@@ -106,20 +112,33 @@ configuration of version 13 or later launches every source, bubblewrap at `/usr/
 first of the fixed locations the helper looks in, and `/bin/true` for bubblewrap's start check.
 bubblewrap carries no set-user-id bit: it makes a user namespace as the source's user, which the
 container's runtime gives or refuses. Docker's default seccomp profile refuses it to a container
-without `CAP_SYS_ADMIN`, and on some Docker versions refuses Landlock's calls too; the
-[quickstart](../engine-quickstart.md) shows what posture says then and what to change. Where no
+without `CAP_SYS_ADMIN`, and on some Docker versions refuses Landlock's calls too. bubblewrap
+also mounts a fresh `/proc` for the source, which the kernel can refuse in a container whose
+`/proc` has paths Docker masks or makes read-only; `systempaths=unconfined` turns that
+confinement off for the container, and the quickstart says what the operator gives up by it. On
+CI's runner, whose Docker lists AppArmor, under `seccomp=unconfined` and `apparmor=unconfined`
+bubblewrap's start check could not mount `/proc` and posture read `workspace-write landlock
+partial`; with `systempaths=unconfined` added it read `workspace-write bubblewrap enforced`. On a
+host whose Docker lists seccomp alone, `seccomp=unconfined` was enough.
+The [quickstart](../engine-quickstart.md) shows what posture says then and what to change. Where no
 backend can be had the engine starts and serves, `gateway posture --config` reports each such
 source `not-enforced`, and each of its restricted launches refuses with `sandbox-not-enforced`;
 with `measureSandboxAtStart` (engine version 23) the engine does not start instead. CI runs the
-image as built under a seccomp setting that leaves it no backend and holds the start to that
-(`scripts/checks/image-sandbox-start.sh`). What each backend needs of the kernel is in
+image as built under a seccomp setting that leaves it no backend and holds the start to that,
+and under `seccomp=unconfined` and `systempaths=unconfined` with the container's mandatory
+access control profile relaxed where `docker info` lists one, where it requires posture to say `workspace-write bubblewrap enforced`
+and the start with the member on to say the same: a fallback to Landlock or to none fails the
+step (`scripts/checks/image-sandbox-start.sh`). What each backend needs of the kernel is in
 [engine-config.md](engine-config.md#source-sandbox-policy-engine-version-13), "When the sandbox
 cannot be had".
 
 **What is pinned is the inputs, not the bytes.** Two clean builds of the same commit are the
 same in content and differ in digest: built files, the account files and the homes carry the
 build's timestamps, and the image metadata is not normalised. A release publishes the digest of
-one build; the pins are what make a rebuild comparable in content, not identical in bytes. Making
+one build; the pins are what make a rebuild comparable in content, not identical in bytes. The
+launcher is the exception: its compiler and libraries are the Alpine repository's at build time,
+held to their upstream versions and not by content, so a later rebuild may link a newer package
+revision of the same version and carry a `bwrap` and a `/bin/true` of other bytes. Making
 the image reproducible byte for byte — a fixed `SOURCE_DATE_EPOCH` and an exporter that rewrites
 timestamps — is a limit accepted here, not a defect: the default builder does not rewrite
 timestamps, and the claim this image makes rests on its contents.
@@ -264,8 +283,9 @@ The release workflow publishes the image with the binaries ([releasing.md](../re
 [ADR-0030](../adr/0030-the-engine-image-carries-the-sandbox-launcher.md)): built from the tagged
 commit for `linux/amd64` and `linux/arm64`, its image index's bytes a release asset whose SHA-256,
 the image digest, is in the same `checksums.txt` that names the binaries and under the same
-attestation, and pushed to `ghcr.io/judgment-pack/judgment-pack-gateway` under the version, by
-that digest, only past the `production` gate. The index's annotations name the source
+attestation, each platform's filesystem held to this note before the archive leaves the
+package job, and pushed to `ghcr.io/judgment-pack/judgment-pack-gateway` under the version, by
+that digest, only past the `production` gate and once the draft is held to the run's files. The index's annotations name the source
 repository, the commit (`org.opencontainers.image.revision`) and the version, so that an
 operator pins the image by digest and can name the tagged state it was built from, as
 [CONTRIBUTING.md](../../CONTRIBUTING.md#tags) already says of the binary; that commit's

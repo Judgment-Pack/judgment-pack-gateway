@@ -51,7 +51,7 @@
     "packaging, packaged checksums, archive contents",
     "native archive runs: linux amd64 and arm64, macOS arm64, Windows amd64",
     "tag still names the commit, no release under the tag",
-    "engine image built for linux amd64 and arm64, its index a release asset",
+    "engine image built for linux amd64 and arm64, its index a release asset, each platform's filesystem held by image_checks.py",
     "attestation, of the archives and of the engine image",
     "draft identity",
     "production approval",

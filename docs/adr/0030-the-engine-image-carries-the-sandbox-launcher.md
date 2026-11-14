@@ -61,20 +61,28 @@ commit for `linux/amd64` and `linux/arm64`, the same script CI runs
 the image digest: a line of `checksums.txt`, attested with the archives, plus a second
 attestation naming `ghcr.io/judgment-pack/judgment-pack-gateway` so that
 `gh attestation verify oci://…` finds it. The notes gain an "Engine image" section, written by
-the workflow, that gives the tag and the digest. Past the gate, the publish job compares the
-archive's index with the asset byte for byte and pushes every manifest by its digest under the
-version as its tag, `0.28.0` for `v0.28.0`, the convention of the runtime pin the `Dockerfile`
-names. It then reads the tag back and refuses a tag that names another digest before it
-publishes the release. No `latest` is pushed, since a deployment pins by digest.
+the workflow, that gives the tag and the digest. Before the archive leaves the package job,
+each platform's image in it is pushed to a registry on the runner's loopback, pulled by its
+manifest's digest, created and exported without being run, and its filesystem held by
+`.github/image_checks.py` (`build/engine-image.sh check`, which CI runs on the same build). Past
+the gate, the publish job holds the draft to the run's files first, so that a draft found
+changed refuses with nothing pushed. It then compares the archive's index with the asset byte
+for byte and pushes every manifest by its digest under the version as its tag, `0.28.0` for
+`v0.28.0`, the convention of the runtime pin the `Dockerfile` names. It reads the tag back and
+refuses a tag that names another digest, holds the draft again, and publishes the release. No
+`latest` is pushed, since a deployment pins by digest.
 
 Option 1 puts a public, movable name in the registry before approval. Option 3 leaves the
 approved draft unable to name the digest it will publish.
 
 **The launcher: option 2.** A launcher stage on the pinned Alpine base fetches the bubblewrap
 0.13.1 release tarball by its SHA-256. It links bubblewrap statically with musl and libcap, and
-links a static one-line `/bin/true` for bubblewrap's start check. The build is refused if
-either program names a program interpreter, or if the Alpine repository would link any version
-other than the one the notices name. `/usr/bin/bwrap` is the first of the helper's fixed
+links a static one-line `/bin/true` for bubblewrap's start check. The compiler, the build tools
+and the two libraries are not pinned by content: they are installed from the pinned Alpine
+release's signed repository at build time, at the package revision it then serves. The build is
+refused if either program names a program interpreter, or if the Alpine repository would link
+any upstream version other than the one the notices name; a new revision of that version is
+taken. `/usr/bin/bwrap` is the first of the helper's fixed
 locations. Both programs are root's, mode 0755, with no set-user-id bit and no capability, and
 `.github/image_checks.py` holds them so. They need user namespaces as the source's user, which
 the container runtime gives or refuses. Option 1 brings a loader and shared libraries for the
@@ -111,15 +119,25 @@ some of which serve what needs no source. An earlier version refuses the member 
   that.
 - Bad, because Docker's default seccomp profile refuses a new user namespace, and on some
   Docker versions Landlock's calls too. Enforcement there takes `seccomp=unconfined` or a
-  profile of the operator's own (the quickstart). Loosening the profile is the operator's
-  trade-off.
+  profile of the operator's own (the quickstart). bubblewrap mounts a fresh `/proc` for the
+  source, which the kernel can refuse in a container whose `/proc` has masked or read-only
+  paths. On CI's runner, whose Docker lists AppArmor, under `seccomp=unconfined` and
+  `apparmor=unconfined` that mount was refused and posture read `workspace-write landlock
+  partial`; with `systempaths=unconfined` added it read `workspace-write bubblewrap enforced`.
+  That setting lifts Docker's masks and read-only mounts over some `/proc` and `/sys` entries
+  for the whole container. Without it there the engine starts with Landlock's `partial`
+  boundary. Loosening any of these is the operator's trade-off. CI requires bubblewrap enforced
+  under `seccomp=unconfined` and `systempaths=unconfined`, with the container's profile relaxed
+  where its runner lists one (`scripts/checks/image-sandbox-start.sh`).
 - Bad, because the bubblewrap in the image moves only when the `Dockerfile` moves its pin.
   bubblewrap's releases are tracked by hand.
-- Bad, because a push that succeeds before a draft check fails leaves a tag for an unpublished
-  release. It names the digest the run built and attested, and a rerun pushes the same digest.
+- Bad, because a push that succeeds before the second draft check or the publish call fails
+  leaves a tag for an unpublished release: a draft changed in the moments of the push, or a
+  failed call. It names the digest the run built and attested, and a rerun pushes the same
+  digest. A draft found changed at the gate leaves nothing in the registry.
 - Bad, because the first push creates the package private. A maintainer makes it public once.
-- Bad, because the arm64 image is built (its compile stages under the builder's emulator) and
-  its index entry checked, but not run in CI.
+- Bad, because the arm64 image is built (its compile stages under the builder's emulator), its
+  index entry checked and its filesystem judged, but not run in CI.
 - Not done: the software bill of materials that the engine image's design note promised. The
   index's `org.opencontainers.image.revision` names the commit, whose `Dockerfile` names the
   runtime pin and every base by digest.

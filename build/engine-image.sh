@@ -21,6 +21,19 @@
 #       containers-auth.json file the copy reads its credential from; the
 #       credential is never an argument. TLS is verified for every registry
 #       but one on this host's loopback, which CI pushes to.
+#   build/engine-image.sh check <dir>
+#       holds the filesystem of every platform's image in <dir>/engine-image.tar
+#       to what the design states, by .github/image_checks.py, the check CI
+#       runs on the image it builds for its own host alone. The archive is
+#       pushed, as `push` pushes it, to a registry on this host's loopback
+#       that lives as long as the check; each platform's image is pulled from
+#       it by its manifest's digest and created as a container, which unpacks
+#       it and runs nothing, so no platform's code is executed here; and the
+#       container's filesystem is exported, its layers saved for the
+#       capability scan, and the runtime the Dockerfile pins taken for that
+#       platform, by its own digest, to compare. Run from the checkout the
+#       image was built from: the catalog, the corpus and the notices are
+#       compared with it.
 set -euo pipefail
 
 # Each pinned by the digest of its manifest index, as the Dockerfile's bases
@@ -29,6 +42,9 @@ set -euo pipefail
 # platform, so a host needs no binfmt_misc registration of its own.
 BUILDKIT=docker.io/moby/buildkit:v0.23.2@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e
 SKOPEO=quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4
+# The registry `check` pushes to on this host's loopback, the one CI's
+# push runs against (scripts/checks/image-platforms.sh).
+REGISTRY=docker.io/library/registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e
 # The platforms a release publishes, and the only ones: the Dockerfile's
 # bases and the runtime pin each carry both.
 PLATFORMS=linux/amd64,linux/arm64
@@ -104,10 +120,73 @@ push() {
   echo "pushed ${ref}@${digest}"
 }
 
+CHECK_WORK="" CHECK_REGISTRY="" CHECK_CONTAINERS=() CHECK_IMAGES=()
+check_cleanup() {
+  local c i
+  for c in "${CHECK_CONTAINERS[@]}"; do docker rm -f -v "${c}" >/dev/null 2>&1 || true; done
+  for i in "${CHECK_IMAGES[@]}"; do docker image rm "${i}" >/dev/null 2>&1 || true; done
+  [ -z "${CHECK_REGISTRY}" ] || docker rm -f -v "${CHECK_REGISTRY}" >/dev/null 2>&1 || true
+  [ -z "${CHECK_WORK}" ] || rm -rf "${CHECK_WORK}"
+}
+
+check() {
+  [ "$#" -eq 1 ] || refuse "usage: engine-image.sh check <dir>"
+  local out pin runtime port platform manifest ref c dir
+  out="$(cd "$1" && pwd)"
+  [ -f .github/image_checks.py ] && [ -f Dockerfile ] || refuse "check runs from the checkout the image was built from"
+  # The runtime pin as image-filesystem.sh reads it: one line, a version
+  # tag and a digest; the registry is asked for it by the digest alone.
+  pin="$(sed -n 's/^FROM \(ghcr\.io\/judgment-pack\/judgment-pack\):[0-9][0-9.]*[0-9]@\(sha256:[0-9a-f]\{64\}\) AS runtime$/\1@\2/p' Dockerfile)"
+  [ "$(printf '%s\n' "${pin}" | grep -c .)" = 1 ] || refuse "the Dockerfile's runtime pin is not one <version>@sha256:<digest> line"
+  trap check_cleanup EXIT
+  CHECK_WORK="$(mktemp -d)"
+  # The pin's index, held to the pin's digest, names the runtime of each
+  # platform by its own digest, before anything is pushed or pulled.
+  docker run --rm "${SKOPEO}" inspect --raw "docker://${pin}" > "${CHECK_WORK}/runtime-index.json"
+  local -A runtimes=()
+  for platform in ${PLATFORMS//,/ }; do
+    runtimes[${platform}]="${pin%@*}@$(python3 -I "${HERE}/engine_image.py" manifest "${CHECK_WORK}/runtime-index.json" "${platform}" "${pin#*@}")"
+  done
+  CHECK_REGISTRY="$(docker run -d -p 127.0.0.1::5000 "${REGISTRY}")"
+  port="$(docker port "${CHECK_REGISTRY}" 5000/tcp | head -n 1 | sed 's/.*://')"
+  local up=""
+  for _ in $(seq 1 30); do
+    if curl -fsS "http://127.0.0.1:${port}/v2/" >/dev/null 2>&1; then up=1; break; fi
+    sleep 1
+  done
+  [ -n "${up}" ] || refuse "the loopback registry did not answer on 127.0.0.1:${port} within 30 tries"
+  push "${out}" "127.0.0.1:${port}/engine:check"
+  for platform in ${PLATFORMS//,/ }; do
+    dir="${CHECK_WORK}/${platform//\//-}"
+    mkdir -p "${dir}/save"
+    manifest="$(python3 -I "${HERE}/engine_image.py" manifest "${out}/engine-image.index.json" "${platform}" "$(cat "${out}/engine-image.digest")")"
+    ref="127.0.0.1:${port}/engine@${manifest}"
+    CHECK_IMAGES+=("${ref}")
+    docker pull --quiet --platform "${platform}" "${ref}" >/dev/null
+    c="$(docker create --platform "${platform}" "${ref}")"
+    CHECK_CONTAINERS+=("${c}")
+    docker export "${c}" > "${dir}/export.tar"
+    docker image inspect "${ref}" > "${dir}/config.json"
+    docker save "${ref}" | tar -x -C "${dir}/save"
+    runtime="${runtimes[${platform}]}"
+    # The runtime by its digest is removed after only when this check pulled
+    # it: an image the host already held under that name stays.
+    docker image inspect --format '{{.Id}}' "${runtime}" >/dev/null 2>&1 || CHECK_IMAGES+=("${runtime}")
+    docker pull --quiet --platform "${platform}" "${runtime}" >/dev/null
+    c="$(docker create --platform "${platform}" "${runtime}")"
+    CHECK_CONTAINERS+=("${c}")
+    docker cp "${c}:/jpack" "${dir}/jpack"
+    python3 -I .github/image_checks.py "${dir}/export.tar" "${dir}/config.json" . "${dir}/save" "${dir}/jpack" > "${dir}/report" \
+      || refuse "the ${platform} image is not what the design states (the line above)"
+    echo "${platform}: $(cat "${dir}/report")"
+  done
+}
+
 command=${1:-}
 [ "$#" -gt 0 ] && shift
 case "${command}" in
   build) build "$@" ;;
   push) push "$@" ;;
-  *) refuse "usage: engine-image.sh build <dir> | push <dir> <repository>:<tag>" ;;
+  check) check "$@" ;;
+  *) refuse "usage: engine-image.sh build <dir> | push <dir> <repository>:<tag> | check <dir>" ;;
 esac

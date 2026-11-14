@@ -18,6 +18,22 @@
 # - Under seccomp=unconfined, whatever the host gives, the start with the
 #   member on agrees with gateway posture: it starts and states the
 #   measurement posture reports, or refuses where posture says not enforced.
+# - The launcher the image carries enforces: under seccomp=unconfined and
+#   systempaths=unconfined, with the host's mandatory access control profile
+#   relaxed as well where `docker info` lists one (apparmor=unconfined for
+#   AppArmor, label=disable for SELinux), posture says workspace-write
+#   bubblewrap enforced and the start with the member on says the same.
+#   bubblewrap mounts a new /proc for the source, which the kernel refuses
+#   in a container whose /proc has masked or read-only paths
+#   (systempaths=unconfined lifts them); such a profile may refuse the
+#   mounts too. Anything else -- Landlock, partial, none -- is a fallback
+#   and fails this step. On a pass the step prints the posture without each
+#   of those settings but seccomp=unconfined, and under seccomp=unconfined
+#   alone, so that each run records which the host needs. On a fallback it
+#   prints the host's user-namespace settings, what the image's bubblewrap
+#   itself says when it runs the start check under the same settings, and
+#   the posture under broader and narrower ones; those lines explain a
+#   failure and never pass one.
 set -e
 dir="$(mktemp -d)"
 containers=()
@@ -57,20 +73,38 @@ sudo chown 65532:65532 "${dir}/state"
 mounts=(-v "${dir}/state:/var/lib/engine" -v "${dir}/etc:/etc/engine:ro" -v "${dir}/catalog:/srv/catalog:ro" -v "${dir}/secrets:/run/secrets:ro")
 docker run --rm "${mounts[@]}" engine:ci keygen /var/lib/engine/gateway.seed >/dev/null
 
-# The source's entry in gateway posture under the seccomp setting given
-# (empty: Docker's default): its mode, backend and state.
+# --security-opt for each setting given; an empty one is Docker's default.
+security_opts() {
+  opts=()
+  local o
+  for o in "$@"; do [ -z "${o}" ] || opts+=(--security-opt "${o}"); done
+}
+# The source's entry in gateway posture under the security settings given
+# (none, or an empty one: Docker's default): its mode, backend and state.
 measured() {
-  local opts=()
-  [ -z "$1" ] || opts=(--security-opt "$1")
-  docker run --rm "${opts[@]}" "${mounts[@]}" engine:ci posture --config /etc/engine/measured.json |
+  local opts
+  security_opts "$@"
+  posture_under "${opts[@]}"
+}
+# The same entry under the relaxed settings but the one given.
+measured_without() {
+  local o rest=()
+  for o in "${relaxed[@]}"; do [ "${o}" = "$1" ] || rest+=("${o}"); done
+  measured "${rest[@]}"
+}
+# The same entry under the docker run options given as they are.
+posture_under() {
+  docker run --rm "$@" "${mounts[@]}" engine:ci posture --config /etc/engine/measured.json |
     awk '$1 == "records/live" && $2 == "adapter" { print $3, $4, $5; exit }'
 }
-# serve --config under the seccomp setting given, in a container of its
-# own: 0 once it serves, 1 once it has exited; its logs are in ${log}.
+# serve --config <file> under the security settings given after it, in a
+# container of its own: 0 once it serves, 1 once it has exited; its logs
+# are in ${log}.
 serve() {
-  local opts=() c
-  [ -z "$1" ] || opts=(--security-opt "$1")
-  c="$(docker run -d "${opts[@]}" "${mounts[@]}" engine:ci serve --config "/etc/engine/$2")"
+  local opts c config=$1
+  shift
+  security_opts "$@"
+  c="$(docker run -d "${opts[@]}" "${mounts[@]}" engine:ci serve --config "/etc/engine/${config}")"
   containers+=("${c}")
   for _ in $(seq 1 90); do
     log="$(docker logs "${c}" 2>&1)"
@@ -85,7 +119,7 @@ serve() {
     fi
     sleep 1
   done
-  echo "serve --config $2 neither served nor exited: ${log}"
+  echo "serve --config ${config} neither served nor exited: ${log}"
   exit 1
 }
 
@@ -101,21 +135,72 @@ done
   exit 1
 }
 
-if serve "${setting}" measured.json; then echo "the engine started with measureSandboxAtStart on and no sandbox to be had: ${log}"; exit 1; fi
+if serve measured.json "${setting}"; then echo "the engine started with measureSandboxAtStart on and no sandbox to be had: ${log}"; exit 1; fi
 [ "${exited}" = 1 ] || { echo "the refused start exited ${exited}: ${log}"; exit 1; }
 printf '%s\n' "${log}" | grep -q '^start: measureSandboxAtStart: source records/live: workspace-write is not enforced under none: .*; the engine does not start' || { echo "the start was refused for another reason: ${log}"; exit 1; }
 if sudo test -e "${dir}/state/store"; then echo "the refused start made the store"; exit 1; fi
 
-serve "${setting}" unmeasured.json || { echo "without the member the engine did not start: ${log}"; exit 1; }
+serve unmeasured.json "${setting}" || { echo "without the member the engine did not start: ${log}"; exit 1; }
 if printf '%s\n' "${log}" | grep -q measureSandboxAtStart; then echo "without the member the start measured the sandbox: ${log}"; exit 1; fi
 
 posture="$(measured seccomp=unconfined)"
 [ -n "${posture}" ] || { echo "gateway posture names no entry for records/live"; exit 1; }
 if [ "${posture##* }" = not-enforced ]; then
-  if serve seccomp=unconfined measured.json; then echo "posture says ${posture}, and the start with the member on served: ${log}"; exit 1; fi
+  if serve measured.json seccomp=unconfined; then echo "posture says ${posture}, and the start with the member on served: ${log}"; exit 1; fi
   printf '%s\n' "${log}" | grep -q '^start: measureSandboxAtStart: source records/live: ' || { echo "posture says ${posture}, and the start was refused for another reason: ${log}"; exit 1; }
 else
-  serve seccomp=unconfined measured.json || { echo "posture says ${posture}, and the start with the member on was refused: ${log}"; exit 1; }
+  serve measured.json seccomp=unconfined || { echo "posture says ${posture}, and the start with the member on was refused: ${log}"; exit 1; }
   printf '%s\n' "${log}" | grep -qx "start: measureSandboxAtStart: measured records/live ${posture}" || { echo "posture says ${posture}, and the start says otherwise: ${log}"; exit 1; }
 fi
-echo "with measureSandboxAtStart on the engine starts only where its posture says the source would launch (unconfined here: ${posture})"
+
+relaxed=(seccomp=unconfined systempaths=unconfined)
+security="$(docker info --format '{{json .SecurityOptions}}')"
+case "${security}" in *name=apparmor*) relaxed+=(apparmor=unconfined) ;; esac
+case "${security}" in *name=selinux*) relaxed+=(label=disable) ;; esac
+want="workspace-write bubblewrap enforced"
+enforcing="$(measured "${relaxed[@]}")"
+# What explains a fallback, printed after it and never in place of it: the
+# host, and what the image's bubblewrap itself says when it runs the start
+# check the launcher runs (adapters/internal/sandbox, bubblewrapFlags: a
+# new user and PID namespace, / read-only, a new /dev and /proc, the
+# environment cleared, /bin/true), as a platform user, under the same
+# settings -- in full, and without the /proc mount, the /dev mount, or
+# both, so that the one refused is named -- and then the posture under
+# --privileged, with SYS_ADMIN added, and without
+# systempaths=unconfined.
+host() {
+  local f opts out rc label
+  echo "  docker security options: ${security}"
+  echo "  docker server $(docker version --format '{{.Server.Version}}' 2>&1); kernel $(uname -r); cgroup driver and storage driver: $(docker info --format '{{.CgroupDriver}} {{.Driver}}' 2>&1)"
+  for f in /proc/sys/kernel/*userns* /proc/sys/user/max_user_namespaces; do
+    [ ! -r "${f}" ] || echo "  ${f}: $(cat "${f}")"
+  done
+  security_opts "${relaxed[@]}"
+  for label in "full start check" "without --proc" "without --dev" "without --proc and --dev"; do
+    local flags=(--die-with-parent --new-session --unshare-user --unshare-pid --ro-bind / /)
+    case "${label}" in *"--dev"*) ;; *) flags+=(--dev /dev) ;; esac
+    case "${label}" in *"--proc"*) ;; *) flags+=(--proc /proc) ;; esac
+    flags+=(--chdir / --clearenv -- /bin/true)
+    out="$(docker run --rm "${opts[@]}" --user 65601:65601 --entrypoint /usr/bin/bwrap engine:ci "${flags[@]}" 2>&1)" && rc=0 || rc=$?
+    echo "  bubblewrap, ${label}, as uid 65601 under ${relaxed[*]}: exit ${rc}"
+    [ -z "${out}" ] || printf '%s\n' "${out}" | head -n 20 | sed 's/^/    /'
+  done
+  echo "  posture under --privileged: $(posture_under --privileged 2>&1 || true)"
+  echo "  posture under ${relaxed[*]} and --cap-add SYS_ADMIN: $(posture_under "${opts[@]}" --cap-add SYS_ADMIN 2>&1 || true)"
+  echo "  posture without systempaths=unconfined: $(measured_without systempaths=unconfined 2>&1 || true)"
+}
+if [ "${enforcing}" != "${want}" ]; then
+  echo "under ${relaxed[*]} posture says ${enforcing:-nothing} for records/live, not ${want}: the launcher falls back on this host"
+  echo "  two known causes: the container's masked /proc paths, which systempaths=unconfined lifts here, so a bubblewrap line below saying it cannot mount proc names something else; and kernel.apparmor_restrict_unprivileged_userns, which CI leaves as the runner has it, so a value of 1 below with bubblewrap refused its user namespace or its mounts names that setting"
+  host
+  exit 1
+fi
+if serve measured.json "${relaxed[@]}"; then :; else
+  echo "under ${relaxed[*]} posture says ${want}, and the start with the member on was refused: ${log}"
+  host
+  exit 1
+fi
+printf '%s\n' "${log}" | grep -qx "start: measureSandboxAtStart: measured records/live ${want}" || { echo "under ${relaxed[*]} posture says ${want}, and the start says otherwise: ${log}"; exit 1; }
+narrower=""
+for o in "${relaxed[@]:1}"; do narrower+="; without ${o}: $(measured_without "${o}")"; done
+echo "image-sandbox-start: with measureSandboxAtStart on the engine starts only where its posture says the source would launch (unconfined here: ${posture}); the launcher enforces under ${relaxed[*]}${narrower}; seccomp=unconfined alone: ${posture}"
