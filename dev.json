@@ -50,7 +50,7 @@
     {"name": "activepieces-test", "run": "npm test", "toolchain": "node", "cwd": "plugins/activepieces/judgment-pack", "summary": "^# (tests|pass|fail)", "timeout": 900},
     {"name": "activepieces-smoke-checkers", "run": "SMOKE_REQUIRE_PIECE=1 python3 -m unittest discover -s plugins/smoke/testing -v", "toolchain": "python", "summary": "^(Ran |OK|FAILED)", "timeout": 600},
     {"name": "verify-ts-typecheck", "run": "npm run typecheck", "toolchain": "node", "cwd": "verify-ts", "timeout": 900},
-    {"name": "verify-ts-test", "run": "npm test", "toolchain": "node", "cwd": "verify-ts", "summary": "^# (tests|pass|fail)", "timeout": 900},
+    {"name": "verify-ts-test", "run": "../scripts/checks/verify-ts-test.sh", "toolchain": "node", "cwd": "verify-ts", "summary": "^# (tests|pass|fail)", "timeout": 900},
     {"name": "verify-ts-conform", "run": "go build -buildvcs=false -o gateway . && ./gateway conform --impl ../verify-ts/impl", "toolchain": "go", "cwd": "go", "summary": "vectors|disagreement", "timeout": 3000},
     {"name": "verify-ts-witness-chain", "run": "GATEWAY_VERIFY_TS_IMPL=\"$PWD/../verify-ts/impl\" go test -count=1 -run '^TestWitnessServedChainReadsCleanly$' -v .", "toolchain": "go", "cwd": "go", "summary": "^(ok|FAIL|---) ", "timeout": 3000},
     {"name": "image-checks-test", "run": "python3 .github/test_image_checks.py", "toolchain": "python", "summary": "^(Ran |OK|FAILED)", "timeout": 600},
