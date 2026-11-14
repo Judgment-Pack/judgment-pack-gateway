@@ -18,27 +18,23 @@
 # - Under seccomp=unconfined, whatever the host gives, the start with the
 #   member on agrees with gateway posture: it starts and states the
 #   measurement posture reports, or refuses where posture says not enforced.
-# - The launcher the image carries enforces: under seccomp=unconfined, with
-#   the host's mandatory access control profile relaxed as well where
-#   `docker info` lists one (apparmor=unconfined for AppArmor,
-#   label=disable for SELinux), since such a profile may refuse the
-#   mounts bubblewrap makes in its namespace, posture says workspace-write
+# - The launcher the image carries enforces: under seccomp=unconfined and
+#   systempaths=unconfined, with the host's mandatory access control profile
+#   relaxed as well where `docker info` lists one (apparmor=unconfined for
+#   AppArmor, label=disable for SELinux), posture says workspace-write
 #   bubblewrap enforced and the start with the member on says the same.
-#   Anything else -- Landlock, partial, none -- is a fallback and fails
-#   this step. What seccomp=unconfined alone gives is printed beside it
-#   where a profile was relaxed. On a fallback the step prints what the
-#   launcher itself says, run in a container with the same settings and the
-#   start check's own options, and the posture under three broader
-#   settings; those lines explain a failure and never pass one. A kernel
-#   that restricts unprivileged user namespaces under AppArmor
-#   (kernel.apparmor_restrict_unprivileged_userns = 1) is turned off by CI
-#   before its checks (.github/workflows/ci.yml), so it is not a cause
-#   there. Where it reads 1 and CI is unset, on a developer's host, this
-#   one leg is skipped and says so, since turning the setting off takes
-#   root on the host; with CI set it is always run. USERNS_RESTRICTION
-#   names the file the setting is read from, for tests.
+#   bubblewrap mounts a new /proc for the source, which the kernel refuses
+#   in a container whose /proc has masked or read-only paths
+#   (systempaths=unconfined lifts them); such a profile may refuse the
+#   mounts too. Anything else -- Landlock, partial, none -- is a fallback
+#   and fails this step. On a pass the step prints the posture without each
+#   of those settings but seccomp=unconfined, and under seccomp=unconfined
+#   alone, so that each run records which the host needs. On a fallback it
+#   prints the host's user-namespace settings, what the image's bubblewrap
+#   itself says when it runs the start check under the same settings, and
+#   the posture under broader and narrower ones; those lines explain a
+#   failure and never pass one.
 set -e
-userns_restriction="${USERNS_RESTRICTION:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}"
 dir="$(mktemp -d)"
 containers=()
 cleanup() {
@@ -89,6 +85,12 @@ measured() {
   local opts
   security_opts "$@"
   posture_under "${opts[@]}"
+}
+# The same entry under the relaxed settings but the one given.
+measured_without() {
+  local o rest=()
+  for o in "${relaxed[@]}"; do [ "${o}" = "$1" ] || rest+=("${o}"); done
+  measured "${rest[@]}"
 }
 # The same entry under the docker run options given as they are.
 posture_under() {
@@ -151,13 +153,7 @@ else
   printf '%s\n' "${log}" | grep -qx "start: measureSandboxAtStart: measured records/live ${posture}" || { echo "posture says ${posture}, and the start says otherwise: ${log}"; exit 1; }
 fi
 
-restricted=""
-[ ! -r "${userns_restriction}" ] || [ "$(cat "${userns_restriction}")" != 1 ] || restricted=1
-if [ -n "${restricted}" ] && [ -z "${CI:-}" ]; then
-  echo "image-sandbox-start: SKIP the leg that requires bubblewrap enforced: ${userns_restriction} reads 1, which restricts the user namespaces bubblewrap makes and which CI turns off, and CI is unset (as root: sysctl -w kernel.apparmor_restrict_unprivileged_userns=0); with measureSandboxAtStart on the engine starts only where its posture says the source would launch (unconfined here: ${posture})"
-  exit 0
-fi
-relaxed=(seccomp=unconfined)
+relaxed=(seccomp=unconfined systempaths=unconfined)
 security="$(docker info --format '{{json .SecurityOptions}}')"
 case "${security}" in *name=apparmor*) relaxed+=(apparmor=unconfined) ;; esac
 case "${security}" in *name=selinux*) relaxed+=(label=disable) ;; esac
@@ -170,12 +166,13 @@ enforcing="$(measured "${relaxed[@]}")"
 # environment cleared, /bin/true), as a platform user, under the same
 # settings -- in full, and without the /proc mount, the /dev mount, or
 # both, so that the one refused is named -- and then the posture under
-# three broader settings.
+# --privileged, with SYS_ADMIN added, and without
+# systempaths=unconfined.
 host() {
   local f opts out rc label
   echo "  docker security options: ${security}"
   echo "  docker server $(docker version --format '{{.Server.Version}}' 2>&1); kernel $(uname -r); cgroup driver and storage driver: $(docker info --format '{{.CgroupDriver}} {{.Driver}}' 2>&1)"
-  for f in "${userns_restriction}" /proc/sys/kernel/*userns* /proc/sys/user/max_user_namespaces; do
+  for f in /proc/sys/kernel/*userns* /proc/sys/user/max_user_namespaces; do
     [ ! -r "${f}" ] || echo "  ${f}: $(cat "${f}")"
   done
   security_opts "${relaxed[@]}"
@@ -190,10 +187,11 @@ host() {
   done
   echo "  posture under --privileged: $(posture_under --privileged 2>&1 || true)"
   echo "  posture under ${relaxed[*]} and --cap-add SYS_ADMIN: $(posture_under "${opts[@]}" --cap-add SYS_ADMIN 2>&1 || true)"
-  echo "  posture under ${relaxed[*]} and systempaths=unconfined: $(posture_under "${opts[@]}" --security-opt systempaths=unconfined 2>&1 || true)"
+  echo "  posture without systempaths=unconfined: $(measured_without systempaths=unconfined 2>&1 || true)"
 }
 if [ "${enforcing}" != "${want}" ]; then
   echo "under ${relaxed[*]} posture says ${enforcing:-nothing} for records/live, not ${want}: the launcher falls back on this host"
+  echo "  two known causes: the container's masked /proc paths, which systempaths=unconfined lifts here, so a bubblewrap line below saying it cannot mount proc names something else; and kernel.apparmor_restrict_unprivileged_userns, which CI leaves as the runner has it, so a value of 1 below with bubblewrap refused its user namespace or its mounts names that setting"
   host
   exit 1
 fi
@@ -203,6 +201,6 @@ if serve measured.json "${relaxed[@]}"; then :; else
   exit 1
 fi
 printf '%s\n' "${log}" | grep -qx "start: measureSandboxAtStart: measured records/live ${want}" || { echo "under ${relaxed[*]} posture says ${want}, and the start says otherwise: ${log}"; exit 1; }
-alone=""
-[ "${#relaxed[@]}" = 1 ] || alone="; seccomp=unconfined alone: $(measured seccomp=unconfined)"
-echo "image-sandbox-start: with measureSandboxAtStart on the engine starts only where its posture says the source would launch (unconfined here: ${posture}); the launcher enforces under ${relaxed[*]}${alone}"
+narrower=""
+for o in "${relaxed[@]:1}"; do narrower+="; without ${o}: $(measured_without "${o}")"; done
+echo "image-sandbox-start: with measureSandboxAtStart on the engine starts only where its posture says the source would launch (unconfined here: ${posture}); the launcher enforces under ${relaxed[*]}${narrower}; seccomp=unconfined alone: ${posture}"

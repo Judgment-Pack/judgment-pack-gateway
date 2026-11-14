@@ -119,12 +119,15 @@ some of which serve what needs no source. An earlier version refuses the member 
   that.
 - Bad, because Docker's default seccomp profile refuses a new user namespace, and on some
   Docker versions Landlock's calls too. Enforcement there takes `seccomp=unconfined` or a
-  profile of the operator's own (the quickstart). On CI's runner, whose Docker lists AppArmor,
-  that was not enough: under `seccomp=unconfined` and `apparmor=unconfined` posture read
-  `workspace-write landlock partial`, both with `kernel.apparmor_restrict_unprivileged_userns`
-  at 1 and with it turned off, and the cause is not yet established. There the engine starts
-  with Landlock's `partial` boundary. Loosening any of these is the operator's trade-off. CI
-  requires bubblewrap enforced under `seccomp=unconfined`, with the container's profile relaxed
+  profile of the operator's own (the quickstart). bubblewrap mounts a fresh `/proc` for the
+  source, which the kernel can refuse in a container whose `/proc` has masked or read-only
+  paths. On CI's runner, whose Docker lists AppArmor, under `seccomp=unconfined` and
+  `apparmor=unconfined` that mount was refused and posture read `workspace-write landlock
+  partial`; with `systempaths=unconfined` added it read `workspace-write bubblewrap enforced`.
+  That setting lifts Docker's masks and read-only mounts over some `/proc` and `/sys` entries
+  for the whole container. Without it there the engine starts with Landlock's `partial`
+  boundary. Loosening any of these is the operator's trade-off. CI requires bubblewrap enforced
+  under `seccomp=unconfined` and `systempaths=unconfined`, with the container's profile relaxed
   where its runner lists one (`scripts/checks/image-sandbox-start.sh`).
 - Bad, because the bubblewrap in the image moves only when the `Dockerfile` moves its pin.
   bubblewrap's releases are tracked by hand.

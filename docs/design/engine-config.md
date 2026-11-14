@@ -1367,10 +1367,12 @@ takes that backend away; a profile that permits what a backend needs is what enf
 in a container, and loosening the profile is the operator's trade-off. The engine image carries
 `adapter-sandbox`, bubblewrap at `/usr/bin/bwrap` and `/bin/true` for its check
 ([engine-image.md](engine-image.md), "The source sandbox"); under Docker's default seccomp
-profile neither backend can be had there, and on a host whose Docker lists AppArmor bubblewrap
-was measured to fall back to Landlock even with the container's seccomp and AppArmor profiles
-relaxed, for a cause not yet established, which the engine image's quickstart
-([engine-quickstart.md](../engine-quickstart.md)) shows and says what to change.
+profile neither backend can be had there. bubblewrap also mounts a fresh `/proc` for the
+source, which the kernel can refuse in a container whose `/proc` has masked or read-only paths:
+on a host whose Docker lists AppArmor, bubblewrap was measured to fall back to Landlock with the
+container's seccomp and AppArmor profiles relaxed, and to enforce once the container's system
+paths were unconfined as well (`systempaths=unconfined`). The engine image's quickstart
+([engine-quickstart.md](../engine-quickstart.md)) shows this and says what each setting gives up.
 
 With neither backend, the engine still starts, unless the configuration sets
 `measureSandboxAtStart` (version 23, below): the start holds the helper and each policy
