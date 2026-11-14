@@ -455,5 +455,8 @@ docker rm -f -v gateway-pg-test
 ```
 
 The CI job also runs `scripts/checks/storage-scenario.sh`: this commit's binary migrates the kind
-and exports, checks and verifies what a start on it wrote, and a store a configuration without
-storage wrote is exported by this binary and by main's, byte for byte alike.
+and exports, checks and verifies what a start on it wrote; the binary's export of the same calls on
+the filesystem kind is held to it, the same files, each artifact byte for byte and every other file
+byte for byte but for the values each run writes afresh (the times, the salted arguments
+commitment, the signatures, and the manifest's digests of the files that hold them); and a store a
+configuration without storage wrote is exported by this binary and by main's, byte for byte alike.
