@@ -77,9 +77,12 @@ approved draft unable to name the digest it will publish.
 
 **The launcher: option 2.** A launcher stage on the pinned Alpine base fetches the bubblewrap
 0.13.1 release tarball by its SHA-256. It links bubblewrap statically with musl and libcap, and
-links a static one-line `/bin/true` for bubblewrap's start check. The build is refused if
-either program names a program interpreter, or if the Alpine repository would link any version
-other than the one the notices name. `/usr/bin/bwrap` is the first of the helper's fixed
+links a static one-line `/bin/true` for bubblewrap's start check. The compiler, the build tools
+and the two libraries are not pinned by content: they are installed from the pinned Alpine
+release's signed repository at build time, at the package revision it then serves. The build is
+refused if either program names a program interpreter, or if the Alpine repository would link
+any upstream version other than the one the notices name; a new revision of that version is
+taken. `/usr/bin/bwrap` is the first of the helper's fixed
 locations. Both programs are root's, mode 0755, with no set-user-id bit and no capability, and
 `.github/image_checks.py` holds them so. They need user namespaces as the source's user, which
 the container runtime gives or refuses. Option 1 brings a loader and shared libraries for the

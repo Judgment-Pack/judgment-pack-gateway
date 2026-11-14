@@ -5,8 +5,12 @@
 # configuration, no credential. Those live on a volume the operator mounts.
 #
 # Every base is pinned by the digest of its manifest index, as the catalog
-# pins what it names, and every file fetched by its content. Both modules
-# build with CGO disabled, so the binaries are static and the base needs no
+# pins what it names, and the bubblewrap source and the Go modules are
+# fetched by their content. The launcher stage's compiler, build tools and
+# the two libraries it links are not: they are installed from the pinned
+# Alpine release's signed package repository as it stands when the image
+# is built, held only to the upstream versions the launcher's notices name
+# (below). Both modules build with CGO disabled, so the binaries are static and the base needs no
 # libc. The runtime is not built here: it is the released binary, taken
 # from the runtime's own distribution image at the pinned digest, so the
 # bytes are the ones that release attests.
@@ -67,10 +71,12 @@ RUN set -e; mkdir -p /out/etc; \
 # no library search path, nothing the launcher's own check
 # (adapters/internal/sandbox, trustedFile) would have to follow -- and
 # /bin/true, which bubblewrap's start check runs inside the sandbox. The
-# compiler and the two libraries are the pinned Alpine release's, as its
-# repository has them when the image is built: the step below refuses a
-# build that would link other upstream versions than the notices beside
-# the launcher name, so the notices cannot drift from what is linked. The
+# source is pinned by content; the compiler and the two libraries are not.
+# They are the pinned Alpine release's, as its signed repository has them
+# when the image is built, at whatever package revision it then serves:
+# the step below refuses a build that would link other upstream versions
+# than the notices beside the launcher name, so the notices cannot drift
+# from what is linked, but a new revision of the same version is taken. The
 # source travels with the binary, as its licence asks; the two libraries'
 # licences are in build/notices, copied from their upstream repositories at
 # those versions (musl's COPYRIGHT at v1.2.6, libcap's License at
