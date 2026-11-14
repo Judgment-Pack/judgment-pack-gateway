@@ -8,9 +8,9 @@
 # not hold, another origin than the statements came from, and the witness stopped
 # (go/witness_scenario_test.go). Run from go/.
 set -e
-# A second runtime pin, beside the Dockerfile's: the image carries 0.21.0, which predates
-# `audit verify --witness`, and moving that pin is a release of the image of its own. This one is
-# the released binary the scenario reads a witness's chain with, by digest.
+# A second runtime pin, beside the Dockerfile's and moved on its own: the released binary the
+# scenario reads a witness's chain with, by digest. It stays at the first release the scenario was
+# held to, which is older than the image's.
 WITNESS_READER_RUNTIME=ghcr.io/judgment-pack/judgment-pack:0.30.0@sha256:7e5576e7a515e16568480aa00e60a89deb97f7f3552b23aeda5355a0946da450
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
