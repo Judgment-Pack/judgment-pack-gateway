@@ -797,6 +797,39 @@ func TestTheStartAsksOfMAINTAINFromPostgreSQL17(t *testing.T) {
 	}
 }
 
+// A server reports server_version at the login, not server_version_num:
+// the version is read from it, so a server at 17 reads as 17 and is asked
+// of MAINTAIN and bounded by transaction_timeout (#440).
+func TestTheServersVersionIsReadFromWhatTheLoginReports(t *testing.T) {
+	for _, tc := range []struct {
+		params map[string]string
+		want   int
+		known  bool
+	}{
+		{map[string]string{"server_version": "17.12"}, 170012, true},
+		{map[string]string{"server_version": "16.15"}, 160015, true},
+		{map[string]string{"server_version": "16.15 (Debian 16.15-1.pgdg120+1)"}, 160015, true},
+		{map[string]string{"server_version": "18beta1"}, 180000, true},
+		{map[string]string{"server_version": "17"}, 170000, true},
+		{map[string]string{"server_version_num": "170006", "server_version": "16.1"}, 170006, true},
+		{map[string]string{"server_version": "9.6.24"}, 0, false},
+		{map[string]string{"server_version": "x17.1"}, 0, false},
+		{map[string]string{}, 0, false},
+	} {
+		n, known := pgServerVersion(tc.params)
+		if n != tc.want || known != tc.known {
+			t.Fatalf("the version of %v read as %d %v, want %d %v", tc.params, n, known, tc.want, tc.known)
+		}
+	}
+	at17 := &pgConn{params: map[string]string{"server_version": "17.12"}}
+	if !pgServerFrom(at17, pgTransactionTimeoutVersion) || !contains(pgTablePrivilegesOn(at17), "MAINTAIN") {
+		t.Fatal("a server reporting 17.12 does not read as PostgreSQL 17")
+	}
+	if at16 := (&pgConn{params: map[string]string{"server_version": "16.15"}}); pgServerFrom(at16, pgTransactionTimeoutVersion) {
+		t.Fatal("a server reporting 16.15 reads as PostgreSQL 17")
+	}
+}
+
 // One scenario on both kinds holds the same bytes: receipts stamped and
 // sessions sealed through the contract into a store of the filesystem kind
 // and into one of the PostgreSQL kind, of no scope and of one scope
