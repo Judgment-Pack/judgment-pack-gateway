@@ -239,8 +239,21 @@ function under(root: string, ...names: string[]): string {
 // not a link to one -- and each one's .json entries that are not
 // directories, each charged to the budget as it is met. A store root or
 // receipts directory not there holds no session; one there that cannot be
-// read as a directory is no verdict.
+// read as a directory is no verdict. The sessions, and each one's files,
+// are in the order of their names' bytes, as the reference reader lists
+// them (go/verify.go; corpus/README.md, "Findings order is not
+// normative"), never in the order a listing returns them, which no
+// filesystem fixes: everything read from the list then sees one order.
 function sessionFiles(root: string, budget: Budget): Map<string, string[]> {
+  return byName(listedSessionFiles(root, budget));
+}
+
+function byName(sessions: Map<string, string[]>): Map<string, string[]> {
+  const order = (a: string, b: string): number => Buffer.compare(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+  return new Map([...sessions].sort(([a], [b]) => order(a, b)).map(([session, files]) => [session, files.sort(order)]));
+}
+
+function listedSessionFiles(root: string, budget: Budget): Map<string, string[]> {
   const sessions = new Map<string, string[]>();
   const receipts = under(root, "receipts");
   // Names are read as the bytes they are: a name that is not UTF-8 is no
