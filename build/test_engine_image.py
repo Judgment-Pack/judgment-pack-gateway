@@ -368,7 +368,8 @@ class Manifest(unittest.TestCase):
 # image index for the loopback read-back, the runtime pin's index for the
 # other, a container name for create (engine-<arch> or runtime-<arch>), that
 # container's export, one image configuration and one saved image for every
-# platform, and the runtime binary by container.
+# platform, and the runtime binary by container. An image is held before
+# the check (image inspect --format) only when $STUB_DIR/held names it.
 CHECK_STUB = """#!/bin/sh
 for a in "$@"; do printf '%s\\n' "$a" >> "$STUB_LOG"; done
 printf '\\n' >> "$STUB_LOG"
@@ -383,7 +384,13 @@ case "$1" in
   port) echo 127.0.0.1:5000 ;;
   create) case "$4" in 127.0.0.1:*) echo "engine-${3#*/}" ;; *) echo "runtime-${3#*/}" ;; esac ;;
   export) cat "$STUB_DIR/export-$2.tar" ;;
-  image) [ "$2" != inspect ] || cat "$STUB_DIR/config.json" ;;
+  image)
+    if [ "$2" = inspect ] && [ "$3" = --format ]; then
+      grep -qxF "$last" "$STUB_DIR/held" 2>/dev/null || exit 1
+      echo sha256:held
+    elif [ "$2" = inspect ]; then
+      cat "$STUB_DIR/config.json"
+    fi ;;
   save) cat "$STUB_DIR/save.tar" ;;
   cp) cp "$STUB_DIR/jpack-${2%%:*}" "$3" ;;
 esac
@@ -415,7 +422,7 @@ class Check(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root)
         self.bin = os.path.join(self.root, "bin")
         os.mkdir(self.bin)
-        for name, body in (("docker", CHECK_STUB), ("curl", "#!/bin/sh\nexit 0\n")):
+        for name, body in (("docker", CHECK_STUB), ("curl", "#!/bin/sh\n[ ! -e \"$STUB_DIR/down\" ]\n"), ("sleep", "#!/bin/sh\nexit 0\n")):
             with open(os.path.join(self.bin, name), "w") as f:
                 f.write(body)
             os.chmod(os.path.join(self.bin, name), stat.S_IRWXU)
@@ -457,6 +464,7 @@ class Check(unittest.TestCase):
             self.export(arch)
             self.write("jpack-runtime-" + arch, tic.RUNTIME)
         self.log = os.path.join(self.root, "log")
+        self.held = []
 
     def write(self, name, data):
         with open(os.path.join(self.stub, name), "wb") as f:
@@ -486,7 +494,8 @@ class Check(unittest.TestCase):
         for name in created:
             self.assertIn(["rm", "-f", "-v", name], calls)
         for ref in made:
-            self.assertIn(["image", "rm", ref], calls)
+            if ref not in self.held:
+                self.assertIn(["image", "rm", ref], calls)
         return made
 
     def test_each_platforms_image_is_held_by_its_own_digest(self):
@@ -515,6 +524,24 @@ class Check(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn("differs from the pinned runtime binary", done.stderr)
         self.assertIn("the linux/arm64 image", done.stderr)
+
+    def test_a_runtime_the_host_already_held_is_left_to_it(self):
+        self.held = [self.runtime_refs[1]]
+        self.write("held", (self.runtime_refs[1] + "\n").encode())
+        done = self.check()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.everything_made_is_removed()
+        removed = [c[-1] for c in self.calls() if c[:2] == ["image", "rm"]]
+        self.assertIn(self.runtime_refs[0], removed)
+        self.assertNotIn(self.runtime_refs[1], removed)
+
+    def test_a_loopback_registry_that_never_answers_refuses_before_the_push(self):
+        self.write("down", b"")
+        done = self.check()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("the loopback registry did not answer", done.stderr)
+        self.assertFalse([c for c in self.calls() if c[0] == "run" and "copy" in c], "the archive was pushed")
+        self.assertIn(["rm", "-f", "-v", "registry-id"], self.calls())
 
     def test_a_runtime_index_that_is_not_the_pin_refuses_before_any_pull(self):
         self.write("runtime-index.json", self.runtime_index + b" ")

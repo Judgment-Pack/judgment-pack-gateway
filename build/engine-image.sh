@@ -149,10 +149,12 @@ check() {
   done
   CHECK_REGISTRY="$(docker run -d -p 127.0.0.1::5000 "${REGISTRY}")"
   port="$(docker port "${CHECK_REGISTRY}" 5000/tcp | head -n 1 | sed 's/.*://')"
+  local up=""
   for _ in $(seq 1 30); do
-    curl -fsS "http://127.0.0.1:${port}/v2/" >/dev/null 2>&1 && break
+    if curl -fsS "http://127.0.0.1:${port}/v2/" >/dev/null 2>&1; then up=1; break; fi
     sleep 1
   done
+  [ -n "${up}" ] || refuse "the loopback registry did not answer on 127.0.0.1:${port} within 30 tries"
   push "${out}" "127.0.0.1:${port}/engine:check"
   for platform in ${PLATFORMS//,/ }; do
     dir="${CHECK_WORK}/${platform//\//-}"
@@ -167,7 +169,9 @@ check() {
     docker image inspect "${ref}" > "${dir}/config.json"
     docker save "${ref}" | tar -x -C "${dir}/save"
     runtime="${runtimes[${platform}]}"
-    CHECK_IMAGES+=("${runtime}")
+    # The runtime by its digest is removed after only when this check pulled
+    # it: an image the host already held under that name stays.
+    docker image inspect --format '{{.Id}}' "${runtime}" >/dev/null 2>&1 || CHECK_IMAGES+=("${runtime}")
     docker pull --quiet --platform "${platform}" "${runtime}" >/dev/null
     c="$(docker create --platform "${platform}" "${runtime}")"
     CHECK_CONTAINERS+=("${c}")
