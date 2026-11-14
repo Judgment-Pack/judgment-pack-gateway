@@ -150,7 +150,7 @@
         "Every job and every matrix leg is required; none is skipped on main. The go legs include native adapter sandbox boundary tests and run the workflow's own steps,",
         "not dev.json's, so their checks are none: the job's success is the API's, and the evidence adds the leg's",
         "platform and toolchain. The check job runs every dev.json check and setup step.",
-        "Before its checks the check job turns kernel.apparmor_restrict_unprivileged_userns off on its runner, so that image-sandbox-start can require bubblewrap enforced."
+        "Before its checks the check job turns kernel.apparmor_restrict_unprivileged_userns off on its runner, so that the setting is not among the causes when image-sandbox-start finds bubblewrap not enforced."
       ],
       "path": ".github/workflows/ci.yml",
       "name": "CI",

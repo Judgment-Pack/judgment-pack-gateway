@@ -26,14 +26,17 @@
 #   bubblewrap enforced and the start with the member on says the same.
 #   Anything else -- Landlock, partial, none -- is a fallback and fails
 #   this step. What seccomp=unconfined alone gives is printed beside it
-#   where a profile was relaxed. A host whose kernel restricts unprivileged
-#   user namespaces under AppArmor (kernel.apparmor_restrict_unprivileged_userns
-#   = 1, a default on some current distributions) falls back to Landlock
-#   even with the container's seccomp and AppArmor profiles relaxed; CI turns that setting off before its checks
-#   (.github/workflows/ci.yml). Where it reads 1 and CI is unset, on a
-#   developer's host, this one leg is skipped and says so, since turning
-#   the setting off takes root on the host; with CI set it is always run.
-#   USERNS_RESTRICTION names the file the setting is read from, for tests.
+#   where a profile was relaxed. On a fallback the step prints what the
+#   launcher itself says, run in a container with the same settings and the
+#   start check's own options, and the posture under three broader
+#   settings; those lines explain a failure and never pass one. A kernel
+#   that restricts unprivileged user namespaces under AppArmor
+#   (kernel.apparmor_restrict_unprivileged_userns = 1) is turned off by CI
+#   before its checks (.github/workflows/ci.yml), so it is not a cause
+#   there. Where it reads 1 and CI is unset, on a developer's host, this
+#   one leg is skipped and says so, since turning the setting off takes
+#   root on the host; with CI set it is always run. USERNS_RESTRICTION
+#   names the file the setting is read from, for tests.
 set -e
 userns_restriction="${USERNS_RESTRICTION:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}"
 dir="$(mktemp -d)"
@@ -85,7 +88,11 @@ security_opts() {
 measured() {
   local opts
   security_opts "$@"
-  docker run --rm "${opts[@]}" "${mounts[@]}" engine:ci posture --config /etc/engine/measured.json |
+  posture_under "${opts[@]}"
+}
+# The same entry under the docker run options given as they are.
+posture_under() {
+  docker run --rm "$@" "${mounts[@]}" engine:ci posture --config /etc/engine/measured.json |
     awk '$1 == "records/live" && $2 == "adapter" { print $3, $4, $5; exit }'
 }
 # serve --config <file> under the security settings given after it, in a
@@ -147,7 +154,7 @@ fi
 restricted=""
 [ ! -r "${userns_restriction}" ] || [ "$(cat "${userns_restriction}")" != 1 ] || restricted=1
 if [ -n "${restricted}" ] && [ -z "${CI:-}" ]; then
-  echo "image-sandbox-start: SKIP the leg that requires bubblewrap enforced: ${userns_restriction} reads 1, under which the launcher falls back to Landlock, and CI is unset (as root: sysctl -w kernel.apparmor_restrict_unprivileged_userns=0); with measureSandboxAtStart on the engine starts only where its posture says the source would launch (unconfined here: ${posture})"
+  echo "image-sandbox-start: SKIP the leg that requires bubblewrap enforced: ${userns_restriction} reads 1, which restricts the user namespaces bubblewrap makes and which CI turns off, and CI is unset (as root: sysctl -w kernel.apparmor_restrict_unprivileged_userns=0); with measureSandboxAtStart on the engine starts only where its posture says the source would launch (unconfined here: ${posture})"
   exit 0
 fi
 relaxed=(seccomp=unconfined)
@@ -156,13 +163,34 @@ case "${security}" in *name=apparmor*) relaxed+=(apparmor=unconfined) ;; esac
 case "${security}" in *name=selinux*) relaxed+=(label=disable) ;; esac
 want="workspace-write bubblewrap enforced"
 enforcing="$(measured "${relaxed[@]}")"
+# What explains a fallback, printed after it and never in place of it: the
+# host, and what the image's bubblewrap itself says when it runs the start
+# check the launcher runs (adapters/internal/sandbox, bubblewrapFlags: a
+# new user and PID namespace, / read-only, a new /dev and /proc, the
+# environment cleared, /bin/true), as a platform user, under the same
+# settings -- in full, and without the /proc mount, the /dev mount, or
+# both, so that the one refused is named -- and then the posture under
+# three broader settings.
 host() {
+  local f opts out rc label
   echo "  docker security options: ${security}"
-  local f
-  for f in "${userns_restriction}" /proc/sys/kernel/unprivileged_userns_clone /proc/sys/user/max_user_namespaces; do
+  echo "  docker server $(docker version --format '{{.Server.Version}}' 2>&1); kernel $(uname -r); cgroup driver and storage driver: $(docker info --format '{{.CgroupDriver}} {{.Driver}}' 2>&1)"
+  for f in "${userns_restriction}" /proc/sys/kernel/*userns* /proc/sys/user/max_user_namespaces; do
     [ ! -r "${f}" ] || echo "  ${f}: $(cat "${f}")"
   done
-  [ -z "${restricted}" ] || echo "  likely cause: ${userns_restriction} reads 1: under it the launcher falls back to Landlock even with the container's seccomp and AppArmor profiles relaxed; turn kernel.apparmor_restrict_unprivileged_userns off on the host (CI does, in ci.yml)"
+  security_opts "${relaxed[@]}"
+  for label in "full start check" "without --proc" "without --dev" "without --proc and --dev"; do
+    local flags=(--die-with-parent --new-session --unshare-user --unshare-pid --ro-bind / /)
+    case "${label}" in *"--dev"*) ;; *) flags+=(--dev /dev) ;; esac
+    case "${label}" in *"--proc"*) ;; *) flags+=(--proc /proc) ;; esac
+    flags+=(--chdir / --clearenv -- /bin/true)
+    out="$(docker run --rm "${opts[@]}" --user 65601:65601 --entrypoint /usr/bin/bwrap engine:ci "${flags[@]}" 2>&1)" && rc=0 || rc=$?
+    echo "  bubblewrap, ${label}, as uid 65601 under ${relaxed[*]}: exit ${rc}"
+    [ -z "${out}" ] || printf '%s\n' "${out}" | head -n 20 | sed 's/^/    /'
+  done
+  echo "  posture under --privileged: $(posture_under --privileged 2>&1 || true)"
+  echo "  posture under ${relaxed[*]} and --cap-add SYS_ADMIN: $(posture_under "${opts[@]}" --cap-add SYS_ADMIN 2>&1 || true)"
+  echo "  posture under ${relaxed[*]} and systempaths=unconfined: $(posture_under "${opts[@]}" --security-opt systempaths=unconfined 2>&1 || true)"
 }
 if [ "${enforcing}" != "${want}" ]; then
   echo "under ${relaxed[*]} posture says ${enforcing:-nothing} for records/live, not ${want}: the launcher falls back on this host"

@@ -127,23 +127,19 @@ default with `clone`, `clone3` and `unshare` allowed to make a user namespace, a
 not tested one, and what a profile allows is the operator's to review. `--init` gives the engine
 an init, which reaps an orphaned descendant of a source ([SECURITY.md](../SECURITY.md)).
 
-On a host whose kernel restricts unprivileged user namespaces under AppArmor
-(`kernel.apparmor_restrict_unprivileged_userns` reads `1`, the default on some current
-distributions), relaxing the container's profiles is not enough. Measured on CI's runner, whose
-Docker lists AppArmor: under `--security-opt seccomp=unconfined --security-opt apparmor=unconfined`
-posture reads `workspace-write landlock partial`. There, `bubblewrap enforced` needs the setting
-turned off on the host (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`), which
-is the host's own trade-off; a host AppArmor profile that lets the container's processes make
-user namespaces may serve instead, which this guide has not tested. Otherwise the engine starts
-with the Landlock posture, `partial`: file-content writes, truncation and directory changes are
+On a host whose Docker also lists AppArmor (`docker info --format '{{json .SecurityOptions}}'`
+lists what the host applies), `seccomp=unconfined` may not be enough. Measured on CI's runner,
+whose Docker lists AppArmor: under `--security-opt seccomp=unconfined --security-opt
+apparmor=unconfined` posture read `workspace-write landlock partial`, both with the kernel
+setting `kernel.apparmor_restrict_unprivileged_userns` at `1` and with it turned off. What keeps
+bubblewrap from enforcing there is not yet established. On such a host the engine starts with the
+Landlock posture, `partial`: file-content writes, truncation and directory changes are
 restricted; metadata changes such as `chmod`, and connections to local sockets, are not
-([below](#reading-the-sandboxs-state)). Whether Docker's own AppArmor profile for containers, or an
-SELinux label (`--security-opt label=disable` relaxes it), also refuses bubblewrap once that
-setting is off was not measured for this guide; `docker info --format '{{json .SecurityOptions}}'`
-lists which the host applies. The run below is on a host that lists seccomp alone and has no such
-kernel setting, where `seccomp=unconfined` was enough. CI turns the setting off, starts the image
-under `seccomp=unconfined` with the container's profile relaxed where its runner lists one, and
-fails unless the start says bubblewrap enforced (`scripts/checks/image-sandbox-start.sh`).
+([below](#reading-the-sandboxs-state)). An SELinux label (`--security-opt label=disable` relaxes
+it) was not measured for this guide. The run below is on a host whose Docker lists seccomp alone,
+where `seccomp=unconfined` was enough. CI starts the image under `seccomp=unconfined`, with the
+container's profile relaxed where its runner lists one, and fails unless the start says
+bubblewrap enforced (`scripts/checks/image-sandbox-start.sh`).
 
 ```sh
 docker run -d --name engine --init --security-opt seccomp=unconfined "${mounts[@]}" "$IMAGE"
@@ -179,9 +175,8 @@ in the image").
   file-content writes, truncation and directory changes are restricted; metadata changes such as
   `chmod`, and connections to local sockets, are not. Under bubblewrap, a listening socket was
   seen that no mask hides. A source in this state launches, and `measureSandboxAtStart` lets the
-  engine start. A host whose kernel restricts unprivileged user namespaces under AppArmor
-  (Ubuntu's setting from 24.04, for one) passes bubblewrap over for Landlock even under
-  `seccomp=unconfined` and `apparmor=unconfined`, and reports this state
+  engine start. CI's runner, whose Docker lists AppArmor, reported this state under
+  `seccomp=unconfined` and `apparmor=unconfined`, for a cause not yet established
   ([A running engine](#a-running-engine), above).
 - **`not-enforced`**: no backend holds the selected mode. Every restricted launch of the source
   refuses, before anything is started, and with `measureSandboxAtStart` the engine does not

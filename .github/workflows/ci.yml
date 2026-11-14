@@ -180,11 +180,11 @@ jobs:
           set -o pipefail
           scripts/dev/check.sh --setup | tee "${RUNNER_TEMP}/setup.log"
       # The runner's kernel restricts unprivileged user namespaces under AppArmor
-      # (kernel.apparmor_restrict_unprivileged_userns = 1), under which the engine image's
-      # bubblewrap falls back to Landlock even with the container's seccomp and AppArmor
-      # profiles relaxed. image-sandbox-start requires bubblewrap enforced, so the setting is
-      # turned off for this job's runner, which lives as long as the job. A kernel without the
-      # key has nothing to turn off.
+      # (kernel.apparmor_restrict_unprivileged_userns = 1), which is a restriction on the user
+      # namespace the engine image's bubblewrap makes. image-sandbox-start requires bubblewrap
+      # enforced; with the setting turned off it is not among the causes when that leg fails.
+      # Turning it off was measured not to be enough on its own (docs/engine-quickstart.md). The
+      # runner lives as long as the job. A kernel without the key has nothing to turn off.
       - name: Let the engine image's launcher make its user namespace
         run: |
           set -eu
