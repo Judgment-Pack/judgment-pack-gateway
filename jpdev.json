@@ -122,6 +122,10 @@
                  "image-runs", "image-evaluates", "image-launch-overrides", "image-sandbox-start", "image-platforms"]
     },
     {
+      "paths": ["scripts/checks/verify-ts-test.sh"],
+      "checks": ["local-paths", "agent-docs", "diff-check", "verify-ts-test"]
+    },
+    {
       "paths": ["scripts/checks/witness-scenario.sh"],
       "checks": ["local-paths", "agent-docs", "diff-check", "witness-scenario"]
     },
