@@ -144,13 +144,16 @@ The engine runs as its own non-root user and each source as its platform user; a
 root, or given added capabilities, gets more from the unmasked paths. `docker inspect` lists a
 container's paths as `MaskedPaths` and `ReadonlyPaths`.
 
-Measured on CI's runner, whose Docker lists AppArmor, with
-`kernel.apparmor_restrict_unprivileged_userns` at 0: under `seccomp=unconfined` and
+Measured on CI's runner, whose Docker lists AppArmor: under `seccomp=unconfined` and
 `apparmor=unconfined` bubblewrap's start check said `Can't mount proc on /proc: Operation not
 permitted` and posture read `workspace-write landlock partial`; with `systempaths=unconfined`
-added, posture read `workspace-write bubblewrap enforced`. Whether `apparmor=unconfined` is needed
-as well there was not measured on its own, and an SELinux label (`--security-opt label=disable`
-relaxes it) was not measured for this guide. On one host whose Docker lists seccomp alone,
+added, posture read `workspace-write bubblewrap enforced`, with
+`kernel.apparmor_restrict_unprivileged_userns` at the runner's default. All three options were
+needed there: without `apparmor=unconfined`, or without `systempaths=unconfined`, posture read
+`workspace-write landlock partial`. So on a host whose Docker lists AppArmor, add
+`--security-opt apparmor=unconfined` to the command above, which takes Docker's AppArmor
+profile off the engine's container. An SELinux label (`--security-opt label=disable` relaxes it)
+was not measured for this guide. On one host whose Docker lists seccomp alone,
 `seccomp=unconfined` was enough without `systempaths=unconfined`. Without the system paths
 unconfined, where the kernel refuses the mount, the engine starts with the Landlock posture,
 `partial`: file-content writes, truncation and directory changes are restricted; metadata
