@@ -4,8 +4,11 @@
 # refused as the run-time login; then, after a start on the kind with one acquisition and its seal
 # (in the test's process: serve --config takes a platform, whose source runs as a user of its own
 # that only a start as root switches to), `gateway export --config` from the kind, `gateway export
-# --check` and `gateway verify` on the export, and no output or file of the run holding either
-# login's password. Then a store a configuration without storage wrote, exported by this binary
+# --check` and `gateway verify` on the export; the same calls on the filesystem kind, exported,
+# checked and verified by the binary, and the two exports alike: the same files, each artifact byte
+# for byte, every other file byte for byte but for the times, the salted arguments commitment, the
+# signatures and the manifest's digests of the files that hold them; and no output or file of the
+# run holding either login's password. Then a store a configuration without storage wrote, exported by this binary
 # and by main's: the two exports alike byte for byte, each holding the store's own bytes. Run from
 # go/, with GATEWAY_TEST_POSTGRES_DSN naming the job's server.
 set -euo pipefail
