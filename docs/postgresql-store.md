@@ -41,8 +41,8 @@ postgresql://gateway_runtime:<password>@db.example.internal:5432/gateway_store?s
   connection reached, and closes it, with nothing sent, unless that is a loopback address: a
   resolver need not answer `localhost` with one. `connect_timeout` is in seconds, 1 to 300, and 10
   without it. Any other parameter is refused, not ignored.
-- The password is required: a connection string without one, or with an empty one, is refused. A
-  login without a password makes no SCRAM exchange, so the server proves nothing of itself by it,
+- The password is required: a connection string without one, or with one that is empty or only
+  spaces, is refused. A login without a password makes no SCRAM exchange, so the server proves nothing of itself by it,
   and under `disable` nothing else would.
 - The connection string is a secret. The gateway never prints it: not in an error, a log line, a
   receipt, the start's lines or `gateway store migrate`'s report. A configuration names it only by
@@ -121,7 +121,8 @@ A version-24 engine configuration names the kind in `storage`, in place of `stor
 - `kind` is `postgresql`; nothing else is accepted.
 - `connection` names the run-time login's connection string by one reference: `file`, an
   absolute path, held as the seed's file is (the gateway's user's, readable by no one else, in
-  directories no one else may write; at most 4096 bytes), or `environment`, a variable's name
+  directories no one else may write, links on the way to it included; at most 4096 bytes; held
+  so by the start, `gateway store migrate` and `gateway export --config` alike), or `environment`, a variable's name
   (capital letters, digits and `_`, not starting with a digit), which the start reads and then
   removes from its own environment, so no program it starts inherits it. Both, neither, or the
   string itself are refused.
