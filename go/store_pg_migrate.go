@@ -303,21 +303,16 @@ func pgRecordedMatch(recorded []pgRecord, set pgMigrationSet) error {
 	return nil
 }
 
-// pgServerHolds refuses a server older than the major version tested or a
-// database whose encoding is not UTF-8.
+// pgServerHolds refuses a server older than the major version tested, a
+// server whose server_version_num disagrees with the version it reported at
+// the login, or a database whose encoding is not UTF-8.
 func pgServerHolds(c *pgConn) error {
-	version, err := strconv.Atoi(c.params["server_version_num"])
+	version, err := c.serverVersion()
 	if err != nil {
-		rows, qerr := c.exec(`SELECT pg_catalog.current_setting('server_version_num')`)
-		if qerr != nil {
-			return qerr
-		}
-		if len(rows.rows) == 1 {
-			version, err = strconv.Atoi(string(rows.rows[0][0]))
-		}
-		if err != nil {
-			return errors.New("store: the server's version did not read")
-		}
+		return err
+	}
+	if reported, known := pgServerVersion(c.params); known && reported != version {
+		return fmt.Errorf("store: the server's server_version_num reads %d and the version it reported at the login (server_version) reads %d; the start is refused while the two disagree", version, reported)
 	}
 	if version < pgMinServerVersion {
 		return errors.New("store: the PostgreSQL storage kind runs on PostgreSQL 16 or later")
@@ -432,11 +427,15 @@ const pgMaintainVersion = 170000
 
 // pgTablePrivilegesOn are the privileges a table has on the server c is
 // connected to: a server that does not know MAINTAIN refuses its name.
-func pgTablePrivilegesOn(c *pgConn) []string {
-	if pgServerFrom(c, pgMaintainVersion) {
-		return append(append([]string{}, pgTablePrivileges...), "MAINTAIN")
+func pgTablePrivilegesOn(c *pgConn) ([]string, error) {
+	from17, err := pgServerFrom(c, pgMaintainVersion)
+	if err != nil {
+		return nil, err
 	}
-	return pgTablePrivileges
+	if from17 {
+		return append(append([]string{}, pgTablePrivileges...), "MAINTAIN"), nil
+	}
+	return pgTablePrivileges, nil
 }
 
 // holdsItsConditions is the kind's start: the server, the login it runs as,
@@ -508,7 +507,11 @@ func (k *pgKind) boundsHold(tx pgTx) error {
 		"lock_timeout":                        {operation, ""},
 		"idle_in_transaction_session_timeout": {strconv.FormatInt(k.idle.Milliseconds(), 10), strconv.FormatInt(pgIdleInTransaction.Milliseconds(), 10)},
 	}
-	if pgServerFrom(tx.c, pgTransactionTimeoutVersion) {
+	from17, err := pgServerFrom(tx.c, pgTransactionTimeoutVersion)
+	if err != nil {
+		return err
+	}
+	if from17 {
 		want["transaction_timeout"] = [2]string{operation, ""}
 	}
 	rows, err := tx.exec(`SELECT name, setting, reset_val FROM pg_catalog.pg_settings
@@ -541,7 +544,10 @@ func (k *pgKind) boundsHold(tx pgTx) error {
 // privilege (UPDATE of one column, say) is a privilege the store does not
 // give as much as the table's is.
 func pgPrivilegesHold(tx pgTx) error {
-	privileges := pgTablePrivilegesOn(tx.c)
+	privileges, err := pgTablePrivilegesOn(tx.c)
+	if err != nil {
+		return err
+	}
 	// the list is the constants above, never a value from outside
 	values := "('" + strings.Join(privileges, "'), ('") + "')"
 	held, err := tx.exec(`SELECT c.relname, p.privilege, pg_catalog.has_table_privilege(c.oid, p.privilege),

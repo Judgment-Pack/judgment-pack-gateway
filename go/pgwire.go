@@ -114,8 +114,9 @@ func parsePgDSN(text string) (pgDSN, error) {
 	}
 	// a password is required: a login without one has the server prove
 	// nothing of itself (no SCRAM exchange), so under sslmode=disable
-	// nothing would tell the gateway's server from another (#440)
-	if d.host == "" || d.user == "" || d.password == "" || d.database == "" || strings.Contains(d.database, "/") ||
+	// nothing would tell the gateway's server from another (#440); a
+	// password of only spaces is no password either
+	if d.host == "" || d.user == "" || strings.TrimSpace(d.password) == "" || d.database == "" || strings.Contains(d.database, "/") ||
 		strings.ContainsRune(d.user+d.database+d.password, 0) {
 		return pgDSN{}, errPgDSN
 	}
@@ -264,6 +265,9 @@ type pgConn struct {
 	status byte // the last ReadyForQuery's transaction status
 	broken bool
 	params map[string]string
+	// version is server_version_num as the server answers it to a query
+	// on this connection (pgConn.serverVersion); 0 until it is read
+	version int
 }
 
 // pgDial opens the TCP connection; a test replaces it.

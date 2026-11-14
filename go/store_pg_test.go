@@ -779,16 +779,19 @@ func TestThePostgresKindRefusesToStartOutsideItsConditions(t *testing.T) {
 // PostgreSQL 17 (#440), which a server before it refuses by name.
 func TestTheStartAsksOfMAINTAINFromPostgreSQL17(t *testing.T) {
 	for _, tc := range []struct {
-		version  string
+		version  int
 		maintain bool
-	}{{"160015", false}, {"169999", false}, {"170000", true}, {"170006", true}, {"180001", true}} {
-		privileges := pgTablePrivilegesOn(&pgConn{params: map[string]string{"server_version_num": tc.version}})
+	}{{160015, false}, {169999, false}, {170000, true}, {170006, true}, {180001, true}} {
+		privileges, err := pgTablePrivilegesOn(&pgConn{version: tc.version})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if contains(privileges, "MAINTAIN") != tc.maintain {
-			t.Fatalf("on a server at %s the privileges asked are %v", tc.version, privileges)
+			t.Fatalf("on a server at %d the privileges asked are %v", tc.version, privileges)
 		}
 		for _, p := range pgTablePrivileges {
 			if !contains(privileges, p) {
-				t.Fatalf("on a server at %s the privileges asked lack %s: %v", tc.version, p, privileges)
+				t.Fatalf("on a server at %d the privileges asked lack %s: %v", tc.version, p, privileges)
 			}
 		}
 	}
@@ -798,8 +801,7 @@ func TestTheStartAsksOfMAINTAINFromPostgreSQL17(t *testing.T) {
 }
 
 // A server reports server_version at the login, not server_version_num:
-// the version is read from it, so a server at 17 reads as 17 and is asked
-// of MAINTAIN and bounded by transaction_timeout (#440).
+// the version the start holds the queried number to is read from it (#440).
 func TestTheServersVersionIsReadFromWhatTheLoginReports(t *testing.T) {
 	for _, tc := range []struct {
 		params map[string]string
@@ -821,12 +823,75 @@ func TestTheServersVersionIsReadFromWhatTheLoginReports(t *testing.T) {
 			t.Fatalf("the version of %v read as %d %v, want %d %v", tc.params, n, known, tc.want, tc.known)
 		}
 	}
-	at17 := &pgConn{params: map[string]string{"server_version": "17.12"}}
-	if !pgServerFrom(at17, pgTransactionTimeoutVersion) || !contains(pgTablePrivilegesOn(at17), "MAINTAIN") {
-		t.Fatal("a server reporting 17.12 does not read as PostgreSQL 17")
-	}
-	if at16 := (&pgConn{params: map[string]string{"server_version": "16.15"}}); pgServerFrom(at16, pgTransactionTimeoutVersion) {
-		t.Fatal("a server reporting 16.15 reads as PostgreSQL 17")
+}
+
+// The checks that depend on PostgreSQL 17 (MAINTAIN, transaction_timeout)
+// read the server_version_num the server answers on the connection, never
+// what the login reported; and the start refuses, by name, a server whose
+// answer disagrees with the version it reported at the login (#440).
+func TestTheVersionChecksReadTheQueriedNumber(t *testing.T) {
+	for _, tc := range []struct {
+		reported string
+		queried  string
+		refusal  string
+	}{
+		{"", "170012", ""},
+		{"17.12", "170012", ""},
+		{"16.15 (Debian 16.15-1.pgdg120+1)", "160015", ""},
+		{"16.15", "170012", "server_version_num reads 170012 and the version it reported at the login (server_version) reads 160015"},
+		{"17.12", "160015", "server_version_num reads 160015 and the version it reported at the login (server_version) reads 170012"},
+		{"17.12", "x", "the server's version did not read"},
+	} {
+		_, dsn := newPgFake(t, func(f *pgFakeConn) {
+			if !(scramServer{password: "pw-of-the-test", iterations: 4096}).run(f) {
+				return
+			}
+			f.auth(0, nil)
+			if tc.reported != "" {
+				f.send('S', []byte("server_version\x00"+tc.reported+"\x00"))
+			}
+			f.send('S', []byte("server_encoding\x00UTF8\x00"))
+			f.ready()
+			for {
+				kind, _, err := f.receive()
+				if err != nil || kind == 'X' {
+					return
+				}
+				if kind == 'S' {
+					row := []byte{0, 1, 0, 0, 0, byte(len(tc.queried))}
+					f.send('D', append(row, tc.queried...))
+					f.send('C', []byte("SELECT 1\x00"))
+					f.ready()
+				}
+			}
+		})
+		c, err := pgConnect(dsn, time.Now().Add(20*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = pgServerHolds(c)
+		if tc.refusal != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.refusal) {
+				t.Fatalf("reported %q, queried %q: the start was not refused as it should be: %v", tc.reported, tc.queried, err)
+			}
+			c.close()
+			continue
+		}
+		if err != nil {
+			t.Fatalf("reported %q, queried %q: %v", tc.reported, tc.queried, err)
+		}
+		from17, err := pgServerFrom(c, pgTransactionTimeoutVersion)
+		if err != nil {
+			t.Fatal(err)
+		}
+		privileges, err := pgTablePrivilegesOn(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := tc.queried >= "170000"; from17 != want || contains(privileges, "MAINTAIN") != want {
+			t.Fatalf("reported %q, queried %q: read as 17 %v, privileges %v", tc.reported, tc.queried, from17, privileges)
+		}
+		c.close()
 	}
 }
 
