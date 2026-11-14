@@ -40,6 +40,8 @@ func TestAConnectionStringIsNeverPrinted(t *testing.T) {
 		"postgresql://" + user + ":" + password + "@" + host + ":5432/",
 		"postgresql://" + user + "@" + host + ":5432/db",
 		"postgresql://" + user + ":@" + host + ":5432/db",
+		"postgresql://" + user + ":%20%20@" + host + ":5432/db",
+		"postgresql://" + user + ":%20%09%0A@127.0.0.1:5432/db?sslmode=disable",
 		"postgresql://" + user + "@127.0.0.1:5432/db?sslmode=disable",
 		"postgresql://" + user + ":" + password + "@127.0.0.1:5432/db?sslmode=disable&sslrootcert=/x",
 		"mysql://" + user + ":" + password + "@" + host + "/db",

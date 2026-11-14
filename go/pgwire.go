@@ -114,8 +114,9 @@ func parsePgDSN(text string) (pgDSN, error) {
 	}
 	// a password is required: a login without one has the server prove
 	// nothing of itself (no SCRAM exchange), so under sslmode=disable
-	// nothing would tell the gateway's server from another (#440)
-	if d.host == "" || d.user == "" || d.password == "" || d.database == "" || strings.Contains(d.database, "/") ||
+	// nothing would tell the gateway's server from another (#440); a
+	// password of only spaces is no password either
+	if d.host == "" || d.user == "" || strings.TrimSpace(d.password) == "" || d.database == "" || strings.Contains(d.database, "/") ||
 		strings.ContainsRune(d.user+d.database+d.password, 0) {
 		return pgDSN{}, errPgDSN
 	}
