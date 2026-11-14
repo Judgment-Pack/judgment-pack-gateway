@@ -316,5 +316,213 @@ class Push(unittest.TestCase):
         self.assertEqual(self.calls(), [])
 
 
+class Manifest(unittest.TestCase):
+    """The one manifest an index holds for a platform, by which check pulls."""
+
+    def setUp(self):
+        self.image = Image()
+        self.data = self.image.index()
+
+    def test_each_platform_is_named_by_its_own_manifest(self):
+        for entry in self.image.entries:
+            p = entry["platform"]
+            self.assertEqual(ei.manifest(self.data, p["os"] + "/" + p["architecture"], digest_of(self.data)), entry["digest"])
+
+    def test_a_variant_and_an_attestation_are_read_past(self):
+        attestation = descriptor(b"{}", platform={"architecture": "unknown", "os": "unknown"})
+        arm = dict(self.image.entries[1], platform={"architecture": "arm64", "os": "linux", "variant": "v8"})
+        data = json.dumps({"mediaType": ei.INDEX, "manifests": [self.image.entries[0], arm, attestation]}).encode()
+        self.assertEqual(ei.manifest(data, "linux/arm64"), arm["digest"])
+
+    def test_the_index_is_not_the_digest_named(self):
+        with self.assertRaises(ei.Refusal) as refused:
+            ei.manifest(self.data + b" ", "linux/amd64", digest_of(self.data))
+        self.assertIn("the index read is not", str(refused.exception))
+
+    def test_no_manifest_for_the_platform(self):
+        with self.assertRaises(ei.Refusal) as refused:
+            ei.manifest(self.data, "linux/riscv64")
+        self.assertIn("holds 0 manifests for linux/riscv64", str(refused.exception))
+
+    def test_two_manifests_for_the_platform(self):
+        data = json.dumps({"mediaType": ei.INDEX, "manifests": [self.image.entries[0], self.image.entries[0]]}).encode()
+        with self.assertRaises(ei.Refusal) as refused:
+            ei.manifest(data, "linux/amd64")
+        self.assertIn("holds 2 manifests", str(refused.exception))
+
+    def test_not_an_index(self):
+        with self.assertRaises(ei.Refusal) as refused:
+            ei.manifest(manifest_for("amd64"), "linux/amd64")
+        self.assertIn("not an image index", str(refused.exception))
+
+    def test_a_manifest_named_by_another_algorithm(self):
+        entry = dict(self.image.entries[0], digest="sha512:" + "a" * 128)
+        data = json.dumps({"mediaType": ei.INDEX, "manifests": [entry]}).encode()
+        with self.assertRaises(ei.Refusal) as refused:
+            ei.manifest(data, "linux/amd64")
+        self.assertIn("not a SHA-256 digest", str(refused.exception))
+
+
+# The stand-in container client for check: each invocation recorded as the
+# push's stand-in records it, and answered from the files of $STUB_DIR -- the
+# image index for the loopback read-back, the runtime pin's index for the
+# other, a container name for create (engine-<arch> or runtime-<arch>), that
+# container's export, one image configuration and one saved image for every
+# platform, and the runtime binary by container.
+CHECK_STUB = """#!/bin/sh
+for a in "$@"; do printf '%s\\n' "$a" >> "$STUB_LOG"; done
+printf '\\n' >> "$STUB_LOG"
+last=""
+for a in "$@"; do last="$a"; done
+case "$1" in
+  run)
+    case " $* " in
+      *" -d "*) echo registry-id ;;
+      *" inspect "*) case "$last" in docker://127.0.0.1:*) cat "$STUB_DIR/index.json" ;; *) cat "$STUB_DIR/runtime-index.json" ;; esac ;;
+    esac ;;
+  port) echo 127.0.0.1:5000 ;;
+  create) case "$4" in 127.0.0.1:*) echo "engine-${3#*/}" ;; *) echo "runtime-${3#*/}" ;; esac ;;
+  export) cat "$STUB_DIR/export-$2.tar" ;;
+  image) [ "$2" != inspect ] || cat "$STUB_DIR/config.json" ;;
+  save) cat "$STUB_DIR/save.tar" ;;
+  cp) cp "$STUB_DIR/jpack-${2%%:*}" "$3" ;;
+esac
+exit 0
+"""
+
+
+def tar_bytes(entries):
+    """A tar of (name, data, mode, pax headers) entries, as bytes."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as t:
+        for name, data, mode, pax in entries:
+            info = tarfile.TarInfo(name)
+            info.size, info.mode, info.pax_headers = len(data), mode, pax
+            t.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+class Check(unittest.TestCase):
+    """check holds every platform's image to .github/image_checks.py: run
+    here from a checkout of its own, with the real check and the stand-in
+    client above, so that what is judged is a filesystem the case wrote."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), ".github"))
+        import test_image_checks as tic
+        self.tic = tic
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root)
+        self.bin = os.path.join(self.root, "bin")
+        os.mkdir(self.bin)
+        for name, body in (("docker", CHECK_STUB), ("curl", "#!/bin/sh\nexit 0\n")):
+            with open(os.path.join(self.bin, name), "w") as f:
+                f.write(body)
+            os.chmod(os.path.join(self.bin, name), stat.S_IRWXU)
+        self.stub = os.path.join(self.root, "stub")
+        os.mkdir(self.stub)
+        # The checkout: the real image check, and what it compares with.
+        self.checkout = os.path.join(self.root, "checkout")
+        os.makedirs(os.path.join(self.checkout, ".github"))
+        shutil.copy(os.path.join(os.path.dirname(HERE), ".github", "image_checks.py"), os.path.join(self.checkout, ".github"))
+        for name, data in (("catalog/postgres.json", b'{"bindingVersion":"1"}'), ("corpus/canon.json", b"[]"),
+                           ("LICENSE", tic.GATEWAY_LICENSE), ("THIRD_PARTY_NOTICES", tic.GATEWAY_NOTICES)):
+            os.makedirs(os.path.dirname(os.path.join(self.checkout, name)), exist_ok=True)
+            with open(os.path.join(self.checkout, name), "wb") as f:
+                f.write(data)
+        # The runtime pin's index as its registry serves it, and the pin naming it.
+        amd, arm = manifest_for("amd64"), manifest_for("arm64")
+        self.runtime_index = json.dumps({"mediaType": ei.INDEX, "manifests": [
+            descriptor(amd, platform={"architecture": "amd64", "os": "linux"}),
+            descriptor(arm, platform={"architecture": "arm64", "os": "linux", "variant": "v8"}),
+            descriptor(b"{}", platform={"architecture": "unknown", "os": "unknown"})]}).encode()
+        self.runtime_refs = ["ghcr.io/judgment-pack/judgment-pack@" + digest_of(amd), "ghcr.io/judgment-pack/judgment-pack@" + digest_of(arm)]
+        with open(os.path.join(self.checkout, "Dockerfile"), "w") as f:
+            f.write("FROM ghcr.io/judgment-pack/judgment-pack:9.9.9@%s AS runtime\n" % digest_of(self.runtime_index))
+        # The image as built: its index beside the archive, and what each platform's image unpacks to.
+        self.out = os.path.join(self.root, "out")
+        os.mkdir(self.out)
+        self.image = Image()
+        self.index = self.image.index()
+        with open(os.path.join(self.out, "engine-image.index.json"), "wb") as f:
+            f.write(self.index)
+        with open(os.path.join(self.out, "engine-image.digest"), "w") as f:
+            f.write(digest_of(self.index) + "\n")
+        self.write("index.json", self.index)
+        self.write("runtime-index.json", self.runtime_index)
+        self.write("config.json", json.dumps([{"Config": tic.CONFIG}]).encode())
+        layer = tar_bytes([("usr/local/bin/gateway", b"g", 0o700, {"SCHILY.xattr.security.capability": tic.CAPS.decode("utf-8", "surrogateescape")})])
+        self.write("save.tar", tar_bytes([("manifest.json", b'[{"Config":"c","Layers":["layer.tar"]}]', 0o644, {}), ("layer.tar", layer, 0o644, {})]))
+        for arch in ("amd64", "arm64"):
+            self.export(arch)
+            self.write("jpack-runtime-" + arch, tic.RUNTIME)
+        self.log = os.path.join(self.root, "log")
+
+    def write(self, name, data):
+        with open(os.path.join(self.stub, name), "wb") as f:
+            f.write(data)
+
+    def export(self, arch, **over):
+        path = self.tic.good(**over).done()
+        shutil.move(path, os.path.join(self.stub, "export-engine-%s.tar" % arch))
+
+    def check(self):
+        environment = {"PATH": self.bin + os.pathsep + "/usr/bin" + os.pathsep + "/bin",
+                       "STUB_LOG": self.log, "STUB_DIR": self.stub}
+        return subprocess.run(["bash", SCRIPT, "check", self.out], cwd=self.checkout, env=environment, capture_output=True, text=True)
+
+    def calls(self):
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log) as f:
+            return [c.split("\n") for c in f.read().split("\n\n") if c]
+
+    def everything_made_is_removed(self):
+        calls = self.calls()
+        made = [c[-1] for c in calls if c[0] == "pull"]
+        created = ["%s-%s" % (kind, c[2].split("/")[1]) for c in calls if c[0] == "create"
+                   for kind in ["engine" if c[-1].startswith("127.0.0.1:") else "runtime"]]
+        self.assertIn(["rm", "-f", "-v", "registry-id"], calls)
+        for name in created:
+            self.assertIn(["rm", "-f", "-v", name], calls)
+        for ref in made:
+            self.assertIn(["image", "rm", ref], calls)
+        return made
+
+    def test_each_platforms_image_is_held_by_its_own_digest(self):
+        done = self.check()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("linux/amd64: the image holds", done.stdout)
+        self.assertIn("linux/arm64: the image holds", done.stdout)
+        self.assertIn("(the pinned binary, byte for byte)", done.stdout)
+        pulled = self.everything_made_is_removed()
+        self.assertEqual(pulled, ["127.0.0.1:5000/engine@" + self.image.entries[0]["digest"], self.runtime_refs[0],
+                                  "127.0.0.1:5000/engine@" + self.image.entries[1]["digest"], self.runtime_refs[1]])
+        self.assertTrue(any(c[0] == "run" and "copy" in c for c in self.calls()), "the archive was not pushed")
+
+    def test_a_set_user_id_file_in_one_platforms_image_refuses(self):
+        self.export("arm64", **{"usr/local/bin/planted": dict(mode=0o4755)})
+        done = self.check()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("linux/amd64: the image holds", done.stdout)
+        self.assertIn("usr/local/bin/planted is set-user-id", done.stderr)
+        self.assertIn("the linux/arm64 image is not what the design states", done.stderr)
+        self.everything_made_is_removed()
+
+    def test_one_platforms_runtime_not_the_pinned_binary_refuses(self):
+        self.write("jpack-runtime-arm64", b"another runtime")
+        done = self.check()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("differs from the pinned runtime binary", done.stderr)
+        self.assertIn("the linux/arm64 image", done.stderr)
+
+    def test_a_runtime_index_that_is_not_the_pin_refuses_before_any_pull(self):
+        self.write("runtime-index.json", self.runtime_index + b" ")
+        done = self.check()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("the index read is not", done.stderr)
+        self.assertFalse([c for c in self.calls() if c[0] in ("pull", "create")])
+
+
 if __name__ == "__main__":
     unittest.main()

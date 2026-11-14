@@ -8,8 +8,13 @@ the archive is the index's bytes (engine-image.index.json), whose SHA-256 is the
 image digest, and that digest (engine-image.digest) -- what the release lists in
 checksums.txt, attests and pushes by.
 
+For the check of each platform's filesystem (engine-image.sh check) it also
+names the one manifest of an index for a platform: the image's own index, or
+the runtime pin's as its registry serves it, held to the digest the pin names.
+
 Standard library only. Usage (build/engine-image.sh runs it):
-python3 -I build/engine_image.py <dir> <platform>[,<platform>...]"""
+python3 -I build/engine_image.py <dir> <platform>[,<platform>...]
+python3 -I build/engine_image.py manifest <index.json> <os>/<architecture> [sha256:<hex>]"""
 import hashlib
 import json
 import os
@@ -69,6 +74,41 @@ def check(out, platforms):
     return digest, data
 
 
+INDEXES = (INDEX, "application/vnd.docker.distribution.manifest.list.v2+json")
+
+
+def manifest(data, platform, digest=None):
+    """The digest of the one manifest an index holds for os/architecture,
+    whatever variant it names; with digest, the index must be those bytes.
+    Entries of another platform (an attestation's unknown/unknown among
+    them) are passed over; none, or two, for this one is a Refusal."""
+    if digest is not None and "sha256:" + hashlib.sha256(data).hexdigest() != digest:
+        raise Refusal("the index read is not %s" % digest)
+    index = json.loads(data)
+    if not isinstance(index, dict) or index.get("mediaType") not in INDEXES or not isinstance(index.get("manifests"), list):
+        raise Refusal("that is not an image index")
+    wanted = platform.split("/")
+    found = [m.get("digest") for m in index["manifests"]
+             if isinstance(m, dict) and isinstance(m.get("platform"), dict)
+             and [m["platform"].get("os"), m["platform"].get("architecture")] == wanted]
+    if len(found) != 1:
+        raise Refusal("the index holds %d manifests for %s, not one" % (len(found), platform))
+    algorithm, _, hexdigest = str(found[0]).partition(":")
+    if algorithm != "sha256" or len(hexdigest) != 64 or set(hexdigest) - set("0123456789abcdef"):
+        raise Refusal("the index names %r for %s, not a SHA-256 digest" % (found[0], platform))
+    return found[0]
+
+
+def main_manifest(path, platform, digest=None):
+    try:
+        with open(path, "rb") as f:
+            print(manifest(f.read(), platform, digest))
+    except (Refusal, ValueError) as refusal:
+        print("engine-image: %s: %s" % (path, refusal), file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(out, platforms):
     try:
         digest, data = check(out, platforms.split(","))
@@ -84,6 +124,8 @@ def main(out, platforms):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) in (4, 5) and sys.argv[1] == "manifest":
+        sys.exit(main_manifest(*sys.argv[2:]))
     if len(sys.argv) != 3:
-        sys.exit("usage: engine_image.py <dir> <platform>[,<platform>...]")
+        sys.exit("usage: engine_image.py <dir> <platform>[,<platform>...] | manifest <index.json> <os>/<architecture> [sha256:<hex>]")
     sys.exit(main(sys.argv[1], sys.argv[2]))

@@ -89,7 +89,13 @@ check's own tests hold each invariant with a negative case of its own, one thing
 so that no other refusal can mask the one under test. The image is unpacked and run on a
 case-sensitive filesystem: a case-folding one, under which two spellings name one directory, is
 not supported, and the check does not model it. It then starts the image as built, with no
-override, and holds the two launch overrides below to what is stated here.
+override, and holds the two launch overrides below to what is stated here. That run is of the
+image CI builds for its own host. The image the release script builds for both architectures is
+held by the same check, each architecture's filesystem apart (`build/engine-image.sh check`, run
+by CI and by the release before its push): each platform's image is pulled from the loopback
+registry by its manifest's digest and created as a container, which unpacks it and runs nothing,
+and its export, its saved layers and the pinned runtime for that platform are judged as above.
+No `arm64` code is executed; the write probes and the start are of the host's image alone.
 
 **Launch overrides.** With every capability dropped (`--cap-drop ALL`) the kernel refuses to
 execute the gateway at all — the binary's attribute has the effective bit set, which demands its
@@ -264,8 +270,9 @@ The release workflow publishes the image with the binaries ([releasing.md](../re
 [ADR-0030](../adr/0030-the-engine-image-carries-the-sandbox-launcher.md)): built from the tagged
 commit for `linux/amd64` and `linux/arm64`, its image index's bytes a release asset whose SHA-256,
 the image digest, is in the same `checksums.txt` that names the binaries and under the same
-attestation, and pushed to `ghcr.io/judgment-pack/judgment-pack-gateway` under the version, by
-that digest, only past the `production` gate. The index's annotations name the source
+attestation, each platform's filesystem held to this note before the archive leaves the
+package job, and pushed to `ghcr.io/judgment-pack/judgment-pack-gateway` under the version, by
+that digest, only past the `production` gate and once the draft is held to the run's files. The index's annotations name the source
 repository, the commit (`org.opencontainers.image.revision`) and the version, so that an
 operator pins the image by digest and can name the tagged state it was built from, as
 [CONTRIBUTING.md](../../CONTRIBUTING.md#tags) already says of the binary; that commit's

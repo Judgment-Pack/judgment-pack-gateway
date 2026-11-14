@@ -8,7 +8,11 @@
 # digest and run: it reports the version it was stamped with, and its
 # custody, which needs the gateway's file capabilities to have come
 # through the archive and the push. The arm64 image is built and its
-# entry in the index held to its platform; it is not run here.
+# entry in the index held to its platform; it is not run here. Each
+# platform's filesystem, arm64's with amd64's, is held to what the design
+# states by the check the release runs before its push
+# (build/engine-image.sh check, .github/image_checks.py): pulled by its
+# manifest's digest, created and exported, never executed.
 set -e
 out="$(mktemp -d)"
 registry=""
@@ -18,6 +22,7 @@ cleanup() {
 }
 trap cleanup EXIT
 RELEASE_VERSION=v0.0.0-ci build/engine-image.sh build "${out}"
+build/engine-image.sh check "${out}"
 registry="$(docker run -d -p 127.0.0.1::5000 docker.io/library/registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e)"
 port="$(docker port "${registry}" 5000/tcp | head -n 1 | sed 's/.*://')"
 for _ in $(seq 1 30); do

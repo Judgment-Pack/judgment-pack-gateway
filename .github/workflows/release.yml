@@ -18,7 +18,9 @@ name: Release
 # in a public log when they are made; and the draft, which those who can
 # write to the repository can see. Nothing is in the registry before it: the
 # image is pushed by the publish job, past the gate, and a tag a registry
-# serves can be moved, which a run artifact cannot.
+# serves can be moved, which a run artifact cannot. (The check of the image
+# pushes it to a registry on the package job's own loopback, which nothing
+# outside that runner reaches and which ends with the step.)
 #
 # Every job works on the commit the run was started for, by its digest. The
 # tag is a name, and until a release is published nothing keeps a name from
@@ -26,12 +28,14 @@ name: Release
 # before the draft is made, and before it is published.
 #
 # The engine image is built here from the tagged commit by the script CI
-# runs on every push to main (build/engine-image.sh), into an OCI archive.
-# The bytes of its index travel with the archives as a release asset, so
-# that its SHA-256 -- the image digest -- is in checksums.txt, attested with
-# them and stated in the release notes; the publish job pushes the archive
+# runs on every push to main (build/engine-image.sh), into an OCI archive,
+# and each platform's filesystem is held to the design by the same script,
+# on this runner alone. The bytes of its index travel with the archives as a
+# release asset, so that its SHA-256 -- the image digest -- is in
+# checksums.txt, attested with them and stated in the release notes; the
+# publish job holds the draft to the run's files, then pushes the archive
 # under the release's version as its tag, every manifest by its digest, and
-# reads the tag back before it publishes the release
+# reads the tag back, then holds the draft again and publishes the release
 # (docs/design/engine-image.md, Provenance; docs/adr/0030).
 
 on:
@@ -282,6 +286,18 @@ jobs:
           digest="$(cat "${RUNNER_TEMP}/engine-image/engine-image.digest")"
           printf '%s  %s\n' "${digest#sha256:}" "${index}" >> dist/checksums.txt
 
+      # Each platform's image held to what the design states, by the check CI
+      # runs on the image it builds for its own host (.github/image_checks.py):
+      # no set-user-id file, no capability but the gateway's, owners and
+      # modes, a static launcher, the notices, the runtime the pin names. The
+      # archive is pushed to a registry on this runner's loopback that lives
+      # as long as the step, never the release's registry; each platform's
+      # image is pulled from it by its digest, created as a container, which
+      # runs nothing, and exported (build/engine-image.sh check).
+      - name: Each platform's image holds what the design states
+        shell: bash
+        run: build/engine-image.sh check "${RUNNER_TEMP}/engine-image"
+
       # Printed, so that the run's own record says what it packaged. The
       # publish job holds the draft to these again before it publishes.
       - name: Verify packaged checksums
@@ -320,7 +336,7 @@ jobs:
           retention-days: 30
 
       # The image itself, for the publish job alone: no smoke test reads it,
-      # and nothing pushes it before the gate.
+      # and nothing pushes it to the registry before the gate.
       - name: Upload the engine image archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -614,13 +630,46 @@ jobs:
           [ "${named}" = "${archives}" ] || { echo "checksums.txt does not name the run's archives, each once:" >&2; diff <(echo "${named}") <(echo "${archives}") >&2; exit 1; }
           sha256sum --check --strict checksums.txt
 
-      # Past the gate, before the release is published: the image the run's
-      # files name -- its index byte for byte the asset's -- pushed under the
-      # version, every manifest by its digest, and the tag read back from the
-      # registry and held to that digest. A push that fails leaves the draft
-      # unpublished. The credential is the job's token, in a file of this
-      # runner's alone that the copier reads, never an argument, and is
-      # removed after.
+      # The draft has waited at the gate, and whoever may write to the
+      # repository could have changed it there. The release this run
+      # drafted is read through the API by its id, never downloaded: its
+      # state, title and notes, then the digest GitHub reports for each
+      # asset, compared with the run's files, no asset more or fewer. Any
+      # difference refuses here, before anything is pushed.
+      - name: The draft holds what this run packaged
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # gh runs outside the job's one checkout (source/); tell it which
+          # repository to target.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          [[ "${RELEASE_ID}" =~ ^[0-9]+$ ]] || { echo "no release id from the draft job: ${RELEASE_ID:-none}" >&2; exit 1; }
+          packaged="$(cd run && for name in $(find . -type f ! -name release-notes.md -printf '%P\n'); do printf '%s sha256:%s\n' "${name}" "$(sha256sum "${name}" | cut -d ' ' -f 1)"; done | LC_ALL=C sort)"
+
+          state="$(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}" --jq '[.draft, .tag_name, .name] | @tsv')"
+          [ "${state}" = "$(printf 'true\t%s\tgateway %s' "${RELEASE_TAG}" "${RELEASE_TAG}")" ] || { echo "release ${RELEASE_ID} is not this run's draft of ${RELEASE_TAG}: ${state}" >&2; exit 1; }
+          # Both are taken without the newlines they end in, which the two
+          # ways of reading them do not agree on.
+          drafted_notes="$(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}" --jq .body)"
+          packaged_notes="$(cat run/release-notes.md)"
+          [ "${drafted_notes}" = "${packaged_notes}" ] || { echo "the draft's notes are not the notes the commit holds:" >&2; diff <(echo "${packaged_notes}") <(echo "${drafted_notes}") >&2; exit 1; }
+
+          drafted="$(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}/assets" --paginate --jq '.[] | "\(.name) \(.digest)"' | LC_ALL=C sort)"
+          if [ "${drafted}" != "${packaged}" ]; then
+            printf 'the draft does not hold what this run packaged.\nThis run packaged:\n%s\nThe draft holds:\n%s\n' "${packaged}" "${drafted}" >&2
+            exit 1
+          fi
+
+      # Past the gate, once the draft is held to the run, and before it is
+      # published: the image the run's files name -- its index byte for byte
+      # the asset's -- pushed under the version, every manifest by its
+      # digest, and the tag read back from the registry and held to that
+      # digest. A draft check that refuses leaves nothing in the registry; a
+      # push that fails leaves the draft unpublished. Nothing in the steps
+      # before this one reads the registry. The credential is the job's
+      # token, in a file of this runner's alone that the copier reads, never
+      # an argument, and is removed after.
       - name: Push the engine image by its digest
         shell: bash
         env:
@@ -633,15 +682,12 @@ jobs:
           (umask 077 && printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf '%s:%s' "${GITHUB_ACTOR}" "${GH_TOKEN}" | base64 -w 0)" > "${auth}")
           REGISTRY_AUTH_FILE="${auth}" source/build/engine-image.sh push image "${IMAGE}:${RELEASE_TAG#v}"
 
-      # The draft has waited at the gate, and whoever may write to the
-      # repository could have changed it there. The release this run
-      # drafted is read through the API by its id, never downloaded: its
-      # state, title and notes, then the digest GitHub reports for each
-      # asset, compared with the run's files, no asset more or fewer. The
-      # publish call follows that last read at once, by the same id, never
-      # by the tag. The moment between the two is the residual window
-      # docs/releasing.md states; the next step closes it after the fact.
-      - name: The draft holds what this run packaged, and is published
+      # The same reads again, now that the push is done, and the publish
+      # call at once after the last of them, by the same id, never by the
+      # tag: the moment between the two is the residual window
+      # docs/releasing.md states, and the next step closes it after the
+      # fact.
+      - name: The draft still holds what this run packaged, and is published
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
