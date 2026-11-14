@@ -112,13 +112,18 @@ configuration of version 13 or later launches every source, bubblewrap at `/usr/
 first of the fixed locations the helper looks in, and `/bin/true` for bubblewrap's start check.
 bubblewrap carries no set-user-id bit: it makes a user namespace as the source's user, which the
 container's runtime gives or refuses. Docker's default seccomp profile refuses it to a container
-without `CAP_SYS_ADMIN`, and on some Docker versions refuses Landlock's calls too; the
-[quickstart](../engine-quickstart.md) shows what posture says then and what to change. Where no
+without `CAP_SYS_ADMIN`, and on some Docker versions refuses Landlock's calls too; a mandatory
+access control profile the host applies to containers (AppArmor or SELinux) may refuse the mounts
+bubblewrap makes as well. The [quickstart](../engine-quickstart.md) shows what posture says then
+and what to change. Where no
 backend can be had the engine starts and serves, `gateway posture --config` reports each such
 source `not-enforced`, and each of its restricted launches refuses with `sandbox-not-enforced`;
 with `measureSandboxAtStart` (engine version 23) the engine does not start instead. CI runs the
-image as built under a seccomp setting that leaves it no backend and holds the start to that
-(`scripts/checks/image-sandbox-start.sh`). What each backend needs of the kernel is in
+image as built under a seccomp setting that leaves it no backend and holds the start to that,
+and under `seccomp=unconfined`, with the host's mandatory access control profile relaxed where
+`docker info` lists one, where it requires posture to say `workspace-write bubblewrap enforced`
+and the start with the member on to say the same: a fallback to Landlock or to none fails the
+step (`scripts/checks/image-sandbox-start.sh`). What each backend needs of the kernel is in
 [engine-config.md](engine-config.md#source-sandbox-policy-engine-version-13), "When the sandbox
 cannot be had".
 

@@ -116,8 +116,11 @@ some of which serve what needs no source. An earlier version refuses the member 
   that.
 - Bad, because Docker's default seccomp profile refuses a new user namespace, and on some
   Docker versions Landlock's calls too. Enforcement there takes `seccomp=unconfined` or a
-  profile of the operator's own (the quickstart). Loosening the profile is the operator's
-  trade-off.
+  profile of the operator's own (the quickstart). A host that applies a mandatory access control
+  profile to containers may refuse bubblewrap's mounts too, and then also takes that profile
+  relaxed. Loosening either is the operator's trade-off. CI requires bubblewrap enforced under
+  `seccomp=unconfined`, with the host's profile relaxed where its runner lists one
+  (`scripts/checks/image-sandbox-start.sh`).
 - Bad, because the bubblewrap in the image moves only when the `Dockerfile` moves its pin.
   bubblewrap's releases are tracked by hand.
 - Bad, because a push that succeeds before the second draft check or the publish call fails

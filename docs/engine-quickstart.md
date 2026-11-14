@@ -127,6 +127,16 @@ default with `clone`, `clone3` and `unshare` allowed to make a user namespace, a
 not tested one, and what a profile allows is the operator's to review. `--init` gives the engine
 an init, which reaps an orphaned descendant of a source ([SECURITY.md](../SECURITY.md)).
 
+A host whose Docker also applies a mandatory access control profile to containers (AppArmor or
+SELinux; `docker info --format '{{json .SecurityOptions}}'` lists it) may refuse the mounts
+bubblewrap makes even with no syscall filter, and posture then names Landlock or `none` in place
+of bubblewrap. Relaxing that profile as well, `--security-opt apparmor=unconfined` or
+`--security-opt label=disable`, is a further trade-off of the operator's. The run below is on a
+host that lists seccomp alone, where `seccomp=unconfined` was enough; the case of a host with
+such a profile was not run for this guide. CI starts the image under `seccomp=unconfined`, with
+the profile relaxed where its runner lists one, and fails unless the start says bubblewrap
+enforced (`scripts/checks/image-sandbox-start.sh`).
+
 ```sh
 docker run -d --name engine --init --security-opt seccomp=unconfined "${mounts[@]}" "$IMAGE"
 docker logs engine
@@ -162,8 +172,9 @@ in the image").
   `chmod`, and connections to local sockets, are not. Under bubblewrap, a listening socket was
   seen that no mask hides. A source in this state launches, and `measureSandboxAtStart` lets the
   engine start. A host whose security module restricts unprivileged user namespaces (Ubuntu's
-  AppArmor setting from 24.04, for one) may pass bubblewrap over for Landlock even under
-  `seccomp=unconfined`. That case is not shown here.
+  AppArmor setting from 24.04, for one), or whose profile for containers refuses bubblewrap's
+  mounts, may pass bubblewrap over for Landlock even under `seccomp=unconfined`. That case is not
+  shown here.
 - **`not-enforced`**: no backend holds the selected mode. Every restricted launch of the source
   refuses, before anything is started, and with `measureSandboxAtStart` the engine does not
   start. The one exception is a policy that selects `danger-full-access`: the operator chose no

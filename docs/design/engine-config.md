@@ -1367,7 +1367,8 @@ takes that backend away; a profile that permits what a backend needs is what enf
 in a container, and loosening the profile is the operator's trade-off. The engine image carries
 `adapter-sandbox`, bubblewrap at `/usr/bin/bwrap` and `/bin/true` for its check
 ([engine-image.md](engine-image.md), "The source sandbox"); under Docker's default seccomp
-profile neither backend can be had there, which the engine image's quickstart
+profile neither backend can be had there, and a mandatory access control profile the host
+applies to containers may take bubblewrap away too, which the engine image's quickstart
 ([engine-quickstart.md](../engine-quickstart.md)) shows and says what to change.
 
 With neither backend, the engine still starts, unless the configuration sets
