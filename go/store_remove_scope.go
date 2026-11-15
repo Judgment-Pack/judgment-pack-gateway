@@ -65,33 +65,46 @@ type storeRemoveScopeOptions struct {
 	timeout   time.Duration
 }
 
-// storeFlags reads a store command's flags, each given once with a value,
-// and the connection's reference: what is not one of names, or is given
-// twice, is a usage error (2), a reference that cannot be held is one (1).
-func storeFlags(args []string, names []string, command, usage string, stderr io.Writer) (map[string]string, *storageSpec, int) {
+// storeFlags reads a store command's flags, each given once with a value:
+// what is not one of names, or is given twice, or names not exactly one
+// reference to the connection and both roles, is a usage error (2). The
+// reference is read by storeConnectionSpec, after every other argument is
+// checked.
+func storeFlags(args []string, names []string, command, usage string, stderr io.Writer) (map[string]string, int) {
 	flags := map[string]string{}
 	for rest := args; len(rest) > 0; rest = rest[2:] {
 		if !contains(names, rest[0]) || len(rest) < 2 || rest[1] == "" {
 			fmt.Fprintln(stderr, usage)
-			return nil, nil, 2
+			return nil, 2
 		}
 		if _, given := flags[rest[0]]; given {
 			fmt.Fprintf(stderr, "%s: %s is given twice\n%s\n", command, rest[0], usage)
-			return nil, nil, 2
+			return nil, 2
 		}
 		flags[rest[0]] = rest[1]
 	}
 	file, environment := flags["--connection-file"], flags["--connection-env"]
 	if (file == "") == (environment == "") || flags["--owner"] == "" || flags["--runtime"] == "" {
 		fmt.Fprintln(stderr, usage)
-		return nil, nil, 2
+		return nil, 2
 	}
+	if environment != "" && !storageEnvironmentName.MatchString(environment) {
+		fmt.Fprintf(stderr, "%s: --connection-env is a variable's name: capital letters, digits and _, not starting with a digit, at most 128\n", command)
+		return nil, 2
+	}
+	return flags, 0
+}
+
+// storeConnectionSpec holds the connection's reference storeFlags checked:
+// a file is held as the seed's is (1 when it cannot be).
+func storeConnectionSpec(flags map[string]string, command string, stderr io.Writer) (*storageSpec, int) {
+	file, environment := flags["--connection-file"], flags["--connection-env"]
 	spec := &storageSpec{kind: storagePostgreSQL, environment: environment}
 	if file != "" {
 		abs, err := filepath.Abs(file)
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: --connection-file: %v\n", command, err)
-			return nil, nil, 1
+			return nil, 1
 		}
 		// the way to the file held as the seed's is, as serve holds the
 		// run-time login's (engineRefusals)
@@ -99,14 +112,11 @@ func storeFlags(args []string, names []string, command, usage string, stderr io.
 		resolved, err := trustedFile(abs, euid, linkOwners{other: euid}, osEngineHost())
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: --connection-file: %v\n", command, err)
-			return nil, nil, 1
+			return nil, 1
 		}
 		spec.file = resolved
-	} else if !storageEnvironmentName.MatchString(environment) {
-		fmt.Fprintf(stderr, "%s: --connection-env is a variable's name: capital letters, digits and _, not starting with a digit, at most 128\n", command)
-		return nil, nil, 2
 	}
-	return flags, spec, 0
+	return spec, 0
 }
 
 // storeTimeout is --timeout, 1 to 3600 seconds, or the default.
@@ -131,7 +141,7 @@ func cmdStoreRemoveScope(args []string, stdout, stderr io.Writer) int {
 func cmdStoreRemoveScopeAt(args []string, stdout, stderr io.Writer, stamp func() string) int {
 	const command = "store remove-scope"
 	usage := storeRemoveScopeUsage
-	flags, spec, code := storeFlags(args, []string{"--connection-file", "--connection-env", "--owner", "--runtime", "--seed", "--scope", "--by", "--timeout"}, command, usage, stderr)
+	flags, code := storeFlags(args, []string{"--connection-file", "--connection-env", "--owner", "--runtime", "--seed", "--scope", "--by", "--timeout"}, command, usage, stderr)
 	if code != 0 {
 		return code
 	}
@@ -150,6 +160,10 @@ func cmdStoreRemoveScopeAt(args []string, stdout, stderr io.Writer, stamp func()
 	timeout, ok := storeTimeout(flags, command, usage, stderr)
 	if !ok {
 		return 2
+	}
+	spec, code := storeConnectionSpec(flags, command, stderr)
+	if code != 0 {
+		return code
 	}
 	o := storeRemoveScopeOptions{
 		roles: pgRoles{owner: flags["--owner"], runtime: flags["--runtime"]},

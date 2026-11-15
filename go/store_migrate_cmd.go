@@ -37,13 +37,17 @@ func cmdStore(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, storeUsage+"\n"+storeRemoveScopeUsage)
 		return 2
 	}
-	flags, spec, code := storeFlags(args[1:], []string{"--connection-file", "--connection-env", "--owner", "--runtime", "--timeout"}, "store migrate", storeUsage, stderr)
+	flags, code := storeFlags(args[1:], []string{"--connection-file", "--connection-env", "--owner", "--runtime", "--timeout"}, "store migrate", storeUsage, stderr)
 	if code != 0 {
 		return code
 	}
 	timeout, ok := storeTimeout(flags, "store migrate", storeUsage, stderr)
 	if !ok {
 		return 2
+	}
+	spec, code := storeConnectionSpec(flags, "store migrate", stderr)
+	if code != 0 {
+		return code
 	}
 	report, err := storeMigrate(spec, pgRoles{owner: flags["--owner"], runtime: flags["--runtime"]}, timeout)
 	if err != nil {
