@@ -399,7 +399,7 @@ func TestThePostgresTakeoverIsRefusedAtOnceWhileAWriteHoldsTheRow(t *testing.T) 
 	time.Sleep(time.Until(start.Add(period + 300*time.Millisecond)))
 	start = time.Now()
 	_, err := second.takeStartLease(newTestLeaseHolder(t), pgStartLeasePeriod, pgStartLeaseRenewal)
-	if !errors.Is(err, errStartLeaseHeld) || !strings.Contains(err.Error(), "start again") || time.Since(start) > time.Second {
+	if !errors.Is(err, errStartLeaseHeld) || !strings.Contains(err.Error(), "start again") || !strings.Contains(err.Error(), "gateway instance "+lease.holder+" ran out") || time.Since(start) > time.Second {
 		t.Fatalf("a takeover beside a write that holds the row: %v after %s", err, time.Since(start))
 	}
 	end()

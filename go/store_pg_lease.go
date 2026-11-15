@@ -62,6 +62,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -280,6 +281,9 @@ func (k *pgKind) takeStartLease(holder string, period, every time.Duration) (*pg
 	sent := time.Now()
 	var refusal error
 	taken := false
+	// expired is each instance whose row ran out, named in the refusal a
+	// write of one of them that still holds its row makes
+	var expired []string
 	// refusedAtOnce ends the transaction the refused NOWAIT failed
 	refusedAtOnce := errors.New("the row is held")
 	err := l.onItsConnection(k.operation, func(tx pgTx) error {
@@ -308,6 +312,8 @@ func (k *pgKind) takeStartLease(holder string, period, every time.Duration) (*pg
 			r.live, _ = pgBool(row[5])
 			if r.live {
 				live = append(live, r)
+			} else {
+				expired = append(expired, r.holder)
 			}
 		}
 		if refusal = admitBeside(as, live); refusal != nil {
@@ -342,8 +348,10 @@ func (k *pgKind) takeStartLease(holder string, period, every time.Duration) (*pg
 		l.closeOwn()
 	}
 	switch {
+	case errors.Is(err, refusedAtOnce) && len(expired) == 1:
+		return nil, fmt.Errorf("%w: the start lease of gateway instance %s ran out, and a write of that instance still holds it; the server ends that write within %s; start again (docs/postgresql-store.md, \"One instance per database\")", errStartLeaseHeld, expired[0], pgIdleInTransaction)
 	case errors.Is(err, refusedAtOnce):
-		return nil, fmt.Errorf("%w: the start lease of a gateway instance ran out, and a write of that instance still holds it; the server ends that write within %s; start again (docs/postgresql-store.md, \"One instance per database\")", errStartLeaseHeld, pgIdleInTransaction)
+		return nil, fmt.Errorf("%w: the start leases of gateway instances %s ran out, and a write of one of them still holds its row; the server ends that write within %s; start again (docs/postgresql-store.md, \"One instance per database\")", errStartLeaseHeld, strings.Join(expired, ", "), pgIdleInTransaction)
 	case pgCode(err) == pgLockNotAvailable:
 		// the lease's lock, held by gateway store remove-scope or gateway
 		// store migrate for its whole transaction
