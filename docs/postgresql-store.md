@@ -178,9 +178,11 @@ runs at most ten minutes from its renewal; the row refuses any later expiry, and
 
 - **The start** takes the lease where there is none or it has expired, before it writes anything.
   While another instance's lease is live the start is refused, and exits 1, with
-  `start-lease-held`, the other instance's identifier and how many seconds its lease runs. It
-  reads the row first and takes it only where it expired, and then without waiting: a start that
-  is refused holds nothing the running instance waits for, however its connection ends.
+  `start-lease-held`, the other instance's identifier and how many seconds its lease runs; or,
+  where the configuration gives `startWaitSeconds`, it waits for the lease ("Handing over to a new
+  instance", below). It reads the row first and takes it only where it expired, and then without
+  waiting: a start that is refused holds nothing the running instance waits for, however its
+  connection ends.
 - **While it serves**, the instance renews the lease every 10 seconds on a connection of its own,
   never one of the pool's; each renewal runs the lease 30 seconds from the renewal's statement by
   the database's clock and is bounded by 5 seconds, opening that connection again where it failed.
@@ -191,7 +193,16 @@ runs at most ten minutes from its renewal; the row refuses any later expiry, and
   `FOR KEY SHARE`, and only where the row is its own with more than 11 seconds of the lease left
   by the database's clock, read once the row is held; otherwise the write fails with
   `start-lease-lost` and writes nothing. A renewal does not wait on the instance's own writes.
-- **A clean stop** (SIGINT or SIGTERM) expires the lease, so the next start is admitted at once.
+- **A stop** (SIGINT or SIGTERM; an interrupt on Windows) drains the instance and then expires
+  the lease. From the signal on, each acquisition is answered `503`, with `Retry-After: 10` and
+  the error `this gateway instance is stopping and admits nothing more; …`, and nothing more is
+  admitted; a seal and the routes that read are still answered. The acquisitions admitted before
+  the signal finish, for at most the operation's time limit (`operationSeconds`, 30 seconds
+  without it); a source still running then is killed, and its acquisition fails as at any stop.
+  The instance then stops listening, answers the requests still open, and sets the lease's expiry
+  to the database's now, so the next start, or a waiting one, takes it at once. The lease is
+  renewed until then. A second signal ends the process at once, undrained: its lease then expires
+  as a crashed instance's does.
 
 **The sessions are bounded.** Every session the instance opens is ended by the server once it sits
 idle within a transaction for 10 seconds (`idle_in_transaction_session_timeout`, set at the
@@ -221,19 +232,72 @@ again". A write whose statements outlast the lease fails at that last statement 
 nothing; a write whose last statement waited for the row reads the clock once it holds it.
 
 The periods are constants of this version. The lease decides which instance serves; it does not
-make several instances safe, which is not supported (ADR-0031, decision 10).
+make several instances safe, which is not supported (ADR-0031, decision 10;
+[ADR-0035](adr/0035-several-instances-on-one-postgresql-database.md) sets out the steps towards
+it, of which the hand-over below is the first).
 
-**Replacing an instance** (an upgrade, a move to another host) is a rolling replacement in this
-order:
+**Handing over to a new instance** (an upgrade, a move to another host). The new instance is
+started before the old one is stopped, and waits for the old one's lease. Its configuration, at
+engine version 25, gives the wait in the `storage` member:
 
-1. stop the old instance with SIGTERM and wait for it to exit: it releases the lease;
-2. run `gateway store migrate` if the new version carries a migration;
-3. start the new instance.
+```json
+"storage": {
+  "kind": "postgresql",
+  "connection": { "file": "/run/secrets/gateway-store-url" },
+  "startWaitSeconds": 300
+}
+```
 
-If the old instance cannot be stopped cleanly (its host is gone), the new start is refused until
-the old lease expires and its sessions are ended, within 45 seconds of its last renewal; start it
-again then. A start that finds the lease held
-names the holder: do not remove the row by hand while that instance may be running.
+`startWaitSeconds`, 1 to 3600, is how long a start that finds another instance's lease live waits
+for it; without the member the start is refused at once, as above. Then:
+
+1. Start the new instance. It listens on its address at once and answers every request, on every
+   route, `503` with `Retry-After: 10` and one fixed body,
+   `{"error":"this gateway instance is not serving yet: it serves once it holds the database's start lease, which another instance holds; send the request again"}`,
+   while it reads the lease's row every renewal interval (10 seconds). It reads the row and takes
+   it only where it is not live by the database's clock: while it waits it holds no row, takes no
+   lock past one read, and writes nothing. It holds connections all the same, so the server's
+   connection budget takes both instances, `connections` + 1 each, for the hand-over. A readiness
+   check that wants a `200` holds it not ready until it serves; one that wants a listener finds it
+   ready at once.
+2. Stop the old instance with SIGTERM. It drains and releases the lease ("A stop", above).
+3. The new instance takes the lease at its next read, within 10 seconds of the release, makes the
+   start's checks again (the server's bounds, the run-time login's privileges, the schema's
+   version, the registry's walk), and serves on the listener it bound, which it never closed: a
+   caller who connects meanwhile waits for its answer and is not refused.
+
+A caller meets `503`, with `Retry-After`, from the old instance from its signal on and from the new
+one until it serves, and nothing else: the window is the drain (at most `operationSeconds`), at
+most one renewal interval, and the start's checks. Give the orchestrator's grace period for a stop
+more than `operationSeconds` and 15 seconds, or it kills the old instance in its drain and the
+hand-over waits for the lease to expire.
+
+If the old instance does not release its lease (its host is gone, a kill, a second signal), the
+waiting instance takes it once it expired, within 45 seconds of the old instance's last renewal
+("The timing", above). If the wait runs out first, the start is refused as one that does not wait:
+exit 1, `start-lease-held`, naming the holder; the listener is closed. A stop signal while it
+waits ends the start, exit 0, having held nothing. A start that finds the lease held names the
+holder: do not remove the row by hand while that instance may be running.
+
+What a hand-over does not do:
+
+- **It does not carry open sessions over.** A session open on the old instance at its stop stays
+  open: the new instance does not continue it (a call into it is refused as a session an earlier
+  process left open, SPEC.md §6), and this kind makes no seal after an interruption yet
+  (`gateway seal-open` and `sealOpenAtStart` are refused, "Not available with this kind yet"). It
+  reads `unregistered-session`, observed `session-open`, to a verifier. Seal a session before the
+  stop where it can be; a caller whose session the stop left open opens a new one on the new
+  instance. A later step seals such sessions (ADR-0035, "Decision outcome").
+- **It does not compare keys or authorities.** The start does not hold the new instance to the
+  old one's seed or authority: the database records neither (the lease's row holds the
+  instance's identifier and its times, and nothing else), and the registry's walk holds a key
+  only to the registry's rotations. Give both instances one seed and one authority: seals and
+  receipts made under another key do not verify under the key a verifier pins.
+- **It does not migrate.** When the new version carries a migration, the new binary refuses the
+  database's earlier schema at its start, before it waits. Stop the old instance with SIGTERM and
+  wait for it to exit, run `gateway store migrate`, then start the new instance: every instance is
+  stopped while a migration runs. A start that waited checks the schema again once it holds the
+  lease, and is refused where it is no longer its binary's.
 
 ## The migration command
 
