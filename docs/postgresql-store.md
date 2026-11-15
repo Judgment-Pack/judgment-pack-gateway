@@ -183,8 +183,8 @@ runs at most ten minutes from its renewal; the row refuses any later expiry, and
   instance", below). It reads the row first and takes it only where it expired, and then without
   waiting: a start that is refused holds nothing the running instance waits for, however its
   connection ends.
-- **While it serves**, the instance renews the lease every 10 seconds on a connection of its own,
-  never one of the pool's; each renewal runs the lease 30 seconds from the renewal's statement by
+- **From the take until the release**, through the rest of the start and while it serves, the
+  instance renews the lease every 10 seconds on a connection of its own, never one of the pool's; each renewal runs the lease 30 seconds from the renewal's statement by
   the database's clock and is bounded by 5 seconds, opening that connection again where it failed.
   A renewal that finds the lease taken or expired stops the instance, and so does a failure that
   leaves less than one renewal's interval of the lease certainly held: it stops serving and exits
