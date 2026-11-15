@@ -713,6 +713,54 @@ func (l pgLog) appendRecord(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// appendJudged appends, as appendRecord does, what build answers for the
+// log's bytes as they stand under the append's lock: the lock is taken
+// first, the log read whole in the same transaction, at READ COMMITTED, so
+// what build judges is every record committed before this append, and none
+// commits after it but this one until its commit (judgedAppendLog).
+func (l pgLog) appendJudged(build func(existing []byte) ([]byte, error)) (int, error) {
+	var refused error
+	var data []byte
+	present, made := false, false
+	err := l.k.transact(pgWriteCommitted, func(tx pgTx) error {
+		if _, err := tx.exec(`SELECT pg_catalog.pg_advisory_xact_lock($1)`, int64(pgLogAppendLock)); err != nil {
+			return err
+		}
+		existing, there, err := l.readTx(tx, 0)
+		if err != nil || !there {
+			return err
+		}
+		present = true
+		if data, refused = build(existing); refused != nil {
+			return refused
+		}
+		if len(data) == 0 || len(data) > pgMaxValue {
+			refused = &storeError{fault: faultRefused, op: "append", err: fmt.Errorf("store: a record of %d bytes is not within the kind's bounds of 1 to %d", len(data), pgMaxValue)}
+			return refused
+		}
+		rows, err := tx.exec(`INSERT INTO gateway.log_records (log, start, data)
+			SELECT g.name, COALESCE((SELECT r.stop FROM gateway.log_records r
+				WHERE r.log = g.name ORDER BY r.start DESC LIMIT 1), 0), $2
+			FROM gateway.logs g WHERE g.name = $1
+			RETURNING start`, l.name, data)
+		made = err == nil && len(rows.rows) == 1
+		return err
+	})
+	var unknown pgCommitUnknown
+	switch {
+	case refused != nil:
+		return 0, refused
+	case errors.As(err, &unknown):
+		// written whole; whether it was made durable is not known
+		return len(data), &storeError{fault: faultDurability, op: "append", written: len(data), committing: true, err: err}
+	case err != nil:
+		return 0, pgFailure("append", true, err)
+	case !present || !made:
+		return 0, &storeError{fault: faultAbsent, op: "append"}
+	}
+	return len(data), nil
+}
+
 // readTx reads the log from a cursor within a transaction already open.
 func (l pgLog) readTx(tx pgTx, from int64) ([]byte, bool, error) {
 	head, err := tx.exec(`SELECT EXISTS (SELECT 1 FROM gateway.logs WHERE name = $1),

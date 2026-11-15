@@ -237,7 +237,15 @@ func newRegistryWriterOn(log appendLog, name string, seed []byte, history func()
 			return nil, fmt.Errorf("the store holds sessions and the registry is not there: %s; restore the registry, or, knowing no session was ever sealed, make it empty by hand", name)
 		}
 		if err := log.createLog(); err != nil {
-			return nil, err
+			// Where instances serve one database beside one another, another
+			// instance's start may have made the registry since this read: it
+			// is there, and is read and walked as a registry found is.
+			if _, shared := log.(judgedAppendLog); !shared || faultOf(err) != faultTaken {
+				return nil, err
+			}
+			if existing, err = log.readLog(0); err != nil {
+				return nil, err
+			}
 		}
 	} else if err != nil {
 		return nil, err
@@ -303,11 +311,35 @@ func (w *registryWriter) sealAfterInterruption(sessionID string, finalCount int6
 	})
 }
 
+// errSessionAlreadySealed is a seal refused because the registry holds one
+// for the session.
+var errSessionAlreadySealed = errors.New("session already sealed")
+
+// judgedAppendLog is a log that several writers append to -- the PostgreSQL
+// kind's, where instances serve one database beside one another
+// (docs/adr/0035-several-instances-on-one-postgresql-database.md, option
+// C): an append is judged against the log as it stands under the append's
+// own lock, read in the append's transaction, so two writers never each
+// find a session unsealed and both append its seal.
+type judgedAppendLog interface {
+	// appendJudged reads the log whole under the append's lock and appends
+	// what build answers for those bytes, as appendRecord appends; a
+	// refusal of build appends nothing and is answered as it is.
+	appendJudged(build func(existing []byte) ([]byte, error)) (int, error)
+}
+
+// afterSealJudged, where a test sets it, runs once a seal appended to a
+// judgedAppendLog was judged and before it is appended.
+var afterSealJudged func()
+
 // appendSeal appends the record a session's seal is, once the registry,
 // read as the verifier reads it, holds no seal for the session.
 func (w *registryWriter) appendSeal(sessionID string, build func() *vObject) (*vObject, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, err
+	}
+	if judged, ok := w.log.(judgedAppendLog); ok {
+		return w.appendSealJudged(judged, sessionID, build)
 	}
 	// the registry is read as the verifier reads it (readRegistryBytes): a
 	// registry that is there and cannot be read -- a link to nothing, a
@@ -327,25 +359,10 @@ func (w *registryWriter) appendSeal(sessionID string, build func() *vObject) (*v
 	// The registry is walked from its first key (SPEC.md §3b), so a session
 	// sealed under a key this gateway rotated from stays sealed, and a walk
 	// that does not hold, or ends at another key, seals nothing.
-	walk, err := engineWalk(existing, w.priv.Public().(ed25519.PublicKey))
+	line, boundary, record, err := w.sealLine(existing, sessionID, build)
 	if err != nil {
 		return nil, err
 	}
-	if _, sealed := walk.seals[sessionID]; sealed {
-		return nil, fmt.Errorf("session already sealed: %s", sessionID)
-	}
-	record := build()
-
-	// A record starts on a line of its own. A registry whose last line is
-	// unterminated -- an earlier seal written in part, or whole but for its
-	// newline -- is ended first: joined to that line, the record would make
-	// one line that is no seal, and neither would load.
-	var line []byte
-	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
-		line = append(line, '\n')
-	}
-	boundary := len(line)
-	line = append(append(line, canon(record)...), '\n')
 
 	// the registry is there (above); the log makes none where it went
 	// away between the read and the append
@@ -361,6 +378,65 @@ func (w *registryWriter) appendSeal(sessionID string, build func() *vObject) (*v
 		return nil, err
 	}
 	return record, nil
+}
+
+// appendSealJudged is appendSeal on a log several writers append to: the
+// registry is read, walked and judged in the append's transaction, under
+// its lock (judgedAppendLog).
+func (w *registryWriter) appendSealJudged(log judgedAppendLog, sessionID string, build func() *vObject) (*vObject, error) {
+	var record *vObject
+	boundary := 0
+	n, err := log.appendJudged(func(existing []byte) ([]byte, error) {
+		line, b, r, err := w.sealLine(existing, sessionID, build)
+		if err != nil {
+			return nil, err
+		}
+		if afterSealJudged != nil {
+			afterSealJudged()
+		}
+		record, boundary = r, b
+		return line, nil
+	})
+	if faultOf(err) == faultAbsent {
+		return nil, fmt.Errorf("the registry the engine made at its start is not there: %s", w.path)
+	}
+	if err != nil {
+		// as appendSeal answers a failed append
+		if record != nil && (n > boundary || committed(err)) {
+			return nil, sealMayBeWritten{err}
+		}
+		return nil, err
+	}
+	return record, nil
+}
+
+// sealLine judges existing, the registry's bytes, for a seal of sessionID:
+// walked as the verifier walks it, it must hold no seal for the session. It
+// answers the line that appends the record build makes, the offset in it
+// where the record starts, and the record.
+func (w *registryWriter) sealLine(existing []byte, sessionID string, build func() *vObject) ([]byte, int, *vObject, error) {
+	// sealed as the verifier loads a seal, never as any parseable line
+	// naming the session (appendSeal)
+	walk, err := engineWalk(existing, w.priv.Public().(ed25519.PublicKey))
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if _, sealed := walk.seals[sessionID]; sealed {
+		return nil, 0, nil, fmt.Errorf("%w: %s", errSessionAlreadySealed, sessionID)
+	}
+	record := build()
+
+	// A record starts on a line of its own. A registry whose last line is
+	// unterminated -- an earlier seal written in part, or whole but for its
+	// newline -- is ended first: joined to that line, the record would make
+	// one line that is no seal, and neither would load.
+	var line []byte
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		line = append(line, '\n')
+	}
+	boundary := len(line)
+	line = append(append(line, canon(record)...), '\n')
+	return line, boundary, record, nil
 }
 
 func nowStamp() string {
