@@ -164,23 +164,30 @@ session observed `session-removed` instead of `sealed-session-missing`; with its
 away it is `sealed-session-missing` again. A session holding receipts of the scope identifier
 beside receipts of another, of none, or that do not verify, and a receipt left in the store
 that cites one it would remove, refuse the whole call by name, and nothing is removed. A run
-cut off is completed by running it again.
+cut off is completed by running it again. On the PostgreSQL storage kind, `gateway store
+remove-scope` removes a scope identifier's rows and its record of the identifier, as the
+migration login, in one transaction that keeps the same records
+([docs/postgresql-store.md](docs/postgresql-store.md), "Removing one scope identifier's rows").
 
 **What a removal of a scope identifier leaves.** In the store and beside it, after the call:
 
 - the registry's seal of each removed sealed session: the session's id, its count, its time,
   the key's id and a signature; no receipt, payload or scope identifier, though a session's id
   is the caller's and may say anything;
-- the removal records in `artifact-removals.jsonl`, which name the scope identifier, each
-  sealed session removed by its id and its seal, the counts removed, the time and the `--by`
-  label;
-- a payload whose bytes a receipt of another scope identifier, or of none, names too, kept
-  once for both, and a descriptor statement or snapshot, which descriptor provenance reads
-  (SPEC.md §9);
+- the removal records in `artifact-removals.jsonl` (on the PostgreSQL kind, rows of
+  `gateway.removal_records`, which an export writes as that file), which name the scope
+  identifier, each sealed session removed by its id and its seal, the counts removed, the time
+  and the `--by` label;
+- on the filesystem kind, a payload whose bytes a receipt of another scope identifier, or of
+  none, names too, kept once for both (on the PostgreSQL kind each scope holds its own row of
+  a payload, and the removed scope's row goes), and a descriptor statement or snapshot, which
+  descriptor provenance reads (SPEC.md §9);
 - what lies outside the store: decision records, which may cite the removed receipts and then
   no longer resolve, the action journal, and the gateway's other files, which are the
   operator's to remove;
-- copies made before the call: an export, a backup.
+- copies made before the call: an export, a backup; on the PostgreSQL kind, also the removed
+  rows' bytes in the database's own files until the server's vacuum reuses their space, and in
+  its write-ahead log and the base backups the operator keeps.
 
 The gateway keeps no credential or cursor of a scope identifier in the store: a source's
 credentials are the operator's files, and a token obtained for a scope identifier is held in

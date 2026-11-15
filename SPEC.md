@@ -2048,6 +2048,19 @@ sessions and receipts and never the scope identifier; the command prints each re
 appends as its line. `--by` is a label of the form of a scope identifier, required, and not
 checked against anything.
 
+**`gateway store remove-scope`** removes one scope identifier's rows from a store of the
+PostgreSQL storage kind: its sessions, receipts, payloads and documents, and its row of the
+scope identifiers recorded. It runs as the migration login acting as the owner role, in one
+transaction that holds the migration's advisory lock and the start lease, and is refused while
+an instance holds the lease. On that kind a session's receipts are of one scope and no receipt
+cites another, so neither refusal above arises. The transaction keeps the same records, each
+signed by the key the registry's walk ends at and read back as above: a `session-removal`
+record for each sealed session of the scope and one `scope-removal` record of what it removes.
+They are kept as rows of no scope, one for each line of `<root>/artifact-removals.jsonl`, and an
+export writes them as that file. The rows, the records and the identifier's row commit
+together or not at all, and a second run finds nothing and appends nothing
+(`docs/postgresql-store.md`, "Removing one scope identifier's rows").
+
 What remains in and beside the store after a removal is stated in `README.md`, "What a removal
 of a scope identifier leaves".
 

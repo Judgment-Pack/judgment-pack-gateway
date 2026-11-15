@@ -163,7 +163,7 @@ place:
 | a platform's `write: true`; `/act` | the configuration's load; `/act` answers 501 | an action keeps its journal and evidence on disk |
 | a platform's `descriptorStatements`; descriptor provenance; a descriptor capture by `gateway connect` | the load; the start; `connect` before any adapter is asked | the signed snapshot is read from the store on disk (`gateway connect --no-descriptors` connects a platform without one) |
 | `/verify` | answers 501 | it verifies the store on disk: export the store and verify the export |
-| `gateway seal-open --config`, `gateway remove-artifact --config` | the command | they read the sessions, and keep removal records, on disk |
+| `gateway seal-open --config`, `gateway remove-artifact --config`, `gateway remove-scope --config` | the command | they read the sessions, and keep removal records, on disk; on this kind `gateway store remove-scope` removes a scope identifier's rows ("Removing one scope identifier's rows") |
 | `gateway rotate-key` | the start refuses a rotation under way beside the seed | the rotation keeps the registry at a path |
 
 `gateway verify` takes a store directory and a registry file: it reads an export of this kind
@@ -249,7 +249,7 @@ the run-time role, before anything is applied. It prints, as canonical JSON, wha
 part of the connection string:
 
 ```json
-{"applied":[1,2,3,4],"migrations":"sha256:…","schemaVersion":4}
+{"applied":[1,2,3,4,5],"migrations":"sha256:…","schemaVersion":5}
 ```
 
 A second run applies nothing (`"applied":[]`). A schema newer than the binary's migrations is
@@ -294,9 +294,13 @@ start refuses a table it was not restored on.
 | `gateway.schema_migrations` | SELECT | every one |
 | `gateway.start_lease` (one row: the instance that serves) | SELECT, INSERT, UPDATE | every one: it carries no scope |
 | `gateway.scope_identifiers` (schema version 3: the scope identifiers recorded) | SELECT, INSERT | no scope's: every row is of no scope |
+| `gateway.removal_records` (schema version 5: the removal records) | SELECT | no scope's: every row is of no scope |
 
 Append-only by privilege: nothing but a document and the start lease's row is changed once written,
-and nothing but a document is removed; a scope identifier, once recorded, stays. The login holds no
+and nothing but a document is removed; a scope identifier, once recorded, stays, and a removal
+record is the run-time login's to read alone. Rows leave otherwise only by `gateway store
+remove-scope`, as the migration login acting as the owner ("Removing one scope identifier's
+rows"), which changes none of these privileges. The login holds no
 TRUNCATE, REFERENCES or TRIGGER (nor, from PostgreSQL 17, MAINTAIN), and makes, changes and drops
 no table, schema, policy or other object in a schema. No function is defined in the schema. An
 append to the registry takes a transaction advisory lock (`pg_advisory_xact_lock`, which every role
@@ -375,8 +379,9 @@ besides.
 | a seal of the session | `gateway.log_records` | none: the registry carries no scope |
 
 A source of no scope writes rows of `none`, and its receipts carry no `scope` member, as before.
-The kind keeps no removal record: `gateway remove-artifact` is refused with it ("Not available
-with this kind yet").
+The kind keeps the removal records of `gateway store remove-scope` alone, as rows of no scope
+("Removing one scope identifier's rows"): `gateway remove-artifact` is refused with it ("Not
+available with this kind yet").
 
 - **Rows of no scope** are reached by the value `none`, which a transaction sets as a scope's
   transaction sets its own: a transaction of a scope identifier never sees one, and a transaction
@@ -393,7 +398,8 @@ with this kind yet").
   keeps one layout for every scope and takes such an acquisition.)
 - **The record of the scope identifiers** (`gateway.scope_identifiers`, schema version 3) holds each
   scope identifier a start has opened a view for, written by that start before the view writes
-  anything, and never changed or removed. Its rows are of no scope, so no scope's transaction reads
+  anything, never changed, and removed only with the scope's rows by `gateway store
+  remove-scope`. Its rows are of no scope, so no scope's transaction reads
   another's identifier from it. What must reach every scope's rows reads it and then each scope in
   its turn, in one transaction whose every statement is of one scope, the setting changed between
   statements for the transaction alone: the export, the start's question whether the store holds a
@@ -407,8 +413,8 @@ with this kind yet").
   which is every new session's, is then looked for in no scope and in every other identifier
   recorded, in the same transaction, two statements each (2N + 5 statements for an acquisition with
   N identifiers recorded), so that a name another scope holds is refused. The question is asked
-  under the service's lock, so other acquisitions, releases and seals wait for it, and identifiers
-  are never removed from the record. Measured on the test container (PostgreSQL 16 on loopback, one
+  under the service's lock, so other acquisitions, releases and seals wait for it, and an
+  identifier leaves the record only by a removal, which no instance serves beside. Measured on the test container (PostgreSQL 16 on loopback, one
   connection, 31 admissions each), a new session's admission took a median of about 100 ms with 100
   identifiers recorded (205 statements) and about 1 s with 1,000 (2,005 statements); an admission
   into a session of the source's own scope took about 2 ms at either.
@@ -426,6 +432,57 @@ with this kind yet").
 - Row security keeps apart what the gateway does. It is not a boundary against the run-time login
   itself, which may set `gateway.scope` as it likes in a transaction of its own; a login per scope
   identifier is an open decision (ADR-0031).
+
+## Removing one scope identifier's rows
+
+```text
+gateway store remove-scope (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> --seed <file> --scope <identifier> --by <label> [--timeout <seconds>]
+```
+
+The command removes every row of one scope identifier, its sessions (`gateway.series`), receipts
+(`gateway.entries`), payloads (`gateway.blobs`) and documents, and its row of
+`gateway.scope_identifiers`, and records the removal, in one transaction
+([ADR-0034](adr/0034-removing-one-scope-identifiers-records.md)). It takes the migration login's
+connection string as `gateway store migrate` does, never printed, and the gateway's seed file, by
+which the records are signed.
+
+- **Who removes.** The migration login, by SET ROLE to the owner for the transaction alone: the
+  owner holds DELETE as the tables' owner. No role, grant or function is added for it; the
+  run-time login's privileges do not change, and it holds no DELETE on a table but
+  `gateway.documents` (a test pins its grants before and after a removal).
+- **What it holds.** The migration's advisory lock, so no migration runs beside it, and the start
+  lease, taken as a start takes it: while an instance serves, the command is refused
+  (`start-lease-held: a gateway instance serves the database, … stop the gateway, then remove`)
+  and nothing changes; a start while it runs waits for it or is refused. The lease is expired
+  again before the commit. A schema not at the binary's version is refused (migrate first), and
+  so is a store with no registry yet.
+- **Row security stays forced.** The scope's rows are read and removed with `gateway.scope` set
+  to the scope's form, and the scope named in every DELETE besides; each DELETE's count is held
+  to the count read, and the transaction rolls back where one differs. The records and the
+  identifier's row are written with it set to `none`.
+- **The records.** Those of the filesystem kind's `gateway remove-scope` (SPEC.md §1.3a, §6): a
+  `session-removal` record for each sealed session of the scope and one `scope-removal` record
+  for the call, signed by the seed's key, which is to be the key the registry's walk ends at, and
+  each read back as a verifier reads it before it is kept. They are rows of
+  `gateway.removal_records` (schema version 5), of no scope, one for each line of the removal
+  file, which the run-time role may read and not write. `gateway export --config` writes them as
+  the export's `store/artifact-removals.jsonl`, and the export verifies, each removed sealed
+  session observed `session-removed`. The command prints each record kept, as its line, and on
+  stderr what it removed, by counts.
+- **All or nothing.** The rows, the identifier's row and the records commit together or not at
+  all. A second run finds nothing of the scope and keeps no record; a scope identifier recorded
+  with no row is removed from the record, and no record is kept.
+- **What cannot arise here.** A session's receipts are of one scope on this kind, and nothing
+  that cites a receipt (`/act`, descriptor statements) is available with it, so the filesystem
+  kind's refusals of a session of mixed scopes and of a receipt that cites a removed one do not
+  arise.
+- **What remains** is stated in README.md, "What a removal of a scope identifier leaves": on this
+  kind, besides, the removed rows' bytes in the database's own files until the server's vacuum
+  reuses their space, and in its write-ahead log and the base backups the operator keeps.
+
+Exit 0 on success, 1 on a refusal or failure, 2 on a usage error. A gateway started again on the
+store serves as before; a platform fixed to the removed scope identifier records it again at its
+start and begins anew.
 
 ## Time
 
