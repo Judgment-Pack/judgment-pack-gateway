@@ -1930,8 +1930,11 @@ With it, a start that finds another instance's start lease live does not exit: i
 `listen` at once, answers every request `503` with `Retry-After` and one fixed body, and reads the
 lease every renewal interval, by the database's clock, holding no row and writing nothing. Once the
 lease is released or has expired it takes it, makes the start's checks again and serves on the
-listener it bound. When the wait runs out, the start is refused as before the member: exit 1,
-`start-lease-held`. Without the member the start is refused at once, as at version 24.
+listener it bound. Where `listen` is in use, as it is by the instance it takes over from on the
+same host, it waits without listening, nothing answering on its behalf, and binds `listen` once it
+holds the lease; any other failure to bind ends the start. When the wait runs out, the start is
+refused as before the member: exit 1, `start-lease-held`. Without the member the start is refused
+at once, as at version 24.
 
 The stop is the same at every version of the kind: a stop signal closes admission (each
 acquisition is answered `503` with `Retry-After`), lets what was admitted finish within

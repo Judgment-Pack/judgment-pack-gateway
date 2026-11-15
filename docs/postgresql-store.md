@@ -260,14 +260,26 @@ for it; without the member the start is refused at once, as above. Then:
    connection budget takes both instances, `connections` + 1 each, for the hand-over. A readiness
    check that wants a `200` holds it not ready until it serves; one that wants a listener finds it
    ready at once.
-2. Stop the old instance with SIGTERM. It drains and releases the lease ("A stop", above).
+
+   Where its address is in use, as it is when the new instance runs on the old one's host with the
+   same `listen`, it says so and waits for the lease without listening: nothing answers on its
+   behalf, and the old instance goes on answering at that address. Any other failure to bind ends
+   the start, exit 1.
+2. Stop the old instance with SIGTERM. It drains and releases the lease ("A stop", above); it stops
+   listening before it releases the lease.
 3. The new instance takes the lease at its next read, within 10 seconds of the release, makes the
    start's checks again (the server's bounds, the run-time login's privileges, the schema's
-   version, the registry's walk), and serves on the listener it bound, which it never closed: a
-   caller who connects meanwhile waits for its answer and is not refused.
+   version, the registry's walk), and serves. On its own address it serves on the listener it
+   bound, which it never closed: a caller who connects meanwhile waits for its answer and is not
+   refused. On the old instance's address it binds the address once it holds the lease; from the
+   old instance's stop of listening until then a caller's connection is refused. A bind that fails
+   then, the address taken by another program meanwhile, ends the start, exit 1, and releases the
+   lease.
 
-A caller meets `503`, with `Retry-After`, from the old instance from its signal on and from the new
-one until it serves, and nothing else: the window is the drain (at most `operationSeconds`), at
+A caller meets `503`, with `Retry-After`, from the old instance from its signal on and, on an
+address of its own, from the new one until it serves, and nothing else; on the old instance's
+address, the old instance's `503`s and then, until the new one serves, a refused connection. The
+window is the drain (at most `operationSeconds`), at
 most one renewal interval, and the start's checks. Give the orchestrator's grace period for a stop
 more than `operationSeconds` and 15 seconds, or it kills the old instance in its drain and the
 hand-over waits for the lease to expire.

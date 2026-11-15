@@ -58,10 +58,17 @@ func startHandoverInstance(t *testing.T, cfg engineConfig, sources map[string]so
 	if err != nil {
 		t.Fatal(err)
 	}
+	return runHandoverInstance(t, cfg, sources, period, every, listener.Addr().String(),
+		func(string, io.Writer) (net.Listener, error) { return listener, nil })
+}
+
+// runHandoverInstance runs serve --config on the kind, reached at addr,
+// with the bind given, until the test stops it.
+func runHandoverInstance(t *testing.T, cfg engineConfig, sources map[string]sourceSpec, period, every time.Duration, addr string, bind func(string, io.Writer) (net.Listener, error)) *handoverInstance {
+	t.Helper()
 	stopped, stop := context.WithCancel(context.Background())
-	i := &handoverInstance{url: "http://" + listener.Addr().String(), stop: stop, said: &syncBuffer{}, done: make(chan struct{})}
-	run := kindRun{period: period, every: every, stopped: stopped, said: i.said,
-		bind: func(string, io.Writer) (net.Listener, error) { return listener, nil }}
+	i := &handoverInstance{url: "http://" + addr, stop: stop, said: &syncBuffer{}, done: make(chan struct{})}
+	run := kindRun{period: period, every: every, stopped: stopped, said: i.said, bind: bind}
 	go func() {
 		defer close(i.done)
 		i.exit = runOnKind(cfg, testSeed, sources, nil, nil, run)
@@ -303,6 +310,54 @@ func TestThePostgresInstanceWaitsAndTakesOverWhenTheHolderStops(t *testing.T) {
 	}
 	if pgLeaseLive(t, db) {
 		t.Fatal("a clean stop left its lease live")
+	}
+}
+
+// A new instance started beside the old one on the same host and address
+// finds the address in use: it waits without listening, while the old one
+// serves there, and binds the address and serves once the old one stopped
+// and released the lease.
+func TestThePostgresInstanceOnTheHoldersAddressWaitsWithoutListeningAndTakesOver(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	cfg := pgHandoverConfig(t, db, "60")
+	ok := func(a handoverAnswer) bool { return a.err == nil && a.code == http.StatusOK }
+
+	first := startHandoverInstance(t, cfg, map[string]sourceSpec{}, pgStartLeasePeriod, pgStartLeaseRenewal)
+	handoverUntil(t, 30*time.Second, func() handoverAnswer { return handoverAsk(http.MethodGet, first.url+"/publickey", "") }, ok, "the first instance serves")
+	holder := pgLeaseHolder(t, db)
+
+	same := cfg
+	same.listen = strings.TrimPrefix(first.url, "http://")
+	second := runHandoverInstance(t, same, map[string]sourceSpec{}, pgStartLeasePeriod, time.Second, same.listen, listenForConfig)
+	handoverUntil(t, 10*time.Second, func() handoverAnswer { return handoverAnswer{body: second.said.String()} },
+		func(a handoverAnswer) bool {
+			return strings.Contains(a.body, "start: "+same.listen+" is in use") && strings.Contains(a.body, "start: waiting up to 1m0s for the start lease")
+		}, "the second instance waits without listening")
+	select {
+	case <-second.done:
+		t.Fatalf("the instance on the holder's address ended at once, exit %d: %s", second.exit, second.said.String())
+	default:
+	}
+	if a := handoverAsk(http.MethodGet, first.url+"/publickey", ""); !ok(a) {
+		t.Fatalf("the first instance, beside one waiting on its address: %d %s %v", a.code, a.body, a.err)
+	}
+	if got := pgLeaseHolder(t, db); got != holder || !pgLeaseLive(t, db) {
+		t.Fatalf("the waiting instance took or changed the lease: %q, the first's %q", got, holder)
+	}
+
+	first.stop()
+	if code := first.wait(t, 30*time.Second); code != 0 {
+		t.Fatalf("the first instance's stop exits %d: %s", code, first.said.String())
+	}
+	handoverUntil(t, 20*time.Second, func() handoverAnswer { return handoverAsk(http.MethodGet, second.url+"/publickey", "") }, ok,
+		"the second instance serves on the address once the first released the lease")
+	if got := pgLeaseHolder(t, db); got == holder || got == "" {
+		t.Fatalf("the lease after the hand-over: %q", got)
+	}
+	second.stop()
+	if code := second.wait(t, 60*time.Second); code != 0 {
+		t.Fatalf("the second instance's stop exits %d: %s", code, second.said.String())
 	}
 }
 

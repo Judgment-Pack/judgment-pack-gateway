@@ -13,7 +13,10 @@ package main
 //     the lease every renewal interval; it takes the lease once the database's
 //     clock says it was released or expired, then makes the start's checks
 //     and serves on the listener it bound, which it never closed in between.
-//     Each poll reads the row and takes it only where it is not live, so a
+//     Where its address is in use, as it is by the instance it takes over
+//     from on the same host, it waits without listening -- nothing answers
+//     -- and binds the address once it holds the lease, which that instance
+//     releases only after it stopped listening. Each poll reads the row and takes it only where it is not live, so a
 //     waiting instance holds no row and writes nothing. When the wait runs
 //     out the start is refused with the last poll's start-lease-held;
 //   - the stop signal of an instance that holds the lease closes its gate
@@ -37,8 +40,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"runtime"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -72,12 +77,21 @@ func runOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, ide
 	var front *waitingFront
 	if cfg.storage.startWait > 0 {
 		bound, err := r.bind(cfg.listen, r.said)
-		if err != nil {
+		switch {
+		case err == nil:
+			front = serveWaiting(bound, r.every)
+			fmt.Fprintf(r.said, "start: listening on %s; until this instance serves, every request is answered 503 with Retry-After %d\n", bound.Addr(), retryAfterOf(r.every))
+		case addressInUse(err):
+			// the instance it takes over from, on this host and address:
+			// that one stops listening before it releases the lease
+			// (serveOn's Shutdown closes the listener, and kindStart.stop
+			// releases the lease after serving ended), so the address is
+			// bound below once the lease is held
+			fmt.Fprintf(r.said, "start: %s is in use, as it is by an instance on this host that serves the database; this instance waits without listening, and binds it once it holds the start lease\n", cfg.listen)
+		default:
 			fmt.Fprintln(r.said, "start:", err)
 			return 1
 		}
-		front = serveWaiting(bound, r.every)
-		fmt.Fprintf(r.said, "start: listening on %s; until this instance serves, every request is answered 503 with Retry-After %d\n", bound.Addr(), retryAfterOf(r.every))
 	}
 	started, err := startOnKind(cfg, seed, sources, identity, r)
 	var listener net.Listener
@@ -97,7 +111,8 @@ func runOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, ide
 	}
 	defer started.stop(r.said)
 	if listener == nil {
-		// as before the member: bound once the start holds the lease
+		// as before the member, or where the address was in use: bound
+		// once the start holds the lease
 		if listener, err = r.bind(cfg.listen, r.said); err != nil {
 			fmt.Fprintln(r.said, "serve:", err)
 			return 1
@@ -107,6 +122,17 @@ func runOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, ide
 		stopped: r.stopped, restore: r.restore, drain: cfg.storage.operation,
 		retryAfter: retryAfterOf(r.every), listener: listener, said: r.said,
 	})
+}
+
+// wsaAddrInUse is Windows' WSAEADDRINUSE, the error of a bind to an address
+// in use there, which package syscall does not name.
+const wsaAddrInUse = syscall.Errno(10048)
+
+// addressInUse says whether a bind failed because the address is in use.
+func addressInUse(err error) bool {
+	var errno syscall.Errno
+	return errors.Is(err, syscall.EADDRINUSE) ||
+		(runtime.GOOS == "windows" && errors.As(err, &errno) && errno == wsaAddrInUse)
 }
 
 // waitForStartLease takes the lease as takeStartLease does. Where wait is
