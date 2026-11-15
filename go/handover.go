@@ -226,8 +226,11 @@ func (f *waitingFront) handOver() net.Listener {
 type handoverListener struct {
 	net.Listener
 	accepted chan acceptedConn
-	closed   chan struct{}
-	once     sync.Once
+	// back holds a connection a detached view took from accepted as it was
+	// detached, for the next server; one view is ever detached
+	back   chan acceptedConn
+	closed chan struct{}
+	once   sync.Once
 }
 
 type acceptedConn struct {
@@ -236,7 +239,7 @@ type acceptedConn struct {
 }
 
 func newHandoverListener(l net.Listener) *handoverListener {
-	h := &handoverListener{Listener: l, accepted: make(chan acceptedConn), closed: make(chan struct{})}
+	h := &handoverListener{Listener: l, accepted: make(chan acceptedConn), back: make(chan acceptedConn, 1), closed: make(chan struct{})}
 	go h.acceptLoop()
 	return h
 }
@@ -260,6 +263,11 @@ func (h *handoverListener) acceptLoop() {
 	}
 }
 
+// take is the next accepted connection for a server: a view's, until it is
+// detached, or the service's (detached nil). A connection that reaches a
+// view as it is detached -- the two ready at once, of which select takes
+// either -- is put back for the service's server, so once a view is
+// detached every connection goes to the service's server.
 func (h *handoverListener) take(detached <-chan struct{}) (net.Conn, error) {
 	select {
 	case <-detached:
@@ -267,7 +275,15 @@ func (h *handoverListener) take(detached <-chan struct{}) (net.Conn, error) {
 	default:
 	}
 	select {
+	case a := <-h.back:
+		return a.conn, a.err
 	case a := <-h.accepted:
+		select {
+		case <-detached:
+			h.back <- a
+			return nil, net.ErrClosed
+		default:
+		}
 		return a.conn, a.err
 	case <-h.closed:
 		return nil, net.ErrClosed
@@ -283,6 +299,13 @@ func (h *handoverListener) Close() error {
 	h.once.Do(func() {
 		close(h.closed)
 		err = h.Listener.Close()
+		select {
+		case a := <-h.back:
+			if a.conn != nil {
+				a.conn.Close()
+			}
+		default:
+		}
 	})
 	return err
 }
