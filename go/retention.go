@@ -36,7 +36,70 @@ const (
 	// The observations a receipt that passed with no bytes checked carries.
 	observationNotRetained = "artifact-not-retained"
 	observationRemoved     = "artifact-removed"
+
+	// The records of a scope identifier's removal (SPEC.md §1.3a, "A removed
+	// session"; docs/adr/0034-removing-one-scope-identifiers-records.md), in
+	// the same file: one for each sealed session removed, and one for the
+	// call. Each is signed under a prefix of its own.
+	sessionRemovalKind    = "session-removal"
+	sessionRemovalContext = "judgment-pack-gateway/session-removal/1:"
+	scopeRemovalKind      = "scope-removal"
+	scopeRemovalContext   = "judgment-pack-gateway/scope-removal/1:"
+	// observationSessionRemoved is what §4 step 4 says of a sealed session
+	// absent from the store that a session-removal record names.
+	observationSessionRemoved = "session-removed"
 )
+
+// sessionRemovalMembers and scopeRemovalMembers are the members each record
+// holds, exactly.
+var (
+	sessionRemovalMembers = map[string]bool{
+		"finalCount": true, "keyId": true, "kind": true, "removedAt": true, "removedBy": true,
+		"scope": true, "sealSignature": true, "sessionId": true, "signature": true,
+	}
+	scopeRemovalMembers = map[string]bool{
+		"keyId": true, "kind": true, "openSessions": true, "payloads": true, "receipts": true,
+		"removedAt": true, "removedBy": true, "scope": true, "sealedSessions": true, "signature": true,
+	}
+)
+
+// sessionRemoval is a session-removal record that loaded: it names a sealed
+// session by its id, its seal's signature as the registry holds it and its
+// seal's count.
+type sessionRemoval struct {
+	sessionID     string
+	sealSignature string
+	finalCount    int64
+	scope         string
+	removedAt     string
+	removedBy     string
+	keyID         string
+	keyPos        int
+}
+
+// scopeRemoval is a scope-removal record that loaded: what one call removed
+// of one scope identifier, by count. No step of §4 reads it.
+type scopeRemoval struct {
+	scope                                            string
+	sealedSessions, openSessions, receipts, payloads int64
+	removedAt, removedBy, keyID                      string
+	keyPos                                           int
+}
+
+// removalRecords are the records of a removal file that loaded, each kind
+// by what it names.
+type removalRecords struct {
+	// artifacts are the artifact-removal records, by the receipt signature
+	// each names.
+	artifacts map[string][]removalRecord
+	// sessions are the session-removal records, by the session each names.
+	// A scope-removal record is read by no step of §4, and is not kept.
+	sessions map[string][]sessionRemoval
+}
+
+func newRemovalRecords() *removalRecords {
+	return &removalRecords{artifacts: map[string][]removalRecord{}, sessions: map[string][]sessionRemoval{}}
+}
 
 // removalMembers are the members a removal record holds, exactly.
 var removalMembers = map[string]bool{
@@ -69,12 +132,21 @@ type removalRecord struct {
 type retention struct {
 	removals map[string][]removalRecord
 	supplied string
+	// sessions are the session-removal records that loaded (§4 step 4).
+	sessions map[string][]sessionRemoval
 }
 
 // removalSigningInput is what a record's signature covers: the prefix, then
 // canon of the record with its top-level signature removed and every other
 // member retained.
 func removalSigningInput(obj *vObject) []byte {
+	return recordSigningInput(removalContext, obj)
+}
+
+// recordSigningInput is what a record of the removal file signs under its
+// kind's prefix: the prefix, then canon of the record with its top-level
+// signature removed and every other member retained.
+func recordSigningInput(prefix string, obj *vObject) []byte {
 	covered := newObject()
 	for _, name := range obj.names {
 		if name == "signature" {
@@ -83,7 +155,180 @@ func removalSigningInput(obj *vObject) []byte {
 		v, _ := obj.get(name)
 		covered.set(name, v)
 	}
-	return append([]byte(removalContext), canon(covered)...)
+	return append([]byte(prefix), canon(covered)...)
+}
+
+// signedByReachedKey is the place among the keys the walk reached of the key
+// keyID names, where the record's signature verifies under it over prefix;
+// -1 otherwise.
+func signedByReachedKey(obj *vObject, prefix, keyID, signatureHex string, keys []reachedKey) int {
+	keyPos := -1
+	for i, k := range keys {
+		if subtle.ConstantTimeCompare([]byte(keyID), []byte(k.keyID)) == 1 {
+			keyPos = i
+			break
+		}
+	}
+	if keyPos < 0 {
+		return -1
+	}
+	signature, err := hex.DecodeString(signatureHex)
+	if err != nil || !ed25519.Verify(keys[keyPos].key, recordSigningInput(prefix, obj), signature) {
+		return -1
+	}
+	return keyPos
+}
+
+// exactMembers is whether obj holds no member outside names. §1.1's parser
+// admits no name twice, and each record's readers require every member of
+// names, so this is all that is left to refuse.
+func exactMembers(obj *vObject, names map[string]bool) bool {
+	for name := range obj.byName {
+		if !names[name] {
+			return false
+		}
+	}
+	return true
+}
+
+// recordCount is a count a scope-removal record holds: an integer from 0 to
+// 2^53-1.
+func recordCount(obj *vObject, name string) (int64, bool) {
+	v, _ := obj.get(name)
+	n, ok := v.(vInt)
+	return int64(n), ok && int64(n) >= 0 && int64(n) <= maxCallIndex
+}
+
+// sessionRemovalOf holds a record to a session-removal's form (SPEC.md
+// §1.3a, "A removed session") and loads it under the keys the walk reached.
+func sessionRemovalOf(obj *vObject, keys []reachedKey) (sessionRemoval, bool) {
+	if !exactMembers(obj, sessionRemovalMembers) {
+		return sessionRemoval{}, false
+	}
+	kind, _ := memberString(obj, "kind")
+	sessionID, okSession := memberString(obj, "sessionId")
+	sealSignature, okSeal := memberString(obj, "sealSignature")
+	scope, okScope := memberString(obj, "scope")
+	removedAt, okAt := memberString(obj, "removedAt")
+	removedBy, okBy := memberString(obj, "removedBy")
+	keyID, okKey := memberString(obj, "keyId")
+	signatureHex, okSig := memberString(obj, "signature")
+	countV, _ := obj.get("finalCount")
+	count, okCount := countV.(vInt)
+	if kind != sessionRemovalKind ||
+		!okSession || requireSession(sessionID) != nil ||
+		!okSeal || !isSignature3(sealSignature) ||
+		!okCount ||
+		!okScope || !isScopeIdentifier(scope) ||
+		!okAt || !isRemovalTime(removedAt) ||
+		!okBy || !isScopeIdentifier(removedBy) ||
+		!okKey || !isLowerHexOfLen(keyID, 32) ||
+		!okSig || !isSignature3(signatureHex) {
+		return sessionRemoval{}, false
+	}
+	keyPos := signedByReachedKey(obj, sessionRemovalContext, keyID, signatureHex, keys)
+	if keyPos < 0 {
+		return sessionRemoval{}, false
+	}
+	return sessionRemoval{
+		sessionID: sessionID, sealSignature: sealSignature, finalCount: int64(count), scope: scope,
+		removedAt: removedAt, removedBy: removedBy, keyID: keyID, keyPos: keyPos,
+	}, true
+}
+
+// scopeRemovalOf holds a record to a scope-removal's form (SPEC.md §1.3a, "A
+// removed session") and loads it under the keys the walk reached.
+func scopeRemovalOf(obj *vObject, keys []reachedKey) (scopeRemoval, bool) {
+	if !exactMembers(obj, scopeRemovalMembers) {
+		return scopeRemoval{}, false
+	}
+	kind, _ := memberString(obj, "kind")
+	scope, okScope := memberString(obj, "scope")
+	removedAt, okAt := memberString(obj, "removedAt")
+	removedBy, okBy := memberString(obj, "removedBy")
+	keyID, okKey := memberString(obj, "keyId")
+	signatureHex, okSig := memberString(obj, "signature")
+	sealed, okSealed := recordCount(obj, "sealedSessions")
+	open, okOpen := recordCount(obj, "openSessions")
+	receipts, okReceipts := recordCount(obj, "receipts")
+	payloads, okPayloads := recordCount(obj, "payloads")
+	if kind != scopeRemovalKind ||
+		!okScope || !isScopeIdentifier(scope) ||
+		!okSealed || !okOpen || !okReceipts || !okPayloads ||
+		!okAt || !isRemovalTime(removedAt) ||
+		!okBy || !isScopeIdentifier(removedBy) ||
+		!okKey || !isLowerHexOfLen(keyID, 32) ||
+		!okSig || !isSignature3(signatureHex) {
+		return scopeRemoval{}, false
+	}
+	keyPos := signedByReachedKey(obj, scopeRemovalContext, keyID, signatureHex, keys)
+	if keyPos < 0 {
+		return scopeRemoval{}, false
+	}
+	return scopeRemoval{
+		scope: scope, sealedSessions: sealed, openSessions: open, receipts: receipts, payloads: payloads,
+		removedAt: removedAt, removedBy: removedBy, keyID: keyID, keyPos: keyPos,
+	}, true
+}
+
+// load loads one line of the removal file, of whichever kind it says it is;
+// a line that is no record of its kind loads nothing.
+func (set *removalRecords) load(line string, keys []reachedKey) {
+	v, err := parseJSON([]byte(line))
+	if err != nil {
+		return
+	}
+	obj, ok := v.(*vObject)
+	if !ok {
+		return
+	}
+	kind, _ := memberString(obj, "kind")
+	switch kind {
+	case removalKind:
+		if rec, ok := artifactRemovalOf(obj, keys); ok {
+			keepRemoval(set.artifacts, rec)
+		}
+	case sessionRemovalKind:
+		if rec, ok := sessionRemovalOf(obj, keys); ok {
+			keepSessionRemoval(set.sessions, rec)
+		}
+	}
+	// a scope-removal record is read by no step of §4 (§1.3a), and
+	// remove-scope reads its own back with scopeRemovalOf
+}
+
+// keepSessionRemoval keeps a session-removal record that loaded once for the
+// seal it names: one naming the same session, seal and count as one kept
+// replaces it only where its key was reached later, which is all
+// sessionRemoved reads of either.
+func keepSessionRemoval(sessions map[string][]sessionRemoval, rec sessionRemoval) {
+	named := sessions[rec.sessionID]
+	for i := range named {
+		if named[i].sealSignature == rec.sealSignature && named[i].finalCount == rec.finalCount {
+			if rec.keyPos > named[i].keyPos {
+				named[i] = rec
+			}
+			return
+		}
+	}
+	sessions[rec.sessionID] = append(named, rec)
+}
+
+// sessionRemoved is whether a session-removal record that loaded names the
+// sealed session (SPEC.md §1.3a, "A removed session"): its id, the signature
+// of its first seal that loaded as the registry holds it, and that seal's
+// count, under the key the seal loaded under or one the walk reached after
+// it.
+func (ret *retention) sessionRemoved(sessionID string, s seal) bool {
+	if ret == nil {
+		return false
+	}
+	for _, rec := range ret.sessions[sessionID] {
+		if rec.sealSignature == s.signature && rec.finalCount == s.finalCount && rec.keyPos >= s.keyPos {
+			return true
+		}
+	}
+	return false
 }
 
 // removalTimeLayout is removedAt's form: UTC, to the second.
@@ -114,12 +359,16 @@ func removalOf(line string, keys []reachedKey) (removalRecord, bool) {
 	if !ok {
 		return removalRecord{}, false
 	}
+	return artifactRemovalOf(obj, keys)
+}
+
+// artifactRemovalOf holds a parsed line to an artifact-removal record's form
+// and loads it under the keys the walk reached (removalOf).
+func artifactRemovalOf(obj *vObject, keys []reachedKey) (removalRecord, bool) {
 	// every member is required below, and §1.1's parser admits no name
 	// twice, so a member of no other name is all that is left to refuse
-	for name := range obj.byName {
-		if !removalMembers[name] {
-			return removalRecord{}, false
-		}
+	if !exactMembers(obj, removalMembers) {
+		return removalRecord{}, false
 	}
 	kind, _ := memberString(obj, "kind")
 	sessionID, okSession := memberString(obj, "sessionId")
@@ -142,18 +391,8 @@ func removalOf(line string, keys []reachedKey) (removalRecord, bool) {
 		!okSig || !isSignature3(signatureHex) {
 		return removalRecord{}, false
 	}
-	keyPos := -1
-	for i, k := range keys {
-		if subtle.ConstantTimeCompare([]byte(keyID), []byte(k.keyID)) == 1 {
-			keyPos = i
-			break
-		}
-	}
+	keyPos := signedByReachedKey(obj, removalContext, keyID, signatureHex, keys)
 	if keyPos < 0 {
-		return removalRecord{}, false
-	}
-	signature, _ := hex.DecodeString(signatureHex)
-	if !ed25519.Verify(keys[keyPos].key, removalSigningInput(obj), signature) {
 		return removalRecord{}, false
 	}
 	return removalRecord{
@@ -165,8 +404,8 @@ func removalOf(line string, keys []reachedKey) (removalRecord, bool) {
 
 // removalLineBound is the most bytes a line of the removal file holds, its
 // line feed not counted, for a record on it to load (SPEC.md §1.3a). A
-// record the command writes is under 600 bytes; a longer line loads
-// nothing and is read no further than the bound, so a reader holds one
+// record a command writes is under 1200 bytes, its labels escaped at their
+// longest; a longer line loads nothing and is read no further than the bound, so a reader holds one
 // line at a time, and what it keeps grows with the records that load.
 const removalLineBound = 4096
 
@@ -190,30 +429,53 @@ var errRemovalsNotRegular = errors.New("is not a regular file")
 // there that is not a regular file, which is not read; a regular file that
 // cannot be read is no verdict.
 func loadRemovals(storeRoot string, keys []reachedKey) (map[string][]removalRecord, error) {
-	removals, _, err := readRemovals(storeRoot, keys)
-	if errors.Is(err, errRemovalsNotRegular) {
-		return nil, nil
+	set, err := loadRecords(storeRoot, keys)
+	if err != nil {
+		return nil, err
 	}
-	return removals, err
+	return set.artifacts, nil
+}
+
+// loadRecords is loadRemovals for every kind of record the file holds.
+func loadRecords(storeRoot string, keys []reachedKey) (*removalRecords, error) {
+	set, _, err := readRecords(storeRoot, keys)
+	if errors.Is(err, errRemovalsNotRegular) {
+		return &removalRecords{}, nil
+	}
+	return set, err
 }
 
 // readRemovals reads the removal file a line at a time and loads its
 // records, and says whether the file ends in a line no append finished.
 // Something at the path that is not a regular file is errRemovalsNotRegular.
 func readRemovals(storeRoot string, keys []reachedKey) (map[string][]removalRecord, bool, error) {
+	set, torn, err := readRecords(storeRoot, keys)
+	if err != nil {
+		return nil, false, err
+	}
+	return set.artifacts, torn, nil
+}
+
+// readRecords is readRemovals for every kind of record the file holds.
+func readRecords(storeRoot string, keys []reachedKey) (*removalRecords, bool, error) {
 	if removalsRead != nil {
 		removalsRead()
 	}
 	file, err := openRemovals(storeRoot)
-	if err != nil || file == nil {
+	if err != nil {
 		return nil, false, err
 	}
+	if file == nil {
+		// nothing there holds no record: no map at all, as before records
+		// of other kinds were read
+		return &removalRecords{}, false, nil
+	}
 	defer file.Close()
-	removals, torn, err := scanRemovals(file, keys)
+	set, torn, err := scanRecords(file, keys)
 	if err != nil {
 		return nil, false, fmt.Errorf("removal records: %w", err)
 	}
-	return removals, torn, nil
+	return set, torn, nil
 }
 
 // openRemovals opens the store's removal file to read, following no link:
@@ -286,7 +548,18 @@ func openRemovalEntry(root *os.Root, open func(*os.Root, string) (*os.File, erro
 // unread; the text after the last line feed is a line no append finished,
 // and torn says whether there is any.
 func scanRemovals(r io.Reader, keys []reachedKey) (removals map[string][]removalRecord, torn bool, err error) {
-	removals = map[string][]removalRecord{}
+	set, torn, err := scanRecords(r, keys)
+	if err != nil {
+		return nil, false, err
+	}
+	return set.artifacts, torn, nil
+}
+
+// scanRecords is scanRemovals for every kind of record a line may hold: an
+// artifact-removal, a session-removal or a scope-removal, each by its kind
+// (SPEC.md §1.3a, "Loading").
+func scanRecords(r io.Reader, keys []reachedKey) (set *removalRecords, torn bool, err error) {
+	set = newRemovalRecords()
 	in := bufio.NewReaderSize(r, removalLineBound+1)
 	for {
 		line, err := in.ReadSlice('\n')
@@ -297,13 +570,11 @@ func scanRemovals(r io.Reader, keys []reachedKey) (removals map[string][]removal
 		}
 		switch {
 		case err == io.EOF:
-			return removals, long || len(line) > 0, nil
+			return set, long || len(line) > 0, nil
 		case err != nil:
 			return nil, false, err
 		case !long:
-			if rec, ok := removalOf(string(line[:len(line)-1]), keys); ok {
-				keepRemoval(removals, rec)
-			}
+			set.load(string(line[:len(line)-1]), keys)
 		}
 	}
 }

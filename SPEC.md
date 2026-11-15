@@ -775,7 +775,8 @@ owner-supplied contract; a provider name alone establishes no guarantee.
 ```
 <root>/receipts/<sessionId>/<callIndex>.json   one canonical receipt, newline-terminated
 <root>/artifacts/<hex>                          the retained bytes; <hex> is resultDigest's hex
-<root>/artifact-removals.jsonl                  optional: one removal record per line (§1.3a)
+<root>/artifact-removals.jsonl                  optional: one removal record per line (§1.3a),
+                                                of a payload or of a session
 ```
 
 The registry is a separate file: one canonical seal object per line, newline
@@ -792,7 +793,8 @@ and a session that mixes them is `chain-broken` (§1.4).
 A gateway keeps the bytes of every result it attests at `<root>/artifacts/<hex>`, and order
 7 (§1.4) fails a receipt whose bytes are not there. Two departures from that are defined
 (`docs/adr/0028-payloads-a-gateway-does-not-keep.md`): a source that keeps no payload, and a
-recorded removal. Neither changes a receipt, a store or a verdict where neither is used.
+recorded removal. Neither changes a receipt, a store or a verdict where neither is used. A
+removed session (below) is recorded in the same file, and changes §4 step 4 alone.
 
 **A source that keeps no payload.** The operator's configuration may have an acquisition
 source keep no payload (`docs/design/engine-config.md`, `artifact`). The gateway then
@@ -838,12 +840,14 @@ anything there that is not a regular file — a directory, a FIFO, a link, whate
 leads to — is not read, and no record loads (§4.1); a link is not followed, so the records a
 verifier reads are the store's own bytes. A line is the bytes before a line feed. A record
 loads when its line is of at most 4096 bytes, its line feed not counted, and is one JSON
-object holding exactly the nine members above, no name twice, each of the form given; its
-`keyId` names a key the walk of §3b reached; and its signature verifies under that key. A line
-that is not so loads nothing and is no finding: a torn last line, left by an interrupted
-append, is such a line, and so is a longer line, which a verifier need read no further than
-its bound — a record the command writes is under 600 bytes, so the bound is one no record
-it writes reaches, and a reader holds one line at a time. A record that repeats one loaded,
+object holding exactly the members of its `kind` — the nine above for `artifact-removal`,
+those of "A removed session" (below) for `session-removal` and `scope-removal` — no name
+twice, each of the form given; its `keyId` names a key the walk of §3b reached; and its
+signature verifies under that key, over its kind's prefix. A line that is not so loads
+nothing and is no finding: a torn last line, left by an interrupted append, is such a line,
+and so is a longer line, which a verifier need read no further than its bound — a record a
+command writes is under 1200 bytes, so the bound is one no record it writes reaches, and a
+reader holds one line at a time. A record that repeats one loaded,
 or names the same receipt as one, adds nothing a verifier need keep. A record **names** a receipt when its `sessionId` is the receipt's session
 directory, its `callIndex`, `receiptSignature` and `resultDigest` are the receipt's own, and
 its key is the receipt's key or a key the walk reached after it. A record that names no
@@ -887,6 +891,62 @@ bytes it says are the payload checks them by digest, as `--artifacts` does. A re
 does not establish that the bytes were the receipt's when they were removed: the command
 refuses to remove bytes that are not (§6), and a verifier cannot see what was removed.
 
+**A removed session.** `gateway remove-scope`, and on the PostgreSQL kind `gateway store
+remove-scope` (§6, "Removing one scope identifier's records";
+`docs/adr/0034-removing-one-scope-identifiers-records.md`), remove every session of one
+scope identifier and record the removal first, in the same file, under the same bound and the
+same loading: one record for each sealed session removed, and one for the call.
+
+```
+{ "finalCount": <integer>, "keyId": <hex>, "kind": "session-removal",
+  "removedAt": <string>, "removedBy": <string>, "scope": <string>,
+  "sealSignature": <hex>, "sessionId": <string>, "signature": <hex> }
+
+{ "keyId": <hex>, "kind": "scope-removal", "openSessions": <integer>,
+  "payloads": <integer>, "receipts": <integer>, "removedAt": <string>,
+  "removedBy": <string>, "scope": <string>, "sealedSessions": <integer>,
+  "signature": <hex> }
+```
+
+`signature` = Ed25519, under the gateway's signing seed, over
+`"judgment-pack-gateway/session-removal/1:"`, or `"judgment-pack-gateway/scope-removal/1:"`,
+`+ canon(the record without signature)`, every other member retained: each kind's prefix is
+its own, so no record is read as another kind's, as a seal or as a receipt. Their members:
+
+- `sessionId` — the removed session's, a §3a identifier;
+- `sealSignature` — the signature of the session's seal, the first that loaded for it in the
+  walk of §4 step 2 (§3, §3c), as the 128 lowercase hexadecimal characters of its bytes;
+- `finalCount` — that seal's `finalCount`, an integer;
+- `scope` — the scope identifier removed, of its form (§1.2a, `scope`);
+- `sealedSessions`, `openSessions`, `receipts` and `payloads` — what the call removed: the
+  sessions a seal closed and those none closed, their receipts, and the payloads, each an
+  integer from 0 to 2^53−1;
+- `removedAt`, `removedBy` and `keyId` — as in an `artifact-removal` record.
+
+A `session-removal` record **names** a sealed session when its `sessionId` is the session's,
+its `sealSignature` is the signature of the session's first loaded seal and its `finalCount`
+that seal's, and its key is the key the seal loaded under or a key the walk reached after it.
+§4 step 4 reads it: a sealed session absent from the store that a record names is no finding,
+and the report carries the observation `session-removed`, of the session; one that no record
+names is `sealed-session-missing`, as before. A session a record names that the store still
+holds — a removal cut off before its files went — is verified as it is, and the record changes
+nothing for it. A record that names no sealed session is nothing the verifier reports. Records
+naming one seal by the same members add nothing a verifier need keep beyond the one whose key
+the walk reached last. No step of §4 reads a `scope-removal` record: it is what the call says
+of itself, for a reader of the file. One who can write to the store can take a record away,
+which makes the session `sealed-session-missing`, a failure, never a pass; cannot write one
+that loads without the key; and cannot make one name another session's seal, since the seal's
+signature is in it.
+
+`session-removed` establishes that a holder of a gateway key the walk reached signed a record
+that the session this seal closed was removed, when, under which label and of which scope
+identifier it says. It does not establish what the session held, that every receipt of it
+carried that scope identifier, or that no copy of it exists anywhere: the commands refuse a
+session holding a receipt of another scope identifier or of none (§6), and a verifier cannot
+see what was removed. It is the key holder's statement, as a seal is: the holder of the key
+can remove any session and record it so, and the record does not tell a removal the operator
+meant from one the key holder made.
+
 **A verifier written before this section** — one of `v0.26.0` or earlier, in Go and in
 TypeScript alike — tolerates the member, as it tolerates any signed member it does not know,
 and does not read `artifact-removals.jsonl`. Its artifact step is order 7 and 8 as they were:
@@ -897,6 +957,12 @@ takes no `--artifacts` and refuses the option as a usage error, giving no verdic
 the member to no form, so it answers `ok` for a receipt, its bytes in the store, whose
 `artifact` this version reports `malformed`: of another value or type, or on an action. Beyond that one kind it passes no receipt this
 version fails, and it fails the receipts this version passes with an observation.
+
+**A verifier written before removed sessions** — one of `v0.28.0` or earlier, in Go and in
+TypeScript alike — loads no `session-removal` or `scope-removal` record, since neither holds an
+`artifact-removal` record's members, and a line that loads nothing is no finding. It reports a
+removed sealed session `sealed-session-missing`, and the report's `ok` is false; it answers
+every other store as this version does.
 
 ### 1.4 Verification statuses
 
@@ -1358,7 +1424,10 @@ start, a session that is not whole is named and stays open, and the gateway serv
      found. The session's per-receipt, sequence and chain findings are its own and
      stand beside either.
 4. For each sealed session **absent** from the store → **`sealed-session-missing`**
-   (a whole sealed session deleted). Then, for each session for which more than one
+   (a whole sealed session deleted), unless a `session-removal` record that loads names it
+   (§1.3a, "A removed session"): then nothing is found of it, and the report carries the
+   **observation** `session-removed`, `{sessionId, observation}`. A session such a record
+   names that the store holds is verified by step 3 as any other. Then, for each session for which more than one
    seal loads, either of them a seal made after an interruption →
    **`seal-conflict`**, `{sessionId, status}`, once, whether or not the store holds
    the session (§3c).
@@ -1449,14 +1518,16 @@ Step 7 reports once per citing record, as `{recordDigest, status}`, independent
 of every other finding and of whether any action receipt names that record.
 
 **Observations.** A report carries, beside `ok` and `findings`, a member
-`observations` when there is anything the verifier says of a receipt without
-failing it: an array of `{sessionId, callIndex, observation}`, with the
-receipt's own session and index. The observations this document names are
-step 3's `session-open` and `sealed-after-interruption`, step 8's
+`observations` when there is anything the verifier says of a receipt, or of a
+session, without failing it: an array of `{sessionId, callIndex, observation}`,
+with the receipt's own session and index, or, for step 4's `session-removed`,
+which is of a session the store no longer holds, `{sessionId, observation}`. The
+observations this document names are step 3's `session-open` and
+`sealed-after-interruption`, step 4's `session-removed`, step 8's
 `decision-record-not-compared`, §1.2b's
 `action-uncertain`, `action-committed` and `action-mismatch`, and §1.3a's
-`artifact-not-retained` and `artifact-removed`, each on a receipt whose ladder status
-is `ok`. An observation is
+`artifact-not-retained` and `artifact-removed`, each but step 4's on a receipt whose
+ladder status is `ok`. An observation is
 not a finding: it never makes `ok` false, a consumer's verdict (§5a) does not
 read it, and a report with none may leave the member out. The corpus compares
 observations where a store vector states them, and only there (§7).
@@ -1524,8 +1595,8 @@ a verdict at all.
 | a session directory holding no receipts | a session with count 0, judged against its seal like any other |
 | the decision-record directory (§4 step 6) does not exist, or the verifier was given none | absent — every version 3 action receipt that passed the ladder is `decision-record-mismatch`; an absent directory cannot make an action verify, it can only fail to excuse one |
 | the decision-record path exists but is not a directory, or cannot be read, or any existing parent path component is not a directory, or it or a directory above it is a link that leads nowhere, or the path is spelled so that the platform could resolve it otherwise (below), or a directory or regular file under it cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
-| `<root>/artifact-removals.jsonl` does not exist | no removal record loads (§1.3a) — a receipt whose bytes are gone and that does not carry `artifact: "not-retained"` is `artifact-missing` |
-| `<root>/artifact-removals.jsonl` exists and is not a regular file: a directory, a FIFO or another special file, or a link, whatever it leads to, nowhere included | not read: no removal record loads (§1.3a, "Loading"), as where the file does not exist — a receipt whose bytes are gone and that does not carry `artifact: "not-retained"` is `artifact-missing`. A link is not followed, so a verifier reads no record from outside the store |
+| `<root>/artifact-removals.jsonl` does not exist | no removal record loads (§1.3a) — a receipt whose bytes are gone and that does not carry `artifact: "not-retained"` is `artifact-missing`, and a sealed session absent from the store is `sealed-session-missing` |
+| `<root>/artifact-removals.jsonl` exists and is not a regular file: a directory, a FIFO or another special file, or a link, whatever it leads to, nowhere included | not read: no removal record loads (§1.3a, "Loading"), as where the file does not exist — a receipt whose bytes are gone and that does not carry `artifact: "not-retained"` is `artifact-missing`, and a sealed session absent from the store is `sealed-session-missing`. A link is not followed, so a verifier reads no record from outside the store |
 | `<root>/artifact-removals.jsonl` is a regular file that cannot be read | no verdict — the verifier refuses (non-zero exit); the records are present and unreadable, not absent |
 | the supplied-bytes directory (§4, `--artifacts`) does not exist, is not a directory, or cannot be read, or the path is spelled so that the platform could resolve it otherwise (below), or a file in it that the verifier reads (§1.3a, step 3) is not a regular file or cannot be read | no verdict — the verifier refuses (non-zero exit); a reader that names a directory of bytes is answered about those bytes or not at all |
 
@@ -1623,6 +1694,14 @@ not itself a finding.
   them. They do not keep the bytes anywhere, make a removal undone, or establish that bytes
   a reader holds were the result; one who can write to the store can take a removal record
   away, which makes the receipt `artifact-missing`, and cannot make one load.
+- A removed session (§1.3a, "A removed session") leaves every other session verifying as
+  before, and tells a removal from a deletion by a record under the key. It does not make
+  the removal undone, keep anything of the session, or establish what the session held. It
+  leaves the session's seal in the registry, which names the session's id, its count, its
+  time and the key and no receipt, payload or scope identifier, and the records, which name
+  the scope identifier; what else remains is stated with the commands (§6). One who can write
+  to the store can take a record away, which makes the session `sealed-session-missing`, and
+  cannot make one load.
 - Scope not claimed: no availability/HA guarantees, no authenticated transport
   (binds a loopback address unless `gateway serve --listen` names another, or a version-19
   engine configuration's `listen` does, beside an `identity` and
@@ -1679,6 +1758,13 @@ session it acts on:
   rotation finding names the rotation the walk could not take and no session: the
   walk stops there, and what it would have reached afterwards is reached for no
   session.
+
+A sealed session the store no longer holds that a `session-removal` record names (§1.3a) is
+no finding: its observation `session-removed` withholds nothing, store-wide or scoped, and a
+store whose every finding is `ok` is `ok` beside it. A consumer scoped to such a session finds
+no finding naming it, so there is nothing in it to act on (the first rule above). Without the
+record, the session is `sealed-session-missing` and withholds every session, store-wide, as
+any finding does.
 
 Session-scoping is a choice with a name, made deliberately in the consumer's code or
 configuration. Silence means store-wide. The list above leans on an invariant of
