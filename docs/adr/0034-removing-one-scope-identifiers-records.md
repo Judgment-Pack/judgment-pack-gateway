@@ -74,13 +74,13 @@ For who removes on the PostgreSQL kind (the run-time login holds no DELETE):
 
 ## Decision outcome
 
-Recommended, for the maintainer to decide: **A** with **1**, because A reuses the file, its
+Decided by the maintainer on 2026-11-15: **A** with **1**, as recommended, because A reuses the file, its
 loading rules and its bound, needs one change to one step of §4, and lets a verifier pair each
 `sealed-session-missing` with a signed record of the session and its seal; and 1 adds no role
 and no grant, and keeps the removal under the same lock and lease the migration and the
 start already hold.
 
-The narrowest form that meets the drivers, once decided:
+The narrowest form that meets the drivers, to be built (nothing of it is built by this record):
 
 1. `gateway remove-scope --scope <identifier> --by <label>` on the filesystem kind, the gateway
    stopped: it removes each session all of whose receipts carry the scope (their files and
