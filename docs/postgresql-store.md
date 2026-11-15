@@ -249,7 +249,7 @@ the run-time role, before anything is applied. It prints, as canonical JSON, wha
 part of the connection string:
 
 ```json
-{"applied":[1,2,3],"migrations":"sha256:…","schemaVersion":3}
+{"applied":[1,2,3,4],"migrations":"sha256:…","schemaVersion":4}
 ```
 
 A second run applies nothing (`"applied":[]`). A schema newer than the binary's migrations is
@@ -303,9 +303,41 @@ append to the registry takes a transaction advisory lock (`pg_advisory_xact_lock
 may call unless the operator took it back); the migration takes another. Both keys are constants of
 the schema, so leave them to the gateway in this database.
 
+The registry's records are one chain by the schema too (schema version 4): no two records start or
+stop at one offset, and each starts where another stops, or at 0. A record inserted without the
+lock, by the run-time login or any other writer, is refused unless it is at the log's end, so the
+log is never left with a record over committed bytes or past a gap. The migration to version 4
+checks the records already there: a store whose log is not one chain is refused it, with nothing
+changed, and the kind's start then refuses the store as behind its migrations.
+
+Migration 4 rewrites the table `gateway.log_records` (it adds a stored column) and builds an index
+on it, under a lock that admits no other reader or writer of the table until it commits. A serving
+instance's reads and appends of the registry wait for it, and are refused once they have waited
+the operation's bound. Run it with every instance stopped.
+
+When migration 4 is refused because the log is not one chain, the kind never wrote such a log (it
+appends at the log's end alone, under the lock), so something else changed `gateway.log_records`.
+These two queries, as the owner, name the records where the chain breaks: a record that starts
+where no record stops (a gap), and an offset where two records stop (an overlap).
+
+```sql
+SELECT log, start, stop FROM gateway.log_records r WHERE start <> 0
+  AND NOT EXISTS (SELECT 1 FROM gateway.log_records p WHERE p.log = r.log AND p.stop = r.start);
+SELECT log, stop, count(*) FROM gateway.log_records GROUP BY log, stop HAVING count(*) > 1;
+```
+
+Do not change the records by hand to make the chain: the registry is what a verifier holds every
+session's seal to. Find what wrote them, and restore the database from a copy made before.
+
 The kind's start refuses a database where any of this differs: a privilege more or less, by table
 or by column; a table, view, sequence, function, trigger, rule or type beside the store's; row
-security not enabled and forced on a scoped table, or a policy other than the scope's.
+security not enabled and forced on a scoped table, or a policy other than the scope's; a column,
+constraint or index of the store's tables other than the migrations made it, or one beside them.
+The start reads each column (its type, collation, NOT NULL, default or generation), constraint and
+index as the server prints its definition, and compares it with the list the binary carries for
+its schema (`go/store_pg_definitions.go`), which the CI job holds to what the pinned server prints
+for a database the migrations made. A table's storage parameters, and whether it is logged, are
+not compared.
 
 What every role may do in a database it connects to, the run-time login may do too, and the
 gateway does none of it: create a large object, which stays in the database until it is unlinked;
@@ -432,9 +464,10 @@ The kind's tests take a server from the environment:
 - `GATEWAY_TEST_POSTGRES_REQUIRED`: when set, a test that would skip fails instead. The CI job
   `postgresql` sets it and runs the tests twice against the pinned image in a service container,
   with synthetic credentials: as a superuser, failing if any test skipped, and as a login that may
-  make roles and databases and nothing more (CREATEROLE, CREATEDB). Three cases need a superuser to
-  set up -- BYPASSRLS on the run-time login, for the migration and for the start, and a setting of
-  `gateway.scope` stored on the run-time role -- and the second run skips those three, by one
+  make roles and databases and nothing more (CREATEROLE, CREATEDB). Four cases need a superuser to
+  set up -- BYPASSRLS on the run-time login, for the migration and for the start, a setting of
+  `gateway.scope` stored on the run-time role, and an index of the store's marked not valid -- and
+  the second run skips those four, by one
   message, and fails on any other skip (ADR-0031, "Consequences").
 
 Locally, one throwaway container from the same image, on loopback, kept for every run and removed

@@ -268,9 +268,9 @@ jobs:
           go test -count=1 -timeout 20m -v -run '^(TestStoreKindsConform|TestPostgres.*|TestAPostgres.*|TestThePostgres.*|TestEveryCorpusStoreExportsFromThePostgresKindByteForByte|TestTheLoginHoldsTheServerToTheSCRAMExchange|TestAValueHoldingANULRoundTripsOnEveryKind)$' . | tee "${RUNNER_TEMP}/postgresql-creator.log"
           skipped=$(grep -c -- '--- SKIP' "${RUNNER_TEMP}/postgresql-creator.log" || true)
           explained=$(grep -c -- 'the admin login is no superuser and cannot set this case up; the run as a superuser holds it' "${RUNNER_TEMP}/postgresql-creator.log" || true)
-          if [ "${skipped}" != 3 ] || [ "${explained}" != 3 ]; then
+          if [ "${skipped}" != 4 ] || [ "${explained}" != 4 ]; then
             grep -B1 -- '--- SKIP' "${RUNNER_TEMP}/postgresql-creator.log" || true
-            echo "the run as an administrator that is no superuser skipped ${skipped} tests, ${explained} of them for want of a superuser; want 3 and 3"
+            echo "the run as an administrator that is no superuser skipped ${skipped} tests, ${explained} of them for want of a superuser; want 4 and 4"
             exit 1
           fi
       - name: The storage kinds through the binary

@@ -109,6 +109,10 @@ the maintainer (below).
      tried again. The primary key of the log and the record's start still refuses a second record
      at one offset, from any writer that did not take the lock. The log's head row cannot be locked
      instead: a row lock needs UPDATE, which the run-time login does not hold.
+     *Amended 2026-11-15 (#440, schema version 4): the schema holds the records to one chain, so a
+     writer that did not take the lock is refused a record anywhere but at the log's end, not only
+     at a start taken: a unique end offset, and a foreign key from each record's start to another's
+     end, but for the record at 0 (`log_records.follows`, its start or NULL at 0).*
    - Single reads run at READ COMMITTED, READ ONLY.
    - Reading the log, and a snapshot, run at REPEATABLE READ, READ ONLY: the log's head and its
      records, and every space a snapshot lists, are of one snapshot of the database, so the cut is
@@ -182,6 +186,10 @@ the maintainer (below).
    indexes alone, with no view, sequence, function, trigger, rule or type beside them; row
    security enabled and forced on every table with a scope column, and on each exactly the
    scope's policy.
+   *Amended 2026-11-15 (#440): and every column, constraint and index of the store's tables as
+   the migrations made it, with none beside them: each as the server prints its definition,
+   compared with a list the binary carries for its schema (`go/store_pg_definitions.go`), which a
+   test holds to what the CI job's pinned server prints for a freshly migrated database.*
 
 9. **Time.** Receipt and seal times are the gateway's, never the database's. A lease's expiry is
    another clock and is decided apart: in this change it is the clock the gateway gives the kind

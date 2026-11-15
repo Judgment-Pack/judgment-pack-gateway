@@ -653,6 +653,26 @@ func TestAPostgresCommitAnsweredWithRollbackIsAFailure(t *testing.T) {
 // The kind does not start on a database outside its conditions: each case
 // is a database migrated and then changed in one way, and the start
 // refuses it, saying why.
+// TestThePostgresKindHoldsItsSchemaWhateverTheLoginPrintsBy holds the
+// start's comparison of the schema's definitions to the text the kind's
+// own settings print: a run-time login whose role sets another interval
+// style, the quoting of every name, another date style and more float
+// digits still starts on a schema as migrated (#440 review).
+func TestThePostgresKindHoldsItsSchemaWhateverTheLoginPrintsBy(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	role := db.roles.runtime
+	db.asAdmin(t, "ALTER ROLE "+role+" SET IntervalStyle = 'iso_8601'",
+		"ALTER ROLE "+role+" SET quote_all_identifiers = on",
+		"ALTER ROLE "+role+" SET DateStyle = 'SQL, DMY'",
+		"ALTER ROLE "+role+" SET extra_float_digits = 3")
+	kind, err := openPgKind(pgOptions{dsn: db.runtime})
+	if err != nil {
+		t.Fatalf("the kind did not start for a login with its own display settings: %v", err)
+	}
+	kind.close()
+}
+
 func TestThePostgresKindRefusesToStartOutsideItsConditions(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -749,6 +769,62 @@ func TestThePostgresKindRefusesToStartOutsideItsConditions(t *testing.T) {
 			db.asAdmin(t, "ALTER ROLE "+db.roles.runtime+" CREATEROLE")
 			return db.runtime
 		}, "CREATEROLE"},
+		// the schema's definitions (#440): a key or a check dropped or
+		// loosened, a column changed, an index or a column beside the store's
+		{"a primary key dropped", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.log_records DROP CONSTRAINT log_records_pkey")
+			return db.runtime
+		}, "gateway.log_records holds no constraint log_records_pkey"},
+		{"a check dropped", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.blobs DROP CONSTRAINT blobs_scope_check")
+			return db.runtime
+		}, "gateway.blobs holds no constraint blobs_scope_check"},
+		{"a check made again, looser, under its name", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.documents DROP CONSTRAINT documents_revision_check",
+				"ALTER TABLE gateway.documents ADD CONSTRAINT documents_revision_check CHECK (revision <> '')")
+			return db.runtime
+		}, "the constraint documents_revision_check of gateway.documents is not the one the store's migrations make"},
+		{"a column's NOT NULL dropped", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.entries ALTER COLUMN data DROP NOT NULL")
+			return db.runtime
+		}, "the column data of gateway.entries is not the one the store's migrations make"},
+		{"an index beside the store's", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "CREATE INDEX another ON gateway.entries (name)")
+			return db.runtime
+		}, "gateway.entries holds the index another, which the store's migrations do not make"},
+		{"a column beside the store's", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.secrets ADD COLUMN another text")
+			return db.runtime
+		}, "gateway.secrets holds the column another, which the store's migrations do not make"},
+		{"a check made again not valid", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.documents DROP CONSTRAINT documents_revision_check",
+				"ALTER TABLE gateway.documents ADD CONSTRAINT documents_revision_check CHECK (revision ~ '^[0-9a-f]{32}$') NOT VALID")
+			return db.runtime
+		}, "the constraint documents_revision_check of gateway.documents is not the one the store's migrations make"},
+		{"an index of the store's not valid", func(t *testing.T, db *pgTestDB) pgDSN {
+			// Only a change to the catalog leaves an index that backs a
+			// constraint not valid, and only a superuser may make it.
+			db.skipUnlessSuperuser(t)
+			db.asAdmin(t, "UPDATE pg_catalog.pg_index SET indisvalid = false WHERE indexrelid = 'gateway.entries_pkey'::pg_catalog.regclass")
+			return db.runtime
+		}, "the index entries_pkey of gateway.entries is not the one the store's migrations make"},
+		{"an unlogged table", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.secrets SET UNLOGGED")
+			return db.runtime
+		}, "the table gateway.secrets is not a permanent, logged table"},
+		{"a table of another schema inheriting from the store's", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asDatabaseOwner(t, "CREATE SCHEMA other", "CREATE TABLE other.more () INHERITS (gateway.secrets)")
+			return db.runtime
+		}, "the schema gateway holds a table inheriting or inherited"},
+		{"a scope column of a collation of the same name in another schema", func(t *testing.T, db *pgTestDB) pgDSN {
+			policy := "(scope = pg_catalog.current_setting('gateway.scope', true))"
+			db.asDatabaseOwner(t, "CREATE SCHEMA other",
+				`CREATE COLLATION other."C" (provider = icu, locale = 'und-u-ks-level2', deterministic = false)`,
+				"DROP POLICY scope_of_the_transaction ON gateway.blobs",
+				`ALTER TABLE gateway.blobs ALTER COLUMN scope TYPE text COLLATE other."C"`,
+				"CREATE POLICY scope_of_the_transaction ON gateway.blobs USING "+policy+" WITH CHECK "+policy)
+			return db.runtime
+		}, "the column scope of gateway.blobs is not the one the store's migrations make"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -797,6 +873,98 @@ func TestTheStartAsksOfMAINTAINFromPostgreSQL17(t *testing.T) {
 	}
 	if contains(pgTablePrivileges, "MAINTAIN") {
 		t.Fatal("the privilege list a server before PostgreSQL 17 is asked of names MAINTAIN")
+	}
+}
+
+// pgDefinitionOrder orders definitions as pgDefinitions lists them: by
+// table, kind and name.
+func pgDefinitionOrder(a, b pgDefinition) int {
+	return strings.Compare(a.table+"\x00"+a.kind+"\x00"+a.name, b.table+"\x00"+b.kind+"\x00"+b.name)
+}
+
+// The start holds the schema's columns, constraints and indexes to the list
+// the binary carries (#440), with no server: the list itself holds; one of
+// its definitions missing, printed otherwise or read twice, or one beside
+// them, is refused by name, and the refusal quotes the binary's definition,
+// never the one read. The list holds a column of each of the store's
+// tables and names no other table, in order, each once.
+func TestTheStartHoldsTheSchemaToTheDefinitionsItCarries(t *testing.T) {
+	if err := pgDefinitionsHold(slices.Clone(pgDefinitions)); err != nil {
+		t.Fatalf("the list the binary carries: %v", err)
+	}
+	if !slices.IsSortedFunc(pgDefinitions, pgDefinitionOrder) || len(slices.CompactFunc(slices.Clone(pgDefinitions), func(a, b pgDefinition) bool { return pgDefinitionOrder(a, b) == 0 })) != len(pgDefinitions) {
+		t.Fatal("the list the binary carries is not in the order of its table, kind and name, each once")
+	}
+	columns := map[string]bool{}
+	for _, d := range pgDefinitions {
+		if !contains(pgTables, d.table) || !contains([]string{"column", "constraint", "index"}, d.kind) || d.name == "" || d.definition == "" {
+			t.Fatalf("the list the binary carries holds %+v", d)
+		}
+		columns[d.table] = columns[d.table] || d.kind == "column"
+	}
+	for _, table := range pgTables {
+		if !columns[table] {
+			t.Fatalf("the list the binary carries holds no column of gateway.%s", table)
+		}
+	}
+	at := func(kind, name string) int {
+		i := slices.IndexFunc(pgDefinitions, func(d pgDefinition) bool {
+			return d.kind == kind && d.name == name && (kind != "column" || d.table == "entries")
+		})
+		if i < 0 {
+			t.Fatalf("the list the binary carries holds no %s %s", kind, name)
+		}
+		return i
+	}
+	pkey, data := at("constraint", "log_records_pkey"), at("column", "data")
+	changed := slices.Clone(pgDefinitions)
+	changed[data].definition = "bytea read-from-the-server"
+	for _, tc := range []struct {
+		name string
+		held []pgDefinition
+		want string
+	}{
+		{"a primary key dropped", slices.Delete(slices.Clone(pgDefinitions), pkey, pkey+1), "gateway.log_records holds no constraint log_records_pkey; the store's migrations make it as PRIMARY KEY (log, start)"},
+		{"a column printed otherwise", changed, "the column data of gateway.entries is not the one the store's migrations make, bytea NOT NULL"},
+		{"an index beside them", append(slices.Clone(pgDefinitions), pgDefinition{"entries", "index", "another", "CREATE INDEX another ON gateway.entries USING btree (name)"}), "gateway.entries holds the index another, which the store's migrations do not make"},
+		{"one read twice", append(slices.Clone(pgDefinitions), pgDefinitions[pkey]), "gateway.log_records holds the constraint log_records_pkey twice"},
+		{"none read", nil, "holds no column data"},
+	} {
+		err := pgDefinitionsHold(tc.held)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: the start was refused as %v, want %q", tc.name, err, tc.want)
+		}
+		if strings.Contains(err.Error(), "read-from-the-server") {
+			t.Fatalf("%s: the refusal quotes the definition read: %v", tc.name, err)
+		}
+	}
+}
+
+// The list of definitions the binary carries is what the server prints for
+// a database the migrations made, read as the start reads it: as the
+// run-time login, under the search path pg_catalog alone. Where the two
+// differ, the test prints the server's list in the list's own form.
+func TestThePostgresSchemaDefinitionsAreTheOnesTheBinaryCarries(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	c := db.runtimeConn(t)
+	if _, err := c.exec(`SELECT pg_catalog.set_config('search_path', 'pg_catalog', false)`); err != nil {
+		t.Fatal(err)
+	}
+	held, err := pgDefinitionsOf(pgTx{c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.SortFunc(held, pgDefinitionOrder)
+	if !slices.Equal(held, pgDefinitions) {
+		var server strings.Builder
+		for _, d := range held {
+			fmt.Fprintf(&server, "\t{%q, %q, %q, `%s`},\n", d.table, d.kind, d.name, d.definition)
+		}
+		t.Fatalf("the server prints the schema's definitions otherwise than the list the binary carries (pgDefinitions); the server prints:\n%s", server.String())
+	}
+	if err := pgDefinitionsHold(held); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1247,6 +1415,118 @@ func TestAPostgresLogUnderConcurrentAppendsLosesNoneAndReadsWhole(t *testing.T) 
 		if !bytes.HasPrefix(final, data) || (len(data) > 0 && data[len(data)-1] != '\n') {
 			t.Fatalf("a read under appends is not the log's start in whole records: %q", data)
 		}
+	}
+}
+
+// pgLogRecord is a record of the registry's log as a statement inserts it.
+type pgLogRecord struct {
+	start int64
+	data  string
+}
+
+// The schema holds the registry's records to one chain (#440): the
+// run-time login, inserting records of its own without the log's lock, is
+// refused one over committed bytes, one that starts or stops where a record
+// does, one past the end that leaves a gap, and a second record at 0, each
+// by a unique or a foreign key with the log as it was; one at the log's end
+// is admitted, and the log reads whole.
+func TestAPostgresLogRefusesARecordAnywhereButAtItsEnd(t *testing.T) {
+	kind, db := pgTestKind(t, "", nil)
+	log := kind.registry()
+	if err := log.createLog(); err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []string{"abcd", "efgh"} {
+		if _, err := log.appendRecord([]byte(record)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := db.runtimeConn(t)
+	insert := `INSERT INTO gateway.log_records (log, start, data) VALUES ('registry', $1, $2)`
+	for _, r := range []pgLogRecord{
+		{0, "x"},        // a second record at 0
+		{2, "xx"},       // within the first, stopping where it stops
+		{2, "xxxxxxxx"}, // over committed bytes, past the end
+		{4, "x"},        // where the second starts
+		{6, "xx"},       // within the second, stopping at the end
+		{6, "xxxx"},     // over the end
+		{9, "x"},        // past the end, leaving a gap
+	} {
+		_, err := c.exec(insert, r.start, []byte(r.data))
+		if code := pgCode(err); code != pgUniqueViolation && code != pgForeignKeyViolation {
+			t.Errorf("a record of %d bytes at %d, inserted without the log's lock: %v", len(r.data), r.start, err)
+		}
+	}
+	if data, err := log.readLog(0); err != nil || string(data) != "abcdefgh" {
+		t.Fatalf("the log after the refused records: %q %v", data, err)
+	}
+	if _, err := c.exec(insert, int64(8), []byte("ij")); err != nil {
+		t.Fatalf("a record at the log's end, inserted without the log's lock: %v", err)
+	}
+	if data, err := log.readLog(0); err != nil || string(data) != "abcdefghij" {
+		t.Fatalf("the log after a record at its end: %q %v", data, err)
+	}
+}
+
+// A store at schema version 3 whose log is one chain migrates to version 4
+// with its records as they were. One whose log holds a record over
+// committed bytes, or past a gap, as a writer without the log's lock could
+// insert before version 4, is refused the migration, by a unique or a
+// foreign key, with nothing changed, and its start is refused as behind the
+// binary's migrations.
+func TestAPostgresStoreAtSchemaThreeMigratesItsLogAsOneChain(t *testing.T) {
+	set := pgShippedMigrations()
+	if len(set.versions) < 4 || set.versions[3].name != "0004_log_chain.sql" {
+		t.Fatalf("the shipped schema has %d versions: the test names version 4 as the log's chain", len(set.versions))
+	}
+	older := pgMigrationSet{versions: set.versions[:3], grants: set.grants}
+	for _, tc := range []struct {
+		name    string
+		records []pgLogRecord
+		refused bool
+	}{
+		{"one chain", []pgLogRecord{{0, "abcd"}, {4, "efgh"}}, false},
+		{"a record over committed bytes", []pgLogRecord{{0, "abcd"}, {4, "efgh"}, {2, "xx"}}, true},
+		{"a record past a gap", []pgLogRecord{{0, "abcd"}, {9, "x"}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newPgTestDB(t)
+			if applied, err := migratePostgres(db.migrator, older, db.roles, time.Minute); err != nil || !slices.Equal(applied, []int{1, 2, 3}) {
+				t.Fatalf("schema version 3: %v %v", applied, err)
+			}
+			c := db.runtimeConn(t)
+			if _, err := c.exec(`INSERT INTO gateway.logs (name) VALUES ('registry')`); err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range tc.records {
+				if _, err := c.exec(`INSERT INTO gateway.log_records (log, start, data) VALUES ('registry', $1, $2)`, r.start, []byte(r.data)); err != nil {
+					t.Fatalf("a record of %d bytes at %d at schema version 3: %v", len(r.data), r.start, err)
+				}
+			}
+			before := db.fingerprint(t)
+			applied, err := migratePostgres(db.migrator, set, db.roles, time.Minute)
+			if !tc.refused {
+				if err != nil || !slices.Equal(applied, []int{4}) {
+					t.Fatalf("from schema version 3: %v %v", applied, err)
+				}
+				if data, err := db.open(t, nil).registry().readLog(0); err != nil || string(data) != "abcdefgh" {
+					t.Fatalf("the log after the migration: %q %v", data, err)
+				}
+				return
+			}
+			if code := pgCode(err); code != pgUniqueViolation && code != pgForeignKeyViolation {
+				t.Fatalf("the migration of a log that is not one chain: %v %v", applied, err)
+			}
+			if after := db.fingerprint(t); after != before {
+				t.Fatalf("a migration that failed changed the database:\n%s\n%s", before, after)
+			}
+			if kind, err := openPgKind(pgOptions{dsn: db.runtime}); err == nil || !strings.Contains(err.Error(), "apply the store's migrations") {
+				if kind != nil {
+					kind.close()
+				}
+				t.Fatalf("the start on a store refused its migration: %v", err)
+			}
+		})
 	}
 }
 
