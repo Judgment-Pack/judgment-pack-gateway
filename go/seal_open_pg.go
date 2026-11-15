@@ -268,7 +268,7 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 		}
 		return nil, nil, err
 	}
-	held := &kindStart{kind: kind, lease: lease}
+	held := &kindStart{kind: kind, lease: lease, as: "seal-open"}
 	held.renew()
 	defer held.stop(said)
 	if _, err := kind.registry().readLog(0); faultOf(err) == faultAbsent {

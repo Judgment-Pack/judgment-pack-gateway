@@ -23,6 +23,7 @@ package main
 //	gateway version
 
 import (
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -649,6 +650,9 @@ type kindStart struct {
 	kind    *pgKind
 	lease   *pgStartLease
 	service *gatewayService
+	// as is the name the stop's line is said under: "stop" for a start,
+	// the command's name for a command that holds the lease
+	as string
 
 	// the renewal, from the take to the stop (renew): endRenewal ends it,
 	// renewed closes once it ended, and lost holds the loss it reported
@@ -690,7 +694,7 @@ func (s *kindStart) stop(said io.Writer) {
 		<-s.renewed
 	}
 	if err := s.lease.release(); err != nil {
-		fmt.Fprintf(said, "stop: the start lease is left to expire within %s: %v\n", pgStartLeasePeriod, err)
+		fmt.Fprintf(said, "%s: the start lease is left to expire within %s: %v\n", cmp.Or(s.as, "stop"), pgStartLeasePeriod, err)
 	}
 	s.kind.close()
 }

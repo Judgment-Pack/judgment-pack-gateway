@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -458,5 +459,22 @@ func TestThePostgresStartWaitsOutAKilledInstancesLeaseAndSealsWhatItLeftOpen(t *
 	got := sealOpenPgSeals(t, strings.Split(waited.String(), "\n"), "start: sealed after an interruption: ", sealedViaStart, heads)
 	if strings.Join(got, ",") != "k-a,k-none" {
 		t.Fatalf("the start sealed %v:\n%s", got, waited.String())
+	}
+}
+
+// A lease the release could not reach is said to be left to expire under
+// the name of what held it: "seal-open" for the command, "stop" for a
+// start, whose line it was before the command took the lease.
+func TestALeaseLeftToExpireIsSaidUnderTheNameOfWhatHeldIt(t *testing.T) {
+	for _, as := range []string{"seal-open", ""} {
+		// a database that answers nothing: port 1 of the loopback host
+		kind := &pgKind{pool: newPgPool(pgDSN{host: "127.0.0.1", port: "1", connectTimeout: time.Second}, 1)}
+		held := &kindStart{kind: kind, lease: &pgStartLease{kind: kind, holder: "a-holder", bound: time.Second}, as: as}
+		var said bytes.Buffer
+		held.stop(&said)
+		want := cmp.Or(as, "stop") + ": the start lease is left to expire within " + pgStartLeasePeriod.String() + ": "
+		if !strings.HasPrefix(said.String(), want) {
+			t.Fatalf("as %q: %q, where %q begins", as, said.String(), want)
+		}
 	}
 }
