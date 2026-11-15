@@ -649,18 +649,17 @@ func (ret *retention) suppliedBytes(digestHex string) ([]byte, bool, error) {
 // first and whatever else holds; where nothing at all is there, a receipt
 // that says its call kept nothing, or that a record names, passes order 7,
 // and bytes a reader supplied for it are re-digested.
-func artifactStep(r *receipt, storeRoot, sessionID, digestHex string, ret *retention) (status, observation string, err error) {
-	path := filepath.Join(storeRoot, "artifacts", digestHex)
-	artifact, readErr := os.ReadFile(path)
-	if readErr == nil {
-		if digestOfBytes(artifact) != digestHex {
+func artifactStep(r *receipt, probe artifactProbe, sessionID, digestHex string, ret *retention) (status, observation string, err error) {
+	sum, held, nothing := probe(digestHex)
+	if held {
+		if sum != digestHex {
 			return "artifact-mismatch", "", nil
 		}
 		return "ok", "", nil
 	}
-	// Nothing at all at the path: no file, no directory, no link -- a link
-	// that leads nowhere is something. Anything else is what it always was.
-	if !nothingAt(storeRoot, digestHex) {
+	// Nothing at all under the name (fsStoreProbe: no file, no directory, no
+	// link). Anything else is what it always was.
+	if !nothing {
 		return "artifact-missing", "", nil
 	}
 	switch {

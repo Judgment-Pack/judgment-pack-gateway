@@ -70,14 +70,58 @@ func (e sealOpenRead) Error() string {
 	return fmt.Sprintf("session %s could not be read, and nothing was sealed: %v", e.sessionID, e.err)
 }
 
+// sealOpenStore is the store sealOpenUnder judges: a store directory of the
+// filesystem kind (fsSealOpenStore), or the sessions read from the
+// PostgreSQL kind (pgSealOpenStore, seal_open_pg.go).
+type sealOpenStore interface {
+	// sessions lists the store's sessions, for --all.
+	sessions() ([]string, error)
+	// misnamed is the refusal of a session listed whose name no session id
+	// is (SPEC.md §3a).
+	misnamed(name string) string
+	// reading is the session as verification reads it; or a refusal where
+	// the store holds it as no session; or an error where it cannot be read.
+	reading(sessionID string) (sessionReading, string, error)
+	// removals are the store's removal records of payloads, as verify loads
+	// them under keys (SPEC.md §1.3a).
+	removals(keys []reachedKey) (map[string][]removalRecord, error)
+}
+
+// fsSealOpenStore is a store directory of the filesystem kind.
+type fsSealOpenStore struct{ root string }
+
+func (s fsSealOpenStore) sessions() ([]string, error) { return listSessions(s.root) }
+
+// a directory --all meets that no session id names is no session of a
+// gateway's (SPEC.md §3a)
+func (s fsSealOpenStore) misnamed(name string) string {
+	return fmt.Sprintf("the store's directory %q is not named as a session is (SPEC.md §3a); it is not sealed", name)
+}
+
+func (s fsSealOpenStore) reading(sessionID string) (sessionReading, string, error) {
+	info, err := os.Lstat(filepath.Join(s.root, "receipts", sessionID))
+	switch {
+	case err != nil && absent(err):
+		return sessionReading{}, fmt.Sprintf("session %s is not in the store", sessionID), nil
+	case err != nil:
+		return sessionReading{}, "", err
+	case !info.IsDir():
+		return sessionReading{}, fmt.Sprintf("session %s is in the store as something other than a session directory; nothing is sealed there", sessionID), nil
+	}
+	reading, err := fsSessionReading(s.root, sessionID)
+	return reading, "", err
+}
+
+func (s fsSealOpenStore) removals(keys []reachedKey) (map[string][]removalRecord, error) {
+	return loadRemovals(s.root, keys)
+}
+
 // sealOpenJudge is what may be done with one session: a target to seal, a
 // refusal, or neither (a session --all passes over: sealed, or holding no
 // receipt); an error is a session that could not be read.
-func sealOpenJudge(storeRoot, authority string, walk *registryWalk, ret *retention, sessionID string, named bool) (*sealOpenTarget, string, error) {
-	// a directory --all meets that no session id names is no session of
-	// a gateway's (SPEC.md §3a)
+func sealOpenJudge(st sealOpenStore, authority string, walk *registryWalk, ret *retention, sessionID string, named bool) (*sealOpenTarget, string, error) {
 	if requireSession(sessionID) != nil {
-		return nil, fmt.Sprintf("the store's directory %q is not named as a session is (SPEC.md §3a); it is not sealed", sessionID), nil
+		return nil, st.misnamed(sessionID), nil
 	}
 	if _, sealed := walk.seals[sessionID]; sealed {
 		if named {
@@ -85,16 +129,14 @@ func sealOpenJudge(storeRoot, authority string, walk *registryWalk, ret *retenti
 		}
 		return nil, "", nil
 	}
-	info, err := os.Lstat(filepath.Join(storeRoot, "receipts", sessionID))
-	switch {
-	case err != nil && absent(err):
-		return nil, fmt.Sprintf("session %s is not in the store", sessionID), nil
-	case err != nil:
+	reading, refusal, err := st.reading(sessionID)
+	if err != nil {
 		return nil, "", sealOpenRead{sessionID, err}
-	case !info.IsDir():
-		return nil, fmt.Sprintf("session %s is in the store as something other than a session directory; nothing is sealed there", sessionID), nil
 	}
-	result, err := verifySessionWith(storeRoot, sessionID, authority, walk.keys, ret)
+	if refusal != "" {
+		return nil, refusal, nil
+	}
+	result, err := verifySessionRead(sessionID, authority, walk.keys, ret, reading)
 	if err != nil {
 		return nil, "", sealOpenRead{sessionID, err}
 	}
@@ -131,14 +173,14 @@ func sealOpenJudge(storeRoot, authority string, walk *registryWalk, ret *retenti
 // that could not be read stops it all with nothing appended. It answers the
 // seals appended, in order, and the refusals; a seal whose append fails ends
 // it, the seals before it standing.
-func sealOpenUnder(storeRoot, authority string, writer *registryWriter, data []byte, session, via string, stamp func() string) ([]*vObject, []string, error) {
+func sealOpenUnder(st sealOpenStore, authority string, writer *registryWriter, data []byte, session, via string, stamp func() string) ([]*vObject, []string, error) {
 	walk, err := engineWalk(data, writer.priv.Public().(ed25519.PublicKey))
 	if err != nil {
 		return nil, nil, err
 	}
 	names := []string{session}
 	if session == "" {
-		if names, err = listSessions(storeRoot); err != nil {
+		if names, err = st.sessions(); err != nil {
 			return nil, nil, fmt.Errorf("the store's sessions could not be read, and nothing was sealed: %v", err)
 		}
 	} else if err := requireSession(session); err != nil {
@@ -147,7 +189,7 @@ func sealOpenUnder(storeRoot, authority string, writer *registryWriter, data []b
 	// the removal records, as verify reads them (SPEC.md §1.3a): a receipt
 	// whose payload a record says was removed is whole, as one whose call
 	// kept none is
-	removals, err := loadRemovals(storeRoot, walk.keys)
+	removals, err := st.removals(walk.keys)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%v, and nothing was sealed", err)
 	}
@@ -155,7 +197,7 @@ func sealOpenUnder(storeRoot, authority string, writer *registryWriter, data []b
 	var targets []sealOpenTarget
 	var refused []string
 	for _, name := range names {
-		target, refusal, err := sealOpenJudge(storeRoot, authority, walk, ret, name, session != "")
+		target, refusal, err := sealOpenJudge(st, authority, walk, ret, name, session != "")
 		if err != nil {
 			return nil, nil, err
 		}
@@ -204,7 +246,7 @@ func sealOpenAtStart(service *gatewayService, stderr io.Writer, stamp func() str
 		if !present {
 			return fmt.Errorf("the registry the engine made at its start is not there: %s", service.regPath)
 		}
-		sealed, refused, err = sealOpenUnder(service.storeRoot, service.authority, service.registry, data, "", sealedViaStart, stamp)
+		sealed, refused, err = sealOpenUnder(fsSealOpenStore{service.storeRoot}, service.authority, service.registry, data, "", sealedViaStart, stamp)
 	}
 	for _, record := range sealed {
 		fmt.Fprintf(stderr, "start: sealed after an interruption: %s\n", canon(record))
@@ -376,6 +418,6 @@ func sealOpen(o sealOpenOptions, stamp func() string) (sealed []*vObject, refuse
 	if err != nil {
 		return nil, nil, unlocked, err
 	}
-	sealed, refused, err = sealOpenUnder(o.store, o.authority, writer, data, o.session, sealedViaCommand, stamp)
+	sealed, refused, err = sealOpenUnder(fsSealOpenStore{o.store}, o.authority, writer, data, o.session, sealedViaCommand, stamp)
 	return sealed, refused, unlocked, err
 }

@@ -21,30 +21,32 @@ package main
 // lease has expired) asks no more than this until each session records the
 // instance that holds it (option C), which is when the rule is to read it.
 //
-// What is read. The scope identifiers recorded are read in a transaction of
-// no scope; then each scope's sessions -- of no scope first, then of each
-// identifier in byte order -- in transactions of that scope alone, as every
-// read of this kind is (ADR-0033): the scope's series in one, and each
-// session's receipts, with the payloads they name, in one of its own.
-// Neither the sessions a seal closes already nor, with --all, a series of
-// no receipt is read past its name. What is read is written, as an export
-// writes it (writeExport), into a directory of this process's own, made
-// private and removed when the judgment ends, and judged there as the
-// filesystem kind's command judges its store (sealOpenUnder): what may be
-// sealed is what gateway verify of an export observes session-open, by the
-// verifier's own ladder. Every session is judged before a seal is appended;
-// a session that cannot be read stops it all with nothing sealed. The seals
-// are appended to the registry the kind keeps, by the append it serialises
-// (pgLog.appendRecord), each refused where the registry, read again, holds a
-// seal for its session (appendSeal).
+// What is read, and where. Nothing read is written anywhere: the judgment
+// is the filesystem kind's (sealOpenUnder, the verifier's own ladder) of
+// the sessions as this kind holds them (pgSealOpenStore). The scope
+// identifiers recorded and the removal records are read in a transaction of
+// no scope; each scope's series names -- of no scope first, then of each
+// identifier in byte order -- in a transaction of that scope alone, as every
+// read of this kind is (ADR-0033). A series whose name no session id is
+// (SPEC.md §3a) is named as a refusal and read no further; so is a session a
+// seal closes already. Each other session is read in one transaction of its
+// own scope: its receipts, kept in this process's memory, and, for each
+// payload a receipt names, whether the scope holds bytes under that name and
+// the SHA-256 of those bytes, computed by the database -- the bytes never
+// leave it. The ladder's payload step reads that, and nothing else: what a
+// receipt of one scope names is judged by what its own scope holds, never
+// by what another scope holds under the same name. Every session is judged
+// before a seal is appended; a session that cannot be read stops it all with
+// nothing sealed. The seals are appended to the registry the kind keeps, by
+// the append it serialises (pgLog.appendRecord), each refused where the
+// registry, read again, holds a seal for its session (appendSeal).
 
 import (
-	"crypto/ed25519"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -60,46 +62,33 @@ func sealOpenOnKind(kind *pgKind, authority string, writer *registryWriter, sess
 	if err != nil {
 		return nil, nil, fmt.Errorf("registry: %w", err)
 	}
-	walk, err := engineWalk(data, writer.priv.Public().(ed25519.PublicKey))
+	st, err := readPgSealOpenStore(kind)
 	if err != nil {
-		return nil, nil, err
-	}
-	if session != "" {
-		if err := requireSession(session); err != nil {
-			return nil, nil, err
-		}
-	}
-	dir, err := os.MkdirTemp("", "gateway-seal-open-")
-	if err != nil {
-		return nil, nil, fmt.Errorf("the directory the sessions are judged in could not be made, and nothing was sealed: %v", err)
-	}
-	defer os.RemoveAll(dir)
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return nil, nil, fmt.Errorf("the directory the sessions are judged in could not be made private, and nothing was sealed: %v", err)
-	}
-	storeRoot := filepath.Join(dir, "store")
-	if err := kind.openSessionsInto(storeRoot, walk.seals, session); err != nil {
 		return nil, nil, fmt.Errorf("the store's sessions could not be read, and nothing was sealed: %v", err)
 	}
-	return sealOpenUnder(storeRoot, authority, writer, data, session, via, stamp)
+	return sealOpenUnder(st, authority, writer, data, session, via, stamp)
 }
 
-// openSessionsInto writes into root, in the layout of an export's store,
-// the sessions to judge -- the one named, or with "" each session sealed
-// holds no seal for -- with the payloads their receipts name, and the
-// removal records. The scope identifiers recorded are read in a
-// transaction of no scope; each scope's rows in transactions of that scope.
-func (k *pgKind) openSessionsInto(root string, sealed map[string]seal, session string) error {
-	for _, d := range []string{root, filepath.Join(root, "receipts"), filepath.Join(root, "artifacts")} {
-		if err := os.Mkdir(d, 0o700); err != nil {
-			return err
-		}
-	}
-	var removals []byte
+// pgSealOpenStore is the kind's sessions as sealOpenUnder judges them: each
+// series' name and the scope that holds it, listed once, and the removal
+// records' bytes. A series' name is the key of gateway.series, so no two
+// scopes hold one.
+type pgSealOpenStore struct {
+	kind     *pgKind
+	names    []string          // of no scope first, then of each identifier
+	scopeOf  map[string]string // a series' name -> its scope's row
+	removalF []byte
+}
+
+// readPgSealOpenStore lists the kind's series: the scope identifiers
+// recorded and the removal records in a transaction of no scope, then each
+// scope's series in a transaction of that scope.
+func readPgSealOpenStore(k *pgKind) (*pgSealOpenStore, error) {
+	st := &pgSealOpenStore{kind: k, scopeOf: map[string]string{}}
 	var recorded []string
 	err := k.ofNoScope().transact(pgReadSnapshot, func(tx pgTx) error {
 		var err error
-		if removals, _, err = pgRemovalFile(tx); err != nil {
+		if st.removalF, _, err = pgRemovalFile(tx); err != nil {
 			return err
 		}
 		rows, err := tx.exec(`SELECT identifier FROM gateway.scope_identifiers WHERE scope = $1 ORDER BY identifier`, pgNoScope)
@@ -107,106 +96,111 @@ func (k *pgKind) openSessionsInto(root string, sealed map[string]seal, session s
 		return err
 	})
 	if err != nil {
-		return pgFailure("list-series", false, err)
+		return nil, pgFailure("list-series", false, err)
 	}
-	if len(removals) > 0 {
-		if err := os.WriteFile(filepath.Join(root, removalsFile), removals, 0o600); err != nil {
-			return err
-		}
-	}
-	payloads := map[string]string{}
 	for _, row := range append([]string{pgNoScope}, recorded...) {
-		if err := k.ofRow(row).scopeSessionsInto(root, sealed, session, payloads); err != nil {
+		view := k.ofRow(row)
+		var names []string
+		err := view.transact(pgRead, func(tx pgTx) error {
+			rows, err := tx.exec(`SELECT name FROM gateway.series WHERE scope = $1 ORDER BY name`, view.row)
+			names = pgNames(rows)
 			return err
+		})
+		if err != nil {
+			return nil, pgFailure("list-series", false, err)
+		}
+		for _, name := range names {
+			if _, held := st.scopeOf[name]; held {
+				continue
+			}
+			st.scopeOf[name] = row
+			st.names = append(st.names, name)
 		}
 	}
-	return nil
+	return st, nil
 }
 
-// scopeSessionsInto writes the view's sessions to judge into root: the
-// scope's series in one transaction of the scope, and each session's
-// receipts and the payloads they name in one of its own. payloads holds the
-// digest of the bytes written under each payload's name, so that two
-// scopes holding different bytes under one name are refused, as an export
-// refuses them, rather than one taken for the other.
-func (k *pgKind) scopeSessionsInto(root string, sealed map[string]seal, session string, payloads map[string]string) error {
-	var names []string
-	err := k.transact(pgRead, func(tx pgTx) error {
-		rows, err := tx.exec(`SELECT name FROM gateway.series WHERE scope = $1 ORDER BY name`, k.row)
-		names = pgNames(rows)
-		return err
-	})
+func (st *pgSealOpenStore) sessions() ([]string, error) { return st.names, nil }
+
+// a series --all meets that no session id names is no session of a
+// gateway's (SPEC.md §3a); it is named, and the rest judged, as the
+// filesystem kind names such a directory
+func (st *pgSealOpenStore) misnamed(name string) string {
+	return fmt.Sprintf("the store's series %q is not named as a session is (SPEC.md §3a); it is not sealed", name)
+}
+
+func (st *pgSealOpenStore) removals(keys []reachedKey) (map[string][]removalRecord, error) {
+	set, _, err := scanRecords(bytes.NewReader(st.removalF), keys)
 	if err != nil {
-		return pgFailure("list-series", false, err)
+		return nil, fmt.Errorf("removal records: %w", err)
 	}
-	for _, name := range names {
-		if session != "" && name != session {
-			continue
-		}
-		if _, closed := sealed[name]; closed && session == "" {
-			continue
-		}
-		// a name no directory can take is read no further; as an export
-		// refuses it, so does the judgment, which is no verdict on it
-		if !validListedSeries(name) {
-			return fmt.Errorf("session %q cannot be named as a directory of a store", name)
-		}
-		if err := k.sessionInto(root, name, payloads); err != nil {
-			return fmt.Errorf("session %s: %w", name, err)
-		}
-	}
-	return nil
+	return set.artifacts, nil
 }
 
-// sessionInto writes one session of the view's scope into root, read in one
-// transaction of that scope: each receipt at receipts/<session>/<index>.json
-// and each payload a receipt names, held by the scope, at artifacts/<hex>.
-func (k *pgKind) sessionInto(root, name string, payloads map[string]string) error {
-	dir := filepath.Join(root, "receipts", name)
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		return err
+// reading reads one session in one transaction of its own scope: each
+// receipt, as <index>.json, an export's name for it; and, for each payload a
+// receipt names, whether the scope holds bytes under that name and their
+// SHA-256, computed in the transaction.
+func (st *pgSealOpenStore) reading(sessionID string) (sessionReading, string, error) {
+	row, held := st.scopeOf[sessionID]
+	if !held {
+		return sessionReading{}, fmt.Sprintf("session %s is not in the store", sessionID), nil
 	}
-	return k.transact(pgReadSnapshot, func(tx pgTx) error {
-		entries, err := tx.exec(`SELECT name, data FROM gateway.entries WHERE scope = $1 AND series = $2 ORDER BY name`, k.row, name)
+	view := st.kind.ofRow(row)
+	receipts := map[string][]byte{}
+	var names []string
+	sums := map[string]string{} // a payload's name -> the SHA-256 held, "" for none
+	err := view.transact(pgReadSnapshot, func(tx pgTx) error {
+		entries, err := tx.exec(`SELECT name, data FROM gateway.entries WHERE scope = $1 AND series = $2 ORDER BY name`, view.row, sessionID)
 		if err != nil {
 			return err
 		}
-		named := map[string]bool{}
 		for _, e := range entries.rows {
-			entry := string(e[0])
-			if !validListedEntry(entry) {
-				return fmt.Errorf("a receipt's name %q cannot be named as a file of a store", entry)
-			}
-			if err := os.WriteFile(filepath.Join(dir, entry+".json"), e[1], 0o600); err != nil {
-				return err
-			}
+			name := string(e[0]) + ".json"
+			receipts[name] = e[1]
+			names = append(names, name)
 			if hexSum, ok := namedPayload(e[1]); ok {
-				named[hexSum] = true
+				sums[hexSum] = ""
 			}
 		}
-		for hexSum := range named {
-			rows, err := tx.exec(`SELECT data FROM gateway.blobs WHERE scope = $1 AND name = $2`, k.row, "sha256:"+hexSum)
+		for hexSum := range sums {
+			rows, err := tx.exec(`SELECT pg_catalog.encode(pg_catalog.sha256(data), 'hex') FROM gateway.blobs WHERE scope = $1 AND name = $2`, view.row, "sha256:"+hexSum)
 			if err != nil {
 				return err
 			}
-			if len(rows.rows) != 1 {
-				// none held: what verification finds of the receipt then
-				continue
+			if len(rows.rows) == 1 {
+				sums[hexSum] = string(rows.rows[0][0])
 			}
-			digest := digestOfBytes(rows.rows[0][0])
-			if was, written := payloads[hexSum]; written {
-				if was != digest {
-					return errors.New("two scopes hold different bytes under one payload's name")
-				}
-				continue
-			}
-			if err := os.WriteFile(filepath.Join(root, "artifacts", hexSum), rows.rows[0][0], 0o600); err != nil {
-				return err
-			}
-			payloads[hexSum] = digest
 		}
 		return nil
 	})
+	if err != nil {
+		return sessionReading{}, "", pgFailure("read-session", false, err)
+	}
+	return sessionReading{
+		names: names,
+		read:  func(name string) ([]byte, error) { return receipts[name], nil },
+		probe: storeProbe{
+			artifact: func(digestHex string) (string, bool, bool) {
+				sum, asked := sums[digestHex]
+				switch {
+				case !asked:
+					// a name the reading did not ask after is not known to
+					// be absent: missing, never passed over
+					return "", false, false
+				case sum == "":
+					return "", false, true
+				}
+				return sum, true, false
+			},
+			// the kind refuses descriptor provenance at its start (its
+			// snapshot is read from a store on disk), so it makes no receipt
+			// that carries one; one found is judged not whole
+			provenance: func(descriptorProvenance, string, string, string, bool, []reachedKey) string {
+				return "descriptor-provenance-missing"
+			},
+		},
+	}, "", nil
 }
 
 // namedPayload is the payload a receipt's bytes name -- its resultDigest's
