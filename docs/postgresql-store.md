@@ -342,20 +342,27 @@ command holds it was left by an instance that no longer serves. ADR-0035's quest
 sessions whose holder's lease has expired) asks no more than this until sessions are held by the
 instance that minted them (option C).
 
-What is read. The scope identifiers recorded are read in a transaction of no scope, and each
-scope's sessions -- of no scope first, then of each identifier in byte order -- in transactions
-of that scope alone ("Scope identifiers"): its series in one, and each session's receipts, with
-the payloads they name, in one of its own. A session a seal closes already, and with `--all` a
-session of no receipt, is not read past its name. What is read is written, in an export's
-layout, into a directory of the process's own under the system's temporary directory (`TMPDIR`
-where set), private to its user and removed when the judgment ends; the payloads of the sessions
-judged are in it meanwhile. There each session is judged as `gateway seal-open` judges a store on
-disk: what is sealed is what `gateway verify` of an export observes `session-open` -- receipts
-every one of which has ladder status `ok`, in sequence and chained. A session that is not so is
-named with what verification finds of it and left open; a session that cannot be read, or a
-session's name held by two scopes, stops the command, and the start, with nothing sealed. Seals
-are appended to the registry by its one serialised append, each refused where the registry holds
-a seal for its session already.
+What is read, and where. Nothing read is written anywhere, and no file is made. The scope
+identifiers recorded and the removal records are read in a transaction of no scope; each scope's
+series names -- of no scope first, then of each identifier in byte order -- in a transaction of
+that scope alone ("Scope identifiers"). A series' name is the key of its table, so no two scopes
+hold one session. A session a seal closes already is not read past its name; nor is a series whose
+name no session id is (SPEC.md §3a), which is named, `the store's series "<name>" is not named as
+a session is (SPEC.md §3a); it is not sealed`, and the rest judged, as the filesystem kind names
+such a directory. Each other session is read in one transaction of its own scope: its receipts,
+held in the process's memory, and, for each payload a receipt names, whether that scope holds
+bytes under the name and the SHA-256 of those bytes, which the database computes -- the payload's
+bytes do not leave it. A session of no receipt is read so, and found to hold none. Each session is
+then judged by the verifier's own ladder, as `gateway seal-open` judges a store on disk: what is
+sealed is what `gateway verify` of an export observes `session-open` -- receipts every one of
+which has ladder status `ok`, in sequence and chained. The payload step reads what the session's
+own scope holds and nothing else: a payload another scope holds under the same name does not stand
+in for one this scope lacks (`artifact-missing`) or holds with other bytes (`artifact-mismatch`).
+A receipt that names descriptor provenance, which this kind does not admit, is judged not whole. A
+session that is not whole is named with what verification finds of it and left open, and the rest
+are sealed (exit 1 for the command); a session that cannot be read stops the command, and the
+start, with nothing sealed. Seals are appended to the registry by its one serialised append, each
+refused where the registry holds a seal for its session already.
 
 ## The migration command
 
