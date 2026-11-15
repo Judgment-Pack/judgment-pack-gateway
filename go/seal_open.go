@@ -211,6 +211,16 @@ func sealOpenUnder(st sealOpenStore, authority string, writer *registryWriter, d
 	var sealed []*vObject
 	for _, t := range targets {
 		record, err := writer.sealAfterInterruption(t.sessionID, t.count, t.head, stamp(), via)
+		if errors.Is(err, errSessionAlreadySealed) {
+			// sealed since it was judged: on the PostgreSQL kind, where
+			// instances serve beside one another, by another instance's
+			// start, judged by the registry in the append's own transaction
+			// (appendSeal); the filesystem kind's lock lets no other in
+			if session != "" {
+				refused = append(refused, fmt.Sprintf("session %s is sealed in the registry; it is not sealed again", t.sessionID))
+			}
+			continue
+		}
 		if err != nil {
 			return sealed, refused, fmt.Errorf("session %s: %w", t.sessionID, err)
 		}
@@ -229,9 +239,10 @@ func sealOpenUnder(st sealOpenStore, authority string, writer *registryWriter, d
 // stops the start: what was left open is not known, or not all sealed.
 //
 // On the PostgreSQL kind (seal_open_pg.go) the start seals once it holds
-// the start lease and walked the registry the kind keeps, before it serves:
-// one instance holds the lease at a time, so each session found open then
-// was left by an instance that no longer serves.
+// the start lease and walked the registry the kind keeps, before it serves,
+// each session whose holder's row of the lease has expired: one left by an
+// instance that no longer serves. A session another live instance holds,
+// where instances serve beside one another, is passed over.
 func sealOpenAtStart(service *gatewayService, stderr io.Writer, stamp func() string) error {
 	var sealed []*vObject
 	var refused []string

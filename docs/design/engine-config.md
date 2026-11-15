@@ -62,7 +62,7 @@ entry is `{"file": …}`, and a live one's may carry `tokenStep` beside `file`. 
 absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"25"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"26"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
@@ -76,8 +76,9 @@ absolute.
   version 22 a platform's `artifact` ("A platform that keeps no payload (engine version 22)",
   below), version 23 `measureSandboxAtStart` ("Measuring the sandbox at the start (engine
   version 23)", below), version 24 `storage` ("The storage kind (engine version 24)",
-  below), and version 25 `storage`'s `startWaitSeconds` ("A start that waits for the start lease
-  (engine version 25)", below). A
+  below), version 25 `storage`'s `startWaitSeconds` ("A start that waits for the start lease
+  (engine version 25)", below), and version 26 `storage`'s `instances` ("Several instances on one
+  database (engine version 26)", below). A
   file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -1456,7 +1457,7 @@ A file without the member, and every call made under no delegation, behave as be
 
 Version 17 adds the optional `sealOpenAtStart` member, `true` or `false` and nothing else
 (SPEC.md §3c, gateway #395). With it `true`, the engine's start, once it holds its registry
-and before it serves, seals each session an earlier process left open whose receipts are
+and before it serves, seals each session another process left open whose receipts are
 whole with a seal made after an interruption, `sealedVia` `"start"`, and writes each seal on
 stderr as `start: sealed after an interruption: <registry line>`. A session that is not
 whole, and a directory no session id names, is named on stderr and stays open, and the engine
@@ -1905,6 +1906,7 @@ kind keeps both, and `store` and `registry` are not given:
 | `connections` | integer, 1 to 64; 4 without it | outside the range, not an integer |
 | `operationSeconds` | integer, 1 to 600; 30 without it | outside the range, not an integer |
 | `startWaitSeconds` | integer, 1 to 3600, from version 25; without it the start does not wait (below) | outside the range, not an integer, at version 24 |
+| `instances` | `"one"` or `"several"`, from version 26; `"one"` without it (below) | any other value, not a string, at version 25 or earlier |
 
 The connection string itself is never written in the file. A file is read, at most 4096 bytes, at
 the start and by `gateway export --config`; a variable is read at the start and removed from the
@@ -1962,6 +1964,43 @@ Refused by name, `engine configuration: …`: `storage.startWaitSeconds` in a fi
 **Upgrading.** A version 24 file loads unchanged under a gateway of this version. To have a start
 wait for the instance it replaces, raise `engineVersion` to `"25"` and add `startWaitSeconds` to
 `storage`; a gateway older than this one refuses a version-25 file by its version.
+
+## Several instances on one database (engine version 26)
+
+Version 26 adds `storage`'s optional `instances`: `"one"`, one instance per database, as without
+it, or `"several"`, instances serving one database beside one another
+([ADR-0035](../adr/0035-several-instances-on-one-postgresql-database.md), option C; the operator's
+page, [postgresql-store.md](../postgresql-store.md), "Several instances on one database", has what
+the operator gives each instance and how a session's calls reach the instance that holds it):
+
+```json
+"storage": {
+  "kind": "postgresql",
+  "connection": { "file": "/run/secrets/gateway-store-url" },
+  "instances": "several"
+}
+```
+
+With `"several"`, a start takes a row of the start lease of its own beside the instances serving,
+where each signs under the same key id and names the same authority, and is refused beside an
+instance of the one-instance mode, which is refused beside it in turn. Each session is held by the
+instance that admitted its first call; another instance answers a call into it, or a seal of it,
+`409`, before the source runs. The start says so on standard error:
+
+```text
+start: instances serve this database beside one another (storage.instances "several"): each session is held by the instance that admitted its first call, and another instance answers a call into it 409
+```
+
+The member needs schema version 6 (`gateway store migrate`, every instance stopped), as every
+start of this version does.
+
+Refused by name, `engine configuration: …`: `storage.instances` in a file of version 25 or earlier
+(`is a version-26 member`), or a value other than `"one"` or `"several"`.
+
+**Upgrading.** A version 25 file loads unchanged under a gateway of this version. To have
+instances serve one database beside one another, stop every instance, run `gateway store
+migrate`, raise `engineVersion` to `"26"` on each, add `"instances": "several"` to `storage`, and
+start them; a gateway older than this one refuses a version-26 file by its version.
 
 ## Keyed actions (engine version 14 and later)
 

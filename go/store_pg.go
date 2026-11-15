@@ -171,6 +171,11 @@ type pgKind struct {
 	// just before its commit. "" for a kind that holds none, as an export
 	// or a test opens it.
 	fence string
+	// instance is what this instance's row of the start lease records of
+	// it, set before the lease is taken (startOnKind); schema is the schema
+	// version the kind was held to at its open, which the take reads again.
+	instance pgInstance
+	schema   int
 }
 
 // pgRowScope is a scope as the rows of the scoped tables hold it, and as a
@@ -542,9 +547,11 @@ func (x pgIndexed) makeSeries(series string) (bool, error) {
 	made := false
 	err := x.k.transact(pgWriteCommitted, func(tx pgTx) error {
 		// a series of any scope holds its name: a session's name is one
-		// across scopes, and one another scope made is never this call's
-		rows, err := tx.exec(`INSERT INTO gateway.series (scope, name) VALUES ($1, $2)
-			ON CONFLICT DO NOTHING RETURNING name`, x.k.row, series)
+		// across scopes, and one another scope made is never this call's.
+		// It records the instance that made it, where the kind holds the
+		// start lease (store_pg_instances.go).
+		rows, err := tx.exec(`INSERT INTO gateway.series (scope, name, holder) VALUES ($1, $2, NULLIF($3, ''))
+			ON CONFLICT DO NOTHING RETURNING name`, x.k.row, series, x.k.fence)
 		made = err == nil && len(rows.rows) == 1
 		return err
 	})
@@ -701,6 +708,54 @@ func (l pgLog) appendRecord(data []byte) (int, error) {
 	case err != nil:
 		return 0, &storeError{fault: faultDurability, op: "append", err: err}
 	case !made:
+		return 0, &storeError{fault: faultAbsent, op: "append"}
+	}
+	return len(data), nil
+}
+
+// appendJudged appends, as appendRecord does, what build answers for the
+// log's bytes as they stand under the append's lock: the lock is taken
+// first, the log read whole in the same transaction, at READ COMMITTED, so
+// what build judges is every record committed before this append, and none
+// commits after it but this one until its commit (judgedAppendLog).
+func (l pgLog) appendJudged(build func(existing []byte) ([]byte, error)) (int, error) {
+	var refused error
+	var data []byte
+	present, made := false, false
+	err := l.k.transact(pgWriteCommitted, func(tx pgTx) error {
+		if _, err := tx.exec(`SELECT pg_catalog.pg_advisory_xact_lock($1)`, int64(pgLogAppendLock)); err != nil {
+			return err
+		}
+		existing, there, err := l.readTx(tx, 0)
+		if err != nil || !there {
+			return err
+		}
+		present = true
+		if data, refused = build(existing); refused != nil {
+			return refused
+		}
+		if len(data) == 0 || len(data) > pgMaxValue {
+			refused = &storeError{fault: faultRefused, op: "append", err: fmt.Errorf("store: a record of %d bytes is not within the kind's bounds of 1 to %d", len(data), pgMaxValue)}
+			return refused
+		}
+		rows, err := tx.exec(`INSERT INTO gateway.log_records (log, start, data)
+			SELECT g.name, COALESCE((SELECT r.stop FROM gateway.log_records r
+				WHERE r.log = g.name ORDER BY r.start DESC LIMIT 1), 0), $2
+			FROM gateway.logs g WHERE g.name = $1
+			RETURNING start`, l.name, data)
+		made = err == nil && len(rows.rows) == 1
+		return err
+	})
+	var unknown pgCommitUnknown
+	switch {
+	case refused != nil:
+		return 0, refused
+	case errors.As(err, &unknown):
+		// written whole; whether it was made durable is not known
+		return len(data), &storeError{fault: faultDurability, op: "append", written: len(data), committing: true, err: err}
+	case err != nil:
+		return 0, pgFailure("append", true, err)
+	case !present || !made:
 		return 0, &storeError{fault: faultAbsent, op: "append"}
 	}
 	return len(data), nil

@@ -40,9 +40,14 @@ type storageSpec struct {
 	// instance holds (engineVersion 25, handover.go); zero refuses the start
 	// at once, as before the member.
 	startWait time.Duration
+	// several is storage.instances "several" (engineVersion 26,
+	// store_pg_lease.go): instances in this mode serve the database beside
+	// one another, each session held by the instance that admitted its
+	// first call; false, the default, keeps one instance per database.
+	several bool
 }
 
-var storageMembers = map[string]bool{"kind": true, "connection": true, "connections": false, "operationSeconds": false, "startWaitSeconds": false}
+var storageMembers = map[string]bool{"kind": true, "connection": true, "connections": false, "operationSeconds": false, "startWaitSeconds": false, "instances": false}
 
 // maxStartWait bounds startWaitSeconds: past the longest drain of the
 // instance that hands over (operationSeconds at most, and the stop's grace)
@@ -131,6 +136,16 @@ func parseStorage(v value, version string) (*storageSpec, error) {
 			return nil, fmt.Errorf("storage.startWaitSeconds %d is outside 1 to %d", n, int64(maxStartWait/time.Second))
 		}
 		spec.startWait = time.Duration(n) * time.Second
+	}
+	if v, present := obj.get("instances"); present {
+		if !versionAtLeast(version, "26") {
+			return nil, fmt.Errorf("storage.instances is a version-26 member; engineVersion %s has no storage.instances", version)
+		}
+		mode, ok := v.(vString)
+		if !ok || (mode != "one" && mode != "several") {
+			return nil, errors.New(`storage.instances is "one", one instance per database, or "several", instances serving the database beside one another`)
+		}
+		spec.several = mode == "several"
 	}
 	return spec, nil
 }

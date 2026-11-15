@@ -10,16 +10,21 @@ package main
 //
 // Who is stopped. The filesystem kind holds the registry's lock; this kind
 // holds the start lease (store_pg_lease.go). The command takes the lease as
-// a start does, and as gateway store remove-scope does it is refused at once,
-// start-lease-held, while an instance's lease is live -- it does not wait,
-// whatever storage.startWaitSeconds says; it renews the lease while it runs
-// and releases it at its end, and every seal it appends is fenced on it. The
-// start seals once it holds the lease and the registry's walk held, and
-// before it serves. One instance holds the lease at a time (ADR-0035, option
-// D), so every session found open then was left by an instance that no
-// longer serves: ADR-0035's question 11 (seal the sessions whose holder's
-// lease has expired) asks no more than this until each session records the
-// instance that holds it (option C), which is when the rule is to read it.
+// a start does -- in the one-instance mode refused at once, start-lease-held,
+// while an instance's lease is live, as gateway store remove-scope is; it
+// does not wait, whatever storage.startWaitSeconds says -- renews it while it
+// runs and releases it at its end, and every seal it appends is fenced on
+// it. The start seals once it holds the lease and the registry's walk held,
+// and before it serves. Each session records the instance that holds it
+// (store_pg_instances.go), and only a session whose holder's row of the
+// lease has expired is sealed (ADR-0035, question 11): where instances
+// serve beside one another (option C), the command and a start pass over,
+// in --all, every session a live instance holds, and refuse one named; in
+// the one-instance mode no instance but this one is live. Before a session
+// is read, the expired row of each instance that holds one is held FOR
+// UPDATE (pgStartLeaseSettle), so no write of that instance commits after
+// the session is read; the read sees who holds it again, in its own
+// snapshot, so a session taken up meanwhile is not sealed.
 //
 // What is read, and where. Nothing read is written anywhere: the judgment
 // is the filesystem kind's (sealOpenUnder, the verifier's own ladder) of
@@ -38,8 +43,10 @@ package main
 // by what another scope holds under the same name. Every session is judged
 // before a seal is appended; a session that cannot be read stops it all with
 // nothing sealed. The seals are appended to the registry the kind keeps, by
-// the append it serialises (pgLog.appendRecord), each refused where the
-// registry, read again, holds a seal for its session (appendSeal).
+// the append it serialises (pgLog.appendJudged), each refused where the
+// registry, read again in the append's transaction under its lock, holds a
+// seal for its session (appendSeal): where another instance's start sealed
+// the session since it was judged, --all passes over it.
 
 import (
 	"bytes"
@@ -47,6 +54,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -78,13 +86,20 @@ type pgSealOpenStore struct {
 	names    []string          // of no scope first, then of each identifier
 	scopeOf  map[string]string // a series' name -> its scope's row
 	removalF []byte
+	// elsewhere holds each series another live instance holds, which --all
+	// passes over
+	elsewhere map[string]bool
 }
+
+// refusalSealHeldElsewhere is a session named to seal that another live
+// instance holds.
+const refusalSealHeldElsewhere = "session %s is held by another gateway instance serving this database, whose start lease is live; it is not sealed"
 
 // readPgSealOpenStore lists the kind's series: the scope identifiers
 // recorded and the removal records in a transaction of no scope, then each
 // scope's series in a transaction of that scope.
 func readPgSealOpenStore(k *pgKind) (*pgSealOpenStore, error) {
-	st := &pgSealOpenStore{kind: k, scopeOf: map[string]string{}}
+	st := &pgSealOpenStore{kind: k, scopeOf: map[string]string{}, elsewhere: map[string]bool{}}
 	var recorded []string
 	err := k.ofNoScope().transact(pgReadSnapshot, func(tx pgTx) error {
 		var err error
@@ -98,29 +113,75 @@ func readPgSealOpenStore(k *pgKind) (*pgSealOpenStore, error) {
 	if err != nil {
 		return nil, pgFailure("list-series", false, err)
 	}
+	expired := map[string]bool{}
 	for _, row := range append([]string{pgNoScope}, recorded...) {
 		view := k.ofRow(row)
-		var names []string
+		var series pgRows
 		err := view.transact(pgRead, func(tx pgTx) error {
-			rows, err := tx.exec(`SELECT name FROM gateway.series WHERE scope = $1 ORDER BY name`, view.row)
-			names = pgNames(rows)
+			var err error
+			series, err = tx.exec(pgSeriesHolders, view.row)
 			return err
 		})
 		if err != nil {
 			return nil, pgFailure("list-series", false, err)
 		}
-		for _, name := range names {
+		for _, r := range series.rows {
+			name := string(r[0])
 			if _, held := st.scopeOf[name]; held {
 				continue
 			}
+			live, ok := pgBool(r[2])
+			if !ok {
+				return nil, pgFailure("list-series", false, errors.New("store: a series' holder did not read"))
+			}
+			holder := ""
+			if r[1] != nil {
+				holder = string(r[1])
+			}
 			st.scopeOf[name] = row
 			st.names = append(st.names, name)
+			switch {
+			case live && holder != k.fence:
+				st.elsewhere[name] = true
+			case !live && holder != "":
+				expired[holder] = true
+			}
+		}
+	}
+	// every write of an instance whose row has expired has ended, or fails
+	// at its fence, before a session it held is read
+	if len(expired) > 0 {
+		holders := make([]string, 0, len(expired))
+		for holder := range expired {
+			holders = append(holders, holder)
+		}
+		slices.Sort(holders)
+		err := k.ofNoScope().transact(pgWriteCommitted, func(tx pgTx) error {
+			for _, holder := range holders {
+				if _, err := tx.exec(pgStartLeaseSettle, holder); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, pgFailure("list-series", true, err)
 		}
 	}
 	return st, nil
 }
 
-func (st *pgSealOpenStore) sessions() ([]string, error) { return st.names, nil }
+// sessions is every series --all judges: each one no live instance but this
+// one holds.
+func (st *pgSealOpenStore) sessions() ([]string, error) {
+	names := make([]string, 0, len(st.names))
+	for _, name := range st.names {
+		if !st.elsewhere[name] {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
 
 // a series --all meets that no session id names is no session of a
 // gateway's (SPEC.md §3a); it is named, and the rest judged, as the
@@ -150,7 +211,18 @@ func (st *pgSealOpenStore) reading(sessionID string) (sessionReading, string, er
 	receipts := map[string][]byte{}
 	var names []string
 	sums := map[string]string{} // a payload's name -> the SHA-256 held, "" for none
+	elsewhere := false
 	err := view.transact(pgReadSnapshot, func(tx pgTx) error {
+		// who holds it, in the snapshot its receipts are read in: one a
+		// live instance holds, or took up since the listing, is not sealed
+		h, err := pgReadSeriesHolding(tx, view.row, sessionID)
+		if err != nil {
+			return err
+		}
+		if h != nil && h.live && h.holder != st.kind.fence {
+			elsewhere = true
+			return nil
+		}
 		entries, err := tx.exec(`SELECT name, data FROM gateway.entries WHERE scope = $1 AND series = $2 ORDER BY name`, view.row, sessionID)
 		if err != nil {
 			return err
@@ -176,6 +248,9 @@ func (st *pgSealOpenStore) reading(sessionID string) (sessionReading, string, er
 	})
 	if err != nil {
 		return sessionReading{}, "", pgFailure("read-session", false, err)
+	}
+	if elsewhere || st.elsewhere[sessionID] {
+		return sessionReading{}, fmt.Sprintf(refusalSealHeldElsewhere, sessionID), nil
 	}
 	return sessionReading{
 		names: names,
@@ -255,6 +330,7 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 	if err != nil {
 		return nil, nil, err
 	}
+	kind.instance = instanceFor(&spec, seed, o.authority)
 	holder, err := newStartLeaseHolder()
 	if err != nil {
 		kind.close()

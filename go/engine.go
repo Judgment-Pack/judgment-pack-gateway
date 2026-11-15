@@ -68,14 +68,18 @@ import (
 // `startWaitSeconds`, by which a start on the PostgreSQL kind waits for an
 // instance serving the database to hand it over
 // (docs/adr/0035-several-instances-on-one-postgresql-database.md, option D;
-// handover.go):
+// handover.go), and version 26 the storage member's optional `instances`,
+// "one" (the default) or "several", by which instances on the PostgreSQL
+// kind serve one database beside one another, each session held by the
+// instance that admitted its first call (ADR-0035, option C;
+// store_pg_lease.go):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "25"
+const engineVersion = "26"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
