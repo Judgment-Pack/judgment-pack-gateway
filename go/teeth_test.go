@@ -2274,15 +2274,20 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 		"v3-artifact-removed-shared-digest", "v3-artifact-removed",
 	}
 	// The removed-session vectors (SPEC.md §1.3a, "A removed session"):
-	// every one states its observations, and two observe a session removed.
+	// every one states its observations, and four observe a session removed.
 	sessionRemovalStating := []string{
 		"v3-session-removed", "v3-session-removed-record-changed-after-signing",
 		"v3-session-removed-record-count-differs", "v3-session-removed-record-extra-member",
 		"v3-session-removed-record-names-another-seal", "v3-session-removed-record-taken-away",
 		"v3-session-removed-record-under-a-later-key", "v3-session-removed-record-under-an-earlier-key",
 		"v3-session-removed-record-under-another-prefix", "v3-session-removed-session-still-present",
+		"v3-session-removed-anchored-by-an-interruption-seal", "v3-session-removed-beside-a-seal-conflict",
+		"v3-session-removed-record-names-the-second-seal", "v3-session-removed-record-under-an-unreached-key",
 	}
-	sessionRemovalObserving := []string{"v3-session-removed", "v3-session-removed-record-under-a-later-key"}
+	sessionRemovalObserving := []string{
+		"v3-session-removed", "v3-session-removed-record-under-a-later-key",
+		"v3-session-removed-anchored-by-an-interruption-seal", "v3-session-removed-beside-a-seal-conflict",
+	}
 	retentionStating = append(retentionStating, sessionRemovalStating...)
 	retentionObserving = append(retentionObserving, sessionRemovalObserving...)
 	supplying := []string{
@@ -2329,8 +2334,8 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 			if err != nil {
 				t.Fatalf("no run: %v", err)
 			}
-			if count != 194 {
-				t.Fatalf("%d store vectors read, want 194", count)
+			if count != 198 {
+				t.Fatalf("%d store vectors read, want 198", count)
 			}
 			disagreeing := map[string]bool{}
 			for _, failure := range failures {
@@ -2508,7 +2513,7 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 	// observes in.
 	if got, want := []int{len(stores), len(okTrue), len(withFindings), len(withWitnesses), len(withRotations), len(stating),
 		len(witnesses), len(refusals), len(readings), len(okReadings), len(withHead)},
-		[]int{194, 46, 194, 3, 14, 13, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
+		[]int{198, 47, 198, 3, 14, 15, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
 		t.Fatalf("the corpus's vectors, by what their answers give: %v, want %v", got, want)
 	}
 	for name := range stating {
