@@ -547,9 +547,11 @@ func (x pgIndexed) makeSeries(series string) (bool, error) {
 	made := false
 	err := x.k.transact(pgWriteCommitted, func(tx pgTx) error {
 		// a series of any scope holds its name: a session's name is one
-		// across scopes, and one another scope made is never this call's
-		rows, err := tx.exec(`INSERT INTO gateway.series (scope, name) VALUES ($1, $2)
-			ON CONFLICT DO NOTHING RETURNING name`, x.k.row, series)
+		// across scopes, and one another scope made is never this call's.
+		// It records the instance that made it, where the kind holds the
+		// start lease (store_pg_instances.go).
+		rows, err := tx.exec(`INSERT INTO gateway.series (scope, name, holder) VALUES ($1, $2, NULLIF($3, ''))
+			ON CONFLICT DO NOTHING RETURNING name`, x.k.row, series, x.k.fence)
 		made = err == nil && len(rows.rows) == 1
 		return err
 	})

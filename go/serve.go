@@ -211,8 +211,12 @@ type gatewayService struct {
 	// source is fixed to, kept through the kind's view of that scope
 	// (ADR-0033); both are nil on every other kind, whose one store holds
 	// every scope's receipts, as the filesystem kind's does.
-	keeper          scopeKeeper
-	scoped          map[string]*store
+	keeper scopeKeeper
+	scoped map[string]*store
+	// claimer is kind where instances serve it beside one another and it
+	// records the instance that holds each session (store_pg_instances.go);
+	// nil otherwise.
+	claimer         seriesClaimer
 	authority       string
 	publicKey       ed25519.PublicKey
 	keyID           string
@@ -384,6 +388,19 @@ const pgRegistryName = "the registry the PostgreSQL storage kind keeps"
 // identifier keeps its payloads and receipts through the kind's view of
 // that scope, which reads and writes that scope's rows alone, and a
 // session's receipts are of one scope.
+// seriesClaimer is a kind that records the instance that holds each
+// session, where instances serve it beside one another
+// (store_pg_instances.go).
+type seriesClaimer interface {
+	// claimsSeries is whether the kind records the holder.
+	claimsSeries() bool
+	// claimSeries makes or takes up a session's series for this instance,
+	// of scope ("" for none), or answers why it does neither.
+	claimSeries(name, scope string) (seriesClaim, error)
+	// seriesHolding answers who holds a session's series, changing nothing.
+	seriesHolding(name string) (seriesClaim, error)
+}
+
 type scopeKeeper interface {
 	// scopeViews records each scope identifier and returns its view.
 	scopeViews(scopes []string) (map[string]storeKind, error)
@@ -452,6 +469,9 @@ func newGatewayServiceOn(kind storeKind, seed []byte, authority string, sources 
 			return nil, err
 		}
 		g.keeper = keeper
+		if claimer, claims := kind.(seriesClaimer); claims && claimer.claimsSeries() {
+			g.claimer = claimer
+		}
 		g.scoped = map[string]*store{}
 		for scope, view := range views {
 			g.scoped[scope] = newStoreOn("", view.artifacts(), view.receipts(), seed, authority)
@@ -1939,11 +1959,14 @@ func (g *gatewayService) admit(sessionID, scope string) error {
 	state, seen := g.sessions[sessionID]
 	if !seen {
 		// A session this process does not hold is taken up only where the
-		// store holds no receipt in it: one an earlier process left open
+		// store holds no receipt in it: one another process left open
 		// cannot be continued from an empty memory, and its source would
 		// run for a receipt that collides at the stamp (open_sessions.go).
-		if refusal := g.leftInStore(sessionID, scope, true); refusal != "" {
-			return badRequest{errors.New(refusal)}
+		// Where instances serve the database beside one another, this
+		// instance records itself as the session's holder here, before the
+		// source runs, and one another live instance holds is refused 409.
+		if refused := g.leftInStore(sessionID, scope, true); refused != nil {
+			return refused
 		}
 		state = &sessionState{scope: scope}
 		g.sessions[sessionID] = state
@@ -1994,8 +2017,9 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 		return nil, badRequest{err}
 	}
 	// A session this process does not hold is not one it can seal: one
-	// sealed in the registry is said to be so, and one an earlier process
-	// left open in the store is said to be that, rather than "no such
+	// sealed in the registry is said to be so, one another live instance
+	// holds is answered 409, and one another process left open in the store
+	// is said to be that, rather than "no such
 	// session" for either (open_sessions.go). The registry is read before
 	// the store, so a sealed session is never said to be left open.
 	if refusal := g.sealedElsewhere(sessionID); refusal != "" {
@@ -2005,8 +2029,8 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 	defer g.mu.Unlock()
 	state, seen := g.sessions[sessionID]
 	if !seen {
-		if refusal := g.leftInStore(sessionID, "", false); refusal != "" {
-			return nil, badRequest{errors.New(refusal)}
+		if refused := g.leftInStore(sessionID, "", false); refused != nil {
+			return nil, refused
 		}
 		return nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
 	}
@@ -2142,6 +2166,13 @@ func (g *gatewayService) handler() http.Handler {
 		var expired *sourceReferenceExpired
 		if errors.As(err, &expired) {
 			writeJSON(w, http.StatusGone, map[string]any{"error": expired.Error(), "code": sourceReferenceExpiredCode})
+			return
+		}
+		// A session another live instance serving the database holds
+		// (open_sessions.go): the caller's calls belong to that instance.
+		var elsewhere sessionHeldElsewhere
+		if errors.As(err, &elsewhere) {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 			return
 		}
 		var caller badRequest

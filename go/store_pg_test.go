@@ -1486,6 +1486,7 @@ func pgGrantsOfVersion(t *testing.T, grants []byte, version int) []byte {
 	}{
 		{3, ", gateway.scope_identifiers"},
 		{5, "\n    EXECUTE pg_catalog.format('GRANT SELECT ON gateway.removal_records TO %I', runtime);"},
+		{6, ", gateway.series_holders"},
 	} {
 		if version >= later.version {
 			continue
