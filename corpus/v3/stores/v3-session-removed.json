@@ -1,0 +1,34 @@
+{
+  "name": "v3-session-removed",
+  "note": "A store of two sessions, each sealed under the test key: s1 of the scope identifier scope-a, removed with its payloads, and s2 of scope-b, kept whole. The removal file holds a session-removal record naming s1 by its id, its seal's signature and count, signed under the test key, and the call's scope-removal record. s2's receipts are ok, and s1 is no finding: the report carries the observation session-removed of it (SPEC.md §1.3a, \"A removed session\"; §4 step 4). A verifier written before the record finds s1 sealed-session-missing.",
+  "authority": "gateway:corpus",
+  "files": {
+    "receipts/s2/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"scope\":\"scope-b\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"7c8866106a1e8e7a245c6d2b9bf8b4670456874314c6329b7d676360e1d51e7fce77f522f606b2f650b4944c667917f14a6eb746e9a5bbf1ba18683e6ded310a\",\"source\":\"corpus\"}\n",
+    "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+    "receipts/s2/1.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":\"7c8866106a1e8e7a245c6d2b9bf8b4670456874314c6329b7d676360e1d51e7fce77f522f606b2f650b4944c667917f14a6eb746e9a5bbf1ba18683e6ded310a\",\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:d435409bf95c33fc1e4cb219f934157553e0bd108b757ec7d6296067bf3cb8b5\",\"scope\":\"scope-b\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"15be3af6b7e194cb2f6408dfabafd642577667c387b0c1f92cf3b5a68563bad719fda7978ba8361943e9b473ea7ad4b61d18f33fd28807b2839aec74a9e6aa09\",\"source\":\"corpus\"}\n",
+    "artifacts/d435409bf95c33fc1e4cb219f934157553e0bd108b757ec7d6296067bf3cb8b5": "{\"n\":1,\"session\":\"s2\"}",
+    "artifact-removals.jsonl": "{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"session-removal\",\"removedAt\":\"2026-09-13T00:00:00Z\",\"removedBy\":\"operator\",\"scope\":\"scope-a\",\"sealSignature\":\"2632d892d85521e1a7999e386c675656a5eb1e4d1fe890095e5c0c1e2b7e387db75c52b4879e5ca9afd8971617b15849979ee116852d80a433111b2b24bf0800\",\"sessionId\":\"s1\",\"signature\":\"8936a34623175591d56570711f2921fa00617ae58a25907d3bcca657d822c74ec839ee4dfd15a269eba41b35214cadd6622f0a412173e70451bfa94614a7e004\"}\n{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"scope-removal\",\"openSessions\":0,\"payloads\":2,\"receipts\":2,\"removedAt\":\"2026-09-13T00:00:00Z\",\"removedBy\":\"operator\",\"scope\":\"scope-a\",\"sealedSessions\":1,\"signature\":\"3bd39f544f2b50ad91e40712f91d47a468656ca7851b3577a0acc3d04c1810d5278e7975585ea04f0a5d1cabab08c93cccc0e3a7bc5abb05b906293e3d808a05\"}\n"
+  },
+  "registry": "{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"2632d892d85521e1a7999e386c675656a5eb1e4d1fe890095e5c0c1e2b7e387db75c52b4879e5ca9afd8971617b15849979ee116852d80a433111b2b24bf0800\"}\n{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-12T00:00:02Z\",\"sessionId\":\"s2\",\"signature\":\"3fe5355413131c0c0e55fe706ddd0d6792709dfa31717d6c5e9f67b5791639cc32c342420ecf7620d3c1cfb64afbe0c3f4e8271e7fbcd20f3f80093e3600790c\"}\n",
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s2",
+        "status": "ok"
+      },
+      {
+        "callIndex": 1,
+        "sessionId": "s2",
+        "status": "ok"
+      }
+    ],
+    "observations": [
+      {
+        "observation": "session-removed",
+        "sessionId": "s1"
+      }
+    ]
+  }
+}

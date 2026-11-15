@@ -227,7 +227,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 133 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 143 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -369,6 +369,25 @@ Six supply bytes (`suppliedArtifacts`, below). A verifier written before §1.3a 
 Go and in TypeScript) answers `artifact-missing` where these vectors expect `ok` with an
 observation, gives no verdict for the six that supply bytes, and answers `ok` for the four
 receipts whose member is not of its form or is on an action; it agrees with the rest.
+
+Ten are of a removed session (§1.3a, "A removed session"; §4 step 4;
+`docs/adr/0034-removing-one-scope-identifiers-records.md`; issue #434), each named
+`v3-session-removed*` and signed, receipts, seals and records alike, by a signer that shares no
+code with the gateway, its expected answers written from §1.3a and §4; the signer reproduces
+the frozen seal of `v3-scope-valid` and the frozen removal record of `v3-artifact-removed` byte
+for byte. Each states its observations. A store of two sealed sessions, `s1` of one scope
+identifier and `s2` of another, `s1` removed: with a `session-removal` record naming `s1` and the
+call's `scope-removal` record, `s2` is `ok` and `s1` is observed `session-removed`; with the
+`session-removal` record taken away, `s1` is `sealed-session-missing` again; and
+`sealed-session-missing` for a record changed after signing, naming another seal's signature,
+naming another count, carrying a tenth member, and signed under the `artifact-removal` prefix.
+One holds the session still in the store beside its record, as a removal cut off before its
+files went leaves it: every receipt `ok` and nothing observed. Two hold a rotation to rotation
+key 1 (above): a record signed by the key rotated to names a seal made under the key rotated
+from, observed `session-removed`; a record signed by the key rotated from names no seal made
+under the key rotated to, `sealed-session-missing`. A verifier written before the records
+(v0.28.0, in Go and in TypeScript) answers `sealed-session-missing` where two of these vectors
+expect the observation, and agrees with the rest.
 
 **`witnesses`.** A vector whose report names witnesses gives them in `expected`
 as `witnesses`, each `{"trail", "origin", "keyId"}`, and a runner compares them

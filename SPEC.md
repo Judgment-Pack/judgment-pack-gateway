@@ -2465,7 +2465,7 @@ each member of its answer once, under its name, answers to the corpus as it did.
 vector states them, and only there. A vector that gives `observations` in its expected
 answer is compared with the observations the implementation reports, as a multiset: order
 is not normative, and how many is, since each observation §4 and §1.2b name is carried
-once, on the one receipt they name for it. `[]` expects none, and a report that leaves the
+once, on the one receipt, or the one session, they name for it. `[]` expects none, and a report that leaves the
 member out reports none. A vector that does not give the member is not compared on observations
 at all, and what an implementation reports of them there is not read. A store vector may
 be run under `--ordinary-seals-only` (§4), and then says so (`"ordinarySealsOnly": true`):
@@ -2479,8 +2479,8 @@ conforming verifier:
   finding `sealed-after-interruption`, `{sessionId, status}`, `ok` false, and that
   observation not carried; and changes nothing else for the option, so a session a seal of
   §3's form anchors, and one no seal anchors, are reported as without it;
-- reports, wherever a vector states observations, those §4 names, each once on the receipt
-  it names: among them `session-open` on the last receipt of a session no seal closes whose
+- reports, wherever a vector states observations, those §4 names, each once on the receipt,
+  or for step 4's `session-removed` the session, it names: among them `session-open` on the last receipt of a session no seal closes whose
   receipts are whole, beside its `unregistered-session`.
 
 `corpus/README.md` names the vectors that hold each. Neither changes what a receipt means
@@ -2505,6 +2505,12 @@ receipts carry `artifact: "not-retained"` or are named by a removal record and p
 agrees with the rest but one kind: it holds `artifact` to no form, so a receipt whose member
 is not of its form or is on an action, its bytes in the store, is `ok` to it and `malformed` to
 this version.
+
+**Removed sessions.** The store vectors of §1.3a's removed session state their observations,
+so a verifier that does not report `session-removed` disagrees with those that observe one. A
+verifier written before the records reads none of them and reports such a session
+`sealed-session-missing`: it disagrees with the vectors whose record names the session, and
+agrees with the rest.
 
 The rows of `testdata/interruption-seal/cases.json`, which both readers in this repository
 read, hold more of §3c over the same stores — a receipt taken away or torn after the seal,
