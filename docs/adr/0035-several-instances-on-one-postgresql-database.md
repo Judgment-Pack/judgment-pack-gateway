@@ -266,7 +266,7 @@ expired. It adds no record form. A and B are not recommended. Because:
 
 The filesystem kind stays one instance per store and registry (README.md), its lock unchanged.
 
-C built in #<PR> (gateway #467): schema version 6 and engine configuration version 26, with
+C built in #471 (gateway #467): schema version 6 and engine configuration version 26, with
 `storage.instances` `"several"` opting in; `docs/postgresql-store.md`, "Several instances on one
 database". No verification step, record, finding or vector changed.
 
