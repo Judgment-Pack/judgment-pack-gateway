@@ -131,7 +131,8 @@ minted, and the caller is told the reason. Its class says whose it was, and the 
   follows is the start of what it wrote on stderr. This is your adapter refusing, the one class a
   case for a request it must turn down expects. An adapter of the `http` shape that exits 7 beside
   a throttled report (SPEC.md §6, "Adapter sources") is in this class too, with the gateway's
-  sentence for the class in place of stderr.
+  sentence for the class in place of stderr, and so is one that exits 8 beside an
+  expired-reference report.
 - `timeout`, `source did not finish within its N-second timeout` — the adapter ran past the
   source's timeout, or left a descendant holding its output past it.
 - `output-bound`, `source output exceeds N bytes` — stdout ran past the source's output bound.
@@ -837,7 +838,13 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   of the answer is in the report. The gateway answers `/acquire` with that class and a
   `Retry-After` it writes from the number, and nothing of the answer or of stderr (SPEC.md §6,
   "When an acquisition does not happen"; [ADR-0029](../docs/adr/0029-a-throttled-source-is-answered-with-its-class.md)).
-  Every other refusing answer exits 1 as before.
+- **An expired reference** — 410 from the source's endpoint: the cursor or change token the
+  request sent is no longer held there — exits 8, with the diagnostic on stderr any refusing
+  answer has and, on stdout beside it, `{"referenceExpired":{"status":410}}`, nothing else of
+  the answer. The gateway answers `/acquire` `410` with the code `source_reference_expired` and
+  its own sentence, and nothing of the answer or of stderr (SPEC.md §6). A 410 from the token
+  step's token endpoint is a refused token request, exit 4, as before. Every other refusing
+  answer — a 404, a 400 among them — exits 1 as before.
 - A redirect is an answer from another resource than the one the operator fixed, and
   following one would carry the credential there: it is reported and never followed. An
   answer outside 2xx is a read that did not happen — nothing is minted, and the first bytes of

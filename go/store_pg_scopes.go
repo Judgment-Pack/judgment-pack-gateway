@@ -16,6 +16,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"slices"
 	"sort"
 )
 
@@ -99,23 +100,16 @@ func (k *pgKind) everyScope(mode pgMode, fn func(tx pgTx, row string) error) err
 	})
 }
 
-// removalFile is the removal records as the store's removal file holds
-// them (pgRemovalFile), read in a transaction of their own, of no scope.
-// An export reads them after the blobs, as it reads the filesystem kind's
-// file: gateway store remove-scope keeps its records in the transaction
-// that removes the rows, so rows the cut listed and the export then found
-// gone are named by records read here.
-func (k *pgKind) removalFile() ([]byte, bool, error) {
-	var file []byte
-	err := k.ofNoScope().transact(pgRead, func(tx pgTx) error {
-		var err error
-		file, _, err = pgRemovalFile(tx)
-		return err
-	})
-	if err != nil {
-		return nil, false, pgFailure("removal-records", false, err)
-	}
-	return file, len(file) > 0, nil
+// pgGoneSinceTheCut refuses an export that finds a row its cut listed gone
+// when it reads the row's bytes. An entry or a blob of this kind goes only
+// by gateway store remove-scope, which takes no lock an export holds: a
+// removal committed after the cut's snapshot took rows the cut listed, and
+// an export that went on would hold the receipts of a removed session
+// without their payloads and without the records that name them -- damage
+// to a verifier, where the store holds none. The export stops before its
+// manifest, so nothing is left as a finished export.
+func pgGoneSinceTheCut(op string) error {
+	return storeFailure(faultUnreadable, op, errors.New("store: a row the export's cut listed was removed while the export read it (gateway store remove-scope ran during the export); export again once the removal is done"))
 }
 
 // holdsAnySeries is whether the kind holds a series of no scope or of any
@@ -234,6 +228,7 @@ func (k *pgKind) exportCut() (*storeCut, error) {
 	cut := &storeCut{documents: map[string][]byte{}, revisions: map[string]string{}, entries: map[string][]string{}}
 	seriesOf := map[string]string{}
 	blobsOf := map[string][]string{}
+	var removals []byte
 	err := k.everyScope(pgReadSnapshot, func(tx pgTx, row string) error {
 		if row == pgNoScope {
 			log, present, err := pgLog{k: k, name: "registry"}.readTx(tx, 0)
@@ -241,6 +236,13 @@ func (k *pgKind) exportCut() (*storeCut, error) {
 				return err
 			}
 			cut.log, cut.logPresent = log, present
+			// the removal records in the cut's snapshot, as the rows are:
+			// gateway store remove-scope commits its records with the
+			// removal of the rows, so the records the cut holds name the
+			// sessions the cut lacks, and no more
+			if removals, _, err = pgRemovalFile(tx); err != nil {
+				return err
+			}
 			docs, err := tx.exec(`SELECT name, revision, data FROM gateway.documents WHERE scope = $1`, row)
 			if err != nil {
 				return err
@@ -291,15 +293,22 @@ func (k *pgKind) exportCut() (*storeCut, error) {
 	for _, names := range cut.entries {
 		sort.Strings(names)
 	}
-	cut.removals = k.removalFile
+	cut.removals = func() ([]byte, bool, error) { return removals, len(removals) > 0, nil }
 	// an entry or a blob is never changed once made, so its bytes are read
-	// when the cut is asked, by the view of the scope that holds it
+	// when the cut is asked, by the view of the scope that holds it, in a
+	// transaction of its own; one the cut listed and the read finds gone
+	// was removed after the snapshot, and refuses the export
+	// (pgGoneSinceTheCut)
 	cut.entry = func(series, entry string) ([]byte, error) {
 		row, listed := seriesOf[series]
 		if !listed {
 			return nil, pgAbsent("get-entry")
 		}
-		return pgIndexed{k.ofRow(row)}.getEntry(series, entry)
+		data, err := pgIndexed{k.ofRow(row)}.getEntry(series, entry)
+		if faultOf(err) == faultAbsent && slices.Contains(cut.entries[series], entry) {
+			return nil, pgGoneSinceTheCut("get-entry")
+		}
+		return data, err
 	}
 	cut.blob = func(name string) ([]byte, error) {
 		var held []byte
@@ -317,6 +326,9 @@ func (k *pgKind) exportCut() (*storeCut, error) {
 			held, found = data, true
 		}
 		if !found {
+			if len(blobsOf[name]) > 0 {
+				return nil, pgGoneSinceTheCut("get-blob")
+			}
 			return nil, pgAbsent("get-blob")
 		}
 		return held, nil

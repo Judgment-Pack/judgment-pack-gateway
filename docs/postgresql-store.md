@@ -334,8 +334,9 @@ part of the connection string:
 A second run applies nothing (`"applied":[]`). A schema newer than the binary's migrations is
 refused, by the command and by the start alike. `--timeout` bounds the run, connection included:
 1 to 3600 seconds, 300 without it. Exit 0 on success, 1 on a refusal or failure, 2 on a usage
-error. The command may run while the gateway serves: the running instance does not check the
-schema again, and its next start does.
+error. Run it with every instance stopped: migration 4 locks and rewrites `gateway.log_records`
+("The migration"), a running instance does not check the schema again, and an instance of a
+binary older than the schema refuses the store at its next start.
 
 ## The migration
 
@@ -420,7 +421,9 @@ The start reads each column (its type, collation, NOT NULL, default or generatio
 index as the server prints its definition, and compares it with the list the binary carries for
 its schema (`go/store_pg_definitions.go`), which the CI job holds to what the pinned server prints
 for a database the migrations made. A table's storage parameters, and whether it is logged, are
-not compared.
+not compared. `gateway store migrate` compares the same definitions before it commits: a server
+that prints one otherwise (the list is read from PostgreSQL 16) rolls the migration back, and the
+store stays at the version it was, rather than migrated and refused by every start.
 
 What every role may do in a database it connects to, the run-time login may do too, and the
 gateway does none of it: create a large object, which stays in the database until it is unlinked;
@@ -548,6 +551,11 @@ which the records are signed.
   the export's `store/artifact-removals.jsonl`, and the export verifies, each removed sealed
   session observed `session-removed`. The command prints each record kept, as its line, and on
   stderr what it removed, by counts.
+- **An export beside it.** The command takes no lock an export holds. An export reads the
+  records in its cut's snapshot, with the rows, and reads each receipt's and payload's bytes
+  afterwards: one the cut listed and the read finds gone was removed after the snapshot, and the
+  export stops with an error and exit status 1, before its manifest, so nothing is left as a
+  finished export. Export again once the removal is done.
 - **All or nothing.** The rows, the identifier's row and the records commit together or not at
   all. A second run finds nothing of the scope and keeps no record; a scope identifier recorded
   with no row is removed from the record, and no record is kept.
