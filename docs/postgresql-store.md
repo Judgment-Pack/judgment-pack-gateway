@@ -159,11 +159,10 @@ place:
 | Asked for | Where it is refused | Why |
 |---|---|---|
 | `witness` | the configuration's load | its files are beside the registry on disk |
-| `sealOpenAtStart` | the configuration's load | it reads the sessions on disk |
 | a platform's `write: true`; `/act` | the configuration's load; `/act` answers 501 | an action keeps its journal and evidence on disk |
 | a platform's `descriptorStatements`; descriptor provenance; a descriptor capture by `gateway connect` | the load; the start; `connect` before any adapter is asked | the signed snapshot is read from the store on disk (`gateway connect --no-descriptors` connects a platform without one) |
 | `/verify` | answers 501 | it verifies the store on disk: export the store and verify the export |
-| `gateway seal-open --config`, `gateway remove-artifact --config`, `gateway remove-scope --config` | the command | they read the sessions, and keep removal records, on disk; on this kind `gateway store remove-scope` removes a scope identifier's rows ("Removing one scope identifier's rows") |
+| `gateway remove-artifact --config`, `gateway remove-scope --config` | the command | they keep removal records, and remove files, on disk; on this kind `gateway store remove-scope` removes a scope identifier's rows ("Removing one scope identifier's rows") |
 | `gateway rotate-key` | the start refuses a rotation under way beside the seed | the rotation keeps the registry at a path |
 
 `gateway verify` takes a store directory and a registry file: it reads an export of this kind
@@ -296,13 +295,15 @@ holder: do not remove the row by hand while that instance may be running.
 
 What a hand-over does not do:
 
-- **It does not carry open sessions over.** A session open on the old instance at its stop stays
-  open: the new instance does not continue it (a call into it is refused as a session an earlier
-  process left open, SPEC.md §6), and this kind makes no seal after an interruption yet
-  (`gateway seal-open` and `sealOpenAtStart` are refused, "Not available with this kind yet"). It
-  reads `unregistered-session`, observed `session-open`, to a verifier. Seal a session before the
-  stop where it can be; a caller whose session the stop left open opens a new one on the new
-  instance. A later step seals such sessions (ADR-0035, "Decision outcome").
+- **It does not carry open sessions over.** A session open on the old instance at its stop, or
+  at its crash, stays open: the new instance does not continue it (a call into it is refused as a
+  session an earlier process left open, SPEC.md §6), and a caller whose session the stop left
+  open opens a new one on the new instance. Such a session is sealed after the interruption
+  (SPEC.md §3c) by the new instance's start where its configuration sets `sealOpenAtStart`, or
+  by `gateway seal-open --config` while no instance serves ("Sealing the sessions an instance
+  left open", below); until then it reads `unregistered-session`, observed `session-open`, to a
+  verifier. Seal a session before the stop where it can be: a seal of §3's form says the count
+  is the minting instance's own.
 - **It does not compare keys or authorities.** The start does not hold the new instance to the
   old one's seed or authority: the database records neither (the lease's row holds the
   instance's identifier and its times, and nothing else), and the registry's walk holds a key
@@ -313,6 +314,48 @@ What a hand-over does not do:
   wait for it to exit, run `gateway store migrate`, then start the new instance: every instance is
   stopped while a migration runs. A start that waited checks the schema again once it holds the
   lease, and is refused where it is no longer its binary's.
+
+## Sealing the sessions an instance left open
+
+A session an instance minted into and did not seal before it stopped -- at a hand-over, by a
+second signal, or at a crash -- is sealed with the seal made after an interruption (SPEC.md §3c;
+ADR-0035, the third step), as on the filesystem kind: no new record, its `finalCount` the
+receipts the store holds in the session, its `headSignature` the last one's signature, and a
+verifier observes it `sealed-after-interruption` (or, with `--ordinary-seals-only`, finds it).
+
+- **At the start**, with `sealOpenAtStart: true` (engine version 17 or later; with `storage`,
+  24 or later): once the start holds the start lease and has walked the registry, and before it
+  serves -- a start that waits for the lease answers `503` until then -- it seals each such
+  session, `sealedVia: "start"`, and writes each seal on stderr as `start: sealed after an
+  interruption: <registry line>`.
+- **By the command**, `gateway seal-open --config <engine.json> (--session <id> | --all)`,
+  `sealedVia: "command"`, each seal printed as its registry line. It connects as the run-time
+  login, as `serve` does, and takes the start lease as a start does: while an instance's lease is
+  live it is refused at once, exit 1, `start-lease-held` and `stop the gateway, then seal`; it
+  does not wait, whatever `startWaitSeconds` says. It renews the lease while it runs, every seal
+  it appends is fenced on it as an instance's writes are, and it releases the lease at its end.
+  A second run finds nothing to seal: `seal-open: no session in the store is left open; nothing
+  was sealed`, exit 0.
+
+One instance holds the start lease at a time, so every session open when the start or the
+command holds it was left by an instance that no longer serves. ADR-0035's question 11 (seal the
+sessions whose holder's lease has expired) asks no more than this until sessions are held by the
+instance that minted them (option C).
+
+What is read. The scope identifiers recorded are read in a transaction of no scope, and each
+scope's sessions -- of no scope first, then of each identifier in byte order -- in transactions
+of that scope alone ("Scope identifiers"): its series in one, and each session's receipts, with
+the payloads they name, in one of its own. A session a seal closes already, and with `--all` a
+session of no receipt, is not read past its name. What is read is written, in an export's
+layout, into a directory of the process's own under the system's temporary directory (`TMPDIR`
+where set), private to its user and removed when the judgment ends; the payloads of the sessions
+judged are in it meanwhile. There each session is judged as `gateway seal-open` judges a store on
+disk: what is sealed is what `gateway verify` of an export observes `session-open` -- receipts
+every one of which has ladder status `ok`, in sequence and chained. A session that is not so is
+named with what verification finds of it and left open; a session that cannot be read, or a
+session's name held by two scopes, stops the command, and the start, with nothing sealed. Seals
+are appended to the registry by its one serialised append, each refused where the registry holds
+a seal for its session already.
 
 ## The migration command
 
