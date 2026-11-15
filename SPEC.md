@@ -2002,6 +2002,55 @@ record may cite it and `/act` resolves the citation as it resolves any other (§
 the action reads no cited payload. `gateway seal-open` seals a session holding such receipts
 as it seals any whole session. An action's own result is always kept.
 
+### Removing one scope identifier's records
+
+**`gateway remove-scope`** removes, from a store of the filesystem kind, every session of one
+scope identifier and the payloads only those sessions name, with the gateway stopped, held as
+`gateway seal-open` holds it (§3c): `--scope <identifier>` and `--by <label>`, beside
+`--config <engine.json>` or the store, seed, registry and authority by flag
+(`docs/adr/0034-removing-one-scope-identifiers-records.md`). A receipt **carries** the scope
+identifier when it passes orders 1 to 6 of the ladder (§1.4) under the keys the walk of its
+registry reached, so the `scope` it carries is signed, and that `scope` is `--scope`'s byte
+for byte; its artifact step may find it `ok`, `artifact-missing` or `artifact-mismatch`. The
+command removes each session that holds a receipt and all of whose receipts carry the scope
+identifier. It refuses the whole call, naming each session and receipt, and appends and removes
+nothing, where:
+
+- a session holds a receipt that carries the scope identifier beside one that does not — of
+  another scope identifier, of none, or not passing orders 1 to 6 — since on this kind nothing
+  binds a session to one scope, and removing a part of it would break the chain of the
+  receipts left (§4 step 1);
+- a receipt left in the store cites a receipt of a session it would remove, in an action's
+  `cites` or an acquisition's `reconciliation.action`, or does not parse and its bytes spell
+  such a receipt's signature, since the citation would no longer resolve (§4 step 5);
+- something that is not a regular file is at the path of a payload it would remove, or at
+  `<root>/artifact-removals.jsonl`.
+
+A payload it removes is the file at the `resultDigest` of a receipt of a removed session,
+unless a receipt left in the store names the same digest (or does not parse and spells it) and
+neither carries `artifact: "not-retained"` nor is named by a removal record, or a descriptor
+statement or snapshot in the store has that digest (§9): those bytes are kept.
+
+It appends first, and makes durable, a `session-removal` record (§1.3a) for each sealed session
+it removes that no record of the same scope identifier names yet, and one `scope-removal`
+record of what it removes, each signed by the key in force and read back as a verifier reads
+the file; then it removes the payloads, and then each session's directory. A run cut off after
+the records leaves sessions a record names still in the store, which are verified as they are
+(§1.3a), and payloads that a receipt still there names, and a second run completes the
+removal, appending a `scope-removal` record of what it removes and no `session-removal` record
+again. A sealed session's directory left holding no receipt, which a verifier finds
+`tail-rollback`, is removed by a second run where a record of the scope identifier names the
+session. An open session's directory left so is not, since no record names an open session: a
+verifier finds it `unregistered-session`, as it found the open session before the call, and
+removing it by hand, as it holds no receipt, completes the removal. A call that finds no
+session of the scope identifier appends nothing and changes nothing. Refusals and notes name
+sessions and receipts and never the scope identifier; the command prints each record it
+appends as its line. `--by` is a label of the form of a scope identifier, required, and not
+checked against anything.
+
+What remains in and beside the store after a removal is stated in `README.md`, "What a removal
+of a scope identifier leaves".
+
 ### Who may ask for a write
 
 A platform's configuration may give `writeRequesters` (engine configuration version 18,

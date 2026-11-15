@@ -153,6 +153,41 @@ call kept nothing, one whose `scope` `--scope` does not give, and one whose byte
 receipt or a descriptor in the store still reads. `--by` is a label, recorded and checked
 against nothing.
 
+Every session of one scope identifier can be removed the same way: with the gateway stopped,
+`./gateway remove-scope --store ./store --seed gateway.seed --registry ./registry.jsonl
+--authority gateway:demo --scope team-a --by operator-1` removes each session all of whose
+receipts carry the scope identifier, and each payload only those receipts name. It appends
+first a signed `session-removal` record for each sealed session and one `scope-removal` record
+of what it removes, then removes the files, and prints the records (SPEC.md §1.3a and §6,
+"Removing one scope identifier's records"). The store then verifies, each removed sealed
+session observed `session-removed` instead of `sealed-session-missing`; with its record taken
+away it is `sealed-session-missing` again. A session holding receipts of the scope identifier
+beside receipts of another, of none, or that do not verify, and a receipt left in the store
+that cites one it would remove, refuse the whole call by name, and nothing is removed. A run
+cut off is completed by running it again.
+
+**What a removal of a scope identifier leaves.** In the store and beside it, after the call:
+
+- the registry's seal of each removed sealed session: the session's id, its count, its time,
+  the key's id and a signature; no receipt, payload or scope identifier, though a session's id
+  is the caller's and may say anything;
+- the removal records in `artifact-removals.jsonl`, which name the scope identifier, each
+  sealed session removed by its id and its seal, the counts removed, the time and the `--by`
+  label;
+- a payload whose bytes a receipt of another scope identifier, or of none, names too, kept
+  once for both, and a descriptor statement or snapshot, which descriptor provenance reads
+  (SPEC.md §9);
+- what lies outside the store: decision records, which may cite the removed receipts and then
+  no longer resolve, the action journal, and the gateway's other files, which are the
+  operator's to remove;
+- copies made before the call: an export, a backup.
+
+The gateway keeps no credential or cursor of a scope identifier in the store: a source's
+credentials are the operator's files, and a token obtained for a scope identifier is held in
+memory alone. A search of the store for the scope identifier after the call finds it in
+`artifact-removals.jsonl`, and elsewhere only where a payload kept, or a receipt of another
+scope identifier, holds the same text of its own.
+
 **One gateway per store and registry.** Run one gateway on a store and its registry at a time.
 On Unix a running gateway holds an exclusive `flock(2)` lock on its registry file, taken at the
 start once the registry is there and held until the gateway exits. A second gateway on the same
