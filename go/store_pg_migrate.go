@@ -406,15 +406,17 @@ var pgPrivileges = map[string][]string{
 	"documents":         {"SELECT", "INSERT", "UPDATE", "DELETE"},
 	"start_lease":       {"SELECT", "INSERT", "UPDATE"},
 	"scope_identifiers": {"SELECT", "INSERT"},
+	"removal_records":   {"SELECT"},
 }
 
 // pgTables are the schema's tables, in the order the start reads them.
-var pgTables = []string{"blobs", "documents", "entries", "log_records", "logs", "schema_migrations", "scope_identifiers", "secrets", "series", "start_lease"}
+var pgTables = []string{"blobs", "documents", "entries", "log_records", "logs", "removal_records", "schema_migrations", "scope_identifiers", "secrets", "series", "start_lease"}
 
 // pgScopedTables are the tables whose rows carry a scope identifier: row
-// security is enabled and forced on each. The scope identifiers' rows are
-// each of no scope (schema version 3), held by the same policy.
-var pgScopedTables = []string{"blobs", "documents", "entries", "scope_identifiers", "series"}
+// security is enabled and forced on each. The scope identifiers' rows
+// (schema version 3) and the removal records' (schema version 5) are each
+// of no scope, held by the same policy.
+var pgScopedTables = []string{"blobs", "documents", "entries", "removal_records", "scope_identifiers", "series"}
 
 // pgTablePrivileges are the privileges a table has (pgPrivilegesHold); from
 // PostgreSQL 17 a table has MAINTAIN besides (pgTablePrivilegesOn).

@@ -286,7 +286,6 @@ func removeScopeFrom(storeRoot, authority string, priv ed25519.PrivateKey, walk 
 
 	// Every record first, each read back as a verifier reads it, then
 	// appended and made durable.
-	current := keys[len(keys)-1]
 	var lines []byte
 	for _, session := range plan.sessions {
 		s, sealed := walk.seals[session]
@@ -297,39 +296,20 @@ func removeScopeFrom(storeRoot, authority string, priv ed25519.PrivateKey, walk 
 			out.notes = append(out.notes, fmt.Sprintf("session %s was recorded as removed already; its files, still there, are removed now", session))
 			continue
 		}
-		record := newObject()
-		record.set("finalCount", vInt(s.finalCount))
-		record.set("keyId", vString(current.keyID))
-		record.set("kind", vString(sessionRemovalKind))
-		record.set("removedAt", vString(stamp()))
-		record.set("removedBy", vString(o.by))
-		record.set("scope", vString(o.scope))
-		record.set("sealSignature", vString(s.signature))
-		record.set("sessionId", vString(session))
-		record.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, recordSigningInput(sessionRemovalContext, record)))))
-		line := append(canon(record), '\n')
-		loaded, _, _ := scanRecords(bytes.NewReader(line), keys)
-		if probe := (&retention{sessions: loaded.sessions}); !probe.sessionRemoved(session, s) {
-			return out, fmt.Errorf("session %s: a session-removal record for it would not name it as a verifier reads it, and nothing was removed", session)
+		record, line, err := signedSessionRemoval(priv, keys, session, s, o.scope, o.by, stamp())
+		if err != nil {
+			return out, fmt.Errorf("%v, and nothing was removed", err)
 		}
 		lines = append(lines, line...)
 		out.appended = append(out.appended, record)
 	}
 	if len(plan.sessions) > 0 {
-		record := newObject()
-		record.set("keyId", vString(current.keyID))
-		record.set("kind", vString(scopeRemovalKind))
-		record.set("openSessions", vInt(int64(len(plan.sessions))-plan.sealed))
-		record.set("payloads", vInt(int64(len(plan.payloads))))
-		record.set("receipts", vInt(int64(len(plan.receipts))))
-		record.set("removedAt", vString(stamp()))
-		record.set("removedBy", vString(o.by))
-		record.set("scope", vString(o.scope))
-		record.set("sealedSessions", vInt(plan.sealed))
-		record.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, recordSigningInput(scopeRemovalContext, record)))))
-		line := append(canon(record), '\n')
-		if !readsBackAsScopeRemoval(line, keys) {
-			return out, errors.New("the call's scope-removal record would not load as a verifier reads the file, and nothing was removed")
+		record, line, err := signedScopeRemoval(priv, keys, o.scope, o.by, stamp(), scopeRemovalCounts{
+			open: int64(len(plan.sessions)) - plan.sealed, sealed: plan.sealed,
+			receipts: int64(len(plan.receipts)), payloads: int64(len(plan.payloads)),
+		})
+		if err != nil {
+			return out, fmt.Errorf("%v, and nothing was removed", err)
 		}
 		lines = append(lines, line...)
 		out.appended = append(out.appended, record)
@@ -368,6 +348,55 @@ func removeScopeFrom(storeRoot, authority string, priv ed25519.PrivateKey, walk 
 	}
 	out.notes = append(out.notes, fmt.Sprintf("removed %d session(s), %d sealed, holding %d receipt(s), and %d payload(s)", len(plan.sessions), plan.sealed, len(plan.receipts), len(plan.payloads)))
 	return out, nil
+}
+
+// signedSessionRemoval is the session-removal record of a sealed session,
+// signed by priv, the key the registry's walk ends at, and its line, read
+// back as a verifier reads the removal file before it is kept: it names the
+// session and its seal, or it is refused. Both kinds' commands make it.
+func signedSessionRemoval(priv ed25519.PrivateKey, keys []reachedKey, session string, s seal, scope, by, at string) (*vObject, []byte, error) {
+	record := newObject()
+	record.set("finalCount", vInt(s.finalCount))
+	record.set("keyId", vString(keys[len(keys)-1].keyID))
+	record.set("kind", vString(sessionRemovalKind))
+	record.set("removedAt", vString(at))
+	record.set("removedBy", vString(by))
+	record.set("scope", vString(scope))
+	record.set("sealSignature", vString(s.signature))
+	record.set("sessionId", vString(session))
+	record.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, recordSigningInput(sessionRemovalContext, record)))))
+	line := append(canon(record), '\n')
+	loaded, _, _ := scanRecords(bytes.NewReader(line), keys)
+	if probe := (&retention{sessions: loaded.sessions}); !probe.sessionRemoved(session, s) {
+		return nil, nil, fmt.Errorf("session %s: a session-removal record for it would not name it as a verifier reads it", session)
+	}
+	return record, line, nil
+}
+
+// scopeRemovalCounts is what a scope-removal record counts.
+type scopeRemovalCounts struct {
+	open, sealed, receipts, payloads int64
+}
+
+// signedScopeRemoval is the call's scope-removal record, signed as
+// signedSessionRemoval's, and its line, read back as a verifier reads it.
+func signedScopeRemoval(priv ed25519.PrivateKey, keys []reachedKey, scope, by, at string, n scopeRemovalCounts) (*vObject, []byte, error) {
+	record := newObject()
+	record.set("keyId", vString(keys[len(keys)-1].keyID))
+	record.set("kind", vString(scopeRemovalKind))
+	record.set("openSessions", vInt(n.open))
+	record.set("payloads", vInt(n.payloads))
+	record.set("receipts", vInt(n.receipts))
+	record.set("removedAt", vString(at))
+	record.set("removedBy", vString(by))
+	record.set("scope", vString(scope))
+	record.set("sealedSessions", vInt(n.sealed))
+	record.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, recordSigningInput(scopeRemovalContext, record)))))
+	line := append(canon(record), '\n')
+	if !readsBackAsScopeRemoval(line, keys) {
+		return nil, nil, errors.New("the call's scope-removal record would not load as a verifier reads the file")
+	}
+	return record, line, nil
 }
 
 // readsBackAsScopeRemoval is whether the line, read as a verifier reads the

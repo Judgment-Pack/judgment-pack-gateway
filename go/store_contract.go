@@ -208,6 +208,12 @@ type storeCut struct {
 	// entry and blob read what the cut listed.
 	entry func(series, entry string) ([]byte, error)
 	blob  func(name string) ([]byte, error)
+	// removals, where the kind keeps the store's removal records itself
+	// (the PostgreSQL kind's gateway.removal_records), reads them as the
+	// store's removal file holds them, and whether there is any; an export
+	// asks it after the blobs. nil where the records are a file beside the
+	// store (exportInputs.storeRoot).
+	removals func() ([]byte, bool, error)
 }
 
 // storeKind is one kind of storage: the spaces the gateway keeps its state

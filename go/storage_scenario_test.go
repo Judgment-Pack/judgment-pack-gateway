@@ -257,7 +257,7 @@ func TestStorageScenarioThroughTheBinary(t *testing.T) {
 	}
 	code, stdout, stderr = binaryRun(t, binary, nil, "store", "migrate", "--connection-file", migration, "--owner", db.roles.owner, "--runtime", db.roles.runtime)
 	said = append(said, stdout, stderr)
-	if code != 0 || !strings.HasPrefix(stdout, `{"applied":[1,2,3,4],`) {
+	if code != 0 || !strings.HasPrefix(stdout, `{"applied":[1,2,3,4,5],`) {
 		t.Fatalf("store migrate: %d %s %s", code, stdout, stderr)
 	}
 	config := filepath.Join(dir, "engine.json")
