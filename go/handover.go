@@ -26,8 +26,9 @@ package main
 //     then does serving end, the sources still running being killed and the
 //     requests still open answered, and the lease is released, its expiry
 //     set to the database's now, so the waiting instance takes it at its
-//     next poll. A second signal ends the process at once: its lease then
-//     expires as a crashed instance's does.
+//     next poll. From the first signal on -- while a start waits or makes
+//     its checks, or during the drain -- a second signal ends the process
+//     at once: a lease it held then expires as a crashed instance's does.
 //
 // Sessions the stopped instance left open stay open: the next instance does
 // not continue them (SPEC.md §6), and on this kind no seal after an
@@ -74,6 +75,14 @@ func retryAfterOf(every time.Duration) int {
 
 // runOnKind is serve --config on the PostgreSQL kind, until the stop.
 func runOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, identity *identityConfig, delegation *delegationService, r kindRun) int {
+	if r.restore != nil {
+		// from the first stop signal on -- while the start waits, makes its
+		// checks, or drains -- a second one ends the process at once
+		go func() {
+			<-r.stopped.Done()
+			r.restore()
+		}()
+	}
 	var front *waitingFront
 	if cfg.storage.startWait > 0 {
 		bound, err := r.bind(cfg.listen, r.said)

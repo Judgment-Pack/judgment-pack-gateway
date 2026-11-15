@@ -48,6 +48,9 @@ type handoverInstance struct {
 	said *syncBuffer
 	done chan struct{}
 	exit int
+	// restored closes once the instance gave the stop signals back their
+	// default (kindRun.restore)
+	restored chan struct{}
 }
 
 // startHandoverInstance runs serve --config on the kind with the lease's
@@ -67,8 +70,10 @@ func startHandoverInstance(t *testing.T, cfg engineConfig, sources map[string]so
 func runHandoverInstance(t *testing.T, cfg engineConfig, sources map[string]sourceSpec, period, every time.Duration, addr string, bind func(string, io.Writer) (net.Listener, error)) *handoverInstance {
 	t.Helper()
 	stopped, stop := context.WithCancel(context.Background())
-	i := &handoverInstance{url: "http://" + addr, stop: stop, said: &syncBuffer{}, done: make(chan struct{})}
-	run := kindRun{period: period, every: every, stopped: stopped, said: i.said, bind: bind}
+	i := &handoverInstance{url: "http://" + addr, stop: stop, said: &syncBuffer{}, done: make(chan struct{}), restored: make(chan struct{})}
+	var restoring sync.Once
+	run := kindRun{period: period, every: every, stopped: stopped, said: i.said, bind: bind,
+		restore: func() { restoring.Do(func() { close(i.restored) }) }}
 	go func() {
 		defer close(i.done)
 		i.exit = runOnKind(cfg, testSeed, sources, nil, nil, run)
@@ -482,6 +487,8 @@ func TestThePostgresStartWhoseWaitRunsOutIsRefusedStartLeaseHeld(t *testing.T) {
 }
 
 // A stop while the start waits ends it, exit 0: it never held the lease.
+// From that first signal on a second one ends the process at once: the
+// signals have their default back.
 func TestThePostgresStopWhileWaitingEndsTheStartHoldingNothing(t *testing.T) {
 	db := newPgTestDB(t)
 	db.migrate(t)
@@ -493,6 +500,11 @@ func TestThePostgresStopWhileWaitingEndsTheStartHoldingNothing(t *testing.T) {
 	waiting.stop()
 	if code := waiting.wait(t, 10*time.Second); code != 0 || !strings.Contains(waiting.said.String(), "stop: "+errStoppedWaiting.Error()) {
 		t.Fatalf("a stop while waiting exits %d: %s", code, waiting.said.String())
+	}
+	select {
+	case <-waiting.restored:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a stop while waiting left the stop signals caught: a second signal would do nothing")
 	}
 	if got := pgLeaseHolder(t, db); got != held.holder || !pgLeaseLive(t, db) {
 		t.Fatalf("the stopped wait changed the lease: %q", got)

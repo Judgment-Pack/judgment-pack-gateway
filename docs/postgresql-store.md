@@ -201,8 +201,9 @@ runs at most ten minutes from its renewal; the row refuses any later expiry, and
   without it); a source still running then is killed, and its acquisition fails as at any stop.
   The instance then stops listening, answers the requests still open, and sets the lease's expiry
   to the database's now, so the next start, or a waiting one, takes it at once. The lease is
-  renewed until then. A second signal ends the process at once, undrained: its lease then expires
-  as a crashed instance's does.
+  renewed until then. From the first signal on, a second one ends the process at once, undrained:
+  during the drain, and also while a start waits for the lease or makes its checks; a lease it
+  held then expires as a crashed instance's does.
 
 **The sessions are bounded.** Every session the instance opens is ended by the server once it sits
 idle within a transaction for 10 seconds (`idle_in_transaction_session_timeout`, set at the
