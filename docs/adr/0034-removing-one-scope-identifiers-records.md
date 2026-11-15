@@ -68,6 +68,10 @@ For who removes on the PostgreSQL kind (the run-time login holds no DELETE):
   scope in every DELETE besides, appends the records, and commits; the owner holds DELETE as the
   tables' owner. The records need a table of no scope (a new migration, SELECT and INSERT for
   the run-time role, so the export can write `artifact-removals.jsonl` from it).
+
+  *Amended 2026-11-15 (#434).* The run-time role holds SELECT alone on that table, not SELECT
+  and INSERT: the removal writes the records as the owner, in its own transaction, and the
+  export only reads them. Removing an identifier that has no rows writes no record.
 - **2. A removal login of its own,** made by the operator, given DELETE on the scoped tables by
   `grants.sql`: a fourth role and a second grantee in the grants, for one command.
 - **3. The run-time login with DELETE:** refused by ADR-0031, decision 6.
