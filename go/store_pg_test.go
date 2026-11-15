@@ -1604,6 +1604,41 @@ ALTER TABLE gateway.documents FORCE ROW LEVEL SECURITY;`), db.roles, time.Minute
 	}
 }
 
+// The definitions the start holds the schema to are held before the
+// migration commits: a schema whose last migration prints one definition
+// otherwise -- here it drops a check the list carries, as a server that
+// printed the check differently would leave it unmatched -- rolls the whole
+// migration back and the database is as it was; the set the binary carries
+// then migrates, and the start takes the store.
+func TestAPostgresMigrationRollsBackASchemaTheStartWouldRefuse(t *testing.T) {
+	db := newPgTestDB(t)
+	shipped := pgShippedMigrations()
+	if !shipped.definitionsHeld {
+		t.Fatal("the shipped set is not held to the definitions the start holds")
+	}
+	altered := shipped
+	altered.versions = slices.Clone(shipped.versions)
+	last := &altered.versions[len(altered.versions)-1]
+	last.sql = append(slices.Clone(last.sql), "\nALTER TABLE gateway.documents DROP CONSTRAINT documents_name_check;\n"...)
+	before := db.fingerprint(t)
+	applied, err := migratePostgres(db.migrator, altered, db.roles, time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "store: gateway.documents holds no constraint documents_name_check") ||
+		!strings.HasSuffix(err.Error(), "; the migration was rolled back") || applied != nil {
+		t.Fatalf("a migration whose schema the start would refuse: %v %v", applied, err)
+	}
+	if after := db.fingerprint(t); after != before {
+		t.Fatalf("a migration rolled back changed the database:\n%s\n%s", before, after)
+	}
+	if applied, err := migratePostgres(db.migrator, shipped, db.roles, time.Minute); err != nil || len(applied) != len(shipped.versions) {
+		t.Fatalf("the shipped set after the refusal: %v %v", applied, err)
+	}
+	kind, err := openPgKind(pgOptions{dsn: db.runtime})
+	if err != nil {
+		t.Fatalf("the start on the migrated store: %v", err)
+	}
+	kind.close()
+}
+
 // Bytes that hold a NUL, as a byte and as the escape \u0000 that Go's JSON
 // encoder writes for one in a caller's text, are kept and read back byte
 // for byte by every kind, in every space and in a cut: the PostgreSQL kind

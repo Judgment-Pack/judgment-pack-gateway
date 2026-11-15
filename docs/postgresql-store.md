@@ -342,7 +342,9 @@ The start reads each column (its type, collation, NOT NULL, default or generatio
 index as the server prints its definition, and compares it with the list the binary carries for
 its schema (`go/store_pg_definitions.go`), which the CI job holds to what the pinned server prints
 for a database the migrations made. A table's storage parameters, and whether it is logged, are
-not compared.
+not compared. `gateway store migrate` compares the same definitions before it commits: a server
+that prints one otherwise (the list is read from PostgreSQL 16) rolls the migration back, and the
+store stays at the version it was, rather than migrated and refused by every start.
 
 What every role may do in a database it connects to, the run-time login may do too, and the
 gateway does none of it: create a large object, which stays in the database until it is unlinked;
