@@ -49,6 +49,10 @@ func (m pgMigration) digest() string {
 type pgMigrationSet struct {
 	versions []pgMigration
 	grants   []byte
+	// definitionsHeld is whether the schema the set makes is held to
+	// pgDefinitions before its migration commits: true for the set this
+	// binary carries (pgShippedMigrations), whose schema the list is.
+	definitionsHeld bool
 }
 
 // digest is the set's own digest: of each version's line, then the grants'.
@@ -124,6 +128,7 @@ func pgShippedMigrations() pgMigrationSet {
 	if err != nil {
 		panic(err)
 	}
+	set.definitionsHeld = true
 	return set
 }
 
@@ -233,6 +238,27 @@ func migratePostgres(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout time.
 	}
 	if err := c.script(string(set.grants)); err != nil {
 		return failed(fmt.Errorf("store: grants: %w", err))
+	}
+	// The definitions the start holds the schema to (pgDefinitions), read
+	// as the start reads them, before the commit: a server that prints one
+	// otherwise -- a major version the list was not read from -- rolls the
+	// migration back, rather than leaving a migrated store that no start of
+	// this binary takes. The settings that change the printed text are the
+	// start's own (pgSettings), set for the transaction alone after every
+	// migration has run, so no migration runs under them.
+	if set.definitionsHeld {
+		if _, err := c.exec(`SELECT pg_catalog.set_config('search_path', 'pg_catalog', true),
+			pg_catalog.set_config('IntervalStyle', 'postgres', true),
+			pg_catalog.set_config('quote_all_identifiers', 'off', true)`); err != nil {
+			return failed(err)
+		}
+		definitions, err := pgDefinitionsOf(pgTx{c})
+		if err != nil {
+			return failed(err)
+		}
+		if err := pgDefinitionsHold(definitions); err != nil {
+			return failed(fmt.Errorf("%w; the migration was rolled back", err))
+		}
 	}
 	done, err := c.exec("COMMIT")
 	if err != nil {

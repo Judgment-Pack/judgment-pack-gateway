@@ -193,8 +193,9 @@ func scenarioOnFilesystem(t *testing.T, dir, sub string) (string, engineConfig) 
 // scenarioMoment is each member whose value two runs of the same calls
 // write differently on any kind: the times, to the second (servedAt,
 // acquisition.observedAt, sealedAt); the arguments commitment, salted
-// afresh each call (SPEC.md); and the signatures over them.
-var scenarioMoment = regexp.MustCompile(`"(servedAt|observedAt|sealedAt|argumentsCommitment|signature)":"[^"]*"`)
+// afresh each call (SPEC.md); and the signatures over them, the previous
+// receipt's (prevSignature) among them.
+var scenarioMoment = regexp.MustCompile(`"(servedAt|observedAt|sealedAt|argumentsCommitment|signature|prevSignature)":"[^"]*"`)
 
 // scenarioManifestDigest is a file's digest in an export's manifest.
 var scenarioManifestDigest = regexp.MustCompile(`"digest":"[^"]*","path":"([^"]*)"`)

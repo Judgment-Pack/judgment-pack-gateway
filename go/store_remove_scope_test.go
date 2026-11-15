@@ -435,3 +435,126 @@ func TestAnExportWritesTheRemovalRecordsTheKindKeepsAndRefusesTwoSources(t *test
 		t.Fatalf("records in the kind and a file beside it: %v", err)
 	}
 }
+
+// hookedCut is a kind whose cut runs a step once, before the export's first
+// read of a receipt's bytes, of a payload's, or of the removal records:
+// where an export and a removal of a scope identifier, which take no lock
+// in common, may interleave.
+type hookedCut struct {
+	storeKind
+	beforeEntry, beforeBlob, beforeRemovals func()
+}
+
+func (k hookedCut) snapshot() (*storeCut, error) {
+	cut, err := k.storeKind.snapshot()
+	if err != nil {
+		return nil, err
+	}
+	once := func(step func()) func() {
+		done := step == nil
+		return func() {
+			if !done {
+				done = true
+				step()
+			}
+		}
+	}
+	entry, blob, removals := cut.entry, cut.blob, cut.removals
+	onEntry, onBlob, onRemovals := once(k.beforeEntry), once(k.beforeBlob), once(k.beforeRemovals)
+	cut.entry = func(series, name string) ([]byte, error) { onEntry(); return entry(series, name) }
+	cut.blob = func(name string) ([]byte, error) { onBlob(); return blob(name) }
+	cut.removals = func() ([]byte, bool, error) { onRemovals(); return removals() }
+	return cut, nil
+}
+
+// An export of the PostgreSQL kind that gateway store remove-scope runs
+// beside: a removal committed after the cut's snapshot and before the
+// export reads a receipt or a payload the cut listed refuses the export,
+// before its manifest, rather than writing a removed session's receipts
+// without their payloads, which would verify as damage; one committed after
+// every byte was read leaves the export of the cut, which verifies, its
+// removal records read in the cut's snapshot and so none.
+func TestPostgresAnExportDuringAScopeRemovalRefusesOrHoldsTheCut(t *testing.T) {
+	for _, at := range []string{"receipts", "payloads", "records"} {
+		t.Run(at, func(t *testing.T) {
+			db := newPgTestDB(t)
+			db.migrate(t)
+			dir := tempDirAt(t, 0o700)
+			t.Setenv(envSourceHelper, "1")
+			helper := sourceSpec{argv: []string{os.Args[0]}, env: helperEnv, scope: "scope-a"}
+			config, started, server := scopedServiceStart(t, db, dir, map[string]sourceSpec{"screening-a": helper})
+			for _, body := range []string{
+				`{"session":"s-a","source":"screening-a","scope":"scope-a","arguments":{"q":"acme"}}`,
+				`{"session":"s-a","source":"screening-a","scope":"scope-a","arguments":{"q":"other"}}`,
+			} {
+				if code, got := post(t, server, "/acquire", body); code != http.StatusOK {
+					t.Fatalf("%s: %d %v", body, code, got)
+				}
+			}
+			if code, got := post(t, server, "/seal", `{"session":"s-a"}`); code != http.StatusOK {
+				t.Fatalf("seal: %d %v", code, got)
+			}
+			publicKey := started.service.publicKey
+			var said bytes.Buffer
+			started.stop(&said)
+			server.Close()
+
+			connection := writeConnection(t, db.migrator)
+			removed := false
+			remove := func() {
+				code, stdout, stderr := runStoreRemoveScope("--connection-file", connection, "--owner", db.roles.owner, "--runtime", db.roles.runtime,
+					"--seed", filepath.Join(dir, "gateway.seed"), "--scope", "scope-a", "--by", "operator-1", "--timeout", "60")
+				if code != 0 || !strings.Contains(stdout, `"kind":"scope-removal"`) {
+					t.Fatalf("the removal: %d %q %q", code, stdout, stderr)
+				}
+				removed = true
+			}
+			cfg, err := parseEngineConfig([]byte(readFile(t, config)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pg, err := openStorageKind(cfg.storage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pg.close()
+			kind := hookedCut{storeKind: pgEveryScope{pg}}
+			switch at {
+			case "receipts":
+				kind.beforeEntry = remove
+			case "payloads":
+				kind.beforeBlob = remove
+			case "records":
+				kind.beforeRemovals = remove
+			}
+			out := filepath.Join(dir, "export")
+			_, err = writeExport(exportInputs{authority: "gateway:test", keyID: keyIDFor(publicKey), publicKey: publicKey, kind: kind}, out)
+			if !removed {
+				t.Fatalf("no removal ran: %v", err)
+			}
+			if at != "records" {
+				if err == nil || !strings.Contains(err.Error(), "was removed while the export read it (gateway store remove-scope ran during the export)") {
+					t.Fatalf("an export across the removal: %v", err)
+				}
+				if _, statErr := os.Lstat(filepath.Join(out, exportManifestName)); !os.IsNotExist(statErr) {
+					t.Fatalf("the refused export holds a manifest: %v", statErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("an export whose every byte was read before the removal: %v", err)
+			}
+			requireExportChecks(t, out)
+			if _, statErr := os.Lstat(filepath.Join(out, "store", removalsFile)); !os.IsNotExist(statErr) {
+				t.Fatalf("the export holds a removal file the cut did not: %v", statErr)
+			}
+			rep, err := verifyWithRegistry(filepath.Join(out, "store"), filepath.Join(out, "registry"), "gateway:test", publicKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !rep.OK || len(rep.Observations) != 0 {
+				t.Fatalf("the export's verdict: ok %v, observations %v, findings %v", rep.OK, rep.Observations, rep.Findings)
+			}
+		})
+	}
+}

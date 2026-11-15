@@ -431,18 +431,25 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 		}
 	}
 	// The removal records (SPEC.md §1.3a), read after the artifacts: a
-	// removal appends its record before it removes the bytes, so bytes the
-	// export lacks because a removal took them after they were listed are
-	// named by a record read here. A file that is not there is none; one
-	// that cannot be read stops the export, as it is no verdict to verify;
-	// and so does anything at its path that is not a regular file, a link
-	// included, which is read through by no reader of the store
-	// (exportRemovals).
+	// removal of one artifact (gateway remove-artifact) appends its record
+	// before it removes the bytes, so bytes the export lacks because such a
+	// removal took them after they were listed are named by a record read
+	// here. A removal of a scope identifier is not covered so: the
+	// receipts of a session it removes may be in the export already, and
+	// the session's record does not make them whole, so an export during
+	// gateway remove-scope can fail verification; the filesystem kind's
+	// export is not to run while one does (README.md), and the PostgreSQL
+	// kind's cut refuses the export instead (pgGoneSinceTheCut). A file
+	// that is not there is none; one that cannot be read stops the export,
+	// as it is no verdict to verify; and so does anything at its path that
+	// is not a regular file, a link included, which is read through by no
+	// reader of the store (exportRemovals).
 	//
 	// A kind that keeps the records itself (storeCut.removals) gives them
-	// from its own space, read here as well; a kind that holds some beside
-	// a store directory whose removal file is there is refused, as the
-	// export could take neither for the other.
+	// from its own space -- the PostgreSQL kind from the cut's snapshot --
+	// read here as well; a kind that holds some beside a store directory
+	// whose removal file is there is refused, as the export could take
+	// neither for the other.
 	var data []byte
 	present := false
 	if cut.removals != nil {
