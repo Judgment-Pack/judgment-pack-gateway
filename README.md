@@ -165,7 +165,10 @@ away it is `sealed-session-missing` again. A session holding receipts of the sco
 beside receipts of another, of none, or that do not verify, a receipt left in the store that
 cites one it would remove, and a session's directory holding anything but receipt files, refuse
 the whole call by name, and nothing is removed. A run
-cut off is completed by running it again. On the PostgreSQL storage kind, `gateway store
+cut off is completed by running it again. Do not export the store while the command runs: the
+export does not hold the registry's lock, and an export cut across a removal may hold a removed
+session's receipts without their payloads, which then verifies as damage; export before or after
+it. On the PostgreSQL storage kind, `gateway store
 remove-scope` removes a scope identifier's rows and its record of the identifier, as the
 migration login, in one transaction that keeps the same records
 ([docs/postgresql-store.md](docs/postgresql-store.md), "Removing one scope identifier's rows").
