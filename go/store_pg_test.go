@@ -776,6 +776,15 @@ func TestThePostgresKindRefusesToStartOutsideItsConditions(t *testing.T) {
 			db.asOwner(t, "ALTER TABLE gateway.secrets ADD COLUMN another text")
 			return db.runtime
 		}, "gateway.secrets holds the column another, which the store's migrations do not make"},
+		{"a scope column of a collation of the same name in another schema", func(t *testing.T, db *pgTestDB) pgDSN {
+			policy := "(scope = pg_catalog.current_setting('gateway.scope', true))"
+			db.asDatabaseOwner(t, "CREATE SCHEMA other",
+				`CREATE COLLATION other."C" (provider = icu, locale = 'und-u-ks-level2', deterministic = false)`,
+				"DROP POLICY scope_of_the_transaction ON gateway.blobs",
+				`ALTER TABLE gateway.blobs ALTER COLUMN scope TYPE text COLLATE other."C"`,
+				"CREATE POLICY scope_of_the_transaction ON gateway.blobs USING "+policy+" WITH CHECK "+policy)
+			return db.runtime
+		}, "the column scope of gateway.blobs is not the one the store's migrations make"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
