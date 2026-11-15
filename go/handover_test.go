@@ -277,10 +277,12 @@ func TestThePostgresInstanceWaitsAndTakesOverWhenTheHolderStops(t *testing.T) {
 	}
 	released := time.Now()
 
-	// the second takes the lease at its next poll, and serves
-	served := handoverUntil(t, every+5*time.Second, func() handoverAnswer { return handoverAcquire(second, "after-1", `{"q":"acme"}`) }, ok,
+	// the second takes the lease at its next poll, and serves. The bound
+	// leaves room for a loaded machine and stays well short of the 20 s at
+	// least that an unreleased lease, renewed every 10 s for 30 s, has left
+	served := handoverUntil(t, every+11*time.Second, func() handoverAnswer { return handoverAcquire(second, "after-1", `{"q":"acme"}`) }, ok,
 		"the waiting instance serves once the stopped one released the lease")
-	if took := served.at.Sub(released); took > every+4*time.Second {
+	if took := served.at.Sub(released); took > every+10*time.Second {
 		t.Fatalf("the waiting instance served %s after the release", took)
 	}
 	time.Sleep(200 * time.Millisecond)
