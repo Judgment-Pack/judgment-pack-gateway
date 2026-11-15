@@ -371,7 +371,14 @@ records itself as the session's holder when it admits the call, before the sourc
 - **A migration, and `gateway store remove-scope`,** run with every instance stopped: each holds the
   start lease's lock and every row of it, and is refused while any instance's lease is live.
 - **Throughput:** acquisitions scale with instances across sessions; one session's calls serialise
-  in its instance; seals serialise on the registry's append.
+  in its instance; seals serialise on the registry's append. A take-up stalls its instance: it
+  waits for every write of the stopped instance that still holds that instance's row -- at most
+  the 10 seconds the server allows an idle transaction, and never past `operationSeconds` -- and
+  the instance judges a session it does not hold under the lock every admission and seal of it
+  takes, so its other admissions and seals wait behind the take-up for that time. The lock is
+  kept so that no two calls of one instance judge one session at once: released for the wait, a
+  second call into the session could find the first's take-up or receipt and be refused `409` or
+  `400` for a session its own instance holds.
 
 The filesystem kind stays one instance per store and registry.
 
