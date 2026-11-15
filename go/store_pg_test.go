@@ -653,6 +653,26 @@ func TestAPostgresCommitAnsweredWithRollbackIsAFailure(t *testing.T) {
 // The kind does not start on a database outside its conditions: each case
 // is a database migrated and then changed in one way, and the start
 // refuses it, saying why.
+// TestThePostgresKindHoldsItsSchemaWhateverTheLoginPrintsBy holds the
+// start's comparison of the schema's definitions to the text the kind's
+// own settings print: a run-time login whose role sets another interval
+// style, the quoting of every name, another date style and more float
+// digits still starts on a schema as migrated (#440 review).
+func TestThePostgresKindHoldsItsSchemaWhateverTheLoginPrintsBy(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	role := db.roles.runtime
+	db.asAdmin(t, "ALTER ROLE "+role+" SET IntervalStyle = 'iso_8601'",
+		"ALTER ROLE "+role+" SET quote_all_identifiers = on",
+		"ALTER ROLE "+role+" SET DateStyle = 'SQL, DMY'",
+		"ALTER ROLE "+role+" SET extra_float_digits = 3")
+	kind, err := openPgKind(pgOptions{dsn: db.runtime})
+	if err != nil {
+		t.Fatalf("the kind did not start for a login with its own display settings: %v", err)
+	}
+	kind.close()
+}
+
 func TestThePostgresKindRefusesToStartOutsideItsConditions(t *testing.T) {
 	cases := []struct {
 		name  string

@@ -272,10 +272,17 @@ func (k *pgKind) transact(mode pgMode, fn func(pgTx) error) error {
 // operation's bound in milliseconds, for a statement and a lock wait (and,
 // from PostgreSQL 17, the whole transaction); $3 the idle bound in
 // milliseconds. What a role, a database or the server sets decides none of
-// them for the transaction.
+// them for the transaction. IntervalStyle and quote_all_identifiers are
+// pinned because the start compares the schema's definitions as the server
+// prints them (pgDefinitions), and they change that text: the interval in
+// start_lease_check, and the quoting of every name. No carried definition
+// holds a date, a time or a floating-point literal, so DateStyle and
+// extra_float_digits change none of them.
 const (
 	pgSettings = `SELECT pg_catalog.set_config('gateway.scope', $1, true),
 		pg_catalog.set_config('search_path', 'pg_catalog', true),
+		pg_catalog.set_config('IntervalStyle', 'postgres', true),
+		pg_catalog.set_config('quote_all_identifiers', 'off', true),
 		pg_catalog.set_config('statement_timeout', $2, true),
 		pg_catalog.set_config('lock_timeout', $2, true),
 		pg_catalog.set_config('idle_in_transaction_session_timeout', $3, true),
