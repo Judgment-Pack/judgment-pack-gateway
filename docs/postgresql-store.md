@@ -255,8 +255,9 @@ part of the connection string:
 A second run applies nothing (`"applied":[]`). A schema newer than the binary's migrations is
 refused, by the command and by the start alike. `--timeout` bounds the run, connection included:
 1 to 3600 seconds, 300 without it. Exit 0 on success, 1 on a refusal or failure, 2 on a usage
-error. The command may run while the gateway serves: the running instance does not check the
-schema again, and its next start does.
+error. Run it with every instance stopped: migration 4 locks and rewrites `gateway.log_records`
+("The migration"), a running instance does not check the schema again, and an instance of a
+binary older than the schema refuses the store at its next start.
 
 ## The migration
 
