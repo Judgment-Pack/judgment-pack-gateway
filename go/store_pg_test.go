@@ -796,6 +796,18 @@ func TestThePostgresKindRefusesToStartOutsideItsConditions(t *testing.T) {
 			db.asOwner(t, "ALTER TABLE gateway.secrets ADD COLUMN another text")
 			return db.runtime
 		}, "gateway.secrets holds the column another, which the store's migrations do not make"},
+		{"a check made again not valid", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.documents DROP CONSTRAINT documents_revision_check",
+				"ALTER TABLE gateway.documents ADD CONSTRAINT documents_revision_check CHECK (revision ~ '^[0-9a-f]{32}$') NOT VALID")
+			return db.runtime
+		}, "the constraint documents_revision_check of gateway.documents is not the one the store's migrations make"},
+		{"an index of the store's not valid", func(t *testing.T, db *pgTestDB) pgDSN {
+			// Only a change to the catalog leaves an index that backs a
+			// constraint not valid, and only a superuser may make it.
+			db.skipUnlessSuperuser(t)
+			db.asAdmin(t, "UPDATE pg_catalog.pg_index SET indisvalid = false WHERE indexrelid = 'gateway.entries_pkey'::pg_catalog.regclass")
+			return db.runtime
+		}, "the index entries_pkey of gateway.entries is not the one the store's migrations make"},
 		{"an unlogged table", func(t *testing.T, db *pgTestDB) pgDSN {
 			db.asOwner(t, "ALTER TABLE gateway.secrets SET UNLOGGED")
 			return db.runtime
