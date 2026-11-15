@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1040,18 +1041,80 @@ func verifySessionUnder(storeRoot, sessionID, authority string, keys []reachedKe
 // artifact step, the removal records and supplied bytes ret holds (SPEC.md
 // §1.3a).
 func verifySessionWith(storeRoot, sessionID, authority string, keys []reachedKey, ret *retention) (*sessionResult, error) {
-	dir := filepath.Join(storeRoot, "receipts", sessionID)
-	entries, err := os.ReadDir(dir)
+	reading, err := fsSessionReading(storeRoot, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	result := &sessionResult{signatures: map[string]string{}}
+	return verifySessionRead(sessionID, authority, keys, ret, reading)
+}
+
+// artifactProbe says what a store holds under a payload's name, the
+// lowercase hexadecimal of its digest: bytes (held), with the lowercase
+// hexadecimal SHA-256 of those bytes; nothing at all (nothing); or, neither,
+// something that holds no bytes -- on a filesystem a directory, or a link
+// that leads nowhere -- which the artifact step finds artifact-missing.
+type artifactProbe func(digestHex string) (sum string, held, nothing bool)
+
+// storeProbe is what the ladder reads of a store beside a receipt's own
+// bytes: what is held under the payload's name (SPEC.md §1.4 orders 7 and
+// 8), and the verdict on descriptor provenance (§9), whose snapshot and
+// statement the store holds.
+type storeProbe struct {
+	artifact   artifactProbe
+	provenance func(p descriptorProvenance, authority, source, endpoint string, remote bool, keys []reachedKey) string
+}
+
+// fsStoreProbe is the probe of a store directory, as the ladder reads one.
+func fsStoreProbe(storeRoot string) storeProbe {
+	return storeProbe{
+		artifact: func(digestHex string) (string, bool, bool) {
+			artifact, err := os.ReadFile(filepath.Join(storeRoot, "artifacts", digestHex))
+			if err == nil {
+				return digestOfBytes(artifact), true, false
+			}
+			// Nothing at all at the path: no file, no directory, no link -- a
+			// link that leads nowhere is something.
+			return "", false, nothingAt(storeRoot, digestHex)
+		},
+		provenance: func(p descriptorProvenance, authority, source, endpoint string, remote bool, keys []reachedKey) string {
+			return checkDescriptorProvenance(storeRoot, p, authority, source, endpoint, remote, keys)
+		},
+	}
+}
+
+// sessionReading is one session as verification reads it: the names of its
+// receipt files (those ending .json), each one's bytes, and the store's
+// probe beside them.
+type sessionReading struct {
+	names []string
+	read  func(name string) ([]byte, error)
+	probe storeProbe
+}
+
+// fsSessionReading is a session of a store directory: receipts/<session>/.
+func fsSessionReading(storeRoot, sessionID string) (sessionReading, error) {
+	dir := filepath.Join(storeRoot, "receipts", sessionID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return sessionReading{}, err
+	}
 	var names []string
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
 			names = append(names, e.Name())
 		}
 	}
+	return sessionReading{
+		names: names,
+		read:  func(name string) ([]byte, error) { return os.ReadFile(filepath.Join(dir, name)) },
+		probe: fsStoreProbe(storeRoot),
+	}, nil
+}
+
+// verifySessionRead is verifySessionWith of a session as reading holds it.
+func verifySessionRead(sessionID, authority string, keys []reachedKey, ret *retention, reading sessionReading) (*sessionResult, error) {
+	result := &sessionResult{signatures: map[string]string{}}
+	names := slices.Clone(reading.names)
 	// Filename string order. SPEC.md does not make finding order normative;
 	// corpus/README.md records that as an open question.
 	sort.Strings(names)
@@ -1060,7 +1123,7 @@ func verifySessionWith(storeRoot, sessionID, authority string, keys []reachedKey
 	var valid []*receipt
 
 	for _, name := range names {
-		data, err := os.ReadFile(filepath.Join(dir, name))
+		data, err := reading.read(name)
 		if err != nil {
 			return nil, err
 		}
@@ -1073,7 +1136,7 @@ func verifySessionWith(storeRoot, sessionID, authority string, keys []reachedKey
 		if signature, ok := topLevelSignature(data); ok {
 			result.signatures[strings.TrimSuffix(name, ".json")] = signature
 		}
-		r, status, err := checkReceiptWith(data, storeRoot, sessionID, name, authority, keys, ret)
+		r, status, err := checkReceiptProbed(data, reading.probe, sessionID, name, authority, keys, ret)
 		if err != nil {
 			return nil, err
 		}
@@ -1178,6 +1241,11 @@ func checkReceiptUnder(data []byte, storeRoot, sessionID, fileName, authority st
 // supplied file that cannot be read is an error, which is no verdict; with
 // ret nil there is none.
 func checkReceiptWith(data []byte, storeRoot, sessionID, fileName, authority string, keys []reachedKey, ret *retention) (*receipt, string, error) {
+	return checkReceiptProbed(data, fsStoreProbe(storeRoot), sessionID, fileName, authority, keys, ret)
+}
+
+// checkReceiptProbed is checkReceiptWith reading the store through probe.
+func checkReceiptProbed(data []byte, probe storeProbe, sessionID, fileName, authority string, keys []reachedKey, ret *retention) (*receipt, string, error) {
 	v, err := parseJSON(data)
 	if err != nil {
 		return nil, "malformed", nil
@@ -1245,7 +1313,7 @@ func checkReceiptWith(data []byte, storeRoot, sessionID, fileName, authority str
 	// receipt attested; where none is retained, the receipt says its call
 	// kept none or a removal record names it, and bytes a reader supplied
 	// are re-digested in their stead (SPEC.md §1.3a).
-	status, observation, err := artifactStep(r, storeRoot, sessionID, digestHex, ret)
+	status, observation, err := artifactStep(r, probe.artifact, sessionID, digestHex, ret)
 	if err != nil {
 		return r, "", err
 	}
@@ -1261,7 +1329,7 @@ func checkReceiptWith(data []byte, storeRoot, sessionID, fileName, authority str
 			source, _ := memberString(r.obj, "source")
 			endpoint, _ := memberString(acq, "endpoint")
 			transport, _ := memberString(acq, "transport")
-			return r, checkDescriptorProvenance(storeRoot, *p, authority, source, endpoint, transport == "http", keys[:r.keyPos+1]), nil
+			return r, probe.provenance(*p, authority, source, endpoint, transport == "http", keys[:r.keyPos+1]), nil
 		}
 	}
 	return r, "ok", nil

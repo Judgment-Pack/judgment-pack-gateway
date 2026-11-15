@@ -181,7 +181,6 @@ func TestWhatReadsTheStoreOnDiskIsRefusedByNameWithThePostgreSQLKind(t *testing.
 	statement := "sha256:" + strings.Repeat("a", 64)
 	for _, tc := range []struct{ name, extra, platform, want string }{
 		{"a witness", `,"witness":{}`, ``, "witness, which keeps its files beside the registry on disk,"},
-		{"sealOpenAtStart", `,"sealOpenAtStart":true`, ``, "sealOpenAtStart, which reads the sessions on disk,"},
 		{"a platform's writes", ``, `,"write":true`, "platform crm's write: true, whose actions keep their journal and evidence on disk,"},
 		{"a platform's descriptor statements", ``, `,"descriptorStatements":{"live":"` + statement + `"}`, "platform crm's descriptorStatements, whose snapshot is read from the store on disk,"},
 	} {
@@ -223,7 +222,6 @@ func TestAPlatformsScopeIsAdmittedWithThePostgreSQLKind(t *testing.T) {
 	}
 	statement := "sha256:" + strings.Repeat("a", 64)
 	for _, tc := range []struct{ name, extra, platform, want string }{
-		{"sealOpenAtStart", `,"sealOpenAtStart":true`, `,"scope":"scope-a"`, "sealOpenAtStart, which reads the sessions on disk,"},
 		{"a scoped platform's descriptor statements", ``, `,"scope":"scope-a","descriptorStatements":{"live":"` + statement + `"}`, "platform crm's descriptorStatements, whose snapshot is read from the store on disk,"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -232,6 +230,19 @@ func TestAPlatformsScopeIsAdmittedWithThePostgreSQLKind(t *testing.T) {
 				t.Fatalf("got %v", err)
 			}
 		})
+	}
+}
+
+// sealOpenAtStart is admitted with the PostgreSQL kind, beside a platform
+// of no scope and one fixed to a scope identifier: the start seals on the
+// kind once it holds the start lease (seal_open_pg.go, gateway #466).
+func TestSealOpenAtStartIsAdmittedWithThePostgreSQLKind(t *testing.T) {
+	binding := "postgres@sha256:" + strings.Repeat("b", 64)
+	for _, platforms := range []string{``, platformJSON(t, "crm", binding, "gw-crm", `,"scope":"scope-a"`)} {
+		cfg, err := parseEngineConfig([]byte(storageConfig(t, storageByFile(t), `,"sealOpenAtStart":true`, platforms)))
+		if err != nil || !cfg.sealOpenAtStart || cfg.storage == nil {
+			t.Fatalf("%s: %v", platforms, err)
+		}
 	}
 }
 
@@ -265,9 +276,6 @@ func TestCommandsThatReadTheStoreOnDiskRefuseThePostgreSQLKindByName(t *testing.
 		run  func(stdout, stderr *bytes.Buffer) int
 		want string
 	}{
-		{"seal-open", func(stdout, stderr *bytes.Buffer) int {
-			return cmdSealOpenAt([]string{"--config", config, "--all"}, stdout, stderr, nowStamp)
-		}, "gateway seal-open, which reads the sessions on disk,"},
 		{"remove-artifact", func(stdout, stderr *bytes.Buffer) int {
 			return cmdRemoveArtifactAt([]string{"--config", config, "--receipt", "s/0", "--by", "operator"}, stdout, stderr, nowStamp)
 		}, "gateway remove-artifact, which keeps its removal records in the store on disk,"},

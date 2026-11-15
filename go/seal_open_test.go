@@ -108,7 +108,7 @@ func TestSealOpenWritesTheSealTheCorpusHolds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, refused, err := sealOpenUnder(storeRoot, vec.Authority, writer, []byte(readFile(t, registry)), "", sealedViaStart, fixedStamp("2026-11-10T00:00:01Z"))
+	sealed, refused, err := sealOpenUnder(fsSealOpenStore{storeRoot}, vec.Authority, writer, []byte(readFile(t, registry)), "", sealedViaStart, fixedStamp("2026-11-10T00:00:01Z"))
 	if err != nil || len(refused) != 0 || len(sealed) != 1 || string(canon(sealed[0])) != sealLine {
 		t.Fatalf("the start's sealing: %v %q %v", err, refused, sealed)
 	}

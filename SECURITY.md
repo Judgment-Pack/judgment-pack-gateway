@@ -816,7 +816,9 @@ a sealed session, take its seal line away, and have the shortened session sealed
 holder; with `sealOpenAtStart` on, that happens at the next start without an operator looking.
 The seal says the key holder sealed what the store held then, not that it was all the minting
 process wrote. A consumer that needs to rule this out verifies with `--ordinary-seals-only`,
-under which such a session is a finding.
+under which such a session is a finding. On the PostgreSQL kind the run-time login may only read
+and insert receipts and registry lines, so taking a receipt or a seal line away takes the owner
+role (or a database superuser), not the gateway's own login.
 
 **Not in scope for this reference:** availability or HA, authenticated transport, access control
 beyond a checkpoint witness's registrations, named operators and a platform's `writeRequesters`, multi-tenancy, key rotation or custody, rate limiting

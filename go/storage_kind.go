@@ -149,9 +149,8 @@ func storageRefusals(cfg *engineConfig) error {
 	if cfg.witness != nil {
 		return storageUnsupported("witness, which keeps its files beside the registry on disk,")
 	}
-	if cfg.sealOpenAtStart {
-		return storageUnsupported("sealOpenAtStart, which reads the sessions on disk,")
-	}
+	// sealOpenAtStart is admitted: the start seals on the kind once it holds
+	// the start lease (seal_open_pg.go)
 	for _, p := range cfg.platforms {
 		switch {
 		case p.write:

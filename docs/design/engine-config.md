@@ -1465,6 +1465,13 @@ start does what it did before. `gateway serve` from the command line takes
 `--seal-open-at-start` for the same switch, and `gateway seal-open --config <engine.json>`
 seals by hand, the engine stopped.
 
+With `storage` naming the PostgreSQL kind (version 24 and later) the member is taken as well
+(gateway #466): the start seals once it holds the start lease and before it serves, and
+`gateway seal-open --config` takes the start lease and is refused, `start-lease-held`, while an
+instance serves (postgresql-store.md, "Sealing the sessions an instance left open"). No engine
+version is added for it: no member is added, and a gateway before it refuses `sealOpenAtStart`
+beside `storage` by name, so it refuses such a file rather than reading it otherwise.
+
 ## A platform's grant (engine version 16)
 
 Version 16 adds a platform's optional `grant` member (SPEC.md §10 rule 3, gateway #368, #372):
@@ -1907,7 +1914,7 @@ its environment holds the variable.
 
 Refused by name, `engine configuration: …`: `storage` in a file of version 23 or earlier; `store`
 or `registry` beside `storage`; and, with `storage`, what reads the store on disk, with the error
-`storage-kind-unsupported` naming it: `witness`, `sealOpenAtStart`, a platform's `write` and
+`storage-kind-unsupported` naming it: `witness`, a platform's `write` and
 `descriptorStatements` (postgresql-store.md, "Not available with this kind yet", has the commands
 and routes refused besides). A platform's `scope` is taken with `storage`: the kind keeps each
 scope identifier's rows apart, and a session's receipts are of one scope (postgresql-store.md,

@@ -98,7 +98,9 @@ keys, walked once at the start (`serve.go:511-518`).
    (`store_remove_scope.go:375-400`).
 7. `gateway seal-open` and `sealOpenAtStart` are refused with the PostgreSQL kind
    (`seal_open.go:259`, `storage_kind.go:130-132`): a session an instance left open when it
-   stopped has no seal on this kind, after a roll-out or after a crash.
+   stopped has no seal on this kind, after a roll-out or after a crash. (Built since, the third
+   step, gateway #466: both seal on this kind under the start lease, `docs/postgresql-store.md`,
+   "Sealing the sessions an instance left open".)
 
 So the one-writer rule now guards four things: a session's chain and count (a1 to a4), the
 registry's one seal per session (a5), one key and one authority (a6), and the operations that need
