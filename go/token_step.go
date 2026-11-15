@@ -489,6 +489,13 @@ func (g *gatewayService) obtainToken(ctx context.Context, timeout time.Duration,
 	run := spec
 	run.argv = append(append([]string(nil), spec.argv...), "--token-only")
 	result, _, _, err := g.runOnce(ctx, timeout, source, run, nil)
+	// An expired reference is the source's endpoint's answer to a request's
+	// reference; a token request sends none, so the report beside a token
+	// request's status is not read, and the run is a failed source as any.
+	var expired *sourceReferenceExpired
+	if errors.As(err, &expired) {
+		err = expired.failed
+	}
 	switch exitCodeOf(err) {
 	case tokenExitNoCredential:
 		return "", 0, fmt.Errorf(errTokenNoCredential, source)
