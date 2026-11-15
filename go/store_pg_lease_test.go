@@ -256,7 +256,7 @@ func pgRawHold(t *testing.T, db *pgTestDB, lock string) func() {
 	if _, err := c.exec("BEGIN"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.exec("SELECT singleton FROM gateway.start_lease FOR " + lock); err != nil {
+	if _, err := c.exec("SELECT holder FROM gateway.start_lease FOR " + lock); err != nil {
 		t.Fatal(err)
 	}
 	var once sync.Once
@@ -492,6 +492,7 @@ func TestThePostgresStartLeaseRenewsOnItsOwnConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(kind.close)
+	kind.instance = instanceFor(&storageSpec{}, testSeed, "gateway:test")
 	lease := pgTakeForTest(t, kind, pgStartLeasePeriod, pgStartLeaseRenewal)
 	c, err := kind.pool.acquire(time.Now().Add(time.Second))
 	if err != nil {

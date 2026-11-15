@@ -719,6 +719,7 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 	if err != nil {
 		return nil, err
 	}
+	kind.instance = instanceFor(cfg.storage, seed, cfg.authority)
 	holder, err := newStartLeaseHolder()
 	if err != nil {
 		kind.close()
@@ -764,6 +765,9 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 	started.service = service
 	fmt.Fprintln(r.said, "start:", storageStartLine(cfg.storage))
 	fmt.Fprintf(r.said, "start: gateway instance %s holds the start lease, which runs %s from each renewal by the database's clock and is renewed every %s\n", holder, r.period, r.every)
+	if cfg.storage.several {
+		fmt.Fprintln(r.said, "start: instances serve this database beside one another (storage.instances \"several\"): each session is held by the instance that admitted its first call, and another instance answers a call into it 409")
+	}
 	return started, nil
 }
 

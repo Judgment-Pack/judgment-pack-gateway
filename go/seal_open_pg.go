@@ -255,6 +255,7 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 	if err != nil {
 		return nil, nil, err
 	}
+	kind.instance = instanceFor(&spec, seed, o.authority)
 	holder, err := newStartLeaseHolder()
 	if err != nil {
 		kind.close()

@@ -9,9 +9,9 @@ package main
 //
 // The transaction is the migration's: the migration login, SET ROLE to the
 // owner for the transaction alone, under the migration's advisory lock, so
-// no migration runs beside it. It takes the start lease as a start does, so
-// no instance serves while it runs, and refuses while one does; it expires
-// the lease again before it commits. Row security stays forced: the scope's
+// no migration runs beside it. It holds the start lease's lock and every
+// row of the lease to its commit (pgHoldEveryInstance), so no instance
+// starts while it runs, and it refuses while any instance's row is live. Row security stays forced: the scope's
 // rows are read and removed with gateway.scope set to the scope's form, and
 // named in every statement besides; the records and the scope identifier's
 // row with it set to 'none'. The owner holds DELETE as the tables' owner;
@@ -201,6 +201,9 @@ func storeRemoveScope(spec *storageSpec, o storeRemoveScopeOptions, stamp func()
 type pgScopeRows struct {
 	series                    []string
 	entries, blobs, documents int64
+	// takeUps are the rows of gateway.series_holders: the instances that
+	// took up a session of the scope (schema version 6), removed with it
+	takeUps int64
 }
 
 func (h pgScopeRows) none() bool {
@@ -263,11 +266,10 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv ed25519.PrivateK
 	if len(recorded) != len(set.versions) {
 		return failed(fmt.Errorf("store: the database's schema is at version %d and this gateway's is %d; gateway store migrate raises it first", len(recorded), len(set.versions)))
 	}
-	holder, err := newStartLeaseHolder()
-	if err != nil {
-		return failed(err)
-	}
-	if err := pgTakeStartLeaseIn(c, holder); err != nil {
+	// the lease's lock and every row of the lease, to the commit: no start
+	// takes a row meanwhile, and the removal is refused while an instance
+	// serves (ADR-0034, option 1; ADR-0035, option C)
+	if err := pgHoldEveryInstance(c, "remove"); err != nil {
 		return failed(err)
 	}
 
@@ -326,7 +328,7 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv ed25519.PrivateK
 		for _, d := range []struct {
 			table string
 			want  int64
-		}{{"entries", held.entries}, {"series", int64(len(held.series))}, {"blobs", held.blobs}, {"documents", held.documents}} {
+		}{{"entries", held.entries}, {"series_holders", held.takeUps}, {"series", int64(len(held.series))}, {"blobs", held.blobs}, {"documents", held.documents}} {
 			done, err := c.exec(`DELETE FROM gateway.`+d.table+` WHERE scope = $1`, row)
 			if err != nil {
 				return failed(err)
@@ -358,9 +360,6 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv ed25519.PrivateK
 	case held.none():
 		notes = append(notes, "no row of the scope identifier is in the store; nothing was removed")
 	}
-	if _, err := c.exec(pgStartLeaseRelease, holder); err != nil {
-		return failed(err)
-	}
 	done, err := c.exec("COMMIT")
 	if err != nil {
 		return removalOutcome{}, fmt.Errorf("the commit's answer did not arrive, so whether the removal was made is not known: %v; a second run removes what is left", err)
@@ -370,37 +369,6 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv ed25519.PrivateK
 	}
 	out.notes = notes
 	return out, nil
-}
-
-// pgTakeStartLeaseIn takes the start lease for holder in the transaction
-// open on c, as a start takes it (pgKind.takeStartLease), or refuses while
-// an instance holds it. The row stays held until the transaction ends: a
-// start meanwhile waits for it or is refused, and a write of an instance
-// whose lease ran out fails at its fence.
-func pgTakeStartLeaseIn(c *pgConn, holder string) error {
-	held, err := c.exec(pgStartLeaseHolder)
-	if err != nil {
-		return err
-	}
-	take := pgStartLeaseTakeFirst
-	if len(held.rows) == 1 {
-		if live, _ := pgBool(held.rows[0][2]); live {
-			left, _ := pgInt8(held.rows[0][1])
-			return fmt.Errorf("%w: a gateway instance serves the database, and its start lease runs %d s more; stop the gateway, then remove", errStartLeaseHeld, left)
-		}
-		take = pgStartLeaseTakeOver
-	}
-	rows, err := c.exec(take, holder, pgInterval(pgStartLeasePeriod))
-	if pgCode(err) == pgLockNotAvailable {
-		return fmt.Errorf("%w: the start lease of a gateway instance ran out, and a write of that instance still holds it; the server ends that write within %s; stop the gateway, then remove", errStartLeaseHeld, pgIdleInTransaction)
-	}
-	if err != nil {
-		return err
-	}
-	if len(rows.rows) != 1 {
-		return fmt.Errorf("%w: a gateway instance took the start lease as the removal began; stop the gateway, then remove", errStartLeaseHeld)
-	}
-	return nil
 }
 
 // pgScopeHeld reads, with gateway.scope set to row, the scope's series and
@@ -416,14 +384,15 @@ func pgScopeHeld(tx pgTx, row string) (pgScopeRows, error) {
 	}
 	counts, err := tx.exec(`SELECT (SELECT count(*) FROM gateway.entries WHERE scope = $1),
 		(SELECT count(*) FROM gateway.blobs WHERE scope = $1),
-		(SELECT count(*) FROM gateway.documents WHERE scope = $1)`, row)
+		(SELECT count(*) FROM gateway.documents WHERE scope = $1),
+		(SELECT count(*) FROM gateway.series_holders WHERE scope = $1)`, row)
 	if err != nil {
 		return h, err
 	}
 	if len(counts.rows) != 1 {
 		return h, errors.New("store: the scope's rows did not count")
 	}
-	for i, n := range []*int64{&h.entries, &h.blobs, &h.documents} {
+	for i, n := range []*int64{&h.entries, &h.blobs, &h.documents, &h.takeUps} {
 		v, ok := pgInt8(counts.rows[0][i])
 		if !ok {
 			return h, errors.New("store: the scope's rows did not count")

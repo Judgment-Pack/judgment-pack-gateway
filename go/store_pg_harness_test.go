@@ -267,6 +267,8 @@ func (db *pgTestDB) open(t testing.TB, clock func() time.Time) *pgKind {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(kind.close)
+	// a lease a test takes is of the one-instance mode, under the test seed
+	kind.instance = instanceFor(&storageSpec{}, testSeed, "gateway:test")
 	return kind
 }
 

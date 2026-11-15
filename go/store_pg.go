@@ -171,6 +171,11 @@ type pgKind struct {
 	// just before its commit. "" for a kind that holds none, as an export
 	// or a test opens it.
 	fence string
+	// instance is what this instance's row of the start lease records of
+	// it, set before the lease is taken (startOnKind); schema is the schema
+	// version the kind was held to at its open, which the take reads again.
+	instance pgInstance
+	schema   int
 }
 
 // pgRowScope is a scope as the rows of the scoped tables hold it, and as a
