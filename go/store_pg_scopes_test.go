@@ -606,11 +606,7 @@ func TestAPostgresStoreAtSchemaTwoMigratesWithItsRowsOfNoScope(t *testing.T) {
 	if len(set.versions) < 3 || set.versions[2].name != "0003_scope_identifiers.sql" {
 		t.Fatalf("the shipped schema has %d versions: the test names version 2 as the one before the record of the scope identifiers", len(set.versions))
 	}
-	older := pgMigrationSet{versions: set.versions[:2], grants: bytes.Replace(bytes.Replace(set.grants, []byte(", gateway.scope_identifiers"), nil, 1),
-		[]byte("\n    EXECUTE pg_catalog.format('GRANT SELECT ON gateway.removal_records TO %I', runtime);"), nil, 1)}
-	if bytes.Equal(older.grants, set.grants) {
-		t.Fatal("the grants name no record of the scope identifiers: the test tests nothing")
-	}
+	older := pgMigrationSet{versions: set.versions[:2], grants: pgGrantsOfVersion(t, set.grants, 2)}
 	if applied, err := migratePostgres(db.migrator, older, db.roles, time.Minute); err != nil || !slices.Equal(applied, []int{1, 2}) {
 		t.Fatalf("schema version 2: %v %v", applied, err)
 	}
