@@ -8,6 +8,7 @@ import * as assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { test } from "node:test";
 
@@ -156,4 +157,54 @@ test("main.ts verify takes --ordinary-seals-only first or not at all, and the ve
   const dir = run(root, registry, v.authority, "./--ordinary-seals-only");
   assert.equal(dir.status, 0, dir.stderr.toString());
   assert.equal(dir.stdout.toString(), plain.stdout.toString());
+});
+
+// reversedListing runs with every directory listed in the reverse of the
+// order the platform gives, through the platform's own module, rebound for
+// the run: an order a filesystem is free to return (gateway #456).
+const nodeFs = createRequire(import.meta.url)("node:fs") as typeof fs;
+function reversedListing<T>(run: () => T): { result: T; listed: number } {
+  const opendirSync = nodeFs.opendirSync;
+  let listed = 0;
+  const reversed = (...args: Parameters<typeof fs.opendirSync>) => {
+    const dir = opendirSync(...args);
+    const entries: fs.Dirent[] = [];
+    try {
+      for (let e = dir.readSync(); e !== null; e = dir.readSync()) {
+        entries.push(e);
+      }
+    } finally {
+      dir.closeSync();
+    }
+    entries.reverse();
+    listed++;
+    return { readSync: () => entries.shift() ?? null, closeSync: () => {} } as unknown as fs.Dir;
+  };
+  nodeFs.opendirSync = reversed as typeof nodeFs.opendirSync;
+  syncBuiltinESMExports();
+  try {
+    return { result: run(), listed };
+  } finally {
+    nodeFs.opendirSync = opendirSync;
+    syncBuiltinESMExports();
+  }
+}
+
+test("the findings are in the order of the sessions' and files' names, whatever order a directory is listed in", () => {
+  const v = vector("stores/interruption-seal.json");
+  // A session named before s1, holding two files that are no receipts, so
+  // its findings name them: 10.json before 2.json, as the names' bytes
+  // order them, the reference reader's order (go/verify.go).
+  v.files["receipts/s0/2.json"] = "{}";
+  v.files["receipts/s0/10.json"] = "{}";
+  const { root, registry } = materialize(v);
+  const verify = () => verdictText(verifyStore(root, registry, v.authority, undefined, publicKey, { ordinarySealsOnly: true }));
+  const listed = verify();
+  const { result: reversed, listed: dirs } = reversedListing(verify);
+  assert.ok(dirs >= 3, "the listings were made through the rebound module");
+  assert.equal(reversed, listed);
+  const at = (JSON.parse(listed).findings as Record<string, unknown>[])
+    .filter((f) => f["file"] !== undefined || f["callIndex"] !== undefined)
+    .map((f) => `${f["sessionId"]}/${f["file"] ?? f["callIndex"]}`);
+  assert.deepEqual(at, ["s0/10.json", "s0/2.json", "s1/0", "s1/1", "s1/2"]);
 });
