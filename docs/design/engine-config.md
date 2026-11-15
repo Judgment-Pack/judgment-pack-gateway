@@ -894,6 +894,15 @@ delta-seconds or an HTTP-date in the future, `Retry-After` in whole seconds, at 
 request leaves no token held, and the gateway does not retry. Every other refusing answer — a
 `500`, a `502`, a `504`, an endpoint that cannot be reached — is answered `400` as before.
 
+**An expired reference** (gateway #461). When the endpoint answers `410` — the cursor or change
+token the request sent is no longer held there — `/acquire` answers `410` with
+`"code": "source_reference_expired"` and the gateway's own sentence, nothing of the endpoint's
+body (SPEC.md §6, "When an acquisition does not happen"). It is not receipted and takes no
+`callIndex`, the sealed token is kept, and the session is left open: the caller drops the
+reference it kept and reads again from its first value, in the same session or a new one. A
+`410` from the token step's token endpoint is a refused token request, and a `404` or a `400`
+from the endpoint is answered `400` as before.
+
 **Paging is the caller's** (gateway #389). The engine keeps no cursor, no high-water mark and no
 "since" for a source of this shape, or for any generic source: each `/acquire` is one request to
 the endpoint and one receipt, for the page or the window the request names, and the caller keeps
