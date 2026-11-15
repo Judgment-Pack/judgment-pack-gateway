@@ -2024,7 +2024,10 @@ nothing, where:
   `cites` or an acquisition's `reconciliation.action`, or does not parse and its bytes spell
   such a receipt's signature, since the citation would no longer resolve (§4 step 5);
 - something that is not a regular file is at the path of a payload it would remove, or at
-  `<root>/artifact-removals.jsonl`.
+  `<root>/artifact-removals.jsonl`;
+- `<root>/artifacts/`, `<root>/receipts/` or the directory of a session it would remove is a
+  symbolic link or something other than a directory, since it removes only within the store's
+  root and a path leading out of it would otherwise be refused after the records are written.
 
 A payload it removes is the file at the `resultDigest` of a receipt of a removed session,
 unless a receipt left in the store names the same digest (or does not parse and spells it) and

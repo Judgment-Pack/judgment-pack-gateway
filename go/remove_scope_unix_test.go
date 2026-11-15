@@ -33,6 +33,44 @@ func TestRemoveScopeIsRefusedWhileAGatewayHoldsTheRegistry(t *testing.T) {
 	}
 }
 
+// The removal goes through the store's root, which refuses a path leading
+// out of it: artifacts/ or receipts/ that is a symbolic link to a directory
+// outside the store refuses the whole call before anything is written, the
+// removal file included, and nothing is removed on either side of the link.
+func TestRemoveScopeRefusesALinkedDirectoryBeforeWritingAnything(t *testing.T) {
+	for _, dir := range []string{"artifacts", "receipts"} {
+		t.Run(dir, func(t *testing.T) {
+			g, seedPath := scopeStore(t)
+			tree := storeTree(t, g.storeRoot)
+			link, outside := filepath.Join(g.storeRoot, dir), filepath.Join(t.TempDir(), dir)
+			if err := os.Rename(link, outside); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, link); err != nil {
+				t.Fatal(err)
+			}
+			code, stdout, stderr := removeScopeOn(t, g, seedPath, "--scope", testScope, "--by", "operator-1")
+			want := "remove-scope: the store's " + dir + "/ is a symbolic link; nothing is removed through it\nremove-scope: nothing was removed\n" + scopeUnlockedLine()
+			if code != 1 || stdout != "" || stderr != want {
+				t.Fatalf("exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+			}
+			if exists(filepath.Join(g.storeRoot, removalsFile)) {
+				t.Fatal("the removal file was written")
+			}
+			// the directory put back in place of the link: the store as it was
+			if err := os.Remove(link); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(outside, link); err != nil {
+				t.Fatal(err)
+			}
+			if !sameEntries(storeTree(t, g.storeRoot), tree) {
+				t.Fatal("the store, or what the link leads to, changed")
+			}
+		})
+	}
+}
+
 // Every record is appended, and made durable, before anything is removed: a
 // run whose first removal fails leaves the records beside the whole store,
 // which verifies as it did, the sessions a record names verified as they

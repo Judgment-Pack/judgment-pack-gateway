@@ -422,6 +422,18 @@ func readsBackAsScopeRemoval(line []byte, keys []reachedKey) bool {
 // refuses, each naming a session or a receipt and never the scope
 // identifier.
 func planScopeRemoval(storeRoot string, all []*storedReceipt, sessions []string, walk *registryWalk, ret *retention, scope string) (plan scopeRemovalPlan, refused []string) {
+	// The removal goes through the store's root, which refuses a path that
+	// leads out of it: artifacts/ or receipts/ that is a symbolic link, or
+	// not a directory, refuses the call here, before anything is written,
+	// and not after the records, on this run and every one after it.
+	for _, dir := range []string{"artifacts", "receipts"} {
+		if why := notARealDirectory(filepath.Join(storeRoot, dir)); why != "" {
+			refused = append(refused, fmt.Sprintf("the store's %s/ %s; nothing is removed through it", dir, why))
+		}
+	}
+	if len(refused) > 0 {
+		return plan, refused
+	}
 	held := map[string][]*storedReceipt{}
 	for _, s := range all {
 		held[s.sessionID] = append(held[s.sessionID], s)
@@ -458,6 +470,13 @@ func planScopeRemoval(storeRoot string, all []*storedReceipt, sessions []string,
 				plan.sealed++
 			}
 			plan.receipts = append(plan.receipts, receipts...)
+		}
+	}
+
+	// A session's directory that is a symbolic link, or not a directory.
+	for _, session := range append(append([]string{}, plan.sessions...), plan.empty...) {
+		if why := notARealDirectory(filepath.Join(storeRoot, "receipts", session)); why != "" {
+			refused = append(refused, fmt.Sprintf("the directory of session %s %s; the session is left whole", session, why))
 		}
 	}
 
@@ -533,6 +552,24 @@ func planScopeRemoval(storeRoot string, all []*storedReceipt, sessions []string,
 		plan.payloads = append(plan.payloads, hexSum)
 	}
 	return plan, refused
+}
+
+// notARealDirectory is why what is at path, looked at without following a
+// symbolic link, is not a directory, or "" where it is one or nothing is
+// there.
+func notARealDirectory(path string) string {
+	info, err := lstat(path)
+	switch {
+	case err != nil && absent(err):
+		return ""
+	case err != nil:
+		return fmt.Sprintf("could not be looked at (%v)", err)
+	case info.Mode()&os.ModeSymlink != 0:
+		return "is a symbolic link"
+	case !info.IsDir():
+		return "is not a directory"
+	}
+	return ""
 }
 
 // payloadOwner is the session of the first receipt to name the digest.
