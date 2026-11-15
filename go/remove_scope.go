@@ -337,8 +337,20 @@ func removeScopeFrom(storeRoot, authority string, priv ed25519.PrivateKey, walk 
 	if len(plan.payloads) > 0 {
 		syncDir(filepath.Join(storeRoot, "artifacts"))
 	}
+	// Each receipt the plan read, and then its session's directory, which the
+	// plan found holding nothing else: removing it fails, and nothing more
+	// is removed, where something came into it since.
+	files := map[string][]string{}
+	for _, s := range plan.receipts {
+		files[s.sessionID] = append(files[s.sessionID], s.fileName)
+	}
 	for _, session := range append(append([]string{}, plan.sessions...), plan.empty...) {
-		if err := root.RemoveAll(filepath.Join("receipts", session)); err != nil {
+		for _, name := range files[session] {
+			if err := root.Remove(filepath.Join("receipts", session, name)); err != nil && !absent(err) {
+				return out, fmt.Errorf("session %s could not be removed: %v; the records stand, and a second run completes the removal", session, err)
+			}
+		}
+		if err := root.Remove(filepath.Join("receipts", session)); err != nil && !absent(err) {
 			return out, fmt.Errorf("session %s could not be removed: %v; the records stand, and a second run completes the removal", session, err)
 		}
 	}
@@ -473,10 +485,25 @@ func planScopeRemoval(storeRoot string, all []*storedReceipt, sessions []string,
 		}
 	}
 
-	// A session's directory that is a symbolic link, or not a directory.
+	// A session's directory that is a symbolic link, or not a directory, or
+	// that holds anything but receipt files: the receipts read are what the
+	// records count, and only they are removed, then the directory, empty.
 	for _, session := range append(append([]string{}, plan.sessions...), plan.empty...) {
-		if why := notARealDirectory(filepath.Join(storeRoot, "receipts", session)); why != "" {
+		dir := filepath.Join(storeRoot, "receipts", session)
+		if why := notARealDirectory(dir); why != "" {
 			refused = append(refused, fmt.Sprintf("the directory of session %s %s; the session is left whole", session, why))
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			refused = append(refused, fmt.Sprintf("the directory of session %s could not be read (%v); the session is left whole", session, err))
+			continue
+		}
+		for _, e := range entries {
+			if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), ".json") {
+				refused = append(refused, fmt.Sprintf("the directory of session %s holds something other than a receipt file, which the call would neither count nor record; the session is left whole", session))
+				break
+			}
 		}
 	}
 

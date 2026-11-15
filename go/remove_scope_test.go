@@ -258,8 +258,10 @@ func TestRemoveScopeRefusesASessionOfMixedScopesWhole(t *testing.T) {
 
 // A receipt left in the store that cites a receipt the call would remove --
 // in an action's cites, whether or not it verifies -- or whose bytes do not
-// parse and spell such a receipt's signature, and a payload's path holding
-// something that is not a regular file, refuse the whole call by name.
+// parse and spell such a receipt's signature, a payload's path holding
+// something that is not a regular file, and a session it would remove
+// holding a file or directory that is not a receipt file, which it would
+// neither count nor record, refuse the whole call by name.
 func TestRemoveScopeRefusesWhatItCannotRemoveWhole(t *testing.T) {
 	vector := readStoreVector(t, "v3-action-remote-transport-valid")
 	action := vector.Files["receipts/s2/1.json"]
@@ -288,6 +290,12 @@ func TestRemoveScopeRefusesWhatItCannotRemoveWhole(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "remove-scope: the payload a receipt of session a2 names is at a path that holds something other than a regular file; it is not removed\n"},
+		{"a file in a session that is not a receipt", func(t *testing.T, g *gatewayService) {
+			writeStoreFile(t, g, "receipts/a2/notes.txt", "kept by hand")
+		}, "remove-scope: the directory of session a2 holds something other than a receipt file, which the call would neither count nor record; the session is left whole\n"},
+		{"a directory in a session", func(t *testing.T, g *gatewayService) {
+			writeStoreFile(t, g, "receipts/a1/more/0.json", "{}")
+		}, "remove-scope: the directory of session a1 holds something other than a receipt file, which the call would neither count nor record; the session is left whole\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g, seedPath := scopeStore(t)

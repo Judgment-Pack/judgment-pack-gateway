@@ -162,8 +162,9 @@ of what it removes, then removes the files, and prints the records (SPEC.md §1.
 "Removing one scope identifier's records"). The store then verifies, each removed sealed
 session observed `session-removed` instead of `sealed-session-missing`; with its record taken
 away it is `sealed-session-missing` again. A session holding receipts of the scope identifier
-beside receipts of another, of none, or that do not verify, and a receipt left in the store
-that cites one it would remove, refuse the whole call by name, and nothing is removed. A run
+beside receipts of another, of none, or that do not verify, a receipt left in the store that
+cites one it would remove, and a session's directory holding anything but receipt files, refuse
+the whole call by name, and nothing is removed. A run
 cut off is completed by running it again. On the PostgreSQL storage kind, `gateway store
 remove-scope` removes a scope identifier's rows and its record of the identifier, as the
 migration login, in one transaction that keeps the same records

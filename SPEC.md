@@ -2027,7 +2027,9 @@ nothing, where:
   `<root>/artifact-removals.jsonl`;
 - `<root>/artifacts/`, `<root>/receipts/` or the directory of a session it would remove is a
   symbolic link or something other than a directory, since it removes only within the store's
-  root and a path leading out of it would otherwise be refused after the records are written.
+  root and a path leading out of it would otherwise be refused after the records are written;
+- the directory of a session it would remove holds anything other than receipt files (regular
+  files named `*.json`), which it would neither count nor record.
 
 A payload it removes is the file at the `resultDigest` of a receipt of a removed session,
 unless a receipt left in the store names the same digest (or does not parse and spells it) and
@@ -2037,10 +2039,10 @@ statement or snapshot in the store has that digest (§9): those bytes are kept.
 It appends first, and makes durable, a `session-removal` record (§1.3a) for each sealed session
 it removes that no record of the same scope identifier names yet, and one `scope-removal`
 record of what it removes, each signed by the key in force and read back as a verifier reads
-the file; then it removes the payloads, and then each session's directory. A run cut off after
-the records leaves sessions a record names still in the store, which are verified as they are
-(§1.3a), and payloads that a receipt still there names, and a second run completes the
-removal, appending a `scope-removal` record of what it removes and no `session-removal` record
+the file; then it removes the payloads, and then each session's receipt files and its directory,
+then empty. A run cut off after the records leaves sessions a record names still in the store,
+which are verified as they are (§1.3a), and payloads that a receipt still there names, and a
+second run completes the removal, appending a `scope-removal` record of what it removes and no `session-removal` record
 again. A sealed session's directory left holding no receipt, which a verifier finds
 `tail-rollback`, is removed by a second run where a record of the scope identifier names the
 session. An open session's directory left so is not, since no record names an open session: a
