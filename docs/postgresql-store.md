@@ -281,8 +281,10 @@ address of its own, from the new one until it serves, and nothing else; on the o
 address, the old instance's `503`s and then, until the new one serves, a refused connection. The
 window is the drain (at most `operationSeconds`), at
 most one renewal interval, and the start's checks. Give the orchestrator's grace period for a stop
-more than `operationSeconds` and 15 seconds, or it kills the old instance in its drain and the
-hand-over waits for the lease to expire.
+more than `operationSeconds` and 20 seconds, or it may kill the old instance before it released the
+lease and the hand-over waits for the lease to expire. The stop's longest run is the drain
+(`operationSeconds`), then at most 15 seconds for the requests still open to be answered (a
+source's 5-second wait to end and 10 seconds more), then at most 5 seconds for the release.
 
 If the old instance does not release its lease (its host is gone, a kill, a second signal), the
 waiting instance takes it once it expired, within 45 seconds of the old instance's last renewal
