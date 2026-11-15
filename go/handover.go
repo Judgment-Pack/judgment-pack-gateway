@@ -118,7 +118,7 @@ func runOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, ide
 			return 1
 		}
 	}
-	return serveUntilStopped(started.service, cfg, delegation, started.lease.keep, serveStop{
+	return serveUntilStopped(started.service, cfg, delegation, started.keep, serveStop{
 		stopped: r.stopped, restore: r.restore, drain: cfg.storage.operation,
 		retryAfter: retryAfterOf(r.every), listener: listener, said: r.said,
 	})

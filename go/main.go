@@ -558,8 +558,10 @@ type serveStop struct {
 
 // serveUntilStopped serves the service until s says it stops, a loss keep
 // reports stops it (exit 1), or serving fails (exit 1). keep, where it is
-// not nil, renews the start lease until serving has ended: through the
-// drain and through the requests serveOn waits for.
+// not nil, reports a loss of the start lease until serving has ended:
+// through the drain and through the requests serveOn waits for. On the
+// PostgreSQL kind it is kindStart.keep, whose renewal began at the take and
+// runs until kindStart.stop.
 func serveUntilStopped(service *gatewayService, cfg engineConfig, delegation *delegationService, keep func(context.Context, func(error)), s serveStop) int {
 	service.attachDelegation(delegation)
 	if s.drain > 0 {
@@ -574,8 +576,7 @@ func serveUntilStopped(service *gatewayService, cfg engineConfig, delegation *de
 	installOperatorControls(service.ctx, service)
 	lost := make(chan error, 1)
 	if keep != nil {
-		// ended, and waited for, before the caller releases the lease: no
-		// renewal runs after the release
+		// ended, and waited for, before serving returns
 		kept, endKeep := context.WithCancel(context.Background())
 		keeping := make(chan struct{})
 		go func() {
@@ -643,16 +644,51 @@ func serveEngineOnKind(cfg engineConfig, seed []byte, sources map[string]sourceS
 }
 
 // kindStart is a start on the PostgreSQL kind: the kind, the lease this
-// instance holds on it, and the service over it.
+// instance holds on it, the lease's renewal, and the service over it.
 type kindStart struct {
 	kind    *pgKind
 	lease   *pgStartLease
 	service *gatewayService
+
+	// the renewal, from the take to the stop (renew): endRenewal ends it,
+	// renewed closes once it ended, and lost holds the loss it reported
+	endRenewal context.CancelFunc
+	renewed    chan struct{}
+	lost       chan error
 }
 
-// stop releases the lease, so the next instance starts at once -- one left
-// behind expires -- and closes the kind.
+// renew starts the lease's renewal (pgStartLease.keep), as soon as the
+// lease is taken, so that a slow start -- the build, the registry's walk,
+// the hand-off to serving -- does not outlast its own lease. It runs until
+// stop; a loss it reports is held for keep.
+func (s *kindStart) renew() {
+	ctx, end := context.WithCancel(context.Background())
+	s.endRenewal, s.renewed, s.lost = end, make(chan struct{}), make(chan error, 1)
+	go func() {
+		defer close(s.renewed)
+		s.lease.keep(ctx, func(err error) { s.lost <- err })
+	}()
+}
+
+// keep is the renewal as serveUntilStopped takes it: it reports the loss
+// the renewal reported, at once where it was before serving began, until
+// ctx ends.
+func (s *kindStart) keep(ctx context.Context, lost func(error)) {
+	select {
+	case err := <-s.lost:
+		lost(err)
+	case <-ctx.Done():
+	}
+}
+
+// stop ends the lease's renewal and waits for it, so that no renewal runs
+// after the release; releases the lease, so the next instance starts at
+// once -- one left behind expires; and closes the kind.
 func (s *kindStart) stop(said io.Writer) {
+	if s.endRenewal != nil {
+		s.endRenewal()
+		<-s.renewed
+	}
 	if err := s.lease.release(); err != nil {
 		fmt.Fprintf(said, "stop: the start lease is left to expire within %s: %v\n", pgStartLeasePeriod, err)
 	}
@@ -690,6 +726,7 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 		return nil, err
 	}
 	started := &kindStart{kind: kind, lease: lease}
+	started.renew()
 	// the database may have been migrated while this start waited, and a
 	// connection the pool kept idle through the wait may have been ended:
 	// the checks, and what follows, open fresh ones
@@ -703,6 +740,13 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 	}
 	if err == nil {
 		_, err = service.kindRegistryWalk()
+	}
+	if err == nil {
+		// a lease lost while the start ran ends it here
+		select {
+		case err = <-started.lost:
+		default:
+		}
 	}
 	if err != nil {
 		started.stop(r.said)

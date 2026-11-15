@@ -423,6 +423,32 @@ func TestThePostgresStartAfterAWaitChecksOnFreshConnections(t *testing.T) {
 	}
 }
 
+// The lease is renewed from the moment it is taken, before the service
+// serves: a start that outlasts the lease's period before it serves still
+// holds it. The period is the shortest a write's fence (11 s) leaves the
+// start's own writes.
+func TestThePostgresStartRenewsTheLeaseBeforeItServes(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	cfg := pgHandoverConfig(t, db, "60")
+	period := 13 * time.Second
+	var said syncBuffer
+	started, err := startOnKind(cfg, testSeed, map[string]sourceSpec{}, nil, kindRun{period: period, every: time.Second, stopped: context.Background(), said: &said})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer started.stop(&said)
+	time.Sleep(period + 3*time.Second)
+	if got := pgLeaseHolder(t, db); got != started.lease.holder || !pgLeaseLive(t, db) {
+		t.Fatalf("the lease, %s after the take and not yet served: %q, live %v", period+3*time.Second, got, pgLeaseLive(t, db))
+	}
+	select {
+	case err := <-started.lost:
+		t.Fatalf("the renewal reported a loss: %v", err)
+	default:
+	}
+}
+
 // A wait that runs out is the start refused as one that does not wait is:
 // exit 1, start-lease-held, naming the holder. It took nothing and wrote
 // nothing, and the listener it answered on is closed.
