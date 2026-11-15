@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-15
 deciders: maintainer
 ---
@@ -244,7 +244,7 @@ flight up to a bound, and then releases the lease, so the waiting instance takes
 
 ## Decision outcome
 
-Recommended, not decided: **D first, then C**, with a third step before C or after it: a seal after
+Decided on 2026-11-15 by the maintainer: **D first, then the third step, then C** (question 1's recommended order). The third step: a seal after
 an interruption (SPEC.md §3c) on the PostgreSQL kind, for the sessions of an instance that stopped,
 made by a command (`sealedVia: "command"`) and by a start (`"start"`), once the instance's lease has
 expired. It adds no record form. A and B are not recommended. Because:
@@ -285,7 +285,7 @@ The filesystem kind stays one instance per store and registry (README.md), its l
 
 ## Questions for the maintainer
 
-Each with this record's recommendation first.
+Each with this record's recommendation first. Question 1 is answered (D, then the third step, then C). Questions 2 to 12 are taken at their recommended answers when the step they bear on is built, unless the maintainer answers otherwise on that step's issue.
 
 1. The order: D, then the third step, then C (recommended); D, then C, then the third step; C alone.
 2. D's wait: a member of `storage` at a new engine configuration version, as `connections` is
