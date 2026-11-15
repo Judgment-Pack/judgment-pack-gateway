@@ -308,7 +308,7 @@ the signer and any authenticated caller who knows the name can seal them by `/se
 signer restarts, a session it had not sealed is one the process that starts next does not
 hold: its chain was in memory, and its count on disk is not one a seal may anchor, since the
 last receipts may have been taken away in between (SPEC.md §2). So an acquisition into it is
-refused before any source runs, and so is its seal, each as a session an earlier process
+refused before any source runs, and so is its seal, each as a session another process
 left open (gateway #381); a client acquires into a new session. A store holding it reads
 `unregistered-session` under `gateway verify`, with the observation `session-open` beside it
 while its receipts are whole, until the operator resolves it — with the signer stopped,

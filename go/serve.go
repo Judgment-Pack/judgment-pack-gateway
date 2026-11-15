@@ -1919,14 +1919,14 @@ func executableDigest(path string) (string, error) {
 
 // sealedElsewhere is why a read may not be admitted into a session this
 // process does not hold, or "": the session is sealed in the registry on
-// disk -- by an earlier process, since this one's own seals are in its
+// disk -- by another process, since this one's own seals are in its
 // map -- or the registry could not be read, which is a refusal, never taken
 // for the absence of a seal. A session this process holds is judged by
 // its map alone, under admission's lock. A session the registry does not
-// seal is then judged by the store, under that lock (leftInStore): one an
-// earlier process left receipts in is refused there too, so a read, like an
-// action (sessionOpen), never continues the chain of a session from before
-// this start.
+// seal is then judged by the store, under that lock (leftInStore): a
+// session another process left receipts in is refused there too, so a
+// read, like an action (sessionOpen), never continues the chain of a
+// session from before this start.
 func (g *gatewayService) sealedElsewhere(sessionID string) string {
 	g.mu.Lock()
 	_, held := g.sessions[sessionID]

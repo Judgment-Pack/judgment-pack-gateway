@@ -1457,7 +1457,7 @@ A file without the member, and every call made under no delegation, behave as be
 
 Version 17 adds the optional `sealOpenAtStart` member, `true` or `false` and nothing else
 (SPEC.md §3c, gateway #395). With it `true`, the engine's start, once it holds its registry
-and before it serves, seals each session an earlier process left open whose receipts are
+and before it serves, seals each session another process left open whose receipts are
 whole with a seal made after an interruption, `sealedVia` `"start"`, and writes each seal on
 stderr as `start: sealed after an interruption: <registry line>`. A session that is not
 whole, and a directory no session id names, is named on stderr and stays open, and the engine
