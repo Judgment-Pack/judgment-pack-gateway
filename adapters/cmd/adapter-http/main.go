@@ -130,6 +130,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			stdout.Write(throttled.Report())
 			return httpsource.ThrottledStatus
 		}
+		// An expired reference (410 from the source's endpoint) exits with
+		// its own status and reports the class alone on stdout beside it;
+		// the diagnostic on stderr is unchanged.
+		var expired *httpsource.ReferenceExpired
+		if errors.As(err, &expired) {
+			stdout.Write(expired.Report())
+			return httpsource.ReferenceExpiredStatus
+		}
 		var failure *httpsource.TokenFailure
 		if errors.As(err, &failure) {
 			return int(failure.Kind)

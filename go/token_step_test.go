@@ -846,6 +846,12 @@ func TestTokenStepStandIn(t *testing.T) {
 		os.Stderr.WriteString("stand-in-stderr-4e1a\n")
 		os.Stdout.WriteString(`{"throttled":{"retryAfter":45,"status":429}}`)
 		os.Exit(sourceExitThrottled)
+	case "expired":
+		// The source's endpoint answered 410, reported as adapter-http
+		// reports it (source_reference_expired.go).
+		os.Stderr.WriteString("stand-in-stderr-4e1a\n")
+		os.Stdout.WriteString(`{"referenceExpired":{"status":410}}`)
+		os.Exit(sourceExitReferenceExpired)
 	}
 	os.Stdout.WriteString(`{"ok":true}`)
 	os.Exit(0)

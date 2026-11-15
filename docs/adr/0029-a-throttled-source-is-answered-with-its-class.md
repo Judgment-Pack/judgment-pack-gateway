@@ -122,6 +122,14 @@ and it can be added for a shape when one does.
   answer; acquisitions that shared one throttled token request are told the same number.
 - Neutral: no receipt, record, schema or conformance vector changes; the corpus is untouched.
 
+## Amendment (gateway #461)
+
+A source endpoint's 410 is classed the same way: `adapter-http` exits 8 beside exactly
+`{"referenceExpired": {"status": 410}}`, read by the gateway only from a source declared
+`http` and not from a token request, and `/acquire` answers `410` with
+`"code": "source_reference_expired"` beside the fixed sentence, unreceipted, the session left
+open, every other status unchanged (SPEC.md §6).
+
 ## More information
 
 - RFC 9110 §10.2.3 (Retry-After), §5.6.7 (date formats) and §15.6.4 (503); RFC 6585 §4 (429).
