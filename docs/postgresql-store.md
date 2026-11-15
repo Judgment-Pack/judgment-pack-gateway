@@ -170,13 +170,18 @@ place:
 
 ## One instance per database
 
-One gateway instance serves a database at a time, and the database says which, by a start lease:
-the one row of `gateway.start_lease`, which holds the instance's identifier, drawn at its start,
-when it last renewed the lease and when the lease expires, both by the database's clock. A lease
-runs at most ten minutes from its renewal; the row refuses any later expiry, and infinity.
+One gateway instance serves a database at a time, unless the configuration says otherwise
+("Several instances on one database", below), and the database says which, by a start lease: a
+row of `gateway.start_lease` for each instance that has served it (schema version 6), which holds
+the instance's identifier, drawn at its start, its mode, the key id it signs under and the
+authority it names, when it last renewed the lease and when the lease expires, both by the
+database's clock. An instance takes the row of an instance whose lease has expired, or a new one;
+no row is removed. A lease runs at most ten minutes from its renewal; the row refuses any later
+expiry, and infinity.
 
-- **The start** takes the lease where there is none or it has expired, before it writes anything.
-  While another instance's lease is live the start is refused, and exits 1, with
+- **The start** takes the lease where no other is live, before it writes anything. The takes run
+  one at a time, under a transaction advisory lock. While another instance's lease is live the
+  start is refused, and exits 1, with
   `start-lease-held`, the other instance's identifier and how many seconds its lease runs; or,
   where the configuration gives `startWaitSeconds`, it waits for the lease ("Handing over to a new
   instance", below). It reads the row first and takes it only where it expired, and then without
@@ -231,10 +236,10 @@ wait for it, is refused at once instead: `start-lease-held`, naming the old inst
 again". A write whose statements outlast the lease fails at that last statement and writes
 nothing; a write whose last statement waited for the row reads the clock once it holds it.
 
-The periods are constants of this version. The lease decides which instance serves; it does not
-make several instances safe, which is not supported (ADR-0031, decision 10;
-[ADR-0035](adr/0035-several-instances-on-one-postgresql-database.md) sets out the steps towards
-it, of which the hand-over below is the first).
+The periods are constants of this version. In this mode the lease decides which instance serves;
+several instances serve one database only in the mode of their own ("Several instances on one
+database", below; ADR-0031, decision 10;
+[ADR-0035](adr/0035-several-instances-on-one-postgresql-database.md), option C).
 
 **Handing over to a new instance** (an upgrade, a move to another host). The new instance is
 started before the old one is stopped, and waits for the old one's lease. Its configuration, at
@@ -297,23 +302,78 @@ What a hand-over does not do:
 
 - **It does not carry open sessions over.** A session open on the old instance at its stop, or
   at its crash, stays open: the new instance does not continue it (a call into it is refused as a
-  session an earlier process left open, SPEC.md §6), and a caller whose session the stop left
+  session another process left open, SPEC.md §6), and a caller whose session the stop left
   open opens a new one on the new instance. Such a session is sealed after the interruption
   (SPEC.md §3c) by the new instance's start where its configuration sets `sealOpenAtStart`, or
-  by `gateway seal-open --config` while no instance serves ("Sealing the sessions an instance
-  left open", below); until then it reads `unregistered-session`, observed `session-open`, to a
+  by `gateway seal-open --config` once the instance's lease has expired ("Sealing the sessions an
+  instance left open", below); until then it reads `unregistered-session`, observed `session-open`, to a
   verifier. Seal a session before the stop where it can be: a seal of §3's form says the count
   is the minting instance's own.
-- **It does not compare keys or authorities.** The start does not hold the new instance to the
-  old one's seed or authority: the database records neither (the lease's row holds the
-  instance's identifier and its times, and nothing else), and the registry's walk holds a key
-  only to the registry's rotations. Give both instances one seed and one authority: seals and
-  receipts made under another key do not verify under the key a verifier pins.
+- **It does not compare keys or authorities.** In the one-instance mode the start does not hold
+  the new instance to the old one's seed or authority: it takes a row only once no other is live,
+  and compares nothing with an expired one; the registry's walk holds a key only to the
+  registry's rotations. Give both instances one seed and one authority: seals and receipts made
+  under another key do not verify under the key a verifier pins.
 - **It does not migrate.** When the new version carries a migration, the new binary refuses the
   database's earlier schema at its start, before it waits. Stop the old instance with SIGTERM and
   wait for it to exit, run `gateway store migrate`, then start the new instance: every instance is
-  stopped while a migration runs. A start that waited checks the schema again once it holds the
-  lease, and is refused where it is no longer its binary's.
+  stopped while a migration runs, and the command is refused while any instance's lease is live.
+  A start that waited checks the schema again once it holds the lease, and is refused where it is
+  no longer its binary's.
+
+## Several instances on one database
+
+Instances serve one database beside one another where each one's configuration, at engine
+version 26, says so in the `storage` member
+([ADR-0035](adr/0035-several-instances-on-one-postgresql-database.md), option C):
+
+```json
+"storage": {
+  "kind": "postgresql",
+  "connection": { "file": "/run/secrets/gateway-store-url" },
+  "instances": "several"
+}
+```
+
+`instances` is `"one"` (the default: one instance per database, as above) or `"several"`. Each
+instance takes its own row of the start lease and renews it, and every write of it is fenced on
+its own row, as above. A gateway keeps a session's count and chain in memory, so a session is
+served by one instance: **the instance that admitted its first call holds it**. That instance
+records itself as the session's holder when it admits the call, before the source runs.
+
+- **Route a session to its instance.** A router, or the caller, sends every call of a session --
+  its acquisitions and its seal -- to the instance that answered its first call. The session is a
+  member of the request's body, not a header. Another instance answers such a call `409`, before
+  the source runs, with one fixed sentence that names no instance:
+  `session <id> is held by another gateway instance serving this database: a session is served by
+  the instance that admitted its first call, so send its calls and its seal to that instance, or
+  acquire into a new session`. It is not forwarded.
+- **One seed, one authority, one set of sources** on every instance. A start in this mode is
+  refused, `instance-mismatch`, where an instance whose lease is live signs under another key id
+  or names another authority; it is refused, `start-lease-held`, beside a live instance of the
+  one-instance mode, and an instance of the one-instance mode is refused beside one of this mode.
+  The sources are not compared: give every instance the same ones, or a session's later calls may
+  meet a source its holder lacks.
+- **Connections:** `connections` + 1 for each instance in the server's connection budget.
+- **Delegated runs:** a delegation's credential is bound, and revoked, at the instance that bound
+  it; keep a delegated run's calls to that instance. The admission read still refuses a revoked
+  delegation at every instance.
+- **An instance that stops or dies** leaves its sessions as one instance's stop leaves them. While
+  its lease is live, every other instance answers a call into them, or a seal of them, `409`.
+  Once it has expired, a session that holds no receipt is taken up by the next instance a call
+  reaches -- after every write of the old instance has ended, or failed at its fence -- and one
+  that holds receipts is refused as one another process left open, `400`, until it is sealed
+  after the interruption ("Sealing the sessions an instance left open", below). Two instances that
+  take up one session at once are not both admitted: the second is answered `409`.
+- **The registry** stays one chain: a seal is judged against the registry in the append's own
+  transaction, under its lock, so no session is sealed twice. A start that finds the registry
+  made by another instance since its read goes on with it.
+- **A migration, and `gateway store remove-scope`,** run with every instance stopped: each holds the
+  start lease's lock and every row of it, and is refused while any instance's lease is live.
+- **Throughput:** acquisitions scale with instances across sessions; one session's calls serialise
+  in its instance; seals serialise on the registry's append.
+
+The filesystem kind stays one instance per store and registry.
 
 ## Sealing the sessions an instance left open
 
@@ -330,17 +390,22 @@ verifier observes it `sealed-after-interruption` (or, with `--ordinary-seals-onl
   interruption: <registry line>`.
 - **By the command**, `gateway seal-open --config <engine.json> (--session <id> | --all)`,
   `sealedVia: "command"`, each seal printed as its registry line. It connects as the run-time
-  login, as `serve` does, and takes the start lease as a start does: while an instance's lease is
-  live it is refused at once, exit 1, `start-lease-held` and `stop the gateway, then seal`; it
-  does not wait, whatever `startWaitSeconds` says. It renews the lease while it runs, every seal
+  login, as `serve` does, and takes the start lease as a start of its configuration's mode does:
+  in the one-instance mode, while an instance's lease is live, it is refused at once, exit 1,
+  `start-lease-held` and `stop the gateway, then seal`; it does not wait, whatever
+  `startWaitSeconds` says. It renews the lease while it runs, every seal
   it appends is fenced on it as an instance's writes are, and it releases the lease at its end.
   A second run finds nothing to seal: `seal-open: no session in the store is left open; nothing
   was sealed`, exit 0.
 
-One instance holds the start lease at a time, so every session open when the start or the
-command holds it was left by an instance that no longer serves. ADR-0035's question 11 (seal the
-sessions whose holder's lease has expired) asks no more than this until sessions are held by the
-instance that minted them (option C).
+Each session records the instance that holds it, and only a session whose holder's lease has
+expired is sealed (ADR-0035, question 11). Where instances serve beside one another, the start and
+the command pass over, with `--all`, every session a live instance holds, and refuse one named:
+`session <id> is held by another gateway instance serving this database, whose start lease is
+live; it is not sealed`. Before a session is read, the expired row of each instance that held one
+is held `FOR UPDATE`, so no write of that instance commits after the read, and the read sees who
+holds the session again in its own snapshot. In the one-instance mode no instance but the start
+or the command is live.
 
 What is read, and where. Nothing read is written anywhere, and no file is made. The scope
 identifiers recorded and the removal records are read in a transaction of no scope; each scope's
@@ -362,7 +427,8 @@ A receipt that names descriptor provenance, which this kind does not admit, is j
 session that is not whole is named with what verification finds of it and left open, and the rest
 are sealed (exit 1 for the command); a session that cannot be read stops the command, and the
 start, with nothing sealed. Seals are appended to the registry by its one serialised append, each
-refused where the registry holds a seal for its session already.
+judged in the append's transaction and refused where the registry holds a seal for its session
+already; a session another instance's start sealed since it was judged is passed over by `--all`.
 
 ## The migration command
 
@@ -378,15 +444,18 @@ the run-time role, before anything is applied. It prints, as canonical JSON, wha
 part of the connection string:
 
 ```json
-{"applied":[1,2,3,4,5],"migrations":"sha256:…","schemaVersion":5}
+{"applied":[1,2,3,4,5,6],"migrations":"sha256:…","schemaVersion":6}
 ```
 
 A second run applies nothing (`"applied":[]`). A schema newer than the binary's migrations is
 refused, by the command and by the start alike. `--timeout` bounds the run, connection included:
 1 to 3600 seconds, 300 without it. Exit 0 on success, 1 on a refusal or failure, 2 on a usage
 error. Run it with every instance stopped: migration 4 locks and rewrites `gateway.log_records`
-("The migration"), a running instance does not check the schema again, and an instance of a
-binary older than the schema refuses the store at its next start.
+("The migration"), and migration 6 makes `gateway.start_lease` again; a running instance does not
+check the schema again, and an instance of a binary older than the schema refuses the store at its
+next start. A store that holds a start lease (schema version 2 or later) is migrated only with
+every row of the lease held and none live: the command is refused, `start-lease-held`, while any
+instance's lease is live.
 
 ## The migration
 
@@ -416,17 +485,18 @@ start refuses a table it was not restored on.
 | Table | Privileges | Rows a transaction sees and writes |
 |---|---|---|
 | `gateway.blobs` (the retained artifacts) | SELECT, INSERT | its scope's |
-| `gateway.series` (the sessions) | SELECT, INSERT | its scope's |
+| `gateway.series` (the sessions; from schema version 6, the instance that made each) | SELECT, INSERT | its scope's |
+| `gateway.series_holders` (schema version 6: the instance that took up a session) | SELECT, INSERT | its scope's |
 | `gateway.entries` (the receipts) | SELECT, INSERT | its scope's |
 | `gateway.documents` (documents and leases) | SELECT, INSERT, UPDATE, DELETE | its scope's |
 | `gateway.logs`, `gateway.log_records` (the seal registry) | SELECT, INSERT | every one: the registry is one chain |
 | `gateway.secrets` | SELECT, INSERT | every one |
 | `gateway.schema_migrations` | SELECT | every one |
-| `gateway.start_lease` (one row: the instance that serves) | SELECT, INSERT, UPDATE | every one: it carries no scope |
+| `gateway.start_lease` (a row for each instance) | SELECT, INSERT, UPDATE | every one: it carries no scope |
 | `gateway.scope_identifiers` (schema version 3: the scope identifiers recorded) | SELECT, INSERT | no scope's: every row is of no scope |
 | `gateway.removal_records` (schema version 5: the removal records) | SELECT | no scope's: every row is of no scope |
 
-Append-only by privilege: nothing but a document and the start lease's row is changed once written,
+Append-only by privilege: nothing but a document and the start lease's rows are changed once written,
 and nothing but a document is removed; a scope identifier, once recorded, stays, and a removal
 record is the run-time login's to read alone. Rows leave otherwise only by `gateway store
 remove-scope`, as the migration login acting as the owner ("Removing one scope identifier's
@@ -506,6 +576,7 @@ besides.
 |---|---|---|
 | the payload (a retained artifact) | `gateway.blobs` | `scope:scope-a` |
 | the session | `gateway.series` | `scope:scope-a` |
+| an instance's take-up of the session (several instances) | `gateway.series_holders` | `scope:scope-a` |
 | each receipt, whose `scope` member is `scope-a` | `gateway.entries` | `scope:scope-a` |
 | the identifier itself | `gateway.scope_identifiers`, `identifier` | `none` |
 | a seal of the session | `gateway.log_records` | none: the registry carries no scope |
@@ -571,7 +642,8 @@ available with this kind yet").
 gateway store remove-scope (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> --seed <file> --scope <identifier> --by <label> [--timeout <seconds>]
 ```
 
-The command removes every row of one scope identifier, its sessions (`gateway.series`), receipts
+The command removes every row of one scope identifier, its sessions (`gateway.series`, and their
+take-ups, `gateway.series_holders`), receipts
 (`gateway.entries`), payloads (`gateway.blobs`) and documents, and its row of
 `gateway.scope_identifiers`, and records the removal, in one transaction
 ([ADR-0034](adr/0034-removing-one-scope-identifiers-records.md)). It takes the migration login's
@@ -583,10 +655,9 @@ which the records are signed.
   run-time login's privileges do not change, and it holds no DELETE on a table but
   `gateway.documents` (a test pins its grants before and after a removal).
 - **What it holds.** The migration's advisory lock, so no migration runs beside it, and the start
-  lease, taken as a start takes it: while an instance serves, the command is refused
-  (`start-lease-held: a gateway instance serves the database, … stop the gateway, then remove`)
-  and nothing changes; a start while it runs waits for it or is refused. The lease is expired
-  again before the commit. A schema not at the binary's version is refused (migrate first), and
+  lease's lock and every row of the lease, to its commit: while any instance's lease is live, the
+  command is refused (`start-lease-held: a gateway instance serves the database, … stop the
+  gateway, then remove`) and nothing changes; a start while it runs waits for it or is refused. A schema not at the binary's version is refused (migrate first), and
   so is a store with no registry yet.
 - **Row security stays forced.** The scope's rows are read and removed with `gateway.scope` set
   to the scope's form, and the scope named in every DELETE besides; each DELETE's count is held
