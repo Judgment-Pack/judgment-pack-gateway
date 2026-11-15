@@ -310,6 +310,25 @@ log is never left with a record over committed bytes or past a gap. The migratio
 checks the records already there: a store whose log is not one chain is refused it, with nothing
 changed, and the kind's start then refuses the store as behind its migrations.
 
+Migration 4 rewrites the table `gateway.log_records` (it adds a stored column) and builds an index
+on it, under a lock that admits no other reader or writer of the table until it commits. A serving
+instance's reads and appends of the registry wait for it, and are refused once they have waited
+the operation's bound. Run it with every instance stopped.
+
+When migration 4 is refused because the log is not one chain, the kind never wrote such a log (it
+appends at the log's end alone, under the lock), so something else changed `gateway.log_records`.
+These two queries, as the owner, name the records where the chain breaks: a record that starts
+where no record stops (a gap), and an offset where two records stop (an overlap).
+
+```sql
+SELECT log, start, stop FROM gateway.log_records r WHERE start <> 0
+  AND NOT EXISTS (SELECT 1 FROM gateway.log_records p WHERE p.log = r.log AND p.stop = r.start);
+SELECT log, stop, count(*) FROM gateway.log_records GROUP BY log, stop HAVING count(*) > 1;
+```
+
+Do not change the records by hand to make the chain: the registry is what a verifier holds every
+session's seal to. Find what wrote them, and restore the database from a copy made before.
+
 The kind's start refuses a database where any of this differs: a privilege more or less, by table
 or by column; a table, view, sequence, function, trigger, rule or type beside the store's; row
 security not enabled and forced on a scoped table, or a policy other than the scope's; a column,

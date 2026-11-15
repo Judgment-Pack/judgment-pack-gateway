@@ -16,8 +16,9 @@ package main
 //
 // A column's NOT NULL is read from the column (pg_attribute.attnotnull)
 // and not as a constraint: a server from PostgreSQL 18 also records it in
-// pg_constraint, of the type 'n', and those rows are left out, so the one
-// list holds on either.
+// pg_constraint, of the type 'n', and those rows are left out. The list is
+// tested on PostgreSQL 16 alone; a server that prints a definition
+// otherwise has its start refused, as a schema changed would.
 
 import (
 	"errors"
