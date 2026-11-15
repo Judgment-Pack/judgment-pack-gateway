@@ -36,9 +36,19 @@ type storageSpec struct {
 	environment string
 	connections int
 	operation   time.Duration
+	// startWait is how long a start waits for the start lease another
+	// instance holds (engineVersion 25, handover.go); zero refuses the start
+	// at once, as before the member.
+	startWait time.Duration
 }
 
-var storageMembers = map[string]bool{"kind": true, "connection": true, "connections": false, "operationSeconds": false}
+var storageMembers = map[string]bool{"kind": true, "connection": true, "connections": false, "operationSeconds": false, "startWaitSeconds": false}
+
+// maxStartWait bounds startWaitSeconds: past the longest drain of the
+// instance that hands over (operationSeconds at most, and the stop's grace)
+// and the takeover of a crashed one's lease, with room for an orchestrator
+// that stops the old instance late.
+const maxStartWait = 3600 * time.Second
 
 // storageEnvironmentName is the form of a variable's name the member takes:
 // what every shell and platform reads as one.
@@ -109,6 +119,18 @@ func parseStorage(v value, version string) (*storageSpec, error) {
 			return nil, fmt.Errorf("storage.operationSeconds %d is outside 1 to 600", n)
 		}
 		spec.operation = time.Duration(n) * time.Second
+	}
+	if n, present, err := integerMember(obj, "startWaitSeconds"); present {
+		if !versionAtLeast(version, "25") {
+			return nil, fmt.Errorf("storage.startWaitSeconds is a version-25 member; engineVersion %s has no storage.startWaitSeconds", version)
+		}
+		if err != nil {
+			return nil, errors.New("storage.startWaitSeconds must be an integer")
+		}
+		if n < 1 || n > int64(maxStartWait/time.Second) {
+			return nil, fmt.Errorf("storage.startWaitSeconds %d is outside 1 to %d", n, int64(maxStartWait/time.Second))
+		}
+		spec.startWait = time.Duration(n) * time.Second
 	}
 	return spec, nil
 }

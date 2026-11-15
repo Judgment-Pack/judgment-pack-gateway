@@ -219,7 +219,10 @@ the maintainer (below).
     row of `gateway.start_lease` with an expiry by the database's clock, renewed while the
     instance serves, removed on a clean stop, and held by every write transaction.* *Amended
     2026-11-13 (#430, ADR-0033, decision 3): the start's question whether the store holds a
-    session is asked of every scope identifier the kind records, one scope at a time.*
+    session is asked of every scope identifier the kind records, one scope at a time.* *Amended
+    2026-11-15 (#465): the lease stays one instance's, and ADR-0035 (option D) adds an orderly
+    hand-over under it -- a start that waits for the lease, and a stop that drains and then
+    releases it.*
 
 ### Consequences
 

@@ -64,14 +64,18 @@ import (
 // sandbox_at_start.go), and version 24 the optional `storage`, by which
 // the PostgreSQL storage kind keeps the store and the registry in place of
 // the store and registry paths (docs/adr/0032-a-configuration-names-its-storage-kind.md;
-// storage_kind.go):
+// storage_kind.go), and version 25 the storage member's optional
+// `startWaitSeconds`, by which a start on the PostgreSQL kind waits for an
+// instance serving the database to hand it over
+// (docs/adr/0035-several-instances-on-one-postgresql-database.md, option D;
+// handover.go):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "24"
+const engineVersion = "25"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.

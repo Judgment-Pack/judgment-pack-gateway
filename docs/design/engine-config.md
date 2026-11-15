@@ -62,7 +62,7 @@ entry is `{"file": …}`, and a live one's may carry `tokenStep` beside `file`. 
 absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"24"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"25"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
@@ -75,8 +75,9 @@ absolute.
   `credentials.live.tokenStep` ("A live operation's token step (engine version 21)", below), and
   version 22 a platform's `artifact` ("A platform that keeps no payload (engine version 22)",
   below), version 23 `measureSandboxAtStart` ("Measuring the sandbox at the start (engine
-  version 23)", below), and version 24 `storage` ("The storage kind (engine version 24)",
-  below). A
+  version 23)", below), version 24 `storage` ("The storage kind (engine version 24)",
+  below), and version 25 `storage`'s `startWaitSeconds` ("A start that waits for the start lease
+  (engine version 25)", below). A
   file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -1896,6 +1897,7 @@ kind keeps both, and `store` and `registry` are not given:
 | `connection` | exactly one of `file`, an absolute path held as the seed's file is, or `environment`, a variable's name matching `^[A-Z_][A-Z0-9_]{0,127}$` | both, neither, any other member |
 | `connections` | integer, 1 to 64; 4 without it | outside the range, not an integer |
 | `operationSeconds` | integer, 1 to 600; 30 without it | outside the range, not an integer |
+| `startWaitSeconds` | integer, 1 to 3600, from version 25; without it the start does not wait (below) | outside the range, not an integer, at version 24 |
 
 The connection string itself is never written in the file. A file is read, at most 4096 bytes, at
 the start and by `gateway export --config`; a variable is read at the start and removed from the
@@ -1917,6 +1919,42 @@ reading it otherwise.
 PostgreSQL kind, run `gateway store migrate`, raise `engineVersion` to `"24"`, replace `store` and
 `registry` by `storage`, and start; a gateway older than this one refuses a version-24 file by its
 version. Moving a store from one kind to the other is not supported: the kind starts empty.
+
+## A start that waits for the start lease (engine version 25)
+
+Version 25 adds `storage`'s optional `startWaitSeconds`, an integer from 1 to 3600
+([ADR-0035](../adr/0035-several-instances-on-one-postgresql-database.md), option D; the
+operator's page, [postgresql-store.md](../postgresql-store.md), "One instance per database", has
+the hand-over it serves):
+
+```json
+"storage": {
+  "kind": "postgresql",
+  "connection": { "file": "/run/secrets/gateway-store-url" },
+  "startWaitSeconds": 300
+}
+```
+
+With it, a start that finds another instance's start lease live does not exit: it listens on
+`listen` at once, answers every request `503` with `Retry-After` and one fixed body, and reads the
+lease every renewal interval, by the database's clock, holding no row and writing nothing. Once the
+lease is released or has expired it takes it, makes the start's checks again and serves on the
+listener it bound. Where `listen` is in use, as it is by the instance it takes over from on the
+same host, it waits without listening, nothing answering on its behalf, and binds `listen` once it
+holds the lease; any other failure to bind ends the start. When the wait runs out, the start is
+refused as before the member: exit 1, `start-lease-held`. Without the member the start is refused
+at once, as at version 24.
+
+The stop is the same at every version of the kind: a stop signal closes admission (each
+acquisition is answered `503` with `Retry-After`), lets what was admitted finish within
+`operationSeconds`, and then releases the lease.
+
+Refused by name, `engine configuration: …`: `storage.startWaitSeconds` in a file of version 24
+(`is a version-25 member`), outside 1 to 3600, or not an integer.
+
+**Upgrading.** A version 24 file loads unchanged under a gateway of this version. To have a start
+wait for the instance it replaces, raise `engineVersion` to `"25"` and add `startWaitSeconds` to
+`storage`; a gateway older than this one refuses a version-25 file by its version.
 
 ## Keyed actions (engine version 14 and later)
 
