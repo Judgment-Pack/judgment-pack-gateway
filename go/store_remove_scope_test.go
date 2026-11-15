@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func runStoreRemoveScope(args ...string) (int, string, string) {
@@ -233,6 +234,108 @@ func TestPostgresRemoveScopeRemovesOneScopesRowsAndRecordsIt(t *testing.T) {
 	if !slices.Equal(after["removal_records"], []string{"SELECT"}) {
 		t.Errorf("the run-time role holds %v on removal_records", after["removal_records"])
 	}
+}
+
+// Each DELETE is held to the count read before the records were signed: a
+// row of the scope that goes between the read and the DELETE -- here a
+// document a second connection removes, its row locked before the read and
+// its removal committed while the DELETE waits for it -- refuses the call,
+// and the transaction rolls back: every other row of the scope, its row of
+// the scope identifiers, and no record, as they were.
+func TestPostgresRemoveScopeRefusesRowsThatChangeWhileItRemoves(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	dir := tempDirAt(t, 0o700)
+	t.Setenv(envSourceHelper, "1")
+	helper := sourceSpec{argv: []string{os.Args[0]}, env: helperEnv, scope: "scope-a"}
+	_, started, server := scopedServiceStart(t, db, dir, map[string]sourceSpec{"screening-a": helper})
+	if code, got := post(t, server, "/acquire", `{"session":"s-a","source":"screening-a","scope":"scope-a","arguments":{"q":"acme"}}`); code != http.StatusOK {
+		t.Fatalf("acquire: %d %v", code, got)
+	}
+	if code, got := post(t, server, "/seal", `{"session":"s-a"}`); code != http.StatusOK {
+		t.Fatalf("seal: %d %v", code, got)
+	}
+	var said bytes.Buffer
+	started.stop(&said)
+	server.Close()
+
+	row := pgRowScope("scope-a")
+	other := db.runtimeConn(t)
+	if err := other.script("BEGIN"); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct {
+		query string
+		args  []any
+	}{
+		{`SELECT pg_catalog.set_config('gateway.scope', $1, true)`, []any{row}},
+		{`INSERT INTO gateway.documents (scope, name, revision, data) VALUES ($1, 'held', repeat('0', 32), '\x00'::bytea)`, []any{row}},
+	} {
+		if _, err := other.exec(step.query, step.args...); err != nil {
+			t.Fatalf("%s: %v", step.query, err)
+		}
+	}
+	if err := other.script("COMMIT"); err != nil {
+		t.Fatal(err)
+	}
+	c := db.runtimeConn(t)
+	scopeRows := func() int64 {
+		var n int64
+		pgInScopeOn(t, c, row, func() { n = pgCount(t, c, pgScopedRowCount) })
+		return n
+	}
+	before := scopeRows()
+
+	// the document's row locked, its removal not yet committed
+	if err := other.script("BEGIN"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.exec(`SELECT pg_catalog.set_config('gateway.scope', $1, true)`, row); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := other.exec(`DELETE FROM gateway.documents WHERE scope = $1 AND name = 'held'`, row); err != nil || done.tag != "DELETE 1" {
+		t.Fatalf("the second connection's DELETE: %v %v", done.tag, err)
+	}
+	type result struct {
+		code           int
+		stdout, stderr string
+	}
+	finished := make(chan result, 1)
+	connection := writeConnection(t, db.migrator)
+	go func() {
+		code, stdout, stderr := runStoreRemoveScope("--connection-file", connection, "--owner", db.roles.owner, "--runtime", db.roles.runtime,
+			"--seed", filepath.Join(dir, "gateway.seed"), "--scope", "scope-a", "--by", "operator-1", "--timeout", "60")
+		finished <- result{code, stdout, stderr}
+	}()
+	// the removal's DELETE waits for the second connection's transaction
+	waiting := `SELECT count(*)::int8 FROM pg_catalog.pg_locks w JOIN pg_catalog.pg_locks h
+		ON h.locktype = 'transactionid' AND h.transactionid = w.transactionid AND h.granted AND h.pid = pg_catalog.pg_backend_pid()
+		WHERE w.locktype = 'transactionid' AND NOT w.granted`
+	for deadline := time.Now().Add(30 * time.Second); pgCount(t, other, waiting) == 0; {
+		if time.Now().After(deadline) {
+			other.script("ROLLBACK")
+			t.Fatalf("the removal never waited for the locked row: %+v", <-finished)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := other.script("COMMIT"); err != nil {
+		t.Fatal(err)
+	}
+	got := <-finished
+	if got.code != 1 || got.stdout != "" || got.stderr != "store remove-scope: the scope's rows changed while they were removed; nothing was removed\n" {
+		t.Fatalf("the removal: %d %q %q", got.code, got.stdout, got.stderr)
+	}
+	if after := scopeRows(); after != before-1 {
+		t.Fatalf("the scope holds %d rows, and held %d with the document the second connection removed", after, before)
+	}
+	pgInScopeOn(t, c, pgNoScope, func() {
+		if n := pgCount(t, c, `SELECT count(*)::int8 FROM gateway.removal_records`); n != 0 {
+			t.Errorf("%d record(s) kept", n)
+		}
+		if got := pgColumn(t, c, `SELECT identifier FROM gateway.scope_identifiers`); !slices.Equal(got, []string{row}) {
+			t.Errorf("the scope identifiers recorded: %v", got)
+		}
+	})
 }
 
 // filesOutside are the paths not under prefix.
