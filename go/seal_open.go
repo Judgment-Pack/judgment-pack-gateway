@@ -28,7 +28,8 @@ package main
 // the store and the registry are read, and the seals appended, under it.
 // The same sealing is what the start does with the switch on
 // (sealOpenAtStart, --seal-open-at-start), under the lock the gateway holds,
-// before it serves.
+// before it serves. On the PostgreSQL kind the start lease stands in for the
+// lock, and the sessions are read from the kind (seal_open_pg.go).
 
 import (
 	"crypto/ed25519"
@@ -184,15 +185,27 @@ func sealOpenUnder(storeRoot, authority string, writer *registryWriter, data []b
 // names, is named there and left as it is, open, as it is with the switch
 // off. A session that cannot be read, or a seal that cannot be appended,
 // stops the start: what was left open is not known, or not all sealed.
+//
+// On the PostgreSQL kind (seal_open_pg.go) the start seals once it holds
+// the start lease and walked the registry the kind keeps, before it serves:
+// one instance holds the lease at a time, so each session found open then
+// was left by an instance that no longer serves.
 func sealOpenAtStart(service *gatewayService, stderr io.Writer, stamp func() string) error {
-	data, present, err := readRegistryBytes(service.regPath)
-	if err != nil {
-		return fmt.Errorf("registry: %w", err)
+	var sealed []*vObject
+	var refused []string
+	var err error
+	if kind, onKind := service.kind.(*pgKind); onKind {
+		sealed, refused, err = sealOpenOnKind(kind, service.authority, service.registry, "", sealedViaStart, stamp)
+	} else {
+		data, present, readErr := readRegistryBytes(service.regPath)
+		if readErr != nil {
+			return fmt.Errorf("registry: %w", readErr)
+		}
+		if !present {
+			return fmt.Errorf("the registry the engine made at its start is not there: %s", service.regPath)
+		}
+		sealed, refused, err = sealOpenUnder(service.storeRoot, service.authority, service.registry, data, "", sealedViaStart, stamp)
 	}
-	if !present {
-		return fmt.Errorf("the registry the engine made at its start is not there: %s", service.regPath)
-	}
-	sealed, refused, err := sealOpenUnder(service.storeRoot, service.authority, service.registry, data, "", sealedViaStart, stamp)
 	for _, record := range sealed {
 		fmt.Fprintf(stderr, "start: sealed after an interruption: %s\n", canon(record))
 	}
@@ -210,6 +223,10 @@ func sealOpenAtStart(service *gatewayService, stderr io.Writer, stamp func() str
 type sealOpenOptions struct {
 	store, registry, authority, session string
 	seedNames                           []string
+	// storage is the configuration's storage member where the PostgreSQL
+	// kind keeps the store and the registry (seal_open_pg.go), and nil
+	// where the filesystem kind keeps them at store and registry.
+	storage *storageSpec
 }
 
 func parseSealOpen(args []string) (sealOpenOptions, string) {
@@ -256,10 +273,9 @@ func parseSealOpen(args []string) (sealOpenOptions, string) {
 		if err != nil {
 			return sealOpenOptions{}, err.Error()
 		}
-		if err := refuseUnderPostgreSQL(cfg, "gateway seal-open, which reads the sessions on disk,"); err != nil {
-			return sealOpenOptions{}, err.Error()
-		}
-		o.store, o.registry, o.authority, o.seedNames = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}
+		// with the PostgreSQL kind, store and registry are "" and storage
+		// names the kind (seal_open_pg.go)
+		o.store, o.registry, o.authority, o.seedNames, o.storage = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}, cfg.storage
 		// the seed by the name it resolves to as well, as serve --config
 		// looks for a rotation under way beside both
 		if resolved, err := filepath.EvalSymlinks(cfg.seed); err == nil && resolved != cfg.seed {
@@ -292,7 +308,16 @@ func cmdSealOpenAt(args []string, stdout, stderr io.Writer, stamp func() string)
 		fmt.Fprintf(stderr, "seal-open: %s\n%s\n", msg, sealOpenUsage)
 		return 2
 	}
-	sealed, refused, unlocked, err := sealOpen(o, stamp)
+	var sealed []*vObject
+	var refused []string
+	var unlocked bool
+	var err error
+	if o.storage != nil {
+		// the start lease, not a lock, keeps a serving instance out
+		sealed, refused, err = sealOpenPostgres(o, stamp, stderr)
+	} else {
+		sealed, refused, unlocked, err = sealOpen(o, stamp)
+	}
 	for _, record := range sealed {
 		fmt.Fprintf(stdout, "%s\n", canon(record))
 	}

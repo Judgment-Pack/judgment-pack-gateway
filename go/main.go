@@ -741,6 +741,11 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 	if err == nil {
 		_, err = service.kindRegistryWalk()
 	}
+	if err == nil && cfg.sealOpenAtStart {
+		// the lease held and the registry walked, before anything is
+		// served (SPEC.md §3c; seal_open_pg.go)
+		err = sealOpenAtStart(service, r.said, nowStamp)
+	}
 	if err == nil {
 		// a lease lost while the start ran ends it here
 		select {

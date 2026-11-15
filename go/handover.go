@@ -31,8 +31,10 @@ package main
 //     at once: a lease it held then expires as a crashed instance's does.
 //
 // Sessions the stopped instance left open stay open: the next instance does
-// not continue them (SPEC.md §6), and on this kind no seal after an
-// interruption is made yet (ADR-0035, the third step).
+// not continue them (SPEC.md §6). They are sealed after the interruption
+// (SPEC.md §3c; ADR-0035, the third step; seal_open_pg.go) by the next start
+// where sealOpenAtStart is set, once it holds the lease and before it
+// serves, or by gateway seal-open --config while no instance serves.
 
 import (
 	"context"
