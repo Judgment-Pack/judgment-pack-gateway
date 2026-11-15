@@ -125,6 +125,55 @@ func TestTheStorageMemberRefusesWhatItDoesNotTake(t *testing.T) {
 	}
 }
 
+// A version-25 configuration's storage may wait for the start lease, from 1
+// to 3600 seconds; without the member the start waits for nothing. The
+// member is refused by name at an earlier version, and a gateway that reads
+// no version 25 refuses the file by its number, as this one refuses 26.
+func TestTheStorageMemberTakesAStartWaitFromVersion25(t *testing.T) {
+	file := abs(t, t.TempDir(), "connection")
+	byFile := `"connection":{"file":"` + file + `"}`
+	at := func(version, storage string) string {
+		return strings.Replace(storageConfig(t, storage, ``, ``), `"engineVersion":"24"`, `"engineVersion":"`+version+`"`, 1)
+	}
+	for _, tc := range []struct {
+		storage string
+		want    time.Duration
+	}{
+		{`{"kind":"postgresql",` + byFile + `}`, 0},
+		{`{"kind":"postgresql",` + byFile + `,"startWaitSeconds":1}`, time.Second},
+		{`{"kind":"postgresql",` + byFile + `,"startWaitSeconds":3600}`, time.Hour},
+	} {
+		cfg, err := parseEngineConfig([]byte(at("25", tc.storage)))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.storage, err)
+		}
+		if cfg.storage.startWait != tc.want {
+			t.Fatalf("%s: the wait is %s, want %s", tc.storage, cfg.storage.startWait, tc.want)
+		}
+	}
+	for _, tc := range []struct{ name, config, want string }{
+		{"version 24", at("24", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":60}`),
+			"engine configuration: storage.startWaitSeconds is a version-25 member; engineVersion 24 has no storage.startWaitSeconds"},
+		{"no wait", at("25", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":0}`),
+			"engine configuration: storage.startWaitSeconds 0 is outside 1 to 3600"},
+		{"too long a wait", at("25", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":3601}`),
+			"engine configuration: storage.startWaitSeconds 3601 is outside 1 to 3600"},
+		{"a wait past any duration", at("25", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":9007199254740991}`),
+			"engine configuration: storage.startWaitSeconds 9007199254740991 is outside 1 to 3600"},
+		{"a string", at("25", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":"60"}`),
+			"engine configuration: storage.startWaitSeconds must be an integer"},
+		{"version 26", at("26", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":60}`),
+			`engine configuration: unsupported engineVersion "26" (latest "25")`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseEngineConfig([]byte(tc.config))
+			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // What reads the filesystem store directly is refused by name at the
 // configuration's load while the PostgreSQL kind keeps the store; each is
 // taken without storage, so the refusal is the kind's.

@@ -296,6 +296,9 @@ type gatewayService struct {
 	// is drained when nothing admitted is in flight. Its state changes
 	// under mu, which admission holds.
 	gate admissionGate
+	// stopping, once set under mu, is the instance's stop (handover.go):
+	// the gate is closed for it and is not reopened.
+	stopping *gateStopped
 	// reports is where the gate's transitions are said, on the signer's
 	// stderr unless a test gives it another writer (reportsOut)
 	reports    *diagnosticStream
@@ -570,10 +573,14 @@ func (g *gatewayService) provenanceKeys() ([]reachedKey, error) {
 // bindLifetime makes the service's lifetime end when parent ends, and gives
 // the service its own way to end it: serveOn cancels it on every exit path,
 // so a source in flight is killed whichever way serving stopped.
-// gateReports says the signer's gate's transitions on its reports.
+// gateReports says the signer's gate's transitions on its reports; its
+// methods are called under mu.
 func (g *gatewayService) gateReports() gateReports {
 	return gateReports{reports: g.reports, who: "serve", outstanding: "acquisitions and actions admitted and not finished",
 		drainedWord: func(*gateClosure) string {
+			if g.stopping != nil {
+				return "nothing admitted is in flight, and nothing will be admitted: the instance is stopping"
+			}
 			return "nothing admitted is in flight, and nothing will be admitted until admission reopens"
 		}}
 }
@@ -590,10 +597,37 @@ func (g *gatewayService) closeAdmission() <-chan struct{} {
 	return c.done
 }
 
-// openAdmission reopens the signer's gate.
+// closedRefusal is a closed gate's refusal, under mu: for maintenance, or,
+// once the instance is stopping, for its stop.
+func (g *gatewayService) closedRefusal() error {
+	if g.stopping != nil {
+		return unavailable{*g.stopping}
+	}
+	return unavailable{errAdmissionClosed}
+}
+
+// closeForStop closes the signer's gate for the instance's stop
+// (handover.go): from here nothing is admitted, the refusal says the
+// instance is stopping, and the gate is not reopened. It returns the
+// channel that closes once nothing admitted is in flight, and how many
+// things were.
+func (g *gatewayService) closeForStop(retryAfter int) (<-chan struct{}, int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.stopping = &gateStopped{retryAfter: retryAfter}
+	c, fresh := g.gate.closeLocked()
+	g.gateReports().closed(c, fresh, g.gate.pending)
+	return c.done, g.gate.pending
+}
+
+// openAdmission reopens the signer's gate, unless the instance is stopping.
 func (g *gatewayService) openAdmission() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.stopping != nil {
+		g.reports.controlf("serve: admission stays closed: this instance is stopping")
+		return
+	}
 	if c, fresh := g.gate.openLocked(); fresh {
 		g.gateReports().opened(c)
 	}
@@ -1893,7 +1927,7 @@ func (g *gatewayService) admit(sessionID, scope string) error {
 	// the gate first, before anything is made: a closed signer admits
 	// nothing, whatever the request carries
 	if g.gate.closed {
-		return unavailable{errAdmissionClosed}
+		return g.closedRefusal()
 	}
 	state, seen := g.sessions[sessionID]
 	if !seen {
@@ -2074,8 +2108,13 @@ func (g *gatewayService) handler() http.Handler {
 		}
 		var down unavailable
 		if errors.As(err, &down) {
-			// No Retry-After: a closure for maintenance lasts until its
-			// operator reopens admission, which the gateway cannot know.
+			// No Retry-After for maintenance: a closure for it lasts until
+			// its operator reopens admission, which the gateway cannot know.
+			// A closure for the instance's stop ends with the stop, and the
+			// instance that takes over serves the call sent again.
+			if stopped, ok := down.error.(gateStopped); ok {
+				w.Header().Set("Retry-After", strconv.Itoa(stopped.retryAfter))
+			}
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
 			return
 		}
@@ -2608,8 +2647,15 @@ var openRoutes = map[string]bool{"/registry": true, "/publickey": true}
 // (boundToLoopback) is served under the limits above.
 func (g *gatewayService) httpServer(addr net.Addr) *http.Server {
 	g.listening = addr
+	return listenerServer(addr, g.handler())
+}
+
+// listenerServer is a server of handler for a listener bound at addr: the
+// service's, and the waiting answer's of a start that waits for the start
+// lease (handover.go).
+func listenerServer(addr net.Addr, handler http.Handler) *http.Server {
 	server := &http.Server{
-		Handler:           g.handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 	}

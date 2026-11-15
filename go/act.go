@@ -833,7 +833,7 @@ func (g *gatewayService) admitAction(sessionID string) error {
 	// the gate first, before any directory is made: a closed signer admits
 	// no action
 	if g.gate.closed {
-		return unavailable{errAdmissionClosed}
+		return g.closedRefusal()
 	}
 	state, seen := g.sessions[sessionID]
 	if !seen {

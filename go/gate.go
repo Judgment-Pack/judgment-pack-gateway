@@ -21,6 +21,17 @@ var errAdmissionClosed = errors.New("admission is closed for maintenance; nothin
 // signer's HTTP surface answers 503.
 type unavailable struct{ error }
 
+// gateStopped is the refusal of a gate closed for the instance's stop
+// (handover.go): the call is sent again, and the instance that takes the
+// database over serves it; retryAfter is the seconds the HTTP answer's
+// Retry-After says, the lease's renewal interval, within which a waiting
+// instance takes a released lease.
+type gateStopped struct{ retryAfter int }
+
+func (gateStopped) Error() string {
+	return "this gateway instance is stopping and admits nothing more; nothing was admitted; send the call again, and the instance that takes over serves it"
+}
+
 // admissionGate is a process's maintenance gate. Its state changes under
 // the owner's lock, which the owner also holds when it admits and when an
 // admitted thing finishes, so no admission and no closure interleave:

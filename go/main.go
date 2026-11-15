@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -530,21 +531,71 @@ func cmdServeEngine(args []string) int {
 // a loss it reports stops the service, which then exits 1 (the start
 // lease's renewal, store_pg_lease.go).
 func serveEngineService(service *gatewayService, cfg engineConfig, delegation *delegationService, keep func(context.Context, func(error))) int {
+	stopped, restore := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer restore()
+	return serveUntilStopped(service, cfg, delegation, keep, serveStop{stopped: stopped, said: os.Stderr})
+}
+
+// serveStop is how a service serveUntilStopped serves stops.
+type serveStop struct {
+	// stopped ends at the stop signal.
+	stopped context.Context
+	// drain, where it is not zero, is the stop's drain (handover.go): the
+	// gate closes for the stop, what it admitted finishes within drain, and
+	// only then does the service's lifetime end. Zero ends it at once,
+	// which kills every source in flight.
+	drain time.Duration
+	// retryAfter is the seconds a call refused during the drain is told to
+	// wait; restore, run as the drain begins, gives the stop signals back
+	// their default, so that a second one ends the process at once.
+	retryAfter int
+	restore    func()
+	// listener is bound already (runOnKind), or nil: the service binds
+	// listen.
+	listener net.Listener
+	said     io.Writer
+}
+
+// serveUntilStopped serves the service until s says it stops, a loss keep
+// reports stops it (exit 1), or serving fails (exit 1). keep, where it is
+// not nil, renews the start lease until serving has ended: through the
+// drain and through the requests serveOn waits for.
+func serveUntilStopped(service *gatewayService, cfg engineConfig, delegation *delegationService, keep func(context.Context, func(error)), s serveStop) int {
 	service.attachDelegation(delegation)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	service.bindLifetime(ctx)
+	if s.drain > 0 {
+		service.bindLifetime(context.Background())
+		go service.drainOnStop(s)
+	} else {
+		service.bindLifetime(s.stopped)
+	}
+	defer service.cancel()
 	// the signer's admission gate, for the rotation contract: SIGUSR1
 	// closes it, SIGUSR2 reopens it
-	installOperatorControls(ctx, service)
+	installOperatorControls(service.ctx, service)
 	lost := make(chan error, 1)
 	if keep != nil {
-		go keep(service.ctx, func(err error) {
-			lost <- err
-			service.cancel()
-		})
+		// ended, and waited for, before the caller releases the lease: no
+		// renewal runs after the release
+		kept, endKeep := context.WithCancel(context.Background())
+		keeping := make(chan struct{})
+		go func() {
+			defer close(keeping)
+			keep(kept, func(err error) {
+				lost <- err
+				service.cancel()
+			})
+		}()
+		defer func() {
+			endKeep()
+			<-keeping
+		}()
 	}
-	err := service.listenAndServe(cfg.listen)
+	var err error
+	if s.listener != nil {
+		err = service.announceAndServe(s.listener)
+	} else {
+		err = service.listenAndServe(cfg.listen)
+	}
 	select {
 	case why := <-lost:
 		fmt.Fprintln(os.Stderr, "serve:", why)
@@ -580,15 +631,15 @@ func rotationPendingAtStart(cfg engineConfig, seedNames []string) error {
 
 // serveEngineOnKind is the rest of serve --config where storage names the
 // PostgreSQL kind (storage_kind.go), served until a signal stops it or the
-// start lease is lost; a clean stop releases the lease.
+// start lease is lost; a stop drains and releases the lease, and a start
+// configured to wait for the lease waits (handover.go).
 func serveEngineOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, identity *identityConfig, delegation *delegationService) int {
-	started, err := startEngineOnKind(cfg, seed, sources, identity, os.Stderr)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "start:", err)
-		return 1
-	}
-	defer started.stop(os.Stderr)
-	return serveEngineService(started.service, cfg, delegation, started.lease.keep)
+	stopped, restore := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer restore()
+	return runOnKind(cfg, seed, sources, identity, delegation, kindRun{
+		period: pgStartLeasePeriod, every: pgStartLeaseRenewal,
+		stopped: stopped, restore: restore, bind: listenForConfig, said: os.Stderr,
+	})
 }
 
 // kindStart is a start on the PostgreSQL kind: the kind, the lease this
@@ -608,14 +659,22 @@ func (s *kindStart) stop(said io.Writer) {
 	s.kind.close()
 }
 
-// startEngineOnKind opens the kind the configuration names, held to its
-// conditions; takes the start lease, refused while another instance's is
-// live (errStartLeaseHeld), before anything is written; builds the service
-// over the kind; and walks the registry it keeps as holdEngineRegistry
-// walks the file. What the start makes in the kind is the lease's row and
-// the registry, empty, where it is not there and no session is held
-// (newRegistryWriterOn).
+// startEngineOnKind is startOnKind with the lease's periods and no stop
+// signal.
 func startEngineOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, identity *identityConfig, said io.Writer) (*kindStart, error) {
+	return startOnKind(cfg, seed, sources, identity, kindRun{period: pgStartLeasePeriod, every: pgStartLeaseRenewal, stopped: context.Background(), said: said})
+}
+
+// startOnKind opens the kind the configuration names, held to its
+// conditions; takes the start lease, refused while another instance's is
+// live (errStartLeaseHeld), or, where storage.startWaitSeconds is set,
+// once that instance released it or it expired (waitForStartLease), before
+// anything is written; holds the kind to its conditions again after a wait;
+// builds the service over the kind; and walks the registry it keeps as
+// holdEngineRegistry walks the file. What the start makes in the kind is
+// the lease's row and the registry, empty, where it is not there and no
+// session is held (newRegistryWriterOn).
+func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, identity *identityConfig, r kindRun) (*kindStart, error) {
 	kind, err := openStorageKind(cfg.storage)
 	if err != nil {
 		return nil, err
@@ -625,23 +684,30 @@ func startEngineOnKind(cfg engineConfig, seed []byte, sources map[string]sourceS
 		kind.close()
 		return nil, err
 	}
-	lease, err := kind.takeStartLease(holder, pgStartLeasePeriod, pgStartLeaseRenewal)
+	lease, waited, err := kind.waitForStartLease(r.stopped, holder, r.period, r.every, cfg.storage.startWait, r.said)
 	if err != nil {
 		kind.close()
 		return nil, err
 	}
 	started := &kindStart{kind: kind, lease: lease}
-	service, err := buildServiceOn(kind, seed, cfg.authority, engineServeOptions(cfg, sources, identity))
+	// the database may have been migrated while this start waited
+	if waited {
+		err = kind.holdsItsConditions(pgShippedMigrations())
+	}
+	var service *gatewayService
+	if err == nil {
+		service, err = buildServiceOn(kind, seed, cfg.authority, engineServeOptions(cfg, sources, identity))
+	}
 	if err == nil {
 		_, err = service.kindRegistryWalk()
 	}
 	if err != nil {
-		started.stop(said)
+		started.stop(r.said)
 		return nil, err
 	}
 	started.service = service
-	fmt.Fprintln(said, "start:", storageStartLine(cfg.storage))
-	fmt.Fprintf(said, "start: gateway instance %s holds the start lease, which runs %s from each renewal by the database's clock and is renewed every %s\n", holder, pgStartLeasePeriod, pgStartLeaseRenewal)
+	fmt.Fprintln(r.said, "start:", storageStartLine(cfg.storage))
+	fmt.Fprintf(r.said, "start: gateway instance %s holds the start lease, which runs %s from each renewal by the database's clock and is renewed every %s\n", holder, r.period, r.every)
 	return started, nil
 }
 
