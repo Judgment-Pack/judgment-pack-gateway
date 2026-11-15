@@ -464,9 +464,10 @@ The kind's tests take a server from the environment:
 - `GATEWAY_TEST_POSTGRES_REQUIRED`: when set, a test that would skip fails instead. The CI job
   `postgresql` sets it and runs the tests twice against the pinned image in a service container,
   with synthetic credentials: as a superuser, failing if any test skipped, and as a login that may
-  make roles and databases and nothing more (CREATEROLE, CREATEDB). Three cases need a superuser to
-  set up -- BYPASSRLS on the run-time login, for the migration and for the start, and a setting of
-  `gateway.scope` stored on the run-time role -- and the second run skips those three, by one
+  make roles and databases and nothing more (CREATEROLE, CREATEDB). Four cases need a superuser to
+  set up -- BYPASSRLS on the run-time login, for the migration and for the start, a setting of
+  `gateway.scope` stored on the run-time role, and an index of the store's marked not valid -- and
+  the second run skips those four, by one
   message, and fails on any other skip (ADR-0031, "Consequences").
 
 Locally, one throwaway container from the same image, on loopback, kept for every run and removed
