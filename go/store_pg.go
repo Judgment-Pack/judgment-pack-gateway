@@ -128,6 +128,19 @@ func (p *pgPool) release(c *pgConn) {
 	p.mu.Unlock()
 }
 
+// dropIdle closes the idle connections, so the next operations open fresh
+// ones: after a start's wait for the lease, during which the server may
+// have ended a connection that sat idle (handover.go).
+func (p *pgPool) dropIdle() {
+	p.mu.Lock()
+	idle := p.idle
+	p.idle = nil
+	p.mu.Unlock()
+	for _, c := range idle {
+		c.close()
+	}
+}
+
 func (p *pgPool) close() {
 	p.mu.Lock()
 	p.done = true

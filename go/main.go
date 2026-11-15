@@ -690,8 +690,11 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 		return nil, err
 	}
 	started := &kindStart{kind: kind, lease: lease}
-	// the database may have been migrated while this start waited
+	// the database may have been migrated while this start waited, and a
+	// connection the pool kept idle through the wait may have been ended:
+	// the checks, and what follows, open fresh ones
 	if waited {
+		kind.pool.dropIdle()
 		err = kind.holdsItsConditions(pgShippedMigrations())
 	}
 	var service *gatewayService

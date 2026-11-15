@@ -394,6 +394,35 @@ func TestThePostgresWaitingInstanceTakesACrashedHoldersLeaseOnceItExpires(t *tes
 	}
 }
 
+// The connections the pool kept idle through the wait, which the server
+// may end meanwhile, are not what the start's checks after the wait use:
+// they open fresh ones, and the start serves.
+func TestThePostgresStartAfterAWaitChecksOnFreshConnections(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	cfg := pgHandoverConfig(t, db, "60")
+	period := 6 * time.Second
+	pgTakeForTest(t, db.open(t, nil), period, time.Second)
+	second := startHandoverInstance(t, cfg, map[string]sourceSpec{}, pgStartLeasePeriod, 500*time.Millisecond)
+	handoverUntil(t, 10*time.Second, func() handoverAnswer { return handoverAnswer{body: second.said.String()} },
+		func(a handoverAnswer) bool { return strings.Contains(a.body, "start: waiting up to") }, "the instance waits")
+	// end the sessions that sat idle from before the wait: the pool's, and
+	// the crashed holder's; a poll's own connection lives for one poll
+	time.Sleep(1500 * time.Millisecond)
+	rows := pgTestQuery(t, db.runtime, "SELECT count(pg_catalog.pg_terminate_backend(pid)) FROM pg_catalog.pg_stat_activity "+
+		"WHERE datname = pg_catalog.current_database() AND usename = current_user AND pid <> pg_catalog.pg_backend_pid() "+
+		"AND state = 'idle' AND backend_start < pg_catalog.clock_timestamp() - interval '1 second'")
+	if n, _ := pgInt8(rows.rows[0][0]); n < 1 {
+		t.Fatalf("no idle session was ended: %d", n)
+	}
+	handoverUntil(t, period+10*time.Second, func() handoverAnswer { return handoverAsk(http.MethodGet, second.url+"/publickey", "") },
+		func(a handoverAnswer) bool { return a.err == nil && a.code == http.StatusOK }, "the instance serves after the wait")
+	second.stop()
+	if code := second.wait(t, 60*time.Second); code != 0 {
+		t.Fatalf("the instance's stop exits %d: %s", code, second.said.String())
+	}
+}
+
 // A wait that runs out is the start refused as one that does not wait is:
 // exit 1, start-lease-held, naming the holder. It took nothing and wrote
 // nothing, and the listener it answered on is closed.
