@@ -305,7 +305,13 @@ the schema, so leave them to the gateway in this database.
 
 The kind's start refuses a database where any of this differs: a privilege more or less, by table
 or by column; a table, view, sequence, function, trigger, rule or type beside the store's; row
-security not enabled and forced on a scoped table, or a policy other than the scope's.
+security not enabled and forced on a scoped table, or a policy other than the scope's; a column,
+constraint or index of the store's tables other than the migrations made it, or one beside them.
+The start reads each column (its type, collation, NOT NULL, default or generation), constraint and
+index as the server prints its definition, and compares it with the list the binary carries for
+its schema (`go/store_pg_definitions.go`), which the CI job holds to what the pinned server prints
+for a database the migrations made. A table's storage parameters, and whether it is logged, are
+not compared.
 
 What every role may do in a database it connects to, the run-time login may do too, and the
 gateway does none of it: create a large object, which stays in the database until it is unlinked;

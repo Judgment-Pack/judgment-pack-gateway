@@ -589,7 +589,9 @@ const pgScopePolicy = `(scope = current_setting('gateway.scope'::text, true))`
 // tables and their indexes alone, with no view, sequence, function,
 // trigger or rule beside them; row security enabled and forced on every
 // table with a column scope, and on each of those one policy, the scope's,
-// for every command and every role; and on no other table any policy.
+// for every command and every role; on no other table any policy; and
+// every column, constraint and index of the tables as the migrations made
+// it, with none beside them (pgDefinitions).
 func pgSchemaHolds(tx pgTx) error {
 	objects, err := tx.exec(`SELECT c.relname, c.relkind::text,
 		EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'scope' AND NOT a.attisdropped),
@@ -661,7 +663,11 @@ func pgSchemaHolds(tx pgTx) error {
 			return fmt.Errorf("store: gateway.%s holds no scope policy", table)
 		}
 	}
-	return nil
+	definitions, err := pgDefinitionsOf(tx)
+	if err != nil {
+		return err
+	}
+	return pgDefinitionsHold(definitions)
 }
 
 func pgAppliedMigrationsTx(tx pgTx) ([]pgRecord, error) {

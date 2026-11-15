@@ -182,6 +182,10 @@ the maintainer (below).
    indexes alone, with no view, sequence, function, trigger, rule or type beside them; row
    security enabled and forced on every table with a scope column, and on each exactly the
    scope's policy.
+   *Amended 2026-11-15 (#440): and every column, constraint and index of the store's tables as
+   the migrations made it, with none beside them: each as the server prints its definition,
+   compared with a list the binary carries for its schema (`go/store_pg_definitions.go`), which a
+   test holds to what the CI job's pinned server prints for a freshly migrated database.*
 
 9. **Time.** Receipt and seal times are the gateway's, never the database's. A lease's expiry is
    another clock and is decided apart: in this change it is the clock the gateway gives the kind

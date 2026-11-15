@@ -749,6 +749,33 @@ func TestThePostgresKindRefusesToStartOutsideItsConditions(t *testing.T) {
 			db.asAdmin(t, "ALTER ROLE "+db.roles.runtime+" CREATEROLE")
 			return db.runtime
 		}, "CREATEROLE"},
+		// the schema's definitions (#440): a key or a check dropped or
+		// loosened, a column changed, an index or a column beside the store's
+		{"a primary key dropped", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.log_records DROP CONSTRAINT log_records_pkey")
+			return db.runtime
+		}, "gateway.log_records holds no constraint log_records_pkey"},
+		{"a check dropped", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.blobs DROP CONSTRAINT blobs_scope_check")
+			return db.runtime
+		}, "gateway.blobs holds no constraint blobs_scope_check"},
+		{"a check made again, looser, under its name", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.documents DROP CONSTRAINT documents_revision_check",
+				"ALTER TABLE gateway.documents ADD CONSTRAINT documents_revision_check CHECK (revision <> '')")
+			return db.runtime
+		}, "the constraint documents_revision_check of gateway.documents is not the one the store's migrations make"},
+		{"a column's NOT NULL dropped", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.entries ALTER COLUMN data DROP NOT NULL")
+			return db.runtime
+		}, "the column data of gateway.entries is not the one the store's migrations make"},
+		{"an index beside the store's", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "CREATE INDEX another ON gateway.entries (name)")
+			return db.runtime
+		}, "gateway.entries holds the index another, which the store's migrations do not make"},
+		{"a column beside the store's", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.secrets ADD COLUMN another text")
+			return db.runtime
+		}, "gateway.secrets holds the column another, which the store's migrations do not make"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -797,6 +824,98 @@ func TestTheStartAsksOfMAINTAINFromPostgreSQL17(t *testing.T) {
 	}
 	if contains(pgTablePrivileges, "MAINTAIN") {
 		t.Fatal("the privilege list a server before PostgreSQL 17 is asked of names MAINTAIN")
+	}
+}
+
+// pgDefinitionOrder orders definitions as pgDefinitions lists them: by
+// table, kind and name.
+func pgDefinitionOrder(a, b pgDefinition) int {
+	return strings.Compare(a.table+"\x00"+a.kind+"\x00"+a.name, b.table+"\x00"+b.kind+"\x00"+b.name)
+}
+
+// The start holds the schema's columns, constraints and indexes to the list
+// the binary carries (#440), with no server: the list itself holds; one of
+// its definitions missing, printed otherwise or read twice, or one beside
+// them, is refused by name, and the refusal quotes the binary's definition,
+// never the one read. The list holds a column of each of the store's
+// tables and names no other table, in order, each once.
+func TestTheStartHoldsTheSchemaToTheDefinitionsItCarries(t *testing.T) {
+	if err := pgDefinitionsHold(slices.Clone(pgDefinitions)); err != nil {
+		t.Fatalf("the list the binary carries: %v", err)
+	}
+	if !slices.IsSortedFunc(pgDefinitions, pgDefinitionOrder) || len(slices.CompactFunc(slices.Clone(pgDefinitions), func(a, b pgDefinition) bool { return pgDefinitionOrder(a, b) == 0 })) != len(pgDefinitions) {
+		t.Fatal("the list the binary carries is not in the order of its table, kind and name, each once")
+	}
+	columns := map[string]bool{}
+	for _, d := range pgDefinitions {
+		if !contains(pgTables, d.table) || !contains([]string{"column", "constraint", "index"}, d.kind) || d.name == "" || d.definition == "" {
+			t.Fatalf("the list the binary carries holds %+v", d)
+		}
+		columns[d.table] = columns[d.table] || d.kind == "column"
+	}
+	for _, table := range pgTables {
+		if !columns[table] {
+			t.Fatalf("the list the binary carries holds no column of gateway.%s", table)
+		}
+	}
+	at := func(kind, name string) int {
+		i := slices.IndexFunc(pgDefinitions, func(d pgDefinition) bool {
+			return d.kind == kind && d.name == name && (kind != "column" || d.table == "entries")
+		})
+		if i < 0 {
+			t.Fatalf("the list the binary carries holds no %s %s", kind, name)
+		}
+		return i
+	}
+	pkey, data := at("constraint", "log_records_pkey"), at("column", "data")
+	changed := slices.Clone(pgDefinitions)
+	changed[data].definition = "bytea read-from-the-server"
+	for _, tc := range []struct {
+		name string
+		held []pgDefinition
+		want string
+	}{
+		{"a primary key dropped", slices.Delete(slices.Clone(pgDefinitions), pkey, pkey+1), "gateway.log_records holds no constraint log_records_pkey; the store's migrations make it as PRIMARY KEY (log, start)"},
+		{"a column printed otherwise", changed, "the column data of gateway.entries is not the one the store's migrations make, bytea NOT NULL"},
+		{"an index beside them", append(slices.Clone(pgDefinitions), pgDefinition{"entries", "index", "another", "CREATE INDEX another ON gateway.entries USING btree (name)"}), "gateway.entries holds the index another, which the store's migrations do not make"},
+		{"one read twice", append(slices.Clone(pgDefinitions), pgDefinitions[pkey]), "gateway.log_records holds the constraint log_records_pkey twice"},
+		{"none read", nil, "holds no column data"},
+	} {
+		err := pgDefinitionsHold(tc.held)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: the start was refused as %v, want %q", tc.name, err, tc.want)
+		}
+		if strings.Contains(err.Error(), "read-from-the-server") {
+			t.Fatalf("%s: the refusal quotes the definition read: %v", tc.name, err)
+		}
+	}
+}
+
+// The list of definitions the binary carries is what the server prints for
+// a database the migrations made, read as the start reads it: as the
+// run-time login, under the search path pg_catalog alone. Where the two
+// differ, the test prints the server's list in the list's own form.
+func TestThePostgresSchemaDefinitionsAreTheOnesTheBinaryCarries(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	c := db.runtimeConn(t)
+	if _, err := c.exec(`SELECT pg_catalog.set_config('search_path', 'pg_catalog', false)`); err != nil {
+		t.Fatal(err)
+	}
+	held, err := pgDefinitionsOf(pgTx{c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.SortFunc(held, pgDefinitionOrder)
+	if !slices.Equal(held, pgDefinitions) {
+		var server strings.Builder
+		for _, d := range held {
+			fmt.Fprintf(&server, "\t{%q, %q, %q, `%s`},\n", d.table, d.kind, d.name, d.definition)
+		}
+		t.Fatalf("the server prints the schema's definitions otherwise than the list the binary carries (pgDefinitions); the server prints:\n%s", server.String())
+	}
+	if err := pgDefinitionsHold(held); err != nil {
+		t.Fatal(err)
 	}
 }
 
