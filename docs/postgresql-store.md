@@ -469,6 +469,11 @@ which the records are signed.
   the export's `store/artifact-removals.jsonl`, and the export verifies, each removed sealed
   session observed `session-removed`. The command prints each record kept, as its line, and on
   stderr what it removed, by counts.
+- **An export beside it.** The command takes no lock an export holds. An export reads the
+  records in its cut's snapshot, with the rows, and reads each receipt's and payload's bytes
+  afterwards: one the cut listed and the read finds gone was removed after the snapshot, and the
+  export stops with an error and exit status 1, before its manifest, so nothing is left as a
+  finished export. Export again once the removal is done.
 - **All or nothing.** The rows, the identifier's row and the records commit together or not at
   all. A second run finds nothing of the scope and keeps no record; a scope identifier recorded
   with no row is removed from the record, and no record is kept.
