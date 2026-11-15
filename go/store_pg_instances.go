@@ -165,8 +165,11 @@ func (k *pgKind) claimSeries(name, scope string) (seriesClaim, error) {
 				claim = seriesLeftOpen
 				return true, nil
 			}
-			if again.turn != h.turn {
-				// taken up meanwhile, by an instance that holds it now
+			if again.turn != h.turn || again.live {
+				// taken up meanwhile, by an instance that holds it now; or
+				// its holder's row is live again (a renewal that committed
+				// between the read and the settle): never taken up from a
+				// live holder
 				claim = seriesHeldElsewhere
 				return true, nil
 			}

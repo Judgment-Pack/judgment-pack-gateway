@@ -409,6 +409,44 @@ func TestThePostgresTakeoverIsRefusedAtOnceWhileAWriteHoldsTheRow(t *testing.T) 
 	}
 }
 
+// A renewal sent while the row is live, that waits for the row held FOR
+// UPDATE (as a settle holds it, pgStartLeaseSettle) until past the row's
+// expiry, finds the lease lost once the hold ends: the clock is read once
+// the row is held, so an expired row never lives again after another
+// instance acted on its expiry; and the instance's writes stay refused.
+func TestThePostgresRenewalThatWaitedPastTheExpiryFindsTheLeaseLost(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	first := db.open(t, nil)
+	period := 1500 * time.Millisecond
+	// a renewal is bounded by half the interval: 4 s, past the hold
+	lease := pgTakeForTest(t, first, period, 8*time.Second)
+	taken := time.Now()
+	end := pgRawHold(t, db, "UPDATE")
+	renewed := make(chan error, 1)
+	go func() { renewed <- lease.renew() }()
+	time.Sleep(time.Until(taken.Add(period + 500*time.Millisecond)))
+	select {
+	case err := <-renewed:
+		t.Fatalf("the renewal did not wait for the row held FOR UPDATE: %v", err)
+	default:
+	}
+	end()
+	if err := <-renewed; !errors.Is(err, errStartLeaseLost) {
+		t.Fatalf("a renewal that waited for the row past its expiry: %v, want the lease lost", err)
+	}
+	rows, err := db.runtimeConn(t).exec(pgStartLeaseLiveCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live, _ := pgInt8(rows.rows[0][0]); live != 0 {
+		t.Fatalf("%d rows of the lease are live after the expiry, want none", live)
+	}
+	if err := pgWriteOne(first, "revived"); !errors.Is(err, errStartLeaseLost) {
+		t.Fatalf("a write of the instance whose row expired: %v", err)
+	}
+}
+
 // pgCutConn is a connection whose path goes away once a statement on the
 // lease's table was sent: what it sends from then on reaches nothing, and
 // its close reaches nothing either, so the server keeps the session.

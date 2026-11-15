@@ -41,7 +41,9 @@ package main
 // row FOR UPDATE (pgStartLeaseSettle), which waits for every write of that
 // instance that holds it: so no write of an instance commits after another
 // instance acted on its row's expiry. A renewal changes only the times and
-// waits for none of the instance's writes.
+// waits for none of the instance's writes; it holds the row before it reads
+// the clock, as the fence does, so a renewal that waited for a settle's hold
+// past the row's expiry fails, and an expired row never lives again.
 //
 // The take holds no row when it is refused: it reads the rows first, and
 // takes one only where it expired. A refused start leaves nothing the
@@ -132,9 +134,18 @@ const (
 	pgStartLeaseTakeNew = `INSERT INTO gateway.start_lease (holder, several, key_id, authority, renewed, expires)
 		SELECT $1, $3, $4, $5, n.now, n.now + $2::interval FROM (SELECT pg_catalog.clock_timestamp() AS now) n
 		RETURNING holder`
-	pgStartLeaseRenew = `UPDATE gateway.start_lease l SET renewed = n.now, expires = n.now + $2::interval
-		FROM (SELECT pg_catalog.clock_timestamp() AS now) n
-		WHERE l.holder = $1 AND l.expires > n.now
+	// pgStartLeaseRenew renews the holder's row while it is live. As the
+	// fence, it holds the row first and reads the clock after: a renewal
+	// that waited for the row -- held by a settle (pgStartLeaseSettle) or a
+	// takeover's hold -- past the row's expiry finds it expired, and never
+	// brings it back to life. Each hold and the clock are MATERIALIZED
+	// queries, so nothing reads the clock before the row is held.
+	pgStartLeaseRenew = `WITH held AS MATERIALIZED (SELECT holder, expires FROM gateway.start_lease
+			WHERE holder = $1 FOR NO KEY UPDATE),
+		n AS MATERIALIZED (SELECT holder, expires, pg_catalog.clock_timestamp() AS now FROM held)
+		UPDATE gateway.start_lease l SET renewed = n.now, expires = n.now + $2::interval
+		FROM n
+		WHERE l.holder = n.holder AND n.expires > n.now
 		RETURNING l.holder`
 	// pgStartLeaseRelease expires the row; it is never removed.
 	pgStartLeaseRelease = `UPDATE gateway.start_lease l SET renewed = n.now, expires = n.now
