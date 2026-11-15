@@ -52,9 +52,10 @@ scope identifier, and the payloads only those receipts name, and records the
 removal first in the store's artifact-removals.jsonl, signed by the key in
 force (SPEC.md §1.3a, §6): a session-removal record for each sealed session
 and a scope-removal record for the call. A session holding a receipt of
-another scope identifier, of none, or one that does not verify, and a
-receipt left in the store that cites one the call would remove, refuse the
-whole call, by name, and nothing is removed. --by is a label, recorded and
+another scope identifier, of none, or one that does not verify, a session
+holding anything but its receipt files, a linked artifacts, receipts or
+session directory, and a receipt left in the store that cites one the call
+would remove, refuse the whole call, by name, and nothing is removed. --by is a label, recorded and
 not checked. Prints each record appended, as its line. On the PostgreSQL
 kind, gateway store remove-scope removes a scope identifier's rows.`
 
