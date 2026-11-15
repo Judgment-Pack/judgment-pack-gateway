@@ -249,7 +249,7 @@ the run-time role, before anything is applied. It prints, as canonical JSON, wha
 part of the connection string:
 
 ```json
-{"applied":[1,2,3],"migrations":"sha256:…","schemaVersion":3}
+{"applied":[1,2,3,4],"migrations":"sha256:…","schemaVersion":4}
 ```
 
 A second run applies nothing (`"applied":[]`). A schema newer than the binary's migrations is
@@ -302,6 +302,13 @@ no table, schema, policy or other object in a schema. No function is defined in 
 append to the registry takes a transaction advisory lock (`pg_advisory_xact_lock`, which every role
 may call unless the operator took it back); the migration takes another. Both keys are constants of
 the schema, so leave them to the gateway in this database.
+
+The registry's records are one chain by the schema too (schema version 4): no two records start or
+stop at one offset, and each starts where another stops, or at 0. A record inserted without the
+lock, by the run-time login or any other writer, is refused unless it is at the log's end, so the
+log is never left with a record over committed bytes or past a gap. The migration to version 4
+checks the records already there: a store whose log is not one chain is refused it, with nothing
+changed, and the kind's start then refuses the store as behind its migrations.
 
 The kind's start refuses a database where any of this differs: a privilege more or less, by table
 or by column; a table, view, sequence, function, trigger, rule or type beside the store's; row

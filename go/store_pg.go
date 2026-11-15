@@ -658,8 +658,10 @@ func (l pgLog) appendRecord(data []byte) (int, error) {
 		// end the last append committed. So a record commits only after the
 		// one it follows, a reader never sees one past a record not yet
 		// committed, and no append loses the end to another and is refused
-		// or tried again. The primary key still refuses a second record at
-		// one offset, from a writer that did not take the lock.
+		// or tried again. From a writer that did not take the lock, the
+		// schema (version 4) still refuses a record anywhere but at the
+		// log's end: each record starts where another stops, or at 0, and
+		// no two start or stop at one offset.
 		if _, err := tx.exec(`SELECT pg_catalog.pg_advisory_xact_lock($1)`, int64(pgLogAppendLock)); err != nil {
 			return err
 		}

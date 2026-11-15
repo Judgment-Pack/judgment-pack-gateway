@@ -595,15 +595,16 @@ func TestThePostgresStartAsksEveryScopeOfTheSessionsItHolds(t *testing.T) {
 	}
 }
 
-// A store at schema version 2 holding rows migrates to version 3 with every
-// row as it was, a row of no scope that no scope's view reads, and no scope
-// identifier recorded; the run-time role is given SELECT and INSERT on the
-// record alone; a second run applies nothing and changes nothing.
+// A store at schema version 2 holding rows migrates to version 3, and to
+// every version after it, with every row as it was, a row of no scope that
+// no scope's view reads, and no scope identifier recorded; the run-time
+// role is given SELECT and INSERT on the record alone; a second run applies
+// nothing and changes nothing.
 func TestAPostgresStoreAtSchemaTwoMigratesWithItsRowsOfNoScope(t *testing.T) {
 	db := newPgTestDB(t)
 	set := pgShippedMigrations()
-	if len(set.versions) != 3 {
-		t.Fatalf("the shipped schema has %d versions: the test names version 2 as the one before", len(set.versions))
+	if len(set.versions) < 3 || set.versions[2].name != "0003_scope_identifiers.sql" {
+		t.Fatalf("the shipped schema has %d versions: the test names version 2 as the one before the record of the scope identifiers", len(set.versions))
 	}
 	older := pgMigrationSet{versions: set.versions[:2], grants: bytes.Replace(set.grants, []byte(", gateway.scope_identifiers"), nil, 1)}
 	if bytes.Equal(older.grants, set.grants) {
@@ -636,7 +637,11 @@ func TestAPostgresStoreAtSchemaTwoMigratesWithItsRowsOfNoScope(t *testing.T) {
 	if err := c.script("COMMIT"); err != nil {
 		t.Fatal(err)
 	}
-	if applied, err := migratePostgres(db.migrator, set, db.roles, time.Minute); err != nil || !slices.Equal(applied, []int{3}) {
+	var later []int
+	for _, m := range set.versions[2:] {
+		later = append(later, m.version)
+	}
+	if applied, err := migratePostgres(db.migrator, set, db.roles, time.Minute); err != nil || !slices.Equal(applied, later) {
 		t.Fatalf("from schema version 2: %v %v", applied, err)
 	}
 	first := db.fingerprint(t)

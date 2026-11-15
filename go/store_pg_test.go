@@ -1369,6 +1369,118 @@ func TestAPostgresLogUnderConcurrentAppendsLosesNoneAndReadsWhole(t *testing.T) 
 	}
 }
 
+// pgLogRecord is a record of the registry's log as a statement inserts it.
+type pgLogRecord struct {
+	start int64
+	data  string
+}
+
+// The schema holds the registry's records to one chain (#440): the
+// run-time login, inserting records of its own without the log's lock, is
+// refused one over committed bytes, one that starts or stops where a record
+// does, one past the end that leaves a gap, and a second record at 0, each
+// by a unique or a foreign key with the log as it was; one at the log's end
+// is admitted, and the log reads whole.
+func TestAPostgresLogRefusesARecordAnywhereButAtItsEnd(t *testing.T) {
+	kind, db := pgTestKind(t, "", nil)
+	log := kind.registry()
+	if err := log.createLog(); err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []string{"abcd", "efgh"} {
+		if _, err := log.appendRecord([]byte(record)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := db.runtimeConn(t)
+	insert := `INSERT INTO gateway.log_records (log, start, data) VALUES ('registry', $1, $2)`
+	for _, r := range []pgLogRecord{
+		{0, "x"},        // a second record at 0
+		{2, "xx"},       // within the first, stopping where it stops
+		{2, "xxxxxxxx"}, // over committed bytes, past the end
+		{4, "x"},        // where the second starts
+		{6, "xx"},       // within the second, stopping at the end
+		{6, "xxxx"},     // over the end
+		{9, "x"},        // past the end, leaving a gap
+	} {
+		_, err := c.exec(insert, r.start, []byte(r.data))
+		if code := pgCode(err); code != pgUniqueViolation && code != pgForeignKeyViolation {
+			t.Errorf("a record of %d bytes at %d, inserted without the log's lock: %v", len(r.data), r.start, err)
+		}
+	}
+	if data, err := log.readLog(0); err != nil || string(data) != "abcdefgh" {
+		t.Fatalf("the log after the refused records: %q %v", data, err)
+	}
+	if _, err := c.exec(insert, int64(8), []byte("ij")); err != nil {
+		t.Fatalf("a record at the log's end, inserted without the log's lock: %v", err)
+	}
+	if data, err := log.readLog(0); err != nil || string(data) != "abcdefghij" {
+		t.Fatalf("the log after a record at its end: %q %v", data, err)
+	}
+}
+
+// A store at schema version 3 whose log is one chain migrates to version 4
+// with its records as they were. One whose log holds a record over
+// committed bytes, or past a gap, as a writer without the log's lock could
+// insert before version 4, is refused the migration, by a unique or a
+// foreign key, with nothing changed, and its start is refused as behind the
+// binary's migrations.
+func TestAPostgresStoreAtSchemaThreeMigratesItsLogAsOneChain(t *testing.T) {
+	set := pgShippedMigrations()
+	if len(set.versions) < 4 || set.versions[3].name != "0004_log_chain.sql" {
+		t.Fatalf("the shipped schema has %d versions: the test names version 4 as the log's chain", len(set.versions))
+	}
+	older := pgMigrationSet{versions: set.versions[:3], grants: set.grants}
+	for _, tc := range []struct {
+		name    string
+		records []pgLogRecord
+		refused bool
+	}{
+		{"one chain", []pgLogRecord{{0, "abcd"}, {4, "efgh"}}, false},
+		{"a record over committed bytes", []pgLogRecord{{0, "abcd"}, {4, "efgh"}, {2, "xx"}}, true},
+		{"a record past a gap", []pgLogRecord{{0, "abcd"}, {9, "x"}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newPgTestDB(t)
+			if applied, err := migratePostgres(db.migrator, older, db.roles, time.Minute); err != nil || !slices.Equal(applied, []int{1, 2, 3}) {
+				t.Fatalf("schema version 3: %v %v", applied, err)
+			}
+			c := db.runtimeConn(t)
+			if _, err := c.exec(`INSERT INTO gateway.logs (name) VALUES ('registry')`); err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range tc.records {
+				if _, err := c.exec(`INSERT INTO gateway.log_records (log, start, data) VALUES ('registry', $1, $2)`, r.start, []byte(r.data)); err != nil {
+					t.Fatalf("a record of %d bytes at %d at schema version 3: %v", len(r.data), r.start, err)
+				}
+			}
+			before := db.fingerprint(t)
+			applied, err := migratePostgres(db.migrator, set, db.roles, time.Minute)
+			if !tc.refused {
+				if err != nil || !slices.Equal(applied, []int{4}) {
+					t.Fatalf("from schema version 3: %v %v", applied, err)
+				}
+				if data, err := db.open(t, nil).registry().readLog(0); err != nil || string(data) != "abcdefgh" {
+					t.Fatalf("the log after the migration: %q %v", data, err)
+				}
+				return
+			}
+			if code := pgCode(err); code != pgUniqueViolation && code != pgForeignKeyViolation {
+				t.Fatalf("the migration of a log that is not one chain: %v %v", applied, err)
+			}
+			if after := db.fingerprint(t); after != before {
+				t.Fatalf("a migration that failed changed the database:\n%s\n%s", before, after)
+			}
+			if kind, err := openPgKind(pgOptions{dsn: db.runtime}); err == nil || !strings.Contains(err.Error(), "apply the store's migrations") {
+				if kind != nil {
+					kind.close()
+				}
+				t.Fatalf("the start on a store refused its migration: %v", err)
+			}
+		})
+	}
+}
+
 // A migration that changes rows of a scoped table, under the forcing of
 // row security that holds the owner too, fails and applies nothing, rather
 // than changing no row because it set no scope; one that lifts the forcing
