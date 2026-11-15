@@ -128,7 +128,7 @@ func TestTheStorageMemberRefusesWhatItDoesNotTake(t *testing.T) {
 // A version-25 configuration's storage may wait for the start lease, from 1
 // to 3600 seconds; without the member the start waits for nothing. The
 // member is refused by name at an earlier version, and a gateway that reads
-// no version 25 refuses the file by its number, as this one refuses 26.
+// no version 25 refuses the file by its number, as this one refuses 27.
 func TestTheStorageMemberTakesAStartWaitFromVersion25(t *testing.T) {
 	file := abs(t, t.TempDir(), "connection")
 	byFile := `"connection":{"file":"` + file + `"}`
@@ -162,8 +162,52 @@ func TestTheStorageMemberTakesAStartWaitFromVersion25(t *testing.T) {
 			"engine configuration: storage.startWaitSeconds 9007199254740991 is outside 1 to 3600"},
 		{"a string", at("25", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":"60"}`),
 			"engine configuration: storage.startWaitSeconds must be an integer"},
-		{"version 26", at("26", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":60}`),
-			`engine configuration: unsupported engineVersion "26" (latest "25")`},
+		{"version 27", at("27", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":60}`),
+			`engine configuration: unsupported engineVersion "27" (latest "26")`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseEngineConfig([]byte(tc.config))
+			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A version-26 configuration's storage names its instances: "one", the
+// default, keeps one instance per database, and "several" lets instances
+// serve it beside one another (ADR-0035, option C). The member is refused by
+// name at an earlier version, and any other value is refused.
+func TestTheStorageMemberTakesItsInstancesFromVersion26(t *testing.T) {
+	file := abs(t, t.TempDir(), "connection")
+	byFile := `"connection":{"file":"` + file + `"}`
+	at := func(version, storage string) string {
+		return strings.Replace(storageConfig(t, storage, ``, ``), `"engineVersion":"24"`, `"engineVersion":"`+version+`"`, 1)
+	}
+	for _, tc := range []struct {
+		version, storage string
+		several          bool
+	}{
+		{"26", `{"kind":"postgresql",` + byFile + `}`, false},
+		{"25", `{"kind":"postgresql",` + byFile + `}`, false},
+		{"26", `{"kind":"postgresql",` + byFile + `,"instances":"one"}`, false},
+		{"26", `{"kind":"postgresql",` + byFile + `,"instances":"several","startWaitSeconds":60}`, true},
+	} {
+		cfg, err := parseEngineConfig([]byte(at(tc.version, tc.storage)))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.storage, err)
+		}
+		if cfg.storage.several != tc.several {
+			t.Fatalf("%s: several is %v", tc.storage, cfg.storage.several)
+		}
+	}
+	for _, tc := range []struct{ name, config, want string }{
+		{"version 25", at("25", `{"kind":"postgresql",`+byFile+`,"instances":"several"}`),
+			"engine configuration: storage.instances is a version-26 member; engineVersion 25 has no storage.instances"},
+		{"another word", at("26", `{"kind":"postgresql",`+byFile+`,"instances":"many"}`),
+			`engine configuration: storage.instances is "one", one instance per database, or "several"`},
+		{"a boolean", at("26", `{"kind":"postgresql",`+byFile+`,"instances":true}`),
+			`engine configuration: storage.instances is "one", one instance per database, or "several"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parseEngineConfig([]byte(tc.config))

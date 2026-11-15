@@ -1,6 +1,6 @@
 package main
 
-// A session an earlier process left open (gateway #381). A gateway holds its
+// A session another process left open (gateway #381). A gateway holds its
 // sessions in memory -- each one's next callIndex and the signature its next
 // receipt chains to -- and seals one only when asked (docs/design/mcp-server.md,
 // "Sessions"). A gateway that stops, by a signal or a crash, leaves every
@@ -10,6 +10,12 @@ package main
 //
 // The process that starts next does not hold such a session, and takes none
 // up: a read into it is refused before its source runs, and so is a seal.
+// Where instances serve one PostgreSQL database beside one another
+// (storage.instances "several"), each session is held by the instance that
+// admitted its first call (store_pg_instances.go): another instance refuses
+// a read into it, and a seal of it, 409 while that instance's row of the
+// start lease is live (refusalHeldElsewhere), and once the row has expired
+// judges it as one another process left open.
 // Neither the chain nor the count can be had from the store alone. The store
 // is outside the trust boundary, and the seal exists to anchor a session's
 // final count outside it (SPEC.md §2, "Final-tail rollback"): a session whose
@@ -31,6 +37,7 @@ package main
 // is then sealed in the registry, never continued, and its store verifies.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -42,18 +49,27 @@ import (
 // for a read's admission and for a seal: the same words for both, since the
 // session's state is the same.
 const (
-	refusalLeftOpen = "session %s was left open by an earlier process: the store holds receipts in it that this process did not mint, and no seal closes it; its chain is not continued from an empty memory, nor is it sealed here from a count on disk, so acquire into a new session (gateway verify reports this one unregistered-session, and observes it session-open while its receipts are whole; gateway seal-open, with the gateway stopped, seals it as sealed after an interruption)"
+	refusalLeftOpen = "session %s was left open by another process: the store holds receipts in it that this process did not mint, and no seal closes it; its chain is not continued from an empty memory, nor is it sealed here from a count on disk, so acquire into a new session (gateway verify reports this one unregistered-session, and observes it session-open while its receipts are whole; gateway seal-open, with the gateway stopped, seals it as sealed after an interruption)"
 	refusalNotADir  = "session %s is in the store as something other than a session directory, which this process did not make; nothing is taken up there"
-	refusalUnread   = "session %s could not be read in the store, so whether an earlier process left receipts in it is not known; it is refused rather than taken for empty"
+	refusalUnread   = "session %s could not be read in the store, so whether another process left receipts in it is not known; it is refused rather than taken for empty"
 	// refusalOtherScope is an acquisition's, on a kind that keeps each scope
 	// identifier's rows apart (scopeKeeper), into a session whose receipts
 	// are of another scope than the source's: held by this process or left
 	// in the store, with receipts or none. It names neither scope.
 	refusalOtherScope = "session %s holds the receipts of a scope other than this source's (another scope identifier, or none): with the PostgreSQL storage kind a session's receipts are of one scope, so acquire into a new session"
+	// refusalHeldElsewhere is a read's and a seal's, where instances serve
+	// one database beside one another, into a session another instance
+	// holds whose row of the start lease is live. It names no instance.
+	refusalHeldElsewhere = "session %s is held by another gateway instance serving this database: a session is served by the instance that admitted its first call, so send its calls and its seal to that instance, or acquire into a new session"
 )
 
+// sessionHeldElsewhere is refusalHeldElsewhere: answered 409, before the
+// source runs.
+type sessionHeldElsewhere struct{ error }
+
 // leftInStore is why this process may not take up a session it does not
-// hold, or "" when the store holds nothing in it that this process could
+// hold -- a badRequest, or, where another live instance holds it, a
+// sessionHeldElsewhere -- or nil when the store holds nothing in it that this process could
 // collide with: no entry at all, or a directory holding no receipt. A
 // receipt is any entry whose name ends in ".json", whatever it holds: every
 // one verification counts (verifySessionUnder), a torn receipt or a junk
@@ -85,7 +101,42 @@ var leftInStoreBatch = 64
 // scope is refused whatever it holds (refusalOtherScope), since its stamp
 // could not be made there; one of its own scope, and a seal, are judged by
 // its receipts.
-func (g *gatewayService) leftInStore(sessionID, scope string, acquiring bool) string {
+func (g *gatewayService) leftInStore(sessionID, scope string, acquiring bool) error {
+	if g.claimer != nil {
+		return g.heldInStore(sessionID, scope, acquiring)
+	}
+	if refusal := g.leftInStoreRefusal(sessionID, scope, acquiring); refusal != "" {
+		return badRequest{errors.New(refusal)}
+	}
+	return nil
+}
+
+// heldInStore is leftInStore where instances serve one database beside one
+// another: an acquisition claims the session's series for this instance, or
+// takes it up from an instance whose row has expired, where it holds no
+// receipt (claimSeries); a seal reads who holds it and changes nothing.
+func (g *gatewayService) heldInStore(sessionID, scope string, acquiring bool) error {
+	var claim seriesClaim
+	var err error
+	if acquiring {
+		claim, err = g.claimer.claimSeries(sessionID, scope)
+	} else {
+		claim, err = g.claimer.seriesHolding(sessionID)
+	}
+	switch {
+	case err != nil:
+		return badRequest{fmt.Errorf(refusalUnread, sessionID)}
+	case claim == seriesOfOtherScope:
+		return badRequest{fmt.Errorf(refusalOtherScope, sessionID)}
+	case claim == seriesHeldElsewhere:
+		return sessionHeldElsewhere{fmt.Errorf(refusalHeldElsewhere, sessionID)}
+	case claim == seriesLeftOpen:
+		return badRequest{fmt.Errorf(refusalLeftOpen, sessionID)}
+	}
+	return nil
+}
+
+func (g *gatewayService) leftInStoreRefusal(sessionID, scope string, acquiring bool) string {
 	refused := func(why string) string { return fmt.Sprintf(why, sessionID) }
 	if g.keeper != nil {
 		held, ofScope, receipts, err := g.keeper.seriesHeld(sessionID, scope)

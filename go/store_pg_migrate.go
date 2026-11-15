@@ -227,6 +227,17 @@ func migratePostgres(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout time.
 	if err := pgRecordedMatch(recorded, set); err != nil {
 		return failed(err)
 	}
+	// A migration runs with every instance stopped (ADR-0035, question 10):
+	// where the schema has the start lease (version 2 on) and a version is
+	// to be applied, the lease's lock and every row of it are held to the
+	// commit, and the migration is refused while a row is live, so no start
+	// takes a row and no write of an instance commits while the schema
+	// changes; a start after the commit finds the version changed.
+	if len(recorded) >= 2 && len(set.versions) > len(recorded) {
+		if err := pgHoldEveryInstance(c, "migrate"); err != nil {
+			return failed(err)
+		}
+	}
 	for _, m := range set.versions[len(recorded):] {
 		if err := c.script(string(m.sql)); err != nil {
 			return failed(fmt.Errorf("store: migration %s: %w", m.name, err))
@@ -425,6 +436,7 @@ var pgPrivileges = map[string][]string{
 	"schema_migrations": {"SELECT"},
 	"blobs":             {"SELECT", "INSERT"},
 	"series":            {"SELECT", "INSERT"},
+	"series_holders":    {"SELECT", "INSERT"},
 	"entries":           {"SELECT", "INSERT"},
 	"logs":              {"SELECT", "INSERT"},
 	"log_records":       {"SELECT", "INSERT"},
@@ -436,13 +448,14 @@ var pgPrivileges = map[string][]string{
 }
 
 // pgTables are the schema's tables, in the order the start reads them.
-var pgTables = []string{"blobs", "documents", "entries", "log_records", "logs", "removal_records", "schema_migrations", "scope_identifiers", "secrets", "series", "start_lease"}
+var pgTables = []string{"blobs", "documents", "entries", "log_records", "logs", "removal_records", "schema_migrations", "scope_identifiers", "secrets", "series", "series_holders", "start_lease"}
 
 // pgScopedTables are the tables whose rows carry a scope identifier: row
 // security is enabled and forced on each. The scope identifiers' rows
 // (schema version 3) and the removal records' (schema version 5) are each
-// of no scope, held by the same policy.
-var pgScopedTables = []string{"blobs", "documents", "entries", "removal_records", "scope_identifiers", "series"}
+// of no scope, held by the same policy; a series' holders (schema version
+// 6) are of the series' scope.
+var pgScopedTables = []string{"blobs", "documents", "entries", "removal_records", "scope_identifiers", "series", "series_holders"}
 
 // pgTablePrivileges are the privileges a table has (pgPrivilegesHold); from
 // PostgreSQL 17 a table has MAINTAIN besides (pgTablePrivilegesOn).
@@ -518,7 +531,11 @@ func (k *pgKind) holdsItsConditions(set pgMigrationSet) error {
 		if err := pgPrivilegesHold(tx); err != nil {
 			return err
 		}
-		return pgSchemaHolds(tx)
+		if err := pgSchemaHolds(tx); err != nil {
+			return err
+		}
+		k.schema = len(set.versions)
+		return nil
 	})
 }
 
