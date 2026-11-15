@@ -313,7 +313,7 @@ func (w *registryWalk) loadSeal(line string) {
 	if !ed25519.Verify(current.key, sealSigningInput(sessionID, int64(count), sealedAt, keyID), sig) {
 		return
 	}
-	w.take(seal{sessionID: sessionID, finalCount: int64(count)})
+	w.take(seal{sessionID: sessionID, finalCount: int64(count), signature: hex.EncodeToString(sig), keyPos: len(w.keys) - 1})
 }
 
 // take keeps a seal that loaded. SPEC.md §3 refuses re-sealing a session,
@@ -431,6 +431,7 @@ func (w *registryWalk) loadInterruptionSeal(obj *vObject) {
 	if keyID != current.keyID || !ed25519.Verify(current.key, interruptionSealSigningInput(obj), signature) {
 		return
 	}
+	s.signature, s.keyPos = hex.EncodeToString(signature), len(w.keys)-1
 	w.take(s)
 }
 

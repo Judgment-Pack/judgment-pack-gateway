@@ -99,6 +99,25 @@ func (k *pgKind) everyScope(mode pgMode, fn func(tx pgTx, row string) error) err
 	})
 }
 
+// removalFile is the removal records as the store's removal file holds
+// them (pgRemovalFile), read in a transaction of their own, of no scope.
+// An export reads them after the blobs, as it reads the filesystem kind's
+// file: gateway store remove-scope keeps its records in the transaction
+// that removes the rows, so rows the cut listed and the export then found
+// gone are named by records read here.
+func (k *pgKind) removalFile() ([]byte, bool, error) {
+	var file []byte
+	err := k.ofNoScope().transact(pgRead, func(tx pgTx) error {
+		var err error
+		file, _, err = pgRemovalFile(tx)
+		return err
+	})
+	if err != nil {
+		return nil, false, pgFailure("removal-records", false, err)
+	}
+	return file, len(file) > 0, nil
+}
+
 // holdsAnySeries is whether the kind holds a series of no scope or of any
 // scope identifier recorded: the registry's start asks it before it makes
 // an empty registry (newGatewayServiceOn).
@@ -272,6 +291,7 @@ func (k *pgKind) exportCut() (*storeCut, error) {
 	for _, names := range cut.entries {
 		sort.Strings(names)
 	}
+	cut.removals = k.removalFile
 	// an entry or a blob is never changed once made, so its bytes are read
 	// when the cut is asked, by the view of the scope that holds it
 	cut.entry = func(series, entry string) ([]byte, error) {

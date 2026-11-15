@@ -157,9 +157,9 @@ func exportEngine(configPath, out string, observations []string) (*vObject, erro
 	if cfg.storage != nil {
 		// the store's cut is the kind's own, of no scope and of every scope
 		// identifier it records (pgKind.exportCut), so an export holds what
-		// a store of the filesystem kind would; the kind keeps no removal
-		// records, which gateway remove-artifact makes on disk alone, and
-		// storeRoot "" says so to writeExport
+		// a store of the filesystem kind would; the kind keeps its removal
+		// records, which gateway store remove-scope makes, itself, and the
+		// cut reads them (storeCut.removals)
 		pg, err := openStorageKind(cfg.storage)
 		if err != nil {
 			return nil, err
@@ -438,15 +438,33 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 	// and so does anything at its path that is not a regular file, a link
 	// included, which is read through by no reader of the store
 	// (exportRemovals).
+	//
+	// A kind that keeps the records itself (storeCut.removals) gives them
+	// from its own space, read here as well; a kind that holds some beside
+	// a store directory whose removal file is there is refused, as the
+	// export could take neither for the other.
+	var data []byte
+	present := false
+	if cut.removals != nil {
+		if data, present, err = cut.removals(); err != nil {
+			return nil, err
+		}
+	}
 	if in.storeRoot != "" {
-		data, present, err := exportRemovals(in.storeRoot)
+		file, there, err := exportRemovals(in.storeRoot)
 		if err != nil {
 			return nil, err
 		}
-		if present {
-			if err := w.put("store/"+removalsFile, data); err != nil {
-				return nil, err
-			}
+		if there && present {
+			return nil, errors.New("removal records: the kind keeps some, and the store directory named beside it holds a removal file; the export takes neither for the other")
+		}
+		if there {
+			data, present = file, true
+		}
+	}
+	if present {
+		if err := w.put("store/"+removalsFile, data); err != nil {
+			return nil, err
 		}
 	}
 	// the decision records, read after the cut, as verification walks them

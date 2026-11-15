@@ -323,6 +323,11 @@ func TestThePostgresRuntimeLoginIsRefusedDDLAndChanges(t *testing.T) {
 		"DELETE FROM gateway.secrets",
 		"INSERT INTO gateway.schema_migrations VALUES (9, 'x', 'sha256:" + strings.Repeat("0", 64) + "')",
 		"DELETE FROM gateway.schema_migrations",
+		"DELETE FROM gateway.scope_identifiers",
+		"INSERT INTO gateway.removal_records VALUES ('none', 0, 'x')",
+		"UPDATE gateway.removal_records SET line = 'x'",
+		"DELETE FROM gateway.removal_records",
+		"TRUNCATE gateway.removal_records",
 		"SET ROLE " + db.roles.owner,
 		"SET SESSION AUTHORIZATION " + db.roles.owner,
 		"ALTER ROLE " + db.roles.runtime + " BYPASSRLS",
@@ -1468,8 +1473,33 @@ func TestAPostgresLogRefusesARecordAnywhereButAtItsEnd(t *testing.T) {
 	}
 }
 
-// A store at schema version 3 whose log is one chain migrates to version 4
-// with its records as they were. One whose log holds a record over
+// pgGrantsOfVersion is the grants as a binary of the schema's version gave
+// them: without the tables a later version made, the record of the scope
+// identifiers (version 3) and the removal records (version 5). A table
+// named in the grants that the test does not find there fails it, so a
+// grant moved elsewhere is noticed.
+func pgGrantsOfVersion(t *testing.T, grants []byte, version int) []byte {
+	t.Helper()
+	for _, later := range []struct {
+		version int
+		text    string
+	}{
+		{3, ", gateway.scope_identifiers"},
+		{5, "\n    EXECUTE pg_catalog.format('GRANT SELECT ON gateway.removal_records TO %I', runtime);"},
+	} {
+		if version >= later.version {
+			continue
+		}
+		if !bytes.Contains(grants, []byte(later.text)) {
+			t.Fatalf("the grants do not hold %q: the test names the table of version %d where it is not", later.text, later.version)
+		}
+		grants = bytes.Replace(grants, []byte(later.text), nil, 1)
+	}
+	return grants
+}
+
+// A store at schema version 3 whose log is one chain migrates to version 4,
+// and to every version after it, with its records as they were. One whose log holds a record over
 // committed bytes, or past a gap, as a writer without the log's lock could
 // insert before version 4, is refused the migration, by a unique or a
 // foreign key, with nothing changed, and its start is refused as behind the
@@ -1479,7 +1509,7 @@ func TestAPostgresStoreAtSchemaThreeMigratesItsLogAsOneChain(t *testing.T) {
 	if len(set.versions) < 4 || set.versions[3].name != "0004_log_chain.sql" {
 		t.Fatalf("the shipped schema has %d versions: the test names version 4 as the log's chain", len(set.versions))
 	}
-	older := pgMigrationSet{versions: set.versions[:3], grants: set.grants}
+	older := pgMigrationSet{versions: set.versions[:3], grants: pgGrantsOfVersion(t, set.grants, 3)}
 	for _, tc := range []struct {
 		name    string
 		records []pgLogRecord
@@ -1506,8 +1536,12 @@ func TestAPostgresStoreAtSchemaThreeMigratesItsLogAsOneChain(t *testing.T) {
 			before := db.fingerprint(t)
 			applied, err := migratePostgres(db.migrator, set, db.roles, time.Minute)
 			if !tc.refused {
-				if err != nil || !slices.Equal(applied, []int{4}) {
-					t.Fatalf("from schema version 3: %v %v", applied, err)
+				var later []int
+				for _, m := range set.versions[3:] {
+					later = append(later, m.version)
+				}
+				if err != nil || !slices.Equal(applied, later) {
+					t.Fatalf("from schema version 3: %v %v, want %v", applied, err, later)
 				}
 				if data, err := db.open(t, nil).registry().readLog(0); err != nil || string(data) != "abcdefgh" {
 					t.Fatalf("the log after the migration: %q %v", data, err)

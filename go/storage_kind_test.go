@@ -222,6 +222,9 @@ func TestCommandsThatReadTheStoreOnDiskRefuseThePostgreSQLKindByName(t *testing.
 		{"remove-artifact", func(stdout, stderr *bytes.Buffer) int {
 			return cmdRemoveArtifactAt([]string{"--config", config, "--receipt", "s/0", "--by", "operator"}, stdout, stderr, nowStamp)
 		}, "gateway remove-artifact, which keeps its removal records in the store on disk,"},
+		{"remove-scope", func(stdout, stderr *bytes.Buffer) int {
+			return cmdRemoveScopeAt([]string{"--config", config, "--scope", "scope-a", "--by", "operator"}, stdout, stderr, nowStamp)
+		}, "gateway remove-scope removes the files of a store on disk; on the PostgreSQL kind, gateway store remove-scope"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer

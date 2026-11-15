@@ -215,6 +215,11 @@ type seal struct {
 	// head the signature of the last receipt it seals.
 	interrupted bool
 	head        string
+	// signature is the seal's signature, its bytes in lowercase hex, and
+	// keyPos the place among the keys the walk reached of the key it loaded
+	// under: what a session-removal record names it by (SPEC.md §1.3a).
+	signature string
+	keyPos    int
 }
 
 // sealSigningInput is spelled out by SPEC.md §3: the seal context prefix, then
@@ -691,11 +696,11 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 	seals, sealOrder := walk.seals, walk.order
 	// The removal records load under the keys the walk reached (SPEC.md
 	// §1.3a): a file that cannot be read is no verdict.
-	removals, err := loadRemovals(storeRoot, walk.keys)
+	records, err := loadRecords(storeRoot, walk.keys)
 	if err != nil {
 		return nil, err
 	}
-	ret := &retention{removals: removals, supplied: supplied}
+	ret := &retention{removals: records.artifacts, supplied: supplied, sessions: records.sessions}
 	if walk.followed() > 0 {
 		rep.Rotations = &rotationsFollowed{Count: walk.followed(), KeyID: walk.current().keyID}
 	}
@@ -787,17 +792,28 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 			})
 		}
 	}
-	// SPEC.md §4 step 4: every sealed session must still be in the store.
+	// SPEC.md §4 step 4: every sealed session must still be in the store,
+	// or be named, by its id and its seal, by a session-removal record that
+	// loaded (§1.3a, "A removed session"), which is no finding and is
+	// observed. A session such a record names that the store still holds is
+	// verified as it is.
 	inStore := map[string]bool{}
 	for _, s := range sessions {
 		inStore[s] = true
 	}
 	for _, sessionID := range sealOrder {
-		if !inStore[sessionID] {
-			rep.Findings = append(rep.Findings, finding{
-				"sessionId": sessionID, "status": "sealed-session-missing",
-			})
+		if inStore[sessionID] {
+			continue
 		}
+		if ret.sessionRemoved(sessionID, seals[sessionID]) {
+			rep.Observations = append(rep.Observations, finding{
+				"sessionId": sessionID, "observation": observationSessionRemoved,
+			})
+			continue
+		}
+		rep.Findings = append(rep.Findings, finding{
+			"sessionId": sessionID, "status": "sealed-session-missing",
+		})
 	}
 	// SPEC.md §3c: a session for which more than one seal loads, one of
 	// them at least a seal made after an interruption, has two answers to

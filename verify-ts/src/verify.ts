@@ -315,6 +315,13 @@ const removalMembers = ["callIndex", "keyId", "kind", "receiptSignature", "remov
 // supplied, undefined when none was.
 type Retention = { readonly removals: ReadonlyMap<string, readonly Removal[]>; readonly supplied: string | undefined };
 
+// A session-removal record that loaded (§1.3a, "A removed session"): it
+// names a sealed session by its id, its seal's signature and its seal's
+// count; kept by the session it names.
+type SessionRemoval = { readonly sealSignature: string; readonly finalCount: bigint; readonly keyPos: number };
+const sessionRemovalPrefix = "judgment-pack-gateway/session-removal/1:";
+const sessionRemovalMembers = ["finalCount", "keyId", "kind", "removedAt", "removedBy", "scope", "sealSignature", "sessionId", "signature"];
+
 // removalOf is a line of the removal file, read, as a record when it holds
 // exactly its nine members, no name twice, each of its form, its key id
 // names a key the walk reached and its signature verifies under that key,
@@ -371,6 +378,61 @@ function removalOf(v: Value | null, keys: readonly ReachedKey[]): (Removal & { r
   return { sessionId: own(sessionId), callIndex: callIndex.integer, resultDigest: own(resultDigest), keyPos, receiptSignature: own(receiptSignature) };
 }
 
+// sessionRemovalOf is a line of the removal file, read, as a
+// session-removal record when it holds exactly its nine members, no name
+// twice, each of its form, its key id names a key the walk reached and its
+// signature verifies under that key, over its own prefix and the canonical
+// form of everything but the signature; any other line is no such record.
+function sessionRemovalOf(v: Value | null, keys: readonly ReachedKey[]): (SessionRemoval & { readonly sessionId: string }) | null {
+  if (v === null || v.type !== "object" || hasDuplicate(v)) {
+    return null;
+  }
+  if (v.members.length !== sessionRemovalMembers.length || !v.members.every((m) => sessionRemovalMembers.includes(m.name))) {
+    return null;
+  }
+  const of = (name: string, form: RegExp): string | undefined => {
+    const s = str(member(v, name));
+    return s !== undefined && form.test(s) ? s : undefined;
+  };
+  const kind = of("kind", /^session-removal$/);
+  const sessionId = of("sessionId", /^[A-Za-z0-9._-]{1,128}$/);
+  const finalCount = member(v, "finalCount");
+  const sealSignature = of("sealSignature", /^[0-9a-f]{128}$/);
+  const scope = str(member(v, "scope"));
+  const removedAt = str(member(v, "removedAt"));
+  const removedBy = str(member(v, "removedBy"));
+  const keyId = of("keyId", /^[0-9a-f]{32}$/);
+  const signature = of("signature", /^[0-9a-f]{128}$/);
+  if (
+    kind === undefined ||
+    sessionId === undefined ||
+    sessionId === "." ||
+    sessionId === ".." ||
+    finalCount?.type !== "number" ||
+    finalCount.integer === null ||
+    sealSignature === undefined ||
+    scope === undefined ||
+    !isScopeIdentifier(scope) ||
+    removedAt === undefined ||
+    !isRemovalTime(removedAt) ||
+    removedBy === undefined ||
+    !isScopeIdentifier(removedBy) ||
+    keyId === undefined ||
+    signature === undefined
+  ) {
+    return null;
+  }
+  const keyPos = keys.findIndex((k) => k.keyId === keyId);
+  if (keyPos < 0) {
+    return null;
+  }
+  const payload: ObjectValue = { type: "object", members: v.members.filter((m) => m.name !== "signature") };
+  if (!signed(keys[keyPos]!.key, sessionRemovalPrefix, payload, signature)) {
+    return null;
+  }
+  return { sessionId: own(sessionId), sealSignature: own(sealSignature), finalCount: finalCount.integer, keyPos };
+}
+
 // loadRemovals is the store's removal records (§1.3a, "Loading"; §4.1),
 // read a line at a time (eachRemovalLine): nothing at the path loads none,
 // and nor does anything there that is not a regular file, which is not
@@ -379,10 +441,33 @@ function removalOf(v: Value | null, keys: readonly ReachedKey[]): (Removal & { r
 // replaces it only where its key was reached later, which is all the
 // artifact step reads of either; so what is kept, and charged, grows with
 // the receipts the records name, not with the lines that repeat them.
-function loadRemovals(root: string, keys: readonly ReachedKey[], budget: Budget): Map<string, Removal[]> {
+function loadRemovals(root: string, keys: readonly ReachedKey[], budget: Budget): { removals: Map<string, Removal[]>; sessions: Map<string, SessionRemoval[]> } {
   const removals = new Map<string, Removal[]>();
+  const sessions = new Map<string, SessionRemoval[]>();
   eachRemovalLine(under(root, "artifact-removals.jsonl"), (line) => {
-    const rec = removalOf(parseOr(line, () => null), keys);
+    const parsed = parseOr(line, () => null);
+    // A session-removal record is kept once for the seal it names, as an
+    // artifact-removal is for its receipt; a scope-removal record is read
+    // by no step of §4 and is not kept.
+    const removed = sessionRemovalOf(parsed, keys);
+    if (removed !== null) {
+      const named = sessions.get(removed.sessionId);
+      const at = named?.findIndex((k) => k.sealSignature === removed.sealSignature && k.finalCount === removed.finalCount) ?? -1;
+      if (at >= 0) {
+        if (removed.keyPos > named![at]!.keyPos) {
+          named![at] = removed;
+        }
+        return;
+      }
+      budget.charge(entryCost + size(removed.sessionId) + size(removed.sealSignature), "the removal records");
+      if (named === undefined) {
+        sessions.set(removed.sessionId, [removed]);
+      } else {
+        named.push(removed);
+      }
+      return;
+    }
+    const rec = removalOf(parsed, keys);
     if (rec === null) {
       return;
     }
@@ -401,7 +486,7 @@ function loadRemovals(root: string, keys: readonly ReachedKey[], budget: Budget)
       named.push(rec);
     }
   });
-  return removals;
+  return { removals, sessions };
 }
 
 // isRemovalTime is a removedAt of its form that names an instant (§1.3a):
@@ -570,12 +655,15 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
 // A seal that loaded. head is, for a seal made after an interruption
 // (§3c), the signature of the last receipt it seals; undefined for one of
 // §3's form.
-type Seal = { readonly sessionId: string; readonly finalCount: bigint; readonly head?: string };
+// signature is the seal's signature, its bytes in lowercase hex, and keyPos
+// the place among the keys the walk reached of the key it loaded under:
+// what a session-removal record names it by (§1.3a).
+type Seal = { readonly sessionId: string; readonly finalCount: bigint; readonly head?: string; readonly signature: string; readonly keyPos: number };
 
 // sealOf is a registry line, read, as a seal, when it is one whose key id
 // is the current key's at its line (§3b, §4 step 2) and whose signature
 // verifies under that key; any other line is no seal and is dropped.
-function sealOf(seal: Value | null, key: crypto.KeyObject, keyId: string): Seal | null {
+function sealOf(seal: Value | null, key: crypto.KeyObject, keyId: string, keyPos: number): Seal | null {
   if (seal === null || seal.type !== "object" || hasDuplicate(seal)) {
     return null;
   }
@@ -609,7 +697,7 @@ function sealOf(seal: Value | null, key: crypto.KeyObject, keyId: string): Seal 
   if (!signed(key, sealPrefix, payload, signature)) {
     return null;
   }
-  return { sessionId: own(sessionId.value), finalCount: finalCount.integer };
+  return { sessionId: own(sessionId.value), finalCount: finalCount.integer, signature: signature.toLowerCase(), keyPos };
 }
 
 // isInterruption is whether a registry line is to be read as a seal made
@@ -625,7 +713,7 @@ function isInterruption(v: Value | null): v is ObjectValue {
 // id is the current key's at its line and its signature verifies under that
 // key, over the prefix and the canonical form of everything but the
 // signature; any other such line is no seal of either kind.
-function interruptionSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string): Seal | null {
+function interruptionSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string, keyPos: number): Seal | null {
   if (hasDuplicate(v) || !v.members.every((m) => interruptionMembers.includes(m.name))) {
     return null;
   }
@@ -662,7 +750,7 @@ function interruptionSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string
   if (!signed(key, interruptionPrefix, payload, signature)) {
     return null;
   }
-  return { sessionId: own(sessionId), finalCount: finalCount.integer, head: own(head) };
+  return { sessionId: own(sessionId), finalCount: finalCount.integer, head: own(head), signature: own(signature), keyPos };
 }
 
 // verifyStore is the verdict of §4 over the store at root, against the
@@ -731,13 +819,14 @@ export function verifyStore(
       return;
     }
     const current = walk.current();
-    const seal = isInterruption(read) ? interruptionSealOf(read, current.key, current.keyId) : sealOf(read, current.key, current.keyId);
+    const at = walk.keys.length - 1;
+    const seal = isInterruption(read) ? interruptionSealOf(read, current.key, current.keyId, at) : sealOf(read, current.key, current.keyId, at);
     if (seal === null) {
       return;
     }
     const first = seals.get(seal.sessionId);
     if (first === undefined) {
-      budget.charge(entryCost + size(seal.sessionId) + (seal.head === undefined ? 0 : size(seal.head)), "the registry's seals");
+      budget.charge(entryCost + size(seal.sessionId) + size(seal.signature) + (seal.head === undefined ? 0 : size(seal.head)), "the registry's seals");
       seals.set(seal.sessionId, seal);
     } else if ((first.head !== undefined || seal.head !== undefined) && !conflicted.has(seal.sessionId)) {
       budget.charge(entryCost, "the registry's seals");
@@ -748,7 +837,15 @@ export function verifyStore(
   testHooks.sample?.("registry");
   const keys = walk.keys;
   // §1.3a: the removal records, under the keys the walk reached.
-  const retention: Retention = { removals: loadRemovals(root, keys, budget), supplied: options.artifacts };
+  const loaded = loadRemovals(root, keys, budget);
+  const retention: Retention = { removals: loaded.removals, supplied: options.artifacts };
+  // §4 step 4: a sealed session a session-removal record names, by its id,
+  // its seal's signature and count, under the seal's key or one the walk
+  // reached after it.
+  const removedSession = (sessionId: string): boolean => {
+    const seal = seals.get(sessionId)!;
+    return (loaded.sessions.get(sessionId) ?? []).some((r) => r.sealSignature === seal.signature && r.finalCount === seal.finalCount && r.keyPos >= seal.keyPos);
+  };
 
   for (const [session, files] of store) {
     const judged: Judged[] = [];
@@ -1003,9 +1100,10 @@ export function verifyStore(
         }
       }
     }
-    // §4 step 4: each sealed session the store does not hold.
+    // §4 step 4: each sealed session the store does not hold, unless a
+    // session-removal record names it, which is observed instead.
     for (const sessionId of seals.keys()) {
-      if (!sessions.has(sessionId)) {
+      if (!sessions.has(sessionId) && !removedSession(sessionId)) {
         yield [
           ["sessionId", sessionId],
           ["status", "sealed-session-missing"],
@@ -1069,6 +1167,16 @@ export function verifyStore(
           ["sessionId", session],
           ["callIndex", seal.finalCount - 1n],
           ["observation", "sealed-after-interruption"],
+        ];
+      }
+    }
+    // §4 step 4's: a sealed session the store does not hold that a
+    // session-removal record names, of the session and not of a receipt.
+    for (const sessionId of seals.keys()) {
+      if (!sessions.has(sessionId) && removedSession(sessionId)) {
+        yield [
+          ["sessionId", sessionId],
+          ["observation", "session-removed"],
         ];
       }
     }
