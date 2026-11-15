@@ -1946,7 +1946,10 @@ status:
   whatever the endpoint's answer held: nothing of its body or its headers, and nothing of the
   adapter's stderr, reaches the caller, and the answer carries no `Retry-After`. `code` is what
   a caller acts on: the reference it kept is of no further use, and it reads again from its
-  first value. The status is the endpoint's class, as a throttled answer's is. A token step's
+  first value. The gateway classes every `410` of the endpoint so, whether or not the request
+  sent a reference: a `410` answered to a read from the first value (a retired endpoint, say)
+  means the source cannot be read, and a caller stops rather than reading again, since each try
+  is counted as any failed call. The status is the endpoint's class, as a throttled answer's is. A token step's
   token endpoint that answers `410` is a refused token request, answered `400` as before, since
   a token request sends no reference. The text begins as a failed source's does.
 - **`503`** with `{"error":"admission is closed for maintenance; nothing was admitted"}` while
