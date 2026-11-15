@@ -587,7 +587,8 @@ const pgScopePolicy = `(scope = current_setting('gateway.scope'::text, true))`
 
 // pgSchemaHolds holds the schema to what the migrations made: the store's
 // tables and their indexes alone, with no view, sequence, function,
-// trigger or rule beside them; row security enabled and forced on every
+// trigger or rule beside them; every table permanent and logged, none
+// inheriting from a table or inherited by one, wherever it is; row security enabled and forced on every
 // table with a column scope, and on each of those one policy, the scope's,
 // for every command and every role; on no other table any policy; and
 // every column, constraint and index of the tables as the migrations made
@@ -595,7 +596,7 @@ const pgScopePolicy = `(scope = current_setting('gateway.scope'::text, true))`
 func pgSchemaHolds(tx pgTx) error {
 	objects, err := tx.exec(`SELECT c.relname, c.relkind::text,
 		EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'scope' AND NOT a.attisdropped),
-		c.relrowsecurity AND c.relforcerowsecurity
+		c.relrowsecurity AND c.relforcerowsecurity, c.relpersistence::text
 		FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 		WHERE n.nspname = 'gateway' ORDER BY c.relname`)
 	if err != nil {
@@ -612,6 +613,11 @@ func pgSchemaHolds(tx pgTx) error {
 		case "r":
 		default:
 			return fmt.Errorf("store: the schema gateway holds %s, which is not one of the store's tables", name)
+		}
+		// An unlogged table is emptied by the server's recovery from a
+		// crash, and is not on a standby: what the store committed would go.
+		if string(row[4]) != "p" {
+			return fmt.Errorf("store: the table gateway.%s is not a permanent, logged table, as the store's tables are", name)
 		}
 		tables = append(tables, name)
 		if scoped != contains(pgScopedTables, name) {
@@ -631,11 +637,15 @@ func pgSchemaHolds(tx pgTx) error {
 		(SELECT count(*) FROM pg_catalog.pg_rewrite w JOIN pg_catalog.pg_class c ON c.oid = w.ev_class
 			JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'gateway')::int8,
 		(SELECT count(*) FROM pg_catalog.pg_type y JOIN pg_catalog.pg_namespace n ON n.oid = y.typnamespace
-			WHERE n.nspname = 'gateway' AND y.typrelid = 0 AND y.typelem = 0)::int8`)
+			WHERE n.nspname = 'gateway' AND y.typrelid = 0 AND y.typelem = 0)::int8,
+		(SELECT count(*) FROM pg_catalog.pg_inherits h JOIN pg_catalog.pg_class c ON c.oid IN (h.inhrelid, h.inhparent)
+			JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'gateway')::int8`)
 	if err != nil {
 		return err
 	}
-	for i, what := range []string{"a function", "a trigger", "a rule", "a type"} {
+	// A table that inherits from one of the store's, wherever it is, has its
+	// rows read by every query of the store's table that does not say ONLY.
+	for i, what := range []string{"a function", "a trigger", "a rule", "a type", "a table inheriting or inherited"} {
 		if n, _ := pgInt8(others.rows[0][i]); n != 0 {
 			return fmt.Errorf("store: the schema gateway holds %s, and the store's schema holds none", what)
 		}

@@ -796,6 +796,14 @@ func TestThePostgresKindRefusesToStartOutsideItsConditions(t *testing.T) {
 			db.asOwner(t, "ALTER TABLE gateway.secrets ADD COLUMN another text")
 			return db.runtime
 		}, "gateway.secrets holds the column another, which the store's migrations do not make"},
+		{"an unlogged table", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asOwner(t, "ALTER TABLE gateway.secrets SET UNLOGGED")
+			return db.runtime
+		}, "the table gateway.secrets is not a permanent, logged table"},
+		{"a table of another schema inheriting from the store's", func(t *testing.T, db *pgTestDB) pgDSN {
+			db.asDatabaseOwner(t, "CREATE SCHEMA other", "CREATE TABLE other.more () INHERITS (gateway.secrets)")
+			return db.runtime
+		}, "the schema gateway holds a table inheriting or inherited"},
 		{"a scope column of a collation of the same name in another schema", func(t *testing.T, db *pgTestDB) pgDSN {
 			policy := "(scope = pg_catalog.current_setting('gateway.scope', true))"
 			db.asDatabaseOwner(t, "CREATE SCHEMA other",
