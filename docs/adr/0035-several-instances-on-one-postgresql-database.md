@@ -209,7 +209,7 @@ it has (a5).
 - Start: refused for a key id or an authority other than a live instance's, and for a schema other
   than the binary's (as now); one instance in the one-instance mode and an instance in this mode
   refuse each other.
-- Operator: an opt-in member (engine configuration version 25), one instance per database staying
+- Operator: an opt-in member (a later engine configuration version than D's 25), one instance per database staying
   the default; a router, or the caller, that sends every call of a session to the instance that
   answered its first (the session is a member of the body, not a header); one seed, authority and
   set of sources on every instance; `connections` + 1 per instance in the server's connection
