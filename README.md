@@ -165,7 +165,10 @@ away it is `sealed-session-missing` again. A session holding receipts of the sco
 beside receipts of another, of none, or that do not verify, a receipt left in the store that
 cites one it would remove, and a session's directory holding anything but receipt files, refuse
 the whole call by name, and nothing is removed. A run
-cut off is completed by running it again. On the PostgreSQL storage kind, `gateway store
+cut off is completed by running it again. Do not export the store while the command runs: the
+export does not hold the registry's lock, and an export cut across a removal may hold a removed
+session's receipts without their payloads, which then verifies as damage; export before or after
+it. On the PostgreSQL storage kind, `gateway store
 remove-scope` removes a scope identifier's rows and its record of the identifier, as the
 migration login, in one transaction that keeps the same records
 ([docs/postgresql-store.md](docs/postgresql-store.md), "Removing one scope identifier's rows").
@@ -679,6 +682,10 @@ answered, and seals the session after the last page, so each page is its own rec
 seal fixes how many there are. An http source whose endpoint answers 429 or 503 is answered
 with that class and, when the endpoint asked for a wait in a form taken, a `Retry-After` of at
 most 3600 seconds; nothing is minted for it, and the caller asks for the same page again when
-it chooses. The worked example is in
+it chooses. One whose endpoint answers 410, the cursor or change token the request sent
+having expired there, is answered `410` with `"code": "source_reference_expired"` and the
+gateway's own sentence, nothing of the endpoint's body; nothing is minted, the session is left
+open, and the caller reads again from its first value, in that session or a new one. Every
+other status, a 404 or a 400 among them, is a failed source, `400`, as before. The worked example is in
 [engine-config.md](docs/design/engine-config.md) ("Paging is the caller's"), and the answers in
 SPEC.md §6 ("When an acquisition does not happen").

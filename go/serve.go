@@ -1600,6 +1600,7 @@ func (g *gatewayService) runSourceUnder(ctx context.Context, cancel context.Canc
 		// The status is kept beside the text, which is unchanged: a token
 		// step's adapter reports its failure's kind by it (token_step.go).
 		code := exitStatus(waitErr)
+		failed := &sourceExited{code: code, text: "source failed: " + sourceFailureText(stderr.buf.String())}
 		if code == sourceExitThrottled && spec.shape == "http" {
 			// An http adapter's throttled answer, read from the report it
 			// wrote beside the status (source_throttled.go); a report out
@@ -1608,7 +1609,13 @@ func (g *gatewayService) runSourceUnder(ctx context.Context, cancel context.Canc
 				return nil, "", "", throttled
 			}
 		}
-		return nil, "", "", &sourceExited{code: code, text: "source failed: " + sourceFailureText(stderr.buf.String())}
+		if code == sourceExitReferenceExpired && spec.shape == "http" && referenceExpiredReport(stdout.buf.Bytes()) {
+			// An http adapter's expired reference, read from the report
+			// it wrote beside the status (source_reference_expired.go); a
+			// report out of its form is a failure as any other.
+			return nil, "", "", &sourceReferenceExpired{failed: failed}
+		}
+		return nil, "", "", failed
 	}
 	observedAt = nowStamp()
 	result, err = parseJSON(stdout.buf.Bytes())
@@ -2127,6 +2134,14 @@ func (g *gatewayService) handler() http.Handler {
 				w.Header().Set("Retry-After", strconv.Itoa(throttled.retryAfter))
 			}
 			writeJSON(w, throttled.status, map[string]any{"error": throttled.Error()})
+			return
+		}
+		// A source whose endpoint answered 410 (source_reference_expired.go):
+		// that class, as a throttled source's is answered with its own, the
+		// code a caller acts on, and the gateway's sentence.
+		var expired *sourceReferenceExpired
+		if errors.As(err, &expired) {
+			writeJSON(w, http.StatusGone, map[string]any{"error": expired.Error(), "code": sourceReferenceExpiredCode})
 			return
 		}
 		var caller badRequest

@@ -754,6 +754,11 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 			// and the wait asked for, and nothing else of the answer.
 			return nil, throttled(a.status, a.header.Values("Retry-After"), time.Now(), strings.TrimSpace(redacted))
 		}
+		if expires(a.status) {
+			// The same diagnostic, said by its kind beside it: the class,
+			// and nothing else of the answer.
+			return nil, &ReferenceExpired{text: strings.TrimSpace(redacted)}
+		}
 		return nil, errors.New(strings.TrimSpace(redacted))
 	}
 	result, err := resultOf(a)

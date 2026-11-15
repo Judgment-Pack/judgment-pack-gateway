@@ -1903,8 +1903,9 @@ An `/acquire` that is refused, or whose source fails, mints nothing, retains not
 holds no session open: no receipt, no artifact, no registry line, and a session the request
 would have begun is not begun, so the same session can be named again. A refusal of a call
 under a delegation answers as §11.5 states. Every other such answer is
-`Content-Type: application/json` with a body of exactly one member, `error`, a string, and is
-one of these five, with no other status:
+`Content-Type: application/json` with a body of exactly one member, `error`, a string (an
+expired reference, below, carries `code` beside it), and is one of these six, with no other
+status:
 
 - **`404`** with `{"error":"not found"}` for a method other than `POST`, before anything else
   of the request is read.
@@ -1936,6 +1937,21 @@ one of these five, with no other status:
   that the gateway writes from the number reported, never the endpoint's bytes; when it
   reported none, the answer carries no `Retry-After`. The text begins as a failed source's
   does, so a reader that reads only the text reads it as one.
+- **`410`**, for a source of shape `http` whose adapter reported an expired reference
+  ("Adapter sources", below): its endpoint answered `410`, the cursor, change token or other
+  reference the request sent being no longer held there. The body is exactly
+
+  `{"code":"source_reference_expired","error":"source failed: the source's endpoint answered 410 Gone: the reference the request sent has expired; nothing was retained or minted"}`
+
+  whatever the endpoint's answer held: nothing of its body or its headers, and nothing of the
+  adapter's stderr, reaches the caller, and the answer carries no `Retry-After`. `code` is what
+  a caller acts on: the reference it kept is of no further use, and it reads again from its
+  first value. The gateway classes every `410` of the endpoint so, whether or not the request
+  sent a reference: a `410` answered to a read from the first value (a retired endpoint, say)
+  means the source cannot be read, and a caller stops rather than reading again, since each try
+  is counted as any failed call. The status is the endpoint's class, as a throttled answer's is. A token step's
+  token endpoint that answers `410` is a refused token request, answered `400` as before, since
+  a token request sends no reference. The text begins as a failed source's does.
 - **`503`** with `{"error":"admission is closed for maintenance; nothing was admitted"}` while
   the gateway's admission is closed (`docs/design/mcp-server.md`, "Rotation"). It carries no
   `Retry-After`: the closure ends when its operator reopens admission, which the gateway does
@@ -1952,7 +1968,13 @@ ask again, and a request it sends again is a new acquisition, receipted as its o
 succeeds. A call under a delegation is admitted, and counted, immediately before its source
 starts (§11.5), and the platform's grant records its use then (§10, rule 3): a throttled call,
 as any call whose source fails, has used one of the delegation's counted calls and one use of
-the grant, and each time the caller asks again is counted again. The MCP front (`docs/design/mcp-server.md`) lists no tool of a platform whose `live`
+the grant, and each time the caller asks again is counted again. An expired reference is
+answered in the same way: nothing of it is receipted and it takes no `callIndex`, a sealed
+token is left held, a session it would have begun is not begun, and a session already open is
+left open and unsealed, so the caller reads again from its first value either in that session,
+the next read taking the next `callIndex`, or in a new one; a call under a delegation that
+met it has been counted as any failed call. There is no receipt for it to carry the code on:
+`code` is in the answer alone. The MCP front (`docs/design/mcp-server.md`) lists no tool of a platform whose `live`
 is of shape `http`, so no forward of it reaches such a source; its error result for a refused
 forward carries the signer's status, as before, and no `Retry-After`.
 
@@ -2211,7 +2233,8 @@ inside the result it was always allowed to write, and the gateway, not the adapt
 decides what of it is signed.
 
 **A throttled answer, shape `http`.** An adapter refuses by exiting with a status other
-than 0, and the gateway reads nothing of its stdout then — with one exception. An adapter
+than 0, and the gateway reads nothing of its stdout then — with two exceptions, this and an
+expired reference (below). An adapter
 of a source declared `http` whose endpoint, or whose token step's token endpoint, answered
 `429` or `503` may exit with status **7** and write on stdout exactly
 
@@ -2240,6 +2263,26 @@ wait past 3600 seconds is 3600; and no line, two or more, a value of neither for
 fraction, a list, a word) and a date at or before the adapter's clock are no wait (`null`),
 never a wait the endpoint did not state. Its stderr for the answer is the diagnostic it wrote for
 any refusing answer, unchanged.
+
+**An expired reference, shape `http`.** An adapter of a source declared `http` whose
+endpoint answered `410` to the acquisition's request may exit with status **8** and write on
+stdout exactly
+
+```json
+{"referenceExpired": {"status": 410}}
+```
+
+— one member, `referenceExpired`, an object of exactly `status`, `410`; each member once, the
+whole one JSON value in the canonical domain (§1.1), the integer spelled in digits alone with
+no sign, and nothing before or after it, whitespace included. The gateway reads stdout beside
+status 8 from a source declared `http` and from no other, and from no token step's token
+request, and answers the acquisition `410` with the code `source_reference_expired` ("When
+an acquisition does not happen", above). Status 8 from a source of another shape, or from a
+bare command or a token request, status 8 beside anything else on stdout, and the report
+beside any other status are a failed source, answered `400` with the stderr text, as before
+the report existed. `adapter-http` reports a `410` from the source's endpoint so, and a `410`
+from its token endpoint as a refused token request (status 4), as before; its stderr for the
+answer is the diagnostic it wrote for any refusing answer, unchanged.
 
 ### Witness endpoints
 
