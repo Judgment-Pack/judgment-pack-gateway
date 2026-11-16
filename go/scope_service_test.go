@@ -78,7 +78,9 @@ func TestAScopedSourcesReceiptCarriesItsScopeAndVerifies(t *testing.T) {
 	if receipt["scope"] != testScope || len(receipt) != 15 {
 		t.Fatalf("the receipt of a scoped source carries its scope beside the members it carried before: %v", receipt)
 	}
-	code, second := post(t, server, "/acquire", `{"session":"scope-1","source":"plain","arguments":{"q":"a"}}`)
+	// a session's receipts are of one scope (ADR-0036): the source fixed to
+	// none acquires into a session of its own
+	code, second := post(t, server, "/acquire", `{"session":"scope-1-none","source":"plain","arguments":{"q":"a"}}`)
 	if code != http.StatusOK {
 		t.Fatalf("an unscoped acquisition: %d %v", code, second)
 	}
@@ -87,8 +89,10 @@ func TestAScopedSourcesReceiptCarriesItsScopeAndVerifies(t *testing.T) {
 	} else if _, present := plain["scope"]; present {
 		t.Fatalf("the receipt of a source fixed to none carries no scope: %v", plain)
 	}
-	if code, out := post(t, server, "/seal", `{"session":"scope-1"}`); code != http.StatusOK {
-		t.Fatalf("seal: %d %v", code, out)
+	for _, session := range []string{"scope-1", "scope-1-none"} {
+		if code, out := post(t, server, "/seal", `{"session":"`+session+`"}`); code != http.StatusOK {
+			t.Fatalf("seal: %d %v", code, out)
+		}
 	}
 	verdict := func() (bool, string) {
 		rep, err := verifyWithRegistry(service.storeRoot, service.regPath, service.authority, service.publicKey)

@@ -51,10 +51,10 @@ type sessionState struct {
 	// two makers cannot both succeed.
 	created bool
 	// scope is the scope identifier of the source that first admitted an
-	// acquisition into the session ("" for none). On a kind that keeps each
-	// scope's rows apart (scopeKeeper) a session's receipts are of that one
-	// scope, and an acquisition of another is refused at its admission;
-	// on every other kind it decides nothing.
+	// acquisition into the session ("" for none). On every kind a session's
+	// receipts are of that one scope (ADR-0036): an acquisition of another,
+	// or an action into a session of a scope identifier, is refused at its
+	// admission, and the seal names it.
 	scope string
 }
 
@@ -1974,11 +1974,12 @@ func (g *gatewayService) admit(sessionID, scope string) error {
 	if state.sealed {
 		return badRequest{fmt.Errorf("session is sealed: %s", sessionID)}
 	}
-	// The session's receipts are of one scope on such a kind: the view of
-	// another scope could not stamp into it (its series is the first
-	// scope's), and the source is not run for a receipt it cannot have.
-	// The refusal names neither scope.
-	if g.keeper != nil && state.scope != scope {
+	// The session's receipts are of one scope, on every kind (ADR-0036):
+	// its seal names that scope, and on a kind that keeps each scope's rows
+	// apart the view of another scope could not stamp into it (its series
+	// is the first scope's). The source is not run for a receipt the
+	// session cannot have. The refusal names neither scope.
+	if state.scope != scope {
 		return badRequest{fmt.Errorf(refusalOtherScope, sessionID)}
 	}
 	state.inFlight++
@@ -2043,7 +2044,9 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 			"session has %d acquisition(s) in flight, retry after they finish: %s",
 			state.inFlight, sessionID)}
 	}
-	record, err := g.registry.seal(sessionID, state.index, nowStamp())
+	// a session of a scope identifier is sealed naming it (ADR-0036), one
+	// of no scope in §3's form, as before
+	record, err := g.registry.sealOfScope(sessionID, state.index, nowStamp(), state.scope)
 	if err != nil {
 		// a seal that may be in the registry closes the session here too:
 		// a reader of the registry may find it, and a session this process

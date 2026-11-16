@@ -1663,8 +1663,48 @@ of one operator's sources can be told apart by the party each serves.
   without one. A gateway whose platforms give no `scope` refuses the request member as unknown,
   as it did before.
 - **The receipt** of such a source carries the identifier as its top-level `scope`. A platform
-  without the member mints the receipts it minted before, byte for byte; a seal and a registry
-  line carry no scope.
+  without the member mints the receipts it minted before, byte for byte.
+- **A session is of one scope**, on either storage kind
+  ([ADR-0036](../adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md)): the
+  scope of its first acquisition, the source's identifier or none. An acquisition into it of a
+  source of another identifier, of a scoped source into a session of none, or of a source of none
+  into a scoped session, is refused `400` before the source runs, with `session <id> holds the
+  receipts of a scope other than this source's (another scope identifier, or none): a session's
+  receipts are of one scope, so acquire into a new session`, which names neither scope. An `/act`
+  into a scoped session is refused at its session step, since an action receipt carries no scope.
+  Use one session per scope identifier. A gateway before this one let a session of the
+  filesystem kind mix them; such sessions in an existing store verify as they did.
+- **Registry lines.** A seal is of one session. The seal of a session of a scope identifier is a
+  seal of version 2 that names it under the signature by its digest in the session, never by the
+  identifier (`sealVersion` `"2"`, `scopeDigest`; SPEC.md §3, "A seal of version 2"), and so is the seal `gateway seal-open`, or the start's switch, makes
+  after an interruption of such a session (SPEC.md §3c, "Naming the scope"); a verifier of this
+  version reports the session `seal-scope-mismatch` where an accepted receipt in it carries
+  another scope or none. The seal of a session of no scope is the form it was before, byte for
+  byte, as are the seals an earlier gateway wrote, which name no scope whatever their sessions
+  held. A rotation statement (SPEC.md §3b) is of the key and of no source, and names no scope.
+  So the lines that concern a scoped source are the seals of version 2, each naming by its digest
+  the scope identifier of the one session it seals; no line carries a scope identifier, so a
+  registry, an export's or a copy, lists none, and on the PostgreSQL kind a gateway of one scope
+  reads none of another's from it (ADR-0036, decision 9). The digest is not a secret: one who
+  guesses an identifier can digest it in a session's id and test it.
+- **`/seal` answers with the seal.** Any caller the gateway admits that names a session this
+  process holds may seal it, whatever its scope (ADR-0033, decision 5), and the response is the
+  seal's record, so a caller that knows or guesses another scope's session id learns that the
+  session is of a scope identifier and the digest it is named by, which tests a guessed
+  identifier. The refusals name no scope. Holding a caller to the scope identifiers its
+  identity allows is #479, which closes this. A verifier
+  written before this gateway reads a seal of version 2 as a seal it cannot verify and reports
+  the session `unregistered-session`: readers of a store with scoped sessions need a verifier of
+  this version.
+- **`gateway verify` and `gateway export` do not select by scope**: each reads the whole store
+  and the whole registry. The registry is one chain that a verifier needs whole to walk from the
+  key it pins (SPEC.md §3b), and a verifier reports every sealed session a store does not hold
+  `sealed-session-missing`, so a store or export cut to one scope would read as damaged. Excusing
+  an absent session by its seal's scope would work only for seals of version 2: a seal an
+  earlier gateway wrote names no scope, so a cut could not be shown to hold every sealed session
+  of the scope. A consumer of one scope verifies the whole store, or an export of it, and may take
+  a session-scoped verdict (SPEC.md §5a.1) for each session whose seal names the scope. A verdict
+  by scope is left to an issue of its own.
 - **When the file is loaded** (`serve`, `connect`, `connect --replace`, `posture`), the member is
   refused at a version before 20, on a platform that sets `write: true` (`/act` takes no scope),
   and in a file with `mcp` (the MCP server forwards a call naming no scope). `gateway serve`
@@ -1676,8 +1716,9 @@ of one operator's sources can be told apart by the party each serves.
 
 It establishes that the operator fixed the source to the identifier and that the request named
 the same one, and nothing more: it is a label and not a credential, so any caller the gateway
-admits that names a source's identifier is served by it; nothing holds a session to one
-identifier; and every scope shares the gateway's key, store and registry. A verifier written
+admits that names a source's identifier is served by it; a session is held to one identifier
+and its seal names it, which tells sessions apart and keeps nothing apart; and every scope
+shares the gateway's key, store and registry. A verifier written
 before the member reads such a receipt as it read one without it and holds the member to no
 form (SPEC.md §1.2a).
 

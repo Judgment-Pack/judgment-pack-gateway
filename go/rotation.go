@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -234,8 +235,12 @@ func (w *registryWalk) walkLines(data []byte) {
 		if kind == "" {
 			// a line whose kind is seal-after-interruption is read as
 			// that seal and as nothing else (SPEC.md §3c)
+			// and a line holding sealVersion as a seal of that version
+			// and as nothing else (ADR-0036)
 			if sealObj := interruptionSealLine(line); sealObj != nil {
 				w.loadInterruptionSeal(sealObj)
+			} else if sealObj := versionedSealLine(line); sealObj != nil {
+				w.loadVersionedSeal(sealObj)
 			} else {
 				w.loadSeal(line)
 			}
@@ -377,10 +382,128 @@ const (
 	sealedViaStart   = "start"
 )
 
-// interruptionSealMembers are the members such a seal holds, exactly.
+// interruptionSealMembers are the members such a seal holds, exactly; one of
+// a session of a scope identifier holds scopedSealMembers besides
+// (ADR-0036), and is signed under interruptionSealContext2.
 var interruptionSealMembers = map[string]bool{
 	"finalCount": true, "headSignature": true, "keyId": true, "kind": true,
 	"sealedAt": true, "sealedVia": true, "sessionId": true, "signature": true,
+}
+
+// A seal of version 2 (ADR-0036; SPEC.md §3, "A seal of version 2"): the
+// seal of a session of a scope identifier, naming it under the signature by
+// its digest, never by the identifier, so a registry line carries no scope
+// identifier and a store of scopes kept apart reads none from the chain it
+// reads whole. The member sealVersion selects the form: a line holding it is
+// read as a seal of that version and as nothing else, so neither form is read
+// as the other, and a seal of §3's form is the bytes it always was.
+const (
+	sealVersionScoped        = "2"
+	scopedSealContext        = "judgment-pack-gateway/seal-version/2:"
+	interruptionSealContext2 = "judgment-pack-gateway/seal-after-interruption/2:"
+	sealScopeDigestContext   = "judgment-pack-gateway/seal-scope/1:"
+)
+
+// scopedSealMembers are the members a seal of version 2 holds, exactly; a
+// seal after an interruption of version 2 holds scopeDigest and sealVersion
+// beside its own.
+var scopedSealMembers = map[string]bool{
+	"finalCount": true, "keyId": true, "scopeDigest": true, "sealVersion": true,
+	"sealedAt": true, "sessionId": true, "signature": true,
+}
+
+// sealScopeDigest is what a seal of version 2 names a session's scope by
+// (SPEC.md §3, "A seal of version 2"): "sha256:" and the lowercase hex of
+// SHA-256 over the prefix and canon of {"scope", "sessionId"}. The session's
+// id is in it, so two sessions of one scope carry different digests and a
+// reader of the registry cannot group sessions by scope.
+func sealScopeDigest(sessionID, scope string) string {
+	named := newObject()
+	named.set("scope", vString(scope))
+	named.set("sessionId", vString(sessionID))
+	sum := sha256.Sum256(append([]byte(sealScopeDigestContext), canon(named)...))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// versionedSealLine is a registry line's object when the line is one JSON
+// object, read by §1.1's parser, that holds a sealVersion member and no kind,
+// and nil for any other line.
+func versionedSealLine(line string) *vObject {
+	v, err := parseJSON([]byte(line))
+	if err != nil {
+		return nil
+	}
+	obj, ok := v.(*vObject)
+	if !ok {
+		return nil
+	}
+	if _, versioned := obj.get("sealVersion"); !versioned {
+		return nil
+	}
+	if _, kinded := obj.get("kind"); kinded {
+		return nil
+	}
+	return obj
+}
+
+// scopedSealOf holds a seal of version 2 to its form: exactly its members,
+// each of its form. It answers the seal, the key id it names and its
+// signature's bytes.
+func scopedSealOf(obj *vObject) (seal, string, []byte, bool) {
+	for name := range obj.byName {
+		if !scopedSealMembers[name] {
+			return seal{}, "", nil, false
+		}
+	}
+	version, okVersion := memberString(obj, "sealVersion")
+	sessionID, okSession := memberString(obj, "sessionId")
+	keyID, okKey := memberString(obj, "keyId")
+	sealedAt, okAt := memberString(obj, "sealedAt")
+	scopeDigest, okScope := memberString(obj, "scopeDigest")
+	signatureHex, okSig := memberString(obj, "signature")
+	countV, _ := obj.get("finalCount")
+	count, okCount := countV.(vInt)
+	if !okVersion || version != sealVersionScoped ||
+		!okSession || requireSession(sessionID) != nil ||
+		!okCount || int64(count) < 0 ||
+		!okKey || !isLowerHexOfLen(keyID, 32) ||
+		!okAt || !witnessTimeForm.MatchString(sealedAt) ||
+		!okScope || !isDigest(scopeDigest) ||
+		!okSig || !isLowerHexOfLen(signatureHex, 128) {
+		return seal{}, "", nil, false
+	}
+	signature, _ := hex.DecodeString(signatureHex)
+	return seal{sessionID: sessionID, finalCount: int64(count), scopeDigest: scopeDigest}, keyID, signature, true
+}
+
+// signedOver is what a seal whose signature covers every other member is
+// signed over: the prefix, then canon of the record with its top-level
+// signature removed.
+func signedOver(prefix string, obj *vObject) []byte {
+	covered := newObject()
+	for _, name := range obj.names {
+		if name == "signature" {
+			continue
+		}
+		v, _ := obj.get(name)
+		covered.set(name, v)
+	}
+	return append([]byte(prefix), canon(covered)...)
+}
+
+// loadVersionedSeal loads a line holding sealVersion as a seal of version 2,
+// under the current key, or loads nothing.
+func (w *registryWalk) loadVersionedSeal(obj *vObject) {
+	s, keyID, signature, ok := scopedSealOf(obj)
+	if !ok {
+		return
+	}
+	current := w.current()
+	if keyID != current.keyID || !ed25519.Verify(current.key, signedOver(scopedSealContext, obj), signature) {
+		return
+	}
+	s.signature, s.keyPos = hex.EncodeToString(signature), len(w.keys)-1
+	w.take(s)
 }
 
 // interruptionSealLine is a registry line's object when the line is one
@@ -406,11 +529,23 @@ func interruptionSealLine(line string) *vObject {
 // seal, the key id it names and its signature's bytes.
 func interruptionSealOf(obj *vObject) (seal, string, []byte, bool) {
 	// every member is required below, and §1.1's parser admits no name
-	// twice, so a member of no other name is all that is left to refuse
+	// twice, so a member of no other name is all that is left to refuse;
+	// one of version 2 holds sealVersion "2" and a scopeDigest besides
+	// (ADR-0036)
+	_, versioned := obj.get("sealVersion")
 	for name := range obj.byName {
-		if !interruptionSealMembers[name] {
+		if !interruptionSealMembers[name] && (!versioned || (name != "sealVersion" && name != "scopeDigest")) {
 			return seal{}, "", nil, false
 		}
+	}
+	var scopeDigest string
+	if versioned {
+		version, okVersion := memberString(obj, "sealVersion")
+		named, okScope := memberString(obj, "scopeDigest")
+		if !okVersion || version != sealVersionScoped || !okScope || !isDigest(named) {
+			return seal{}, "", nil, false
+		}
+		scopeDigest = named
 	}
 	sessionID, okSession := memberString(obj, "sessionId")
 	head, okHead := memberString(obj, "headSignature")
@@ -430,22 +565,19 @@ func interruptionSealOf(obj *vObject) (seal, string, []byte, bool) {
 		return seal{}, "", nil, false
 	}
 	signature, _ := hex.DecodeString(signatureHex)
-	return seal{sessionID: sessionID, finalCount: int64(count), interrupted: true, head: head}, keyID, signature, true
+	return seal{sessionID: sessionID, finalCount: int64(count), interrupted: true, head: head, scopeDigest: scopeDigest}, keyID, signature, true
 }
 
 // interruptionSealSigningInput is what such a seal's signature covers: the
 // prefix, then canon of the seal with its top-level signature removed and
-// every other member retained.
+// every other member retained. A seal of version 2, which names a scope, is
+// signed under a prefix of its own (ADR-0036), so a ten-member seal is never
+// read under the eight-member form's prefix, nor the reverse.
 func interruptionSealSigningInput(obj *vObject) []byte {
-	covered := newObject()
-	for _, name := range obj.names {
-		if name == "signature" {
-			continue
-		}
-		v, _ := obj.get(name)
-		covered.set(name, v)
+	if _, versioned := obj.get("sealVersion"); versioned {
+		return signedOver(interruptionSealContext2, obj)
 	}
-	return append([]byte(interruptionSealContext), canon(covered)...)
+	return signedOver(interruptionSealContext, obj)
 }
 
 // loadInterruptionSeal loads a seal made after an interruption under the

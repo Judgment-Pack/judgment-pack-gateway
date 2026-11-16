@@ -2288,8 +2288,20 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 		"v3-session-removed", "v3-session-removed-record-under-a-later-key",
 		"v3-session-removed-anchored-by-an-interruption-seal", "v3-session-removed-beside-a-seal-conflict",
 	}
-	retentionStating = append(retentionStating, sessionRemovalStating...)
-	retentionObserving = append(retentionObserving, sessionRemovalObserving...)
+	// The seal-of-a-scope vectors (SPEC.md §3, "A seal of version 2"): the
+	// twelve that state observations each observe one, session-open where the
+	// seal loads nothing, sealed-after-interruption where §3c's seal loads,
+	// session-removed where a record of the seal's scope names the session.
+	sealScopeObserving := []string{
+		"v3-seal-scope-session-removed", "v3-seal-scope-after-interruption-over-receipts-of-none",
+		"v3-seal-scope-after-interruption", "v3-seal-scope-after-interruption-mismatch",
+		"v3-seal-scope-after-interruption-under-the-first-prefix", "v3-seal-scope-changed-after-signing",
+		"v3-seal-scope-member-more", "v3-seal-scope-other-version", "v3-seal-scope-out-of-form",
+		"v3-seal-scope-removed-after-signing", "v3-seal-scope-under-the-ordinary-prefix",
+		"v3-seal-scope-version-removed-after-signing",
+	}
+	retentionStating = append(append(retentionStating, sessionRemovalStating...), sealScopeObserving...)
+	retentionObserving = append(append(retentionObserving, sessionRemovalObserving...), sealScopeObserving...)
 	supplying := []string{
 		"v3-artifact-missing-no-record", "v3-artifact-not-retained-supplied-elsewhere",
 		"v3-artifact-not-retained-supplied-mismatch", "v3-artifact-not-retained-supplied",
@@ -2334,8 +2346,8 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 			if err != nil {
 				t.Fatalf("no run: %v", err)
 			}
-			if count != 198 {
-				t.Fatalf("%d store vectors read, want 198", count)
+			if count != 215 {
+				t.Fatalf("%d store vectors read, want 215", count)
 			}
 			disagreeing := map[string]bool{}
 			for _, failure := range failures {
@@ -2513,7 +2525,7 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 	// observes in.
 	if got, want := []int{len(stores), len(okTrue), len(withFindings), len(withWitnesses), len(withRotations), len(stating),
 		len(witnesses), len(refusals), len(readings), len(okReadings), len(withHead)},
-		[]int{198, 47, 198, 3, 14, 15, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
+		[]int{215, 50, 215, 3, 14, 27, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
 		t.Fatalf("the corpus's vectors, by what their answers give: %v, want %v", got, want)
 	}
 	for name := range stating {

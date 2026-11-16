@@ -516,7 +516,10 @@ the identifier the receipt carries is the configuration's and the request's alik
 receipt of a source the configuration fixes to no scope identifier is the receipt it
 was before the member existed. The format admits the member on either kind; this
 gateway mints it on acquisitions alone, since a platform fixed to a scope identifier
-allows no write. A seal (§3) never carries it, and a registry line names none.
+allows no write. A seal never carries the identifier, and a registry line names none: the
+seal of a session of a scope identifier, a seal of version 2 (§3, "A seal of version 2"; §3c,
+"Naming the scope"), carries its digest in the session, `scopeDigest`, under the signature, and
+a verifier holds the session's accepted receipts to it (§4 step 3, `seal-scope-mismatch`).
 
 **What `scope` establishes.** On a receipt that verifies under the operator's gateway
 key: that the holder of that key, minting the receipt, held the source it names fixed
@@ -525,8 +528,9 @@ not establish who or what the identifier stands for; that the caller was entitle
 it — a scope identifier is a label the operator fixes and a request repeats, not a
 credential, and any caller the gateway admits that names a source's identifier is
 served by that source; that no other source, platform or gateway is fixed to the same
-identifier; that the receipts of one session share one scope identifier, which nothing
-holds them to; or anything about the operator's honesty. A receipt without the member
+identifier; that the receipts of one session share one scope identifier, which only a seal
+of version 2 holds them to, and a seal of an earlier form, or none, does not; or anything
+about the operator's honesty. A receipt without the member
 establishes nothing about a scope, and not that its source was fixed to none. The
 member is unrelated to a delegation's scope (§11.5) and to an action key's first scope
 (§1.2b).
@@ -925,14 +929,16 @@ its own, so no record is read as another kind's, as a seal or as a receipt. Thei
 
 A `session-removal` record **names** a sealed session when its `sessionId` is the session's,
 its `sealSignature` is the signature of the session's first loaded seal and its `finalCount`
-that seal's, and its key is the key the seal loaded under or a key the walk reached after it.
-§4 step 4 reads it: a sealed session absent from the store that a record names is no finding,
+that seal's, and its key is the key the seal loaded under or a key the walk reached after it;
+where that seal is of version 2 (§3, "A seal of version 2"; §3c, "Naming the scope"), its
+`scope` digested in the session is also the seal's `scopeDigest`, so a record of another scope
+identifier names no such session. §4 step 4 reads it: a sealed session absent from the store that a record names is no finding,
 and the report carries the observation `session-removed`, of the session; one that no record
 names is `sealed-session-missing`, as before. A session a record names that the store still
 holds — a removal cut off before its files went — is verified as it is, and the record changes
 nothing for it. A record that names no sealed session is nothing the verifier reports. Records
-naming one seal by the same members add nothing a verifier need keep beyond the one whose key
-the walk reached last. No step of §4 reads a `scope-removal` record: it is what the call says
+naming one seal by the same members, `scope` among them, add nothing a verifier need keep
+beyond the one whose key the walk reached last. No step of §4 reads a `scope-removal` record: it is what the call says
 of itself, for a reader of the file. One who can write to the store can take a record away,
 which makes the session `sealed-session-missing`, a failure, never a pass; cannot write one
 that loads without the key; and cannot make one name another session's seal, since the seal's
@@ -1069,13 +1075,49 @@ The context prefix domain-separates a seal signature from a receipt signature
 
 Checking a seal needs only the **public** key — see §5.
 
+**A seal of version 2.** A session is of one scope (§6, `/acquire`): its receipts all carry
+one scope identifier (§1.2a, `scope`), or all carry none. A session of a scope identifier is
+sealed by a record that names it by its digest, never by the identifier
+(`docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md`):
+
+```
+{ "finalCount": <integer>, "keyId": <hex>, "scopeDigest": <string>, "sealVersion": "2",
+  "sealedAt": <string>, "sessionId": <string>, "signature": <hex> }
+```
+
+`signature` = Ed25519, under the gateway's signing seed, over
+`"judgment-pack-gateway/seal-version/2:" + canon(the record without signature)`, every other
+member retained, so the scope is signed with the count. `scopeDigest` is the scope identifier
+every receipt of the session carries, of the form §1.2a gives it, digested in the session:
+`"sha256:"` and the 64 lowercase hexadecimal characters of SHA-256 over
+`"judgment-pack-gateway/seal-scope/1:" + canon({"scope": <identifier>, "sessionId": <the
+seal's sessionId>})`. A registry line therefore carries no scope identifier: a reader of the
+registry learns of a sealed session that it is of some scope, and can tell which only by
+digesting an identifier it already holds; the session's id is in the digest, so two sessions
+of one scope carry different digests. `finalCount` is an integer from
+0 to 2^53−1; `keyId` 32 lowercase hexadecimal characters; `sealedAt` `YYYY-MM-DDThh:mm:ssZ` in
+UTC. A session of no scope is sealed in the form above, the bytes it was sealed with before.
+The member `sealVersion` is what selects the form: a registry line that is one JSON object
+holding `sealVersion` and no `kind` is read as a seal of that version and as nothing else,
+never as a seal of the form above, whose signature covers four members under another prefix.
+A line of `sealVersion` `"2"` loads (§4 step 2) when it holds exactly the seven members above,
+no name twice, each of the form given (`scopeDigest` of the digest form of §1.2a, which a
+verifier checks without knowing the identifier), its `keyId` is the key current at its line in
+§3b's walk, and its signature verifies under that key; a line of any other `sealVersion`, or not
+so, a line holding a member `scope` among them, loads nothing. A seal of version 2 anchors its
+session as a seal of the form above does, and a verifier holds the session's receipts to the
+scope it names (§4 step 3, `seal-scope-mismatch`). A verifier written before version 2 reads such a line as a seal of the
+form above whose signature does not verify, so it loads nothing and the session is
+`unregistered-session` to it: it fails closed, and a reader of a store with scoped sessions
+needs a verifier of this version.
+
 The registry is an append-only file, one seal per line. A seal is appended on a line of its
 own: a gateway that finds the registry's last line unterminated — an earlier seal written in
 part, or whole but for its newline — ends that line before it writes the record, since a
 record joined to it would make one line that is no seal (§4 drops it) and lose both. Sealing a session that is already sealed is **refused** — a session's
 `finalCount` can never be re-sealed to a smaller value, so a seal cannot be walked
 backward to excuse a rollback. A session is already sealed when the registry holds a seal for
-it that §4 step 2 loads, of this form or the form of a seal made after an interruption (§3c) — a JSON object whose `keyId` is the gateway's own and whose signature
+it that §4 step 2 loads, of this form, of version 2 or the form of a seal made after an interruption (§3c) — a JSON object whose `keyId` is the gateway's own and whose signature
 verifies under its public key, or, in a registry holding rotation statements, the key current at
 its line in the gateway's own reading (§3b) — and a line that names the session and is no such seal (a
 signature that does not verify, a foreign `keyId`, a member missing) establishes no seal for
@@ -1313,12 +1355,26 @@ every other member retained. Its members:
 
 It names no operator: the key signed it, and `sealedVia` says by which path.
 
+**Naming the scope.** A session every receipt of which carries one scope identifier
+(§1.2a, `scope`) is sealed with the eight members above and two more, `"scopeDigest":
+<string>`, that identifier's digest in the session (§3, "A seal of version 2"), and
+`"sealVersion": "2"`, its signature over
+`"judgment-pack-gateway/seal-after-interruption/2:" + canon(the record without signature)`
+(`docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md`, decision 3).
+A session of no scope is sealed with the eight members under the prefix above, as before, and
+so is a session an earlier release left open holding receipts of several scope identifiers, or
+of one and of none, which a gateway of this version does not make (§6, `/acquire`).
+
 **Loading.** A registry line that is one JSON object whose `kind` is
 `"seal-after-interruption"` is read as such a seal and as nothing else — never as a seal of
-§3's form, whose signature covers four members under another prefix, so neither can be
-replayed as the other. It loads (§4 step 2) when it holds exactly the eight members above,
-no name twice, each of the form given, its `keyId` is the key current at its line in §3b's
-walk, and its signature verifies under that key. A line that is not so loads nothing.
+§3's form or of version 2, whose signatures cover other members under other prefixes, so none
+can be replayed as another. It loads (§4 step 2) when it holds exactly the eight members above,
+or exactly those and `scopeDigest` and `sealVersion` `"2"`, no name twice, each of the form given,
+its `keyId` is the key current at its line in §3b's walk, and its signature verifies under that
+key and the prefix of its form. A line that is not so loads nothing: one holding a
+`sealVersion` other than `"2"`, or one of the two members without the other, among them. A
+verifier written before the second form holds such a line to the eight members, and it loads
+nothing to it.
 
 **What it anchors.** The first loadable seal of either kind anchors its session (§4 step
 2). A seal made after an interruption anchors it as a seal does — fewer receipts than its
@@ -1395,8 +1451,8 @@ start, a session that is not whole is named and stays open, and the gateway serv
    forged by someone without the seed is discarded either way, so a store cannot be
    excused by a forged registry.
 
-   A seal made after an interruption (§3c) loads by its own rule, under the same
-   key condition.
+   A seal made after an interruption (§3c), and a seal of version 2 (§3), each
+   loads by its own rule, under the same key condition.
 
    Where a registry contains more than one loadable seal for one session — which
    §3's append-only rule forbids a conforming gateway from writing, but says
@@ -1429,6 +1485,15 @@ start, a session that is not whole is named and stays open, and the gateway serv
      `sealed-after-interruption` on the receipt at `finalCount − 1`, and nothing is
      found. The session's per-receipt, sequence and chain findings are its own and
      stand beside either.
+   - beside any of the above, for a session the first loaded seal of which names a
+     scope identifier (a seal of version 2, §3, or one made after an interruption
+     naming it, §3c): a receipt of the session whose ladder status is `ok` and that
+     carries no top-level `scope` string, or one whose digest in the session (§3, "A
+     seal of version 2") is not the seal's `scopeDigest`, byte for byte →
+     **`seal-scope-mismatch`**, `{sessionId, status}`, once for
+     the session. The receipts' own findings stand beside it. A seal of a form that
+     names no scope asks nothing of its receipts' scopes, so a session an earlier
+     release sealed over receipts of several scope identifiers is verified as it was.
 4. For each sealed session **absent** from the store → **`sealed-session-missing`**
    (a whole sealed session deleted), unless a `session-removal` record that loads names it
    (§1.3a, "A removed session"): then nothing is found of it, and the report carries the
@@ -1750,7 +1815,8 @@ session it acts on:
   sealed at count zero, which §4.1 permits) and there is nothing in it to act on;
 - it is registered: no `unregistered-session` finding names it;
 - its seal holds: no `tail-rollback`, `count-exceeds-seal`, `seal-head-mismatch`,
-  `seal-conflict` or `sealed-session-missing` finding names it, and, for a consumer
+  `seal-scope-mismatch`, `seal-conflict` or `sealed-session-missing` finding names it,
+  and, for a consumer
   run with `--ordinary-seals-only` (§4), no `sealed-after-interruption` finding;
 - its chain holds: no `sequence-broken` or `chain-broken` finding names it;
 - no decision record fails to cite: no `record-citation-unresolved` or
@@ -1771,6 +1837,14 @@ store whose every finding is `ok` is `ok` beside it. A consumer scoped to such a
 no finding naming it, so there is nothing in it to act on (the first rule above). Without the
 record, the session is `sealed-session-missing` and withholds every session, store-wide, as
 any finding does.
+
+A consumer of one scope identifier's receipts verifies the whole store, or an export of it:
+no verifier of this document selects by scope, since the registry is one chain read whole
+(§3b) and step 4 finds a sealed session a cut by scope leaves out `sealed-session-missing`,
+and a seal an earlier release wrote names no scope, so a cut could not be shown to hold every
+session of the scope (`docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md`,
+decision 7). It may take a session-scoped verdict for each session whose seal names that
+identifier, the session's `seal-scope-mismatch` among the findings that withhold it.
 
 Session-scoping is a choice with a name, made deliberately in the consumer's code or
 configuration. Silence means store-wide. The list above leans on an invariant of
@@ -1871,8 +1945,17 @@ the configuration fixes to none; each is refused with the same sentence, which n
 no scope identifier, neither the source's nor the request's. A `scope` that is not a
 string is refused `400` too. A gateway whose configuration fixes no source to a scope
 identifier reads `scope` as any member `/acquire` does not read, and refuses it, as it
-did before the member existed. `POST /act` takes no scope: a platform fixed to a scope
-identifier allows no write. `POST /act` mints one of kind `"action"` (the engine of
+did before the member existed. A session is of one scope, on every storage kind: the scope
+of its first acquisition the process admits, the source's identifier or none
+(`docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md`). An
+acquisition into a session of another scope identifier, of a scoped source into a session
+of none, or of a source of none into a scoped session, is refused `400` at admission, before
+the source runs, with one sentence that names neither scope: `session <id> holds the
+receipts of a scope other than this source's (another scope identifier, or none): a
+session's receipts are of one scope, so acquire into a new session`. Such a session's seal
+names its scope (§3, "A seal of version 2"). `POST /act` takes no scope: a platform fixed to a scope
+identifier allows no write, and an action into a session of a scope identifier is refused
+at its session step, since an action receipt carries none. `POST /act` mints one of kind `"action"` (the engine of
 `docs/adr/0001-one-engine-four-processes.md`, described in
 `docs/design/executor.md`): from an authenticated request naming a platform's
 write tool, the decision record the write relies on and the receipts that
@@ -2045,8 +2128,9 @@ identifier. It refuses the whole call, naming each session and receipt, and appe
 nothing, where:
 
 - a session holds a receipt that carries the scope identifier beside one that does not — of
-  another scope identifier, of none, or not passing orders 1 to 6 — since on this kind nothing
-  binds a session to one scope, and removing a part of it would break the chain of the
+  another scope identifier, of none, or not passing orders 1 to 6 — since a store an earlier
+  release wrote on this kind may hold such a session (a gateway of this version binds a session
+  to one scope, §6, `/acquire`), and removing a part of it would break the chain of the
   receipts left (§4 step 1);
 - a receipt left in the store cites a receipt of a session it would remove, in an action's
   `cites` or an acquisition's `reconciliation.action`, or does not parse and its bytes spell
