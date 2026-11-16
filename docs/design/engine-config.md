@@ -1715,6 +1715,14 @@ of one operator's sources can be told apart by the party each serves.
   written before this gateway reads a seal of version 2 as a seal it cannot verify and reports
   the session `unregistered-session`: readers of a store with scoped sessions need a verifier of
   this version.
+- **The upgrade is one-way once a seal of version 2 is written.** A gateway written before this
+  one does not read a seal of version 2, so it finds the session open: its `gateway seal-open`
+  (`--all`, or the session named), or its start with `sealOpenAtStart`, seals the session again
+  in the earlier form, and from then on this version's verifier reports the session
+  `seal-conflict`. Nothing refuses the older gateway on the store, on either kind. So stop every
+  instance of v0.30.0 or earlier before one of this version serves the store, and once a seal of
+  version 2 is in the registry never run an older instance, or an older `gateway seal-open`, on
+  it (postgresql-store.md, "Several instances on one database").
 - **`gateway verify` and `gateway export` do not select by scope**: each reads the whole store
   and the whole registry. The registry is one chain that a verifier needs whole to walk from the
   key it pins (SPEC.md §3b), and a verifier reports every sealed session a store does not hold
