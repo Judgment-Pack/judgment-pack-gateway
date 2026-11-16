@@ -288,7 +288,7 @@ func TestBothTransportsListTheSnapshotReadAtStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, _ := json.Marshal(server.toolList())
+	before, _ := json.Marshal(server.toolList(nil, ""))
 	if !strings.Contains(string(before), "Search screens") {
 		t.Fatalf("the snapshot is served: %s", before)
 	}

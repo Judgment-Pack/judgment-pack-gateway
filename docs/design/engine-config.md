@@ -62,7 +62,7 @@ entry is `{"file": …}`, and a live one's may carry `tokenStep` beside `file`. 
 absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"27"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"28"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
@@ -78,8 +78,9 @@ absolute.
   version 23)", below), version 24 `storage` ("The storage kind (engine version 24)",
   below), version 25 `storage`'s `startWaitSeconds` ("A start that waits for the start lease
   (engine version 25)", below), version 26 `storage`'s `instances` ("Several instances on one
-  database (engine version 26)", below), and version 27 `identity`'s `callerScopes` ("Caller
-  scope identifiers (engine version 27)", below). A
+  database (engine version 26)", below), version 27 `identity`'s `callerScopes` ("Caller
+  scope identifiers (engine version 27)", below), and version 28 `mcp`'s `scope` and
+  `scopeFrom` ("The MCP server on scoped platforms (engine version 28)", below). A
   file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -264,7 +265,10 @@ verification requires their retained evidence (SPEC.md §9).
   and `callsPerMinute` (`1` to `6000`, default `120`). With `mcp` present the signer's `listen`
   may not name port `0` — by its number, whatever its spelling — nor an address that is not
   loopback, since the MCP server finds the signer by that value and nothing else, and fronts a
-  signer on loopback. The signer reads the member and does nothing with it; the MCP server reads the whole
+  signer on loopback. From version 28, `scope` (a scope identifier) fixes the server to that
+  identifier's platforms, or `scopeFrom` (the string `"caller"`) serves each caller the
+  platforms of the scope identifiers its token reaches ("The MCP server on scoped platforms
+  (engine version 28)", below); one or neither. The signer reads the member and does nothing with it; the MCP server reads the whole
   file as metadata and holds `identity.issuer`, when it serves HTTP, to an authorization
   server's identifier (an absolute `https` URL with no query and no fragment), which the
   signer does not demand.
@@ -1718,7 +1722,8 @@ of one operator's sources can be told apart by the party each serves.
   by scope is left to an issue of its own.
 - **When the file is loaded** (`serve`, `connect`, `connect --replace`, `posture`), the member is
   refused at a version before 20, on a platform that sets `write: true` (`/act` takes no scope),
-  and in a file with `mcp` (the MCP server forwards a call naming no scope). `gateway serve`
+  and in a file with `mcp` that names neither `scope` nor `scopeFrom` (such a server forwards a
+  call naming no scope; "The MCP server on scoped platforms (engine version 28)", below). `gateway serve`
   from the command line has no flag for it.
 - **`connect --replace`** keeps the member as written, since an entry written without it would
   serve requests that name no scope, and refuses a replacement that sets `--write` before
@@ -2153,6 +2158,51 @@ the upgrade. Before upgrading such a configuration, write an entry for each such
 granting what its tokens name (or `"installation"` for a Runner), have the issuer leave the
 claim out of the tokens it issues for this gateway's audience, or write
 `"callerScopes": "unchecked"`. The start line and `/posture` say the rule in this case too.
+
+## The MCP server on scoped platforms (engine version 28)
+
+`mcp` takes one of two members, or neither, that let the MCP server serve platforms fixed to a
+scope identifier ([ADR-0038](../adr/0038-the-mcp-server-on-platforms-fixed-to-a-scope-identifier.md);
+[mcp-server.md](mcp-server.md), "Scope identifiers"):
+
+- `scope`, a scope identifier of §1.2a's form: the server serves the live tools of the
+  platforms fixed to it and no other, and every forward names it. It runs over `--http` and
+  `--stdio`.
+- `scopeFrom`, the string `"caller"`: the server serves every platform, and each forward names
+  its tool's platform's scope identifier, or none for a platform of none. It needs `identity`
+  with `callerScopes` checked, and runs over `--http` alone.
+
+In both, a caller is listed, and may call, only the tools of the sources its token reaches
+("Caller scope identifiers (engine version 27)", above); any other tool is answered as one the
+server does not hold. No tool's arguments name a scope identifier.
+
+```json
+"engineVersion": "28",
+"platforms": { "warehouse": { "binding": "postgres@sha256:…", "scope": "team-a" } },
+"mcp": { "listen": "127.0.0.1:8788", "scope": "team-a" }
+```
+
+Refused by name, `engine configuration: …`, quoting nothing of the value:
+
+- either member in a file of version 27 or earlier (`is a version-28 member`);
+- both members (`two forms of the server`);
+- a `scope` out of the form, or `"unscoped"`, the caller scope marker, which no platform is
+  fixed to;
+- a `scopeFrom` other than the string `"caller"`;
+- `scopeFrom` without `identity`, or with `callerScopes: "unchecked"`, where every caller
+  reaches every source;
+- a platform's `scope` beside an `mcp` of neither member, as before.
+
+`gateway mcp` refuses to start a server whose `scope` no platform is fixed to, and one of
+`scopeFrom` over `--stdio`, where one token is given at start for the life of the process.
+
+**Upgrading.** A file of version 27 or earlier loads as before, and an MCP server without
+either member serves as before, with one change in a file of any version: under `identity`
+with `callerScopes` checked, the server's HTTP transport refuses `401`, before any session, a token whose `scope_ids` claim is
+out of form or wider than its subject's entry, with the signer's sentence. Before, that token
+was refused at the forward, by the signer. To serve a scoped platform over MCP, raise `engineVersion` to
+`"28"` and add one member. A gateway older than this one refuses a version-28 file by its
+version.
 
 ## Keyed actions (engine version 14 and later)
 

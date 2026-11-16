@@ -84,9 +84,11 @@ file without the member still loads, and a version-`1` file with it is refused b
 `listen` is; when `mcp` is present the signer's `listen` may not name port zero, nor an address
 that is not loopback (engine configuration version 19), since the frontend finds the signer by
 that value and nothing else, and fronts a signer on loopback. Beside `mcp` a platform's `scope`
-is refused (engine configuration version 20, [ADR-0026](../adr/0026-a-scope-identifier-fixed-on-a-platform.md)):
-the frontend forwards a call with no scope member, so it could reach none of that platform's
-sources. `resource` is the URL the world
+is refused (engine configuration version 20, [ADR-0026](../adr/0026-a-scope-identifier-fixed-on-a-platform.md))
+unless `mcp` names `scope` or `scopeFrom` (engine configuration version 28,
+[ADR-0038](../adr/0038-the-mcp-server-on-platforms-fixed-to-a-scope-identifier.md)): a server of
+neither form forwards a call with no scope member, so it could reach none of that platform's
+sources ("Scope identifiers", below). `resource` is the URL the world
 reaches the MCP endpoint by — the protected resource's identifier, below — an absolute
 `https` URL without a fragment, required with `--http`; with it, the `identity` member is
 required too, and its `issuer` must be an authorization server's identifier as RFC 8414 has
@@ -105,8 +107,8 @@ Bounds. The endpoint path is `/mcp`; the transport is chosen at launch, never by
 | MCP request | What the server does |
 |---|---|
 | `initialize` | speaks protocol `2025-06-18` and no other — the version the engine's own client speaks — and answers it whatever version the client proposed, as the lifecycle allows (a client that cannot speak it disconnects); a JSON-RPC batch, which the earlier version required servers to accept, is an invalid-request error here; answers the engine's authority as the server name and the engine version (the tag of the release the executable was built for, as `gateway version` prints it, or `unversioned build` for an executable built from a checkout; it is not the protocol's version, the configuration's, or a receipt's), capability `tools` only; accepts `notifications/initialized`; answers `ping`; acknowledges notifications without a response |
-| `tools/list` | the table below, in one page, no cursor |
-| `tools/call` | `POST /acquire` to the signer's `listen` address with `source = "<platform>/live"`, the session (below) and `arguments = {"tool": <tool>, "arguments": <the call's arguments, byte for byte>}`; the answer, below |
+| `tools/list` | the table below, in one page, no cursor; on scoped platforms, the tools the caller reaches ("Scope identifiers", below) |
+| `tools/call` | `POST /acquire` to the signer's `listen` address with `source = "<platform>/live"`, the session (below), `scope` where the server names one ("Scope identifiers", below), and `arguments = {"tool": <tool>, "arguments": <the call's arguments, byte for byte>}`; the answer, below |
 | anything else | a JSON-RPC method-not-found; no prompts, no resources, no sampling, no writes |
 
 Messages are read as the pinned protocol has them, by their members' exact names, never
@@ -271,6 +273,51 @@ as MCP hosts hand every server its secrets), verified at start the same way, hel
 never logged, and sent on every call; when it expires, calls fail with the signer's refusal
 until the host restarts the server with a fresh one. Without an `identity` configured the
 server sends no token, the signer records `caller: null`, and no action is ever performed.
+
+## Scope identifiers
+
+From engine configuration version 28 the server serves platforms fixed to a scope identifier
+(SPEC.md §1.2a) in one of two forms ([ADR-0038](../adr/0038-the-mcp-server-on-platforms-fixed-to-a-scope-identifier.md)):
+
+```json
+"mcp": { "listen": "127.0.0.1:8788", "scope": "team-a" }
+"mcp": { "listen": "127.0.0.1:8788", "resource": "https://engine.example/mcp", "scopeFrom": "caller" }
+```
+
+- **Fixed to one scope identifier** (`scope`). The tool table holds the live tools of the
+  platforms fixed to that identifier and no other, and every acquisition the server forwards
+  names it. It is served over `--http` and over `--stdio`. A configuration whose `mcp.scope`
+  no platform is fixed to is refused at start, and so is the marker `"unscoped"`.
+- **Of each caller** (`scopeFrom: "caller"`). The table holds the live tools of every
+  platform, and each acquisition names the scope identifier of its tool's platform, or none
+  for a platform of none. It needs `identity` with `callerScopes` checked
+  ([ADR-0037](../adr/0037-a-caller-is-held-to-the-scope-identifiers-its-token-and-the-configuration-allow.md)):
+  without `identity`, or with `"unchecked"`, every caller reaches every source, and the
+  configuration is refused. It is served over `--http` alone. Over `--stdio` one token is
+  given at start for the life of the process, so the start is refused and the operator runs
+  one server fixed to each scope identifier instead.
+
+In both forms a caller is listed, and may call, only the platform tools of the sources its
+token reaches. The rule is ADR-0037's, computed by the signer's own function. Any
+other tool is answered `unknown tool: <name>`, exactly as a name the table does not hold, and
+nothing is forwarded. `engine.seal` is listed to every caller, because the signer holds
+`/seal` to the caller itself. Over HTTP the reach is read from each request's token. Over
+stdio it is read once at start, with `ENGINE_TOKEN`, and holds until the next start: after the
+token expires, or the subject's grant is narrowed, `tools/list` still lists the tools of the
+start, and the signer refuses each call of them (`401`, or the scope refusal). A token the signer refuses `401` (a
+`scope_ids` claim out of form, or wider than its subject's entry) is refused `401` at the
+transport with the signer's sentence, or stops a stdio start.
+
+A scope identifier never comes from the client. No tool's input schema gains a member, a
+call's arguments are carried to the signer byte for byte, and `_meta` is read for the session
+alone, so a scope named in either has no effect. The forward carries the caller's token, so
+the signer holds it to the source's scope identifier and to the caller's reach as it holds a
+direct `/acquire`. The receipt's `scope` is the identifier the forward named. No write tool is
+served in either form.
+
+A session is of one scope identifier (ADR-0036). In the caller form, a caller that reaches two
+scope identifiers names a session per identifier in `_meta`. Otherwise the signer refuses its
+first call of the second identifier into the default session.
 
 ## Sessions
 

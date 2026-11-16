@@ -82,6 +82,10 @@ func runMCP(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 			return 1
 		}
 	}
+	if transport == "--stdio" && cfg.mcp.scopeFromCaller {
+		fmt.Fprintln(stderr, "start:", errStdioScopeFromCaller)
+		return 1
+	}
 	identity, err := loadIdentity(cfg.identity)
 	if err != nil {
 		fmt.Fprintln(stderr, "start:", err)

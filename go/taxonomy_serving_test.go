@@ -93,7 +93,7 @@ type servedEntry struct {
 func servedEntries(t *testing.T, s *mcpServer) []servedEntry {
 	t.Helper()
 	var out []servedEntry
-	for _, raw := range s.toolList() {
+	for _, raw := range s.toolList(nil, "") {
 		var e servedEntry
 		if err := json.Unmarshal(raw, &e); err != nil {
 			t.Fatal(err)
