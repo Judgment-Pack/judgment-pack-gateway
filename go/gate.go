@@ -23,13 +23,21 @@ type unavailable struct{ error }
 
 // gateStopped is the refusal of a gate closed for the instance's stop
 // (handover.go): the call is sent again, and the instance that takes the
-// database over serves it; retryAfter is the seconds the HTTP answer's
-// Retry-After says, the lease's renewal interval, within which a waiting
-// instance takes a released lease.
-type gateStopped struct{ retryAfter int }
+// database over serves it -- or, where instances serve it beside one
+// another (several), another of them does -- unless its session holds
+// receipts, which no other instance continues; retryAfter is the seconds
+// the HTTP answer's Retry-After says, the lease's renewal interval, within
+// which a waiting instance takes a released lease.
+type gateStopped struct {
+	retryAfter int
+	several    bool
+}
 
-func (gateStopped) Error() string {
-	return "this gateway instance is stopping and admits nothing more; nothing was admitted; send the call again, and the instance that takes over serves it"
+func (s gateStopped) Error() string {
+	if s.several {
+		return "this gateway instance is stopping and admits nothing more; nothing was admitted; another instance serving this database serves the call sent again once this one has stopped, unless its session holds receipts already: no other instance continues such a session, so acquire into a new session"
+	}
+	return "this gateway instance is stopping and admits nothing more; nothing was admitted; send the call again, and the instance that takes over serves it, unless its session holds receipts already: no other instance continues such a session, so acquire into a new session"
 }
 
 // admissionGate is a process's maintenance gate. Its state changes under

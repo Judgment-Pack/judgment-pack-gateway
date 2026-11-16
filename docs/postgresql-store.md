@@ -364,7 +364,10 @@ records itself as the session's holder when it admits the call, before the sourc
   reaches -- after every write of the old instance has ended, or failed at its fence -- and one
   that holds receipts is refused as one another process left open, `400`, until it is sealed
   after the interruption ("Sealing the sessions an instance left open", below). Two instances that
-  take up one session at once are not both admitted: the second is answered `409`.
+  take up one session at once are not both admitted: the second is answered `409`. A stopping
+  instance's `503` says so: another instance serves the call sent again once this one has
+  stopped, unless the call's session holds receipts already, which no other instance continues,
+  so the caller acquires into a new session.
 - **The registry** stays one chain: a seal is judged against the registry in the append's own
   transaction, under its lock, so no session is sealed twice. An instance keeps its walk of the
   registry from its start on, and a seal reads and walks there only what was appended since the

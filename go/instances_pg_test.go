@@ -202,6 +202,32 @@ func TestTwoPostgresInstancesServeTheirOwnSessionsAndRefuseTheOthers(t *testing.
 	}
 }
 
+// A stopping instance of the several-instances mode says what another
+// instance serves of the call sent again: not a session that holds
+// receipts.
+func TestAStoppingPostgresInstanceOfSeveralSaysWhatAnotherServes(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	dir := tempDirAt(t, 0o700)
+	_, cfg := instancesPgConfig(t, db, dir, "engine.json", false)
+	var said bytes.Buffer
+	a, err := startEngineOnKind(cfg, testSeed, sealOpenPgSources(t), nil, &said)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.stop(&said)
+	server := httptest.NewServer(a.service.handler())
+	defer server.Close()
+	a.service.closeForStop(10)
+	code, got := post(t, server, "/acquire", `{"session":"s-1","source":"plain","arguments":{"q":"x"}}`)
+	if code != http.StatusServiceUnavailable || got["error"] != (gateStopped{several: true}).Error() {
+		t.Fatalf("a stopping instance of several: %d %v", code, got)
+	}
+	if strings.Contains(fmt.Sprint(got["error"]), "the instance that takes over serves it") {
+		t.Fatalf("the refusal promises a hand-over of the session: %v", got["error"])
+	}
+}
+
 // A session that holds no receipt is taken up by another instance only once
 // its holder's row has expired, recorded at the series' next turn, and by
 // one instance where two take it up at once; one that holds a receipt is
