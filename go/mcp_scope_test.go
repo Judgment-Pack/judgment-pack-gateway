@@ -347,6 +347,7 @@ func TestTheMCPScopeConfiguration(t *testing.T) {
 		{"scope null", at("28", ``, `{"listen":"127.0.0.1:8788","scope":null}`, ``), outOfForm, ""},
 		{"scope an array", at("28", ``, `{"listen":"127.0.0.1:8788","scope":["`+callerScopeA+`"]}`, ``), outOfForm, "quipe"},
 		{"scope with a tab", at("28", ``, `{"listen":"127.0.0.1:8788","scope":"kappa\ta"}`, ``), outOfForm, "kappa"},
+		{"scope the unscoped marker", at("28", ``, `{"listen":"127.0.0.1:8788","scope":"unscoped"}`, ``), `mcp.scope is "unscoped", the marker of the sources of no scope identifier`, ""},
 		{"scope too long", at("28", ``, `{"listen":"127.0.0.1:8788","scope":"`+strings.Repeat("x", 129)+`"}`, ``), outOfForm, strings.Repeat("x", 129)},
 		{"scopeFrom another word", at("28", identity(``), `{"listen":"127.0.0.1:8788","scopeFrom":"token"}`, ``), fromForm, "token"},
 		{"scopeFrom true", at("28", identity(``), `{"listen":"127.0.0.1:8788","scopeFrom":true}`, ``), fromForm, ""},

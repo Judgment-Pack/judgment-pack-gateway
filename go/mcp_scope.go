@@ -62,6 +62,11 @@ func parseMCPScope(obj *vObject, version string, m *mcpConfig) error {
 		if !ok || !isScopeIdentifier(s) {
 			return fmt.Errorf("mcp.scope must be a scope identifier, %s", scopeForm)
 		}
+		// the bytes "unscoped" are the caller scope marker, to which no
+		// platform of this version is fixed (parsePlatformScope)
+		if s == unscopedMarker {
+			return fmt.Errorf("mcp.scope is %q, the marker of the sources of no scope identifier, to which no platform is fixed; fix the server to a platform's scope identifier, or leave mcp.scope out", unscopedMarker)
+		}
 		m.scope = s
 	}
 	if withFrom {
