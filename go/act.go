@@ -800,6 +800,9 @@ func (g *gatewayService) sessionOpen(sessionID string) string {
 // Called by the session step and again by admission, so a reservation made
 // between the two changes nothing.
 func (g *gatewayService) sessionMintedHere(sessionID string) string {
+	if state, seen := g.sessions[sessionID]; seen && state.scope != "" {
+		return fmt.Sprintf(refusalActionInScope, sessionID)
+	}
 	if state, seen := g.sessions[sessionID]; seen && state.created {
 		return ""
 	}
@@ -842,6 +845,11 @@ func (g *gatewayService) admitAction(sessionID string) error {
 	}
 	if state.sealed {
 		return actRefusal{"session", "session is sealed: " + sessionID}
+	}
+	// a session of a scope identifier holds that scope's receipts alone, and
+	// an action receipt carries no scope (ADR-0036)
+	if state.scope != "" {
+		return actRefusal{"session", fmt.Sprintf(refusalActionInScope, sessionID)}
 	}
 	if !state.created {
 		err := os.Mkdir(filepath.Join(g.storeRoot, "receipts", sessionID), 0o755)

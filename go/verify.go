@@ -39,6 +39,10 @@ const (
 
 type finding map[string]any
 
+// statusSealScopeMismatch is a session whose seal names a scope identifier
+// holding an accepted receipt of another scope, or of none (ADR-0036).
+const statusSealScopeMismatch = "seal-scope-mismatch"
+
 type report struct {
 	OK       bool      `json:"ok"`
 	Findings []finding `json:"findings"`
@@ -221,6 +225,9 @@ type seal struct {
 	// under: what a session-removal record names it by (SPEC.md §1.3a).
 	signature string
 	keyPos    int
+	// scope is the scope identifier a seal of version 2 names (ADR-0036),
+	// of either kind; "" for a seal of a form that names none.
+	scope string
 }
 
 // sealSigningInput is spelled out by SPEC.md §3: the seal context prefix, then
@@ -708,6 +715,7 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 
 	counts := map[string]int64{}
 	whole := map[string]bool{}
+	results := map[string]*sessionResult{}
 	signatures := map[string]map[string]string{}
 	var actions, naming, reconciling []*receipt
 	for _, sessionID := range sessions {
@@ -718,6 +726,7 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 		rep.Observations = append(rep.Observations, result.observations...)
 		counts[sessionID] = result.count
 		whole[sessionID] = result.whole
+		results[sessionID] = result
 		signatures[sessionID] = result.signatures
 		actions = append(actions, result.actions...)
 		reconciling = append(reconciling, result.reconciling...)
@@ -790,6 +799,15 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 		case s.interrupted:
 			rep.Observations = append(rep.Observations, finding{
 				"sessionId": sessionID, "callIndex": s.finalCount - 1, "observation": "sealed-after-interruption",
+			})
+		}
+		// ADR-0036: a seal that names a scope identifier says every receipt
+		// it counts is of that scope, so an accepted receipt of another, or
+		// of none, is found, once, beside whatever else the session finds. A
+		// seal of a form that names none asks nothing of the receipts.
+		if sealed && s.scope != "" && results[sessionID].offScope(s.scope) {
+			rep.Findings = append(rep.Findings, finding{
+				"sessionId": sessionID, "status": statusSealScopeMismatch,
 			})
 		}
 	}
@@ -1025,6 +1043,21 @@ type sessionResult struct {
 	// observations are what the artifact step says of receipts that passed
 	// the ladder with no bytes re-digested (SPEC.md §1.3a).
 	observations []finding
+	// scopes are the top-level scope members of the receipts that passed
+	// the ladder, once each, "" standing for a receipt that holds none: what
+	// a seal naming a scope is held to (ADR-0036).
+	scopes map[string]bool
+}
+
+// offScope is whether a receipt that passed the ladder holds no scope member,
+// or one other than scope, byte for byte.
+func (r *sessionResult) offScope(scope string) bool {
+	for held := range r.scopes {
+		if held != scope {
+			return true
+		}
+	}
+	return false
 }
 
 func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*sessionResult, error) {
@@ -1113,7 +1146,7 @@ func fsSessionReading(storeRoot, sessionID string) (sessionReading, error) {
 
 // verifySessionRead is verifySessionWith of a session as reading holds it.
 func verifySessionRead(sessionID, authority string, keys []reachedKey, ret *retention, reading sessionReading) (*sessionResult, error) {
-	result := &sessionResult{signatures: map[string]string{}}
+	result := &sessionResult{signatures: map[string]string{}, scopes: map[string]bool{}}
 	names := slices.Clone(reading.names)
 	// Filename string order. SPEC.md does not make finding order normative;
 	// corpus/README.md records that as an open question.
@@ -1151,6 +1184,8 @@ func verifySessionRead(sessionID, authority string, keys []reachedKey, ret *rete
 		})
 		if status == "ok" {
 			valid = append(valid, r)
+			scope, _ := memberString(r.obj, "scope")
+			result.scopes[scope] = true
 			if r.observation != "" {
 				result.observations = append(result.observations, finding{
 					"sessionId": sessionID, "callIndex": r.callIndex, "observation": r.observation,

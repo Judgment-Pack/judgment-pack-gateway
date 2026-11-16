@@ -52,11 +52,16 @@ const (
 	refusalLeftOpen = "session %s was left open by another process: the store holds receipts in it that this process did not mint, and no seal closes it; its chain is not continued from an empty memory, nor is it sealed here from a count on disk, so acquire into a new session (gateway verify reports this one unregistered-session, and observes it session-open while its receipts are whole; gateway seal-open, with the gateway stopped, seals it as sealed after an interruption)"
 	refusalNotADir  = "session %s is in the store as something other than a session directory, which this process did not make; nothing is taken up there"
 	refusalUnread   = "session %s could not be read in the store, so whether another process left receipts in it is not known; it is refused rather than taken for empty"
-	// refusalOtherScope is an acquisition's, on a kind that keeps each scope
-	// identifier's rows apart (scopeKeeper), into a session whose receipts
-	// are of another scope than the source's: held by this process or left
-	// in the store, with receipts or none. It names neither scope.
-	refusalOtherScope = "session %s holds the receipts of a scope other than this source's (another scope identifier, or none): with the PostgreSQL storage kind a session's receipts are of one scope, so acquire into a new session"
+	// refusalOtherScope is an acquisition's into a session whose receipts
+	// are of another scope than the source's: on every kind, one this
+	// process holds (ADR-0036), and on a kind that keeps each scope
+	// identifier's rows apart (scopeKeeper) one left in the store too, with
+	// receipts or none. It names neither scope.
+	refusalOtherScope = "session %s holds the receipts of a scope other than this source's (another scope identifier, or none): a session's receipts are of one scope, so acquire into a new session"
+	// refusalActionInScope is an action's into a session of a scope
+	// identifier: an action receipt carries no scope (ADR-0026), and a
+	// session's receipts are of one scope (ADR-0036). It names no scope.
+	refusalActionInScope = "session %s holds the receipts of a scope identifier, and an action receipt carries none: a session's receipts are of one scope, so an action opens a session of its own"
 	// refusalHeldElsewhere is a read's and a seal's, where instances serve
 	// one database beside one another, into a session another instance
 	// holds whose row of the start lease is live. It names no instance.

@@ -227,7 +227,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 147 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 160 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -395,6 +395,24 @@ first, observed `session-removed` beside the finding `seal-conflict`, which stan
 the store holds the session. A verifier written before the records (v0.28.0, in Go and in
 TypeScript) answers `sealed-session-missing` where four of these vectors expect the
 observation, and agrees with the rest.
+
+Thirteen are of a seal that names its session's scope identifier (§3, "A seal of version 2";
+§3c; §4 step 3; `docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md`;
+issue #442), each named `v3-seal-scope-*` and signed, receipts and seals alike, by a signer that
+shares no code with the gateway, its expected answers written from §3, §3c and §4; the signer
+reproduces the frozen seal of `v3-scope-valid` byte for byte. Each states its observations where
+it has any. A session of two receipts of `scope-a` sealed by a seal of version 2 naming it is
+`ok`; the same seal naming `scope-b`, and a seal naming `scope-a` over two receipts of no scope,
+are `seal-scope-mismatch`, the seal anchoring the count. A seal of version 2 loads nothing, and
+the session is `unregistered-session`, observed `session-open`, when its scope is changed after
+signing, taken out, or taken out with `sealVersion` (the line then read as a seal of §3's form,
+whose signature does not verify), when it names `sealVersion` `"3"`, holds an eighth member,
+holds a scope with a zero width space, or is signed under §3's prefix. A seal after an
+interruption of ten members naming `scope-a` is `ok`, observed `sealed-after-interruption`; naming
+`scope-b`, observed so and `seal-scope-mismatch`; signed under §3c's first prefix, it loads
+nothing. A verifier written before these seals (v0.30.0, in Go and in TypeScript) answers
+`unregistered-session` for the three vectors whose seal this version loads where `ok` or
+`seal-scope-mismatch` is expected, and for the two mismatch vectors, and agrees with the rest.
 
 **`witnesses`.** A vector whose report names witnesses gives them in `expected`
 as `witnesses`, each `{"trail", "origin", "keyId"}`, and a runner compares them

@@ -57,6 +57,11 @@ type sealOpenTarget struct {
 	sessionID string
 	count     int64
 	head      string
+	// scope is the scope identifier every receipt of the session carries,
+	// which the seal names (ADR-0036); "" for a session of no scope, and for
+	// one an earlier release left holding receipts of several scopes, or of
+	// a scope and none, which is sealed in §3c's form as before.
+	scope string
 }
 
 // sealOpenRead is a session that could not be read: no answer, so nothing is
@@ -164,7 +169,13 @@ func sealOpenJudge(st sealOpenStore, authority string, walk *registryWalk, ret *
 	// a receipt the ladder passes holds its signature as 128 lowercase
 	// hexadecimal characters, which is what the seal names
 	head := result.signatures[strconv.FormatInt(result.count-1, 10)]
-	return &sealOpenTarget{sessionID: sessionID, count: result.count, head: head}, "", nil
+	var scope string
+	if len(result.scopes) == 1 {
+		for held := range result.scopes {
+			scope = held
+		}
+	}
+	return &sealOpenTarget{sessionID: sessionID, count: result.count, head: head, scope: scope}, "", nil
 }
 
 // sealOpenUnder seals what may be sealed -- the session named, or with ""
@@ -210,7 +221,7 @@ func sealOpenUnder(st sealOpenStore, authority string, writer *registryWriter, d
 	}
 	var sealed []*vObject
 	for _, t := range targets {
-		record, err := writer.sealAfterInterruption(t.sessionID, t.count, t.head, stamp(), via)
+		record, err := writer.sealAfterInterruptionOfScope(t.sessionID, t.count, t.head, stamp(), via, t.scope)
 		if errors.Is(err, errSessionAlreadySealed) {
 			// sealed since it was judged: on the PostgreSQL kind, where
 			// instances serve beside one another, by another instance's

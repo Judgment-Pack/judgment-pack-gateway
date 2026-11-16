@@ -46,7 +46,17 @@ func scopeStore(t *testing.T, extra ...[3]string) (*gatewayService, string) {
 	defer server.Close()
 	scopes := map[string]string{"a": testScope, "b": otherScope}
 	calls := append([][3]string{{"a1", "a", "only-a"}, {"a1", "a", "shared"}, {"a2", "a", "open-a"}, {"b1", "b", "shared"}, {"b1", "b", "only-b"}}, extra...)
+	// a session given calls of several scopes holds them as one an earlier
+	// release wrote may (ADR-0036), and is sealed in §3's form
+	first := map[string]string{}
+	mixed := map[string]bool{}
 	for _, c := range calls {
+		if scope, seen := first[c[0]]; !seen {
+			first[c[0]] = scopes[c[1]]
+		} else if scope != scopes[c[1]] {
+			mixed[c[0]] = true
+		}
+		bindAsEarlier(g, c[0], scopes[c[1]])
 		body := `{"session":"` + c[0] + `","source":"` + c[1] + `","arguments":{"q":"` + c[2] + `"}}`
 		if scope, scoped := scopes[c[1]]; scoped {
 			body = `{"session":"` + c[0] + `","source":"` + c[1] + `","scope":` + jsonText(t, scope) + `,"arguments":{"q":"` + c[2] + `"}}`
@@ -56,6 +66,9 @@ func scopeStore(t *testing.T, extra ...[3]string) (*gatewayService, string) {
 		}
 	}
 	for _, session := range []string{"a1", "b1"} {
+		if mixed[session] {
+			bindAsEarlier(g, session, "")
+		}
 		if code, out := post(t, server, "/seal", `{"session":"`+session+`"}`); code != http.StatusOK {
 			t.Fatalf("seal %s: %d %v", session, code, out)
 		}

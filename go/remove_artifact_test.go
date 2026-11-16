@@ -54,10 +54,16 @@ func removalStore(t *testing.T) (*gatewayService, string) {
 		`{"session":"r","source":"unkept","arguments":{"q":"c"}}`,
 		`{"session":"r","source":"scoped","scope":` + jsonText(t, testScope) + `,"arguments":{"q":"d"}}`,
 	} {
+		// r holds receipts of a scope and of none, as a session an earlier
+		// release wrote may (ADR-0036), and is sealed in §3's form
+		if strings.Contains(body, `"scoped"`) {
+			bindAsEarlier(g, "r", testScope)
+		}
 		if code, out := post(t, server, "/acquire", body); code != http.StatusOK {
 			t.Fatalf("acquire %s: %d %v", body, code, out)
 		}
 	}
+	bindAsEarlier(g, "r", "")
 	if code, out := post(t, server, "/seal", `{"session":"r"}`); code != http.StatusOK {
 		t.Fatalf("seal: %d %v", code, out)
 	}
