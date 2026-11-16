@@ -170,7 +170,9 @@ func sealOpenJudge(st sealOpenStore, authority string, walk *registryWalk, ret *
 	// hexadecimal characters, which is what the seal names
 	head := result.signatures[strconv.FormatInt(result.count-1, 10)]
 	var scope string
-	if len(result.scopes) == 1 {
+	// one scope identifier and no receipt of none: a session an earlier
+	// release left mixed is sealed in §3c's form, as before
+	if len(result.scopes) == 1 && !result.noScope {
 		for held := range result.scopes {
 			scope = held
 		}

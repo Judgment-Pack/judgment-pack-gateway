@@ -1675,15 +1675,18 @@ of one operator's sources can be told apart by the party each serves.
   Use one session per scope identifier. A gateway before this one let a session of the
   filesystem kind mix them; such sessions in an existing store verify as they did.
 - **Registry lines.** A seal is of one session. The seal of a session of a scope identifier is a
-  seal of version 2 that names it under the signature (`sealVersion` `"2"`, `scope`; SPEC.md §3,
-  "A seal of version 2"), and so is the seal `gateway seal-open`, or the start's switch, makes
+  seal of version 2 that names it under the signature by its digest in the session, never by the
+  identifier (`sealVersion` `"2"`, `scopeDigest`; SPEC.md §3, "A seal of version 2"), and so is the seal `gateway seal-open`, or the start's switch, makes
   after an interruption of such a session (SPEC.md §3c, "Naming the scope"); a verifier of this
   version reports the session `seal-scope-mismatch` where an accepted receipt in it carries
   another scope or none. The seal of a session of no scope is the form it was before, byte for
   byte, as are the seals an earlier gateway wrote, which name no scope whatever their sessions
   held. A rotation statement (SPEC.md §3b) is of the key and of no source, and names no scope.
-  So the lines that concern a scoped source are the seals of version 2, each naming the scope
-  identifier of the one session it seals; no other line carries a scope identifier. A verifier
+  So the lines that concern a scoped source are the seals of version 2, each naming by its digest
+  the scope identifier of the one session it seals; no line carries a scope identifier, so a
+  registry, an export's or a copy, lists none, and on the PostgreSQL kind a gateway of one scope
+  reads none of another's from it (ADR-0036, decision 9). The digest is not a secret: one who
+  guesses an identifier can digest it in a session's id and test it. A verifier
   written before this gateway reads a seal of version 2 as a seal it cannot verify and reports
   the session `unregistered-session`: readers of a store with scoped sessions need a verifier of
   this version.

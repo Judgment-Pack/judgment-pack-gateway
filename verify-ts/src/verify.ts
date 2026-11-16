@@ -182,12 +182,33 @@ const interruptionKind = "seal-after-interruption";
 const interruptionPrefix = "judgment-pack-gateway/seal-after-interruption/1:";
 const interruptionMembers = ["finalCount", "headSignature", "keyId", "kind", "sealedAt", "sealedVia", "sessionId", "signature"];
 // A seal of version 2 (§3, "A seal of version 2"; ADR-0036): the seal of a
-// session of a scope identifier, naming it under the signature, of either
-// kind. sealVersion selects the form, and each is signed under a prefix of
-// its own, so no form is read as another.
+// session of a scope identifier, naming it under the signature by its
+// digest in the session, never by the identifier, of either kind.
+// sealVersion selects the form, and each is signed under a prefix of its
+// own, so no form is read as another.
 const scopedSealPrefix = "judgment-pack-gateway/seal-version/2:";
 const interruptionPrefix2 = "judgment-pack-gateway/seal-after-interruption/2:";
-const scopedSealMembers = ["finalCount", "keyId", "scope", "sealVersion", "sealedAt", "sessionId", "signature"];
+const sealScopeDigestPrefix = "judgment-pack-gateway/seal-scope/1:";
+const scopedSealMembers = ["finalCount", "keyId", "scopeDigest", "sealVersion", "sealedAt", "sessionId", "signature"];
+const digestForm = /^sha256:[0-9a-f]{64}$/;
+
+// sealScopeDigest is what a seal of version 2 names a session's scope by:
+// "sha256:" and the lowercase hex of SHA-256 over the prefix and the
+// canonical form of {"scope", "sessionId"} (§3, "A seal of version 2").
+function sealScopeDigest(sessionId: string, scope: string): string {
+  const named: ObjectValue = {
+    type: "object",
+    members: [
+      { name: "scope", value: { type: "string", value: scope } },
+      { name: "sessionId", value: { type: "string", value: sessionId } },
+    ],
+  };
+  const body = canonical(named);
+  if (body === null) {
+    return "";
+  }
+  return "sha256:" + sha256Hex(Buffer.concat([Buffer.from(sealScopeDigestPrefix, "utf8"), body]));
+}
 
 // A key id: SHA-256 of the 32 raw bytes of the public key, in hex, its
 // first 32 characters.
@@ -669,9 +690,9 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
 // signature is the seal's signature, its bytes in lowercase hex, and keyPos
 // the place among the keys the walk reached of the key it loaded under:
 // what a session-removal record names it by (§1.3a).
-// scope is the scope identifier a seal of version 2 names; undefined for a
-// seal of a form that names none.
-type Seal = { readonly sessionId: string; readonly finalCount: bigint; readonly head?: string; readonly signature: string; readonly keyPos: number; readonly scope?: string };
+// scopeDigest is the digest of the scope identifier a seal of version 2
+// names (sealScopeDigest); undefined for a seal of a form that names none.
+type Seal = { readonly sessionId: string; readonly finalCount: bigint; readonly head?: string; readonly signature: string; readonly keyPos: number; readonly scopeDigest?: string };
 
 // sealOf is a registry line, read, as a seal, when it is one whose key id
 // is the current key's at its line (§3b, §4 step 2) and whose signature
@@ -738,7 +759,7 @@ function scopedSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string, keyP
   const sealKeyId = of("keyId", /^[0-9a-f]{32}$/);
   const sealedAt = of("sealedAt", /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
   const signature = of("signature", /^[0-9a-f]{128}$/);
-  const scope = str(member(v, "scope"));
+  const scopeDigest = of("scopeDigest", digestForm);
   if (
     str(member(v, "sealVersion")) !== "2" ||
     sessionId === undefined ||
@@ -750,8 +771,7 @@ function scopedSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string, keyP
     sealKeyId === undefined ||
     sealedAt === undefined ||
     signature === undefined ||
-    scope === undefined ||
-    !isScopeIdentifier(scope)
+    scopeDigest === undefined
   ) {
     return null;
   }
@@ -762,7 +782,7 @@ function scopedSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string, keyP
   if (!signed(key, scopedSealPrefix, payload, signature)) {
     return null;
   }
-  return { sessionId: own(sessionId), finalCount: finalCount.integer, signature: own(signature), keyPos, scope: own(scope) };
+  return { sessionId: own(sessionId), finalCount: finalCount.integer, signature: own(signature), keyPos, scopeDigest: own(scopeDigest) };
 }
 
 // isInterruption is whether a registry line is to be read as a seal made
@@ -779,15 +799,15 @@ function isInterruption(v: Value | null): v is ObjectValue {
 // key, over the prefix and the canonical form of everything but the
 // signature; any other such line is no seal of either kind.
 function interruptionSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string, keyPos: number): Seal | null {
-  // one of version 2 holds sealVersion "2" and a scope beside its own
+  // one of version 2 holds sealVersion "2" and a scopeDigest beside its own
   // members, and is signed under a prefix of its own (ADR-0036)
   const versioned = member(v, "sealVersion") !== undefined;
-  const allowed = versioned ? [...interruptionMembers, "scope", "sealVersion"] : interruptionMembers;
+  const allowed = versioned ? [...interruptionMembers, "scopeDigest", "sealVersion"] : interruptionMembers;
   if (hasDuplicate(v) || !v.members.every((m) => allowed.includes(m.name))) {
     return null;
   }
-  const scope = versioned ? str(member(v, "scope")) : undefined;
-  if (versioned && (str(member(v, "sealVersion")) !== "2" || scope === undefined || !isScopeIdentifier(scope))) {
+  const scopeDigest = versioned ? str(member(v, "scopeDigest")) : undefined;
+  if (versioned && (str(member(v, "sealVersion")) !== "2" || scopeDigest === undefined || !digestForm.test(scopeDigest))) {
     return null;
   }
   const of = (name: string, form: RegExp): string | undefined => {
@@ -823,7 +843,7 @@ function interruptionSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string
   if (!signed(key, versioned ? interruptionPrefix2 : interruptionPrefix, payload, signature)) {
     return null;
   }
-  return { sessionId: own(sessionId), finalCount: finalCount.integer, head: own(head), signature: own(signature), keyPos, ...(scope !== undefined && { scope: own(scope) }) };
+  return { sessionId: own(sessionId), finalCount: finalCount.integer, head: own(head), signature: own(signature), keyPos, ...(scopeDigest !== undefined && { scopeDigest: own(scopeDigest) }) };
 }
 
 // verifyStore is the verdict of §4 over the store at root, against the
@@ -903,7 +923,7 @@ export function verifyStore(
     }
     const first = seals.get(seal.sessionId);
     if (first === undefined) {
-      budget.charge(entryCost + size(seal.sessionId) + size(seal.signature) + (seal.head === undefined ? 0 : size(seal.head)) + (seal.scope === undefined ? 0 : size(seal.scope)), "the registry's seals");
+      budget.charge(entryCost + size(seal.sessionId) + size(seal.signature) + (seal.head === undefined ? 0 : size(seal.head)) + (seal.scopeDigest === undefined ? 0 : size(seal.scopeDigest)), "the registry's seals");
       seals.set(seal.sessionId, seal);
     } else if ((first.head !== undefined || seal.head !== undefined) && !conflicted.has(seal.sessionId)) {
       budget.charge(entryCost, "the registry's seals");
@@ -1127,7 +1147,8 @@ export function verifyStore(
       // ADR-0036: a seal naming a scope identifier says every receipt it
       // counts is of that scope; an accepted receipt of another, or of none,
       // is found once, beside whatever else the session finds.
-      if (seal?.scope !== undefined && judged.some((j) => j.status === "ok" && j.scope !== seal.scope)) {
+      const scopeDigest = seal?.scopeDigest;
+      if (scopeDigest !== undefined && judged.some((j) => j.status === "ok" && (j.scope === undefined || sealScopeDigest(session, j.scope) !== scopeDigest))) {
         yield [
           ["sessionId", session],
           ["status", "seal-scope-mismatch"],

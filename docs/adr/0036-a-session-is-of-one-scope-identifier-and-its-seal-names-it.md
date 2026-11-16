@@ -24,7 +24,9 @@ session whose two receipts carry two scope identifiers, and verifies `ok`.
 Option (a): a session is bound to the scope identifier of its first acquisition, on every kind,
 and an acquisition or an action of another scope, or of none, is refused before anything runs;
 the seal of a session bound to a scope identifier is of a new seal version that names it under
-the signature, and a verifier of this version holds the session's receipts to it. A session of
+the signature by its digest in the session, never by the identifier, so that no registry line
+carries a scope identifier (decision 9), and a verifier of this version holds the session's
+receipts to it. A session of
 no scope is sealed in §3's form as before, byte for byte, and every store an earlier release
 wrote verifies as it did. `gateway verify` and `gateway export` do not select by scope in this
 change; the operator page says why (decision 7).
@@ -41,6 +43,10 @@ change; the operator page says why (decision 7).
   several instances (ADR-0035: a session is held by the instance that minted it, so the binding
   in that instance's memory is the session's).
 - Removing one scope (ADR-0034) meets fewer sessions it must leave whole.
+- ADR-0033's promise holds: on the PostgreSQL kind a transaction of one scope identifier reads no
+  other scope's identifier, and a removal of a scope (ADR-0034) leaves none of its identifier
+  behind but its own removal records, while the registry stays one chain of no scope that every
+  view reads whole.
 - Both verifiers agree, and a verifier written before the change fails closed on the new form
   rather than reading it as the old one.
 
@@ -80,22 +86,24 @@ scopes in one session is refused) falls on a use that ADR-0026 recorded as a gap
 2. **A seal of version 2.** A session of a scope identifier is sealed by
 
    ```
-   { "finalCount": <integer>, "keyId": <hex>, "scope": <string>, "sealVersion": "2",
+   { "finalCount": <integer>, "keyId": <hex>, "scopeDigest": <string>, "sealVersion": "2",
      "sealedAt": <string>, "sessionId": <string>, "signature": <hex> }
    ```
 
    its signature over `"judgment-pack-gateway/seal-version/2:"` and canon of the record without
-   `signature`, every other member retained. A session of no scope is sealed in §3's form, the
-   bytes it was sealed with before. The member `sealVersion` is what selects the form: a registry
+   `signature`, every other member retained. `scopeDigest` is `"sha256:"` and the lowercase hex
+   of SHA-256 over `"judgment-pack-gateway/seal-scope/1:"` and canon of `{"scope", "sessionId"}`
+   (decision 9). A session of no scope is sealed in §3's form, the bytes it was sealed with
+   before. The member `sealVersion` is what selects the form: a registry
    line that is one JSON object holding `sealVersion` and no `kind` is read as a seal of that
    version and as nothing else; `"2"` loads when the line holds exactly these seven members, each
-   of its form (`scope` by ADR-0026's one function, `finalCount` from 0 to 2^53-1, `sealedAt` and
+   of its form (`scopeDigest` of §1.2a's digest form, `finalCount` from 0 to 2^53-1, `sealedAt` and
    `keyId` as §3c's), its `keyId` is the current key's at its line and its signature verifies; a
    line of any other `sealVersion` loads nothing.
 
 3. **A seal after an interruption names the scope too.** `gateway seal-open` and the start's
    switch (§3c) seal a session every receipt of which carries one scope identifier with §3c's
-   eight members and `scope` and `sealVersion: "2"`, signed under
+   eight members and `scopeDigest` and `sealVersion: "2"`, signed under
    `"judgment-pack-gateway/seal-after-interruption/2:"`; a session of no scope, and a session an
    earlier release left open holding receipts of several scopes, or of a scope and none, in §3c's
    form as before. On either kind the scope sealed is the one the session's receipts carry, as
@@ -105,8 +113,8 @@ scopes in one session is refused) falls on a use that ADR-0026 recorded as a gap
 4. **What a verifier checks.** A seal of either kind that names a scope anchors its session as
    its form without the member anchors it (counts, head). Beside that, at §4 step 3, a session
    whose first loadable seal names a scope identifier and that holds a receipt whose ladder
-   status is `ok` and whose top-level `scope` is not that string, byte for byte (absent included),
-   is **`seal-scope-mismatch`**, `{sessionId, status}`, once; the receipts' own findings stand
+   status is `ok` and that carries no top-level `scope` string, or one whose digest in the session
+   is not the seal's `scopeDigest`, is **`seal-scope-mismatch`**, `{sessionId, status}`, once; the receipts' own findings stand
    beside it. It is listed with the seal findings of §5a.1. A seal of a form that names no scope
    asks nothing of its receipts' scopes, so a session an earlier release sealed over receipts of
    several scopes verifies as it did.
@@ -119,11 +127,13 @@ scopes in one session is refused) falls on a use that ADR-0026 recorded as a gap
 
 6. **Registry lines.** The registry holds seals of §3's form, seals after an interruption, seals
    of version 2 and the rotation statements of §3b. A seal is of one session; under this decision
-   a seal of version 2 names the scope of the session it seals, and a seal of §3's or §3c's form
+   a seal of version 2 names the scope of the session it seals by its digest (decision 9), and a
+   seal of §3's or §3c's form
    that this release writes is of a session of no scope (or, for §3c, one an earlier release left
    mixed). Seals an earlier release wrote name none, whatever their sessions held. A rotation
    statement is of the key, of no source, and names no scope. The removal records of
-   `artifact-removals.jsonl` (ADR-0034) are no registry lines and already name the scope.
+   `artifact-removals.jsonl` (ADR-0034) are no registry lines and already name the scope. No
+   registry line carries a scope identifier.
 
 7. **Export and verify do not select by scope.** The registry is one chain that a verifier needs
    whole (§3b: the walk from the pinned key), and §4 step 4 reports every sealed session a store
@@ -141,11 +151,36 @@ scopes in one session is refused) falls on a use that ADR-0026 recorded as a gap
    the PostgreSQL schema is unchanged (the registry's rows hold a line's bytes). SPEC.md §3, §3c,
    §4 step 3 and §5a.1, both verifiers and the corpus move together.
 
+9. **The registry names a scope by its digest, never by its identifier.** The registry is one
+   chain, of no scope, that every view reads whole (ADR-0033, decision 5): on the PostgreSQL kind
+   its lines are one log of contiguous byte ranges (`gateway.log_records`, each record following
+   the one before), and §3b's walk reads every line from the pinned key. A seal that carried the
+   scope identifier would put every scope's identifier in rows every scope's transaction reads,
+   which `gateway.scope_identifiers`' forced row security was made to prevent (ADR-0033, decision
+   2), and a removal of the scope (ADR-0034) would leave its identifier in the chain it may not
+   cut. So the seal carries the identifier's digest, the session's id in it: a verifier, which
+   reads the receipts, digests each accepted receipt's `scope` in the session and compares; the
+   identifier itself is in the scope's own rows (its receipts), which row security holds and a
+   removal takes away. On the filesystem kind one store and one registry are the operator's,
+   which every scope's sources share, and the same bytes are written; the digest keeps the
+   registry free of identifiers there too, so an export or a copy of a registry carries none.
+
+   The alternative was rows of the registry held per scope: each scoped session's seal a row of
+   that scope, under forced row security, so other scopes' views would not read it and
+   `remove-scope` would remove it. It is not taken: the registry log's rows follow one another
+   by offset, so a row a view cannot read is a gap in the chain the start and `gateway verify`
+   walk whole, removing a seal would cut the chain for every row after it, and a verifier could
+   no longer tell a removed seal from a deleted one. It needs a new schema version and a log
+   that is not one chain, for an answer the digest gives without either.
+
 ### Consequences
 
-- Good, because a reader of a seal that loads under the operator's key learns which scope
-  identifier its session is of, and a verifier of this version checks that every accepted receipt
-  it counts says the same.
+- Good, because a seal that loads under the operator's key binds its session to one scope
+  identifier, which a reader holding the session's receipts, or the identifier, can tell, and a
+  verifier of this version checks that every accepted receipt it counts says the same.
+- Good, because no registry line carries a scope identifier on either kind (decision 9): the
+  PostgreSQL kind's row security still keeps every identifier from another scope's transaction,
+  and a removal of a scope leaves its identifier in its removal records alone.
 - Good, because the two storage kinds answer an acquisition of another scope alike, and a removal
   of one scope meets no session this release made that it must leave whole.
 - Good, because a session of no scope, its seal and every store an earlier release wrote are
@@ -157,6 +192,12 @@ scopes in one session is refused) falls on a use that ADR-0026 recorded as a gap
   `unregistered-session`; a reader of a store with scoped sessions needs this version.
 - Bad, because seals an earlier release wrote stay unattributed, so nothing selects a scope's
   sessions by seal across a store's whole history, and export and verify still read a whole store.
+- Bad, because a digest is not a secret: a reader of the registry, a gateway of another scope
+  among them, who already holds or guesses an identifier can digest it in a session's id and
+  learn whether that session is of it. ADR-0026 calls the identifier a label and not a
+  credential; the digest keeps the registry from listing identifiers or grouping sessions by
+  scope, and does not hide an identifier a reader can guess. A removal of a scope leaves its
+  sessions' digests in the registry, digests of rows no longer held.
 - Revisit when a verdict by scope is designed (its own issue), when a caller's token is held to a
   scope (ADR-0026), or when the registry is kept per scope.
 

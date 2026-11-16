@@ -1071,29 +1071,36 @@ Checking a seal needs only the **public** key — see §5.
 
 **A seal of version 2.** A session is of one scope (§6, `/acquire`): its receipts all carry
 one scope identifier (§1.2a, `scope`), or all carry none. A session of a scope identifier is
-sealed by a record that names it
+sealed by a record that names it by its digest, never by the identifier
 (`docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md`):
 
 ```
-{ "finalCount": <integer>, "keyId": <hex>, "scope": <string>, "sealVersion": "2",
+{ "finalCount": <integer>, "keyId": <hex>, "scopeDigest": <string>, "sealVersion": "2",
   "sealedAt": <string>, "sessionId": <string>, "signature": <hex> }
 ```
 
 `signature` = Ed25519, under the gateway's signing seed, over
 `"judgment-pack-gateway/seal-version/2:" + canon(the record without signature)`, every other
-member retained, so the scope identifier is signed with the count. `scope` is the identifier
-every receipt of the session carries, of the form §1.2a gives it; `finalCount` an integer from
+member retained, so the scope is signed with the count. `scopeDigest` is the scope identifier
+every receipt of the session carries, of the form §1.2a gives it, digested in the session:
+`"sha256:"` and the 64 lowercase hexadecimal characters of SHA-256 over
+`"judgment-pack-gateway/seal-scope/1:" + canon({"scope": <identifier>, "sessionId": <the
+seal's sessionId>})`. A registry line therefore carries no scope identifier: a reader of the
+registry learns of a sealed session that it is of some scope, and can tell which only by
+digesting an identifier it already holds; the session's id is in the digest, so two sessions
+of one scope carry different digests. `finalCount` is an integer from
 0 to 2^53−1; `keyId` 32 lowercase hexadecimal characters; `sealedAt` `YYYY-MM-DDThh:mm:ssZ` in
 UTC. A session of no scope is sealed in the form above, the bytes it was sealed with before.
 The member `sealVersion` is what selects the form: a registry line that is one JSON object
 holding `sealVersion` and no `kind` is read as a seal of that version and as nothing else,
 never as a seal of the form above, whose signature covers four members under another prefix.
 A line of `sealVersion` `"2"` loads (§4 step 2) when it holds exactly the seven members above,
-no name twice, each of the form given, its `keyId` is the key current at its line in §3b's walk,
-and its signature verifies under that key; a line of any other `sealVersion`, or not so, loads
-nothing. A seal of version 2 anchors its session as a seal of the form above does, and a
-verifier holds the session's receipts to the scope it names (§4 step 3,
-`seal-scope-mismatch`). A verifier written before version 2 reads such a line as a seal of the
+no name twice, each of the form given (`scopeDigest` of the digest form of §1.2a, which a
+verifier checks without knowing the identifier), its `keyId` is the key current at its line in
+§3b's walk, and its signature verifies under that key; a line of any other `sealVersion`, or not
+so, a line holding a member `scope` among them, loads nothing. A seal of version 2 anchors its
+session as a seal of the form above does, and a verifier holds the session's receipts to the
+scope it names (§4 step 3, `seal-scope-mismatch`). A verifier written before version 2 reads such a line as a seal of the
 form above whose signature does not verify, so it loads nothing and the session is
 `unregistered-session` to it: it fails closed, and a reader of a store with scoped sessions
 needs a verifier of this version.
@@ -1343,8 +1350,9 @@ every other member retained. Its members:
 It names no operator: the key signed it, and `sealedVia` says by which path.
 
 **Naming the scope.** A session every receipt of which carries one scope identifier
-(§1.2a, `scope`) is sealed with the eight members above and two more, `"scope": <string>`,
-that identifier, and `"sealVersion": "2"`, its signature over
+(§1.2a, `scope`) is sealed with the eight members above and two more, `"scopeDigest":
+<string>`, that identifier's digest in the session (§3, "A seal of version 2"), and
+`"sealVersion": "2"`, its signature over
 `"judgment-pack-gateway/seal-after-interruption/2:" + canon(the record without signature)`
 (`docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md`, decision 3).
 A session of no scope is sealed with the eight members under the prefix above, as before, and
@@ -1355,7 +1363,7 @@ of one and of none, which a gateway of this version does not make (§6, `/acquir
 `"seal-after-interruption"` is read as such a seal and as nothing else — never as a seal of
 §3's form or of version 2, whose signatures cover other members under other prefixes, so none
 can be replayed as another. It loads (§4 step 2) when it holds exactly the eight members above,
-or exactly those and `scope` and `sealVersion` `"2"`, no name twice, each of the form given,
+or exactly those and `scopeDigest` and `sealVersion` `"2"`, no name twice, each of the form given,
 its `keyId` is the key current at its line in §3b's walk, and its signature verifies under that
 key and the prefix of its form. A line that is not so loads nothing: one holding a
 `sealVersion` other than `"2"`, or one of the two members without the other, among them. A
@@ -1473,9 +1481,10 @@ start, a session that is not whole is named and stays open, and the gateway serv
      stand beside either.
    - beside any of the above, for a session the first loaded seal of which names a
      scope identifier (a seal of version 2, §3, or one made after an interruption
-     naming it, §3c): a receipt of the session whose ladder status is `ok` and whose
-     top-level `scope` is not that string, byte for byte, a receipt carrying no
-     `scope` among them → **`seal-scope-mismatch`**, `{sessionId, status}`, once for
+     naming it, §3c): a receipt of the session whose ladder status is `ok` and that
+     carries no top-level `scope` string, or one whose digest in the session (§3, "A
+     seal of version 2") is not the seal's `scopeDigest`, byte for byte →
+     **`seal-scope-mismatch`**, `{sessionId, status}`, once for
      the session. The receipts' own findings stand beside it. A seal of a form that
      names no scope asks nothing of its receipts' scopes, so a session an earlier
      release sealed over receipts of several scope identifiers is verified as it was.

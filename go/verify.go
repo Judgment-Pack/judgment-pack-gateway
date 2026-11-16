@@ -225,9 +225,10 @@ type seal struct {
 	// under: what a session-removal record names it by (SPEC.md §1.3a).
 	signature string
 	keyPos    int
-	// scope is the scope identifier a seal of version 2 names (ADR-0036),
-	// of either kind; "" for a seal of a form that names none.
-	scope string
+	// scopeDigest is the digest of the scope identifier a seal of version 2
+	// names (ADR-0036; sealScopeDigest), of either kind; "" for a seal of a
+	// form that names none.
+	scopeDigest string
 }
 
 // sealSigningInput is spelled out by SPEC.md §3: the seal context prefix, then
@@ -805,7 +806,7 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 		// it counts is of that scope, so an accepted receipt of another, or
 		// of none, is found, once, beside whatever else the session finds. A
 		// seal of a form that names none asks nothing of the receipts.
-		if sealed && s.scope != "" && results[sessionID].offScope(s.scope) {
+		if sealed && s.scopeDigest != "" && results[sessionID].offScope(sessionID, s.scopeDigest) {
 			rep.Findings = append(rep.Findings, finding{
 				"sessionId": sessionID, "status": statusSealScopeMismatch,
 			})
@@ -1044,16 +1045,22 @@ type sessionResult struct {
 	// the ladder with no bytes re-digested (SPEC.md §1.3a).
 	observations []finding
 	// scopes are the top-level scope members of the receipts that passed
-	// the ladder, once each, "" standing for a receipt that holds none: what
-	// a seal naming a scope is held to (ADR-0036).
-	scopes map[string]bool
+	// the ladder, once each, and noScope whether one of them holds none (or
+	// one that is no string): what a seal naming a scope is held to
+	// (ADR-0036).
+	scopes  map[string]bool
+	noScope bool
 }
 
 // offScope is whether a receipt that passed the ladder holds no scope member,
-// or one other than scope, byte for byte.
-func (r *sessionResult) offScope(scope string) bool {
+// or one whose digest in the session (sealScopeDigest) is not digest, byte
+// for byte.
+func (r *sessionResult) offScope(sessionID, digest string) bool {
+	if r.noScope {
+		return true
+	}
 	for held := range r.scopes {
-		if held != scope {
+		if sealScopeDigest(sessionID, held) != digest {
 			return true
 		}
 	}
@@ -1184,8 +1191,11 @@ func verifySessionRead(sessionID, authority string, keys []reachedKey, ret *rete
 		})
 		if status == "ok" {
 			valid = append(valid, r)
-			scope, _ := memberString(r.obj, "scope")
-			result.scopes[scope] = true
+			if scope, held := memberString(r.obj, "scope"); held {
+				result.scopes[scope] = true
+			} else {
+				result.noScope = true
+			}
 			if r.observation != "" {
 				result.observations = append(result.observations, finding{
 					"sessionId": sessionID, "callIndex": r.callIndex, "observation": r.observation,

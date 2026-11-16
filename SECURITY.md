@@ -718,7 +718,8 @@ It does not establish:
   credential, so any caller the gateway admits that names it is served;
 - that no other source or gateway uses it. A gateway holds a session to one identifier, or to
   none ([ADR-0036](docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md)),
-  and the seal of a session of an identifier names it under the signature, which a verifier of
+  and the seal of a session of an identifier names it under the signature by its digest in the
+  session, never by the identifier, so no registry line carries one, which a verifier of
   this version holds the session's accepted receipts to (`seal-scope-mismatch`); a seal of the
   earlier forms, every seal an earlier gateway wrote among them, names none, so of such a
   session only its receipts say which identifiers it holds;

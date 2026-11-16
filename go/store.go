@@ -407,8 +407,9 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 }
 
 // sealOfScope seals a session of a scope identifier with a seal of version 2,
-// which names it under the signature (ADR-0036; SPEC.md §3, "A seal of
-// version 2"), and a session of no scope ("") with seal, in §3's form, the
+// which names it under the signature by its digest in the session
+// (sealScopeDigest), so the registry line carries no scope identifier
+// (ADR-0036; SPEC.md §3, "A seal of version 2"), and a session of no scope ("") with seal, in §3's form, the
 // bytes such a seal always had.
 func (w *registryWriter) sealOfScope(sessionID string, finalCount int64, sealedAt, scope string) (*vObject, error) {
 	if scope == "" {
@@ -422,7 +423,7 @@ func (w *registryWriter) sealOfScope(sessionID string, finalCount int64, sealedA
 		record := newObject()
 		record.set("finalCount", vInt(finalCount))
 		record.set("keyId", vString(w.keyID))
-		record.set("scope", vString(scope))
+		record.set("scopeDigest", vString(sealScopeDigest(sessionID, scope)))
 		record.set("sealVersion", vString(sealVersionScoped))
 		record.set("sealedAt", vString(sealedAt))
 		record.set("sessionId", vString(sessionID))
@@ -442,8 +443,9 @@ func (w *registryWriter) sealAfterInterruption(sessionID string, finalCount int6
 }
 
 // sealAfterInterruptionOfScope is sealAfterInterruption of a session every
-// receipt of which carries the scope identifier scope: the seal carries it,
-// and sealVersion "2", under its own prefix (ADR-0036); "" is the eight
+// receipt of which carries the scope identifier scope: the seal carries its
+// digest in the session (sealScopeDigest), never the identifier, and
+// sealVersion "2", under its own prefix (ADR-0036); "" is the eight
 // members of §3c, as before.
 func (w *registryWriter) sealAfterInterruptionOfScope(sessionID string, finalCount int64, head, sealedAt, via, scope string) (*vObject, error) {
 	// what a reader would not load is not written (SPEC.md §3c)
@@ -461,7 +463,7 @@ func (w *registryWriter) sealAfterInterruptionOfScope(sessionID string, finalCou
 		record.set("keyId", vString(w.keyID))
 		record.set("kind", vString(sealKindInterruption))
 		if scope != "" {
-			record.set("scope", vString(scope))
+			record.set("scopeDigest", vString(sealScopeDigest(sessionID, scope)))
 			record.set("sealVersion", vString(sealVersionScoped))
 		}
 		record.set("sealedAt", vString(sealedAt))

@@ -679,12 +679,15 @@ available with this kind yet").
 - **The registry** is one chain across scopes: its tables carry no scope column, and every view
   reads the whole registry. Its lines are seals (SPEC.md §3, §3c): a session's id, its count of
   receipts, its time, the key's identifier and a signature, and, for a session of a scope
-  identifier, that identifier and `sealVersion` `"2"` (ADR-0036; SPEC.md §3, "A seal of version
-  2"). None carries a receipt, a payload or an argument. The registry's rows are still of no
-  scope: a seal naming a scope identifier is a row every view reads, so a gateway of one scope
-  reads every seal, the ids, counts and scope identifiers of every scope's sealed sessions, and
-  nothing more of their rows. `gateway verify` reads the chain from an export, which holds every
-  line; neither it nor the export selects by scope (engine-config.md, "A platform's scope").
+  identifier, `sealVersion` `"2"` and `scopeDigest`, the identifier's SHA-256 digest in the
+  session (ADR-0036, decision 9; SPEC.md §3, "A seal of version 2"), never the identifier. None
+  carries a receipt, a payload, an argument or a scope identifier, so a gateway of one scope reads
+  the ids, counts and digests of every scope's sealed sessions and no other scope's identifier,
+  which `gateway.scope_identifiers` keeps from it. A digest is not a secret: one who guesses an
+  identifier can digest it in a session's id and test it. When a scope's rows are removed its
+  seals stay, digests of rows no longer held: the chain needs every line. `gateway verify` reads
+  the chain from an export, which holds every line; neither it nor the export selects by scope
+  (engine-config.md, "A platform's scope").
 - **The export** reads every scope recorded, whichever scopes the configuration names now, and
   writes the layout of SPEC.md §1.3 the filesystem kind writes: a session once, under its name; a
   payload two scopes hold alike once, its bytes read from each and compared, and refused where

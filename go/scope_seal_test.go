@@ -98,10 +98,12 @@ func TestAnActionIsRefusedInASessionOfAScope(t *testing.T) {
 }
 
 // A scoped session is sealed by a seal of version 2: its seven members,
+// naming the scope by its digest in the session and never by the identifier,
 // signed under its own prefix, loading under the gateway's key; a session of
-// no scope is sealed in §3's form, the five members it always had. A scope
-// changed, taken out or put on a seal of §3's form, and a version taken out
-// or changed, load nothing, and the session reads unregistered.
+// no scope is sealed in §3's form, the five members it always had. A digest
+// changed or taken out, a version taken out or changed, and the identifier
+// put on the seal beside its digest, load nothing, and the session reads
+// unregistered.
 func TestAScopedSessionsSealNamesItsScope(t *testing.T) {
 	service, server, _ := scopedService(t)
 	scoped := `"scope":` + jsonText(t, testScope) + `,`
@@ -134,8 +136,13 @@ func TestAScopedSessionsSealNamesItsScope(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &plainSeal); err != nil {
 		t.Fatal(err)
 	}
-	if len(scopedSeal) != 7 || scopedSeal["scope"] != testScope || scopedSeal["sealVersion"] != "2" || scopedSeal["finalCount"] != float64(2) {
+	if len(scopedSeal) != 7 || scopedSeal["scopeDigest"] != sealScopeDigest("bound", testScope) || scopedSeal["sealVersion"] != "2" || scopedSeal["finalCount"] != float64(2) {
 		t.Fatalf("the seal of a scoped session: %s", lines[0])
+	}
+	// a registry line carries no scope identifier (ADR-0036; ADR-0033,
+	// decision 5): the seal names the scope by its digest alone
+	if strings.Contains(string(registry), testScope) || strings.Contains(string(registry), jsonText(t, testScope)) {
+		t.Fatalf("the registry holds the scope identifier: %q", registry)
 	}
 	// §3's form, the bytes of its four members under its prefix
 	if len(plainSeal) != 5 {
@@ -148,13 +155,14 @@ func TestAScopedSessionsSealNamesItsScope(t *testing.T) {
 	if rep := scopedVerdict(t, service); !rep.OK || len(statusesOf(rep)) != 0 {
 		t.Fatalf("both sealed sessions verify: %v", rep.Findings)
 	}
-	member := `"scope":` + jsonText(t, testScope) + `,`
+	member := `"scopeDigest":"` + sealScopeDigest("bound", testScope) + `",`
 	for _, tc := range []struct{ name, line string }{
-		{"the scope changed", strings.Replace(lines[0], member, `"scope":"équipe-b",`, 1)},
-		{"the scope taken out", strings.Replace(lines[0], member, "", 1)},
-		{"the version and the scope taken out", strings.Replace(strings.Replace(lines[0], member, "", 1), `"sealVersion":"2",`, "", 1)},
+		{"the digest changed", strings.Replace(lines[0], member, `"scopeDigest":"`+sealScopeDigest("bound", "équipe-b")+`",`, 1)},
+		{"the digest taken out", strings.Replace(lines[0], member, "", 1)},
+		{"the version and the digest taken out", strings.Replace(strings.Replace(lines[0], member, "", 1), `"sealVersion":"2",`, "", 1)},
 		{"another version", strings.Replace(lines[0], `"sealVersion":"2"`, `"sealVersion":"3"`, 1)},
 		{"a member more", strings.Replace(lines[0], `"finalCount"`, `"extra":1,"finalCount"`, 1)},
+		{"the identifier beside its digest", strings.Replace(lines[0], member, `"scope":`+jsonText(t, testScope)+`,`+member, 1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.line == lines[0] {
@@ -262,7 +270,8 @@ func TestAStoreV030WroteVerifiesUnchanged(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &line); err != nil {
 		t.Fatalf("%v: %s", err, stdout.String())
 	}
-	if len(line) != 10 || line["scope"] != testScope || line["sealVersion"] != "2" || line["kind"] != sealKindInterruption {
+	if len(line) != 10 || line["scopeDigest"] != sealScopeDigest("left-open", testScope) || line["sealVersion"] != "2" || line["kind"] != sealKindInterruption ||
+		strings.Contains(stdout.String(), testScope) {
 		t.Fatalf("the seal after an interruption of a scoped session: %s", stdout.String())
 	}
 	rep, err = verifyWithRegistry(storeRoot, regPath, fixture.Authority, public)
