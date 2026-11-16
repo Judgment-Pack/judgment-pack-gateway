@@ -2103,6 +2103,13 @@ it may be granted.
   caller does not reach `no such session`. `/verify` is served to a caller that reaches every
   source, and, where no source is fixed to a scope identifier, to one that reaches the sources of
   none; otherwise `403`. `/registry` and `/publickey` stay open and whole.
+- **What `/registry` tells anyone.** A seal of a scoped session names its scope by an unkeyed
+  digest over the scope identifier and the session's id (SPEC.md §3). Anyone who can reach
+  `/registry` and guesses a scope identifier can test it against each sealed session and learn
+  which sessions are of that scope, with their final counts and seal times (never a receipt).
+  Where tenants must not learn of one another's sessions, choose scope identifiers with at
+  least 128 bits of entropy (22 or more characters drawn at random from a 64-character
+  alphabet, for example), and keep the names people read outside the identifier.
 - **`"unchecked"`** reads no claim: every caller reaches every source, as before the member.
   Without `identity` there is no caller to hold and every request reaches every source.
 

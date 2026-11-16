@@ -1093,8 +1093,11 @@ every receipt of the session carries, of the form §1.2a gives it, digested in t
 `"judgment-pack-gateway/seal-scope/1:" + canon({"scope": <identifier>, "sessionId": <the
 seal's sessionId>})`. A registry line therefore carries no scope identifier: a reader of the
 registry learns of a sealed session that it is of some scope, and can tell which only by
-digesting an identifier it already holds; the session's id is in the digest, so two sessions
-of one scope carry different digests. `finalCount` is an integer from
+digesting an identifier it already holds or guesses; the session's id is in the digest, so two
+sessions of one scope carry different digests. The digest is not keyed, and `/registry` is open
+(§6), so a reader who guesses a scope identifier can test it against each sealed session and
+learn which sessions are of it, with their `finalCount` and `sealedAt`: a scope identifier hides
+which sessions are its own only where it cannot be guessed (§6, "Caller scope identifiers"). `finalCount` is an integer from
 0 to 2^53−1; `keyId` 32 lowercase hexadecimal characters; `sealedAt` `YYYY-MM-DDThh:mm:ssZ` in
 UTC. A session of no scope is sealed in the form above, the bytes it was sealed with before.
 The member `sealVersion` is what selects the form: a registry line that is one JSON object
@@ -2054,7 +2057,14 @@ where checked and `not-enforced` otherwise.
   scope identifier, to one that reaches the sources of none; otherwise `403` before the store
   is read. The verdict covers every scope's sessions and is not cut by scope.
 - `/registry` and `/publickey` need no token and are served whole: no registry line carries a
-  scope identifier or a caller, and a registry cut by scope would not walk.
+  scope identifier or a caller, and a registry cut by scope would not walk. A seal of version 2
+  names its session's scope by an unkeyed digest over the identifier and the session's id
+  (§3), so anyone who reads `/registry` and guesses a scope identifier (a tenant's name, say)
+  can test the guess against each sealed session and learn which sessions are of that scope,
+  their `finalCount` and their `sealedAt`, though never a receipt. Where that must stay
+  hidden, scope identifiers are chosen with at least 128 bits of entropy (for instance 22 or
+  more characters drawn at random from a 64-character alphabet), and a name a person reads is
+  kept outside the identifier.
 
 The receipt's `caller` is the caller as before; the claim is not recorded, the receipt's
 `scope` being the identifier the request was held to. A scoped caller's subject and issuer are

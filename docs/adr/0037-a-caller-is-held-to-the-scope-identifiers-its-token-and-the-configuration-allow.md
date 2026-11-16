@@ -125,8 +125,18 @@ the caller, and `/seal` and `/verify` read none either.
 - Bad, because the session namespace is one across scopes (ADR-0033): a caller that reaches the
   sources of no scope identifier still learns from a refusal that a session name is taken by
   some scope, not which. Closing it needs a namespace per scope.
-- Revisit when a delegation carries scope identifiers (decision 5), or when the registry is kept
-  per scope.
+- Bad, because `/registry` stays open (decision 6) while a seal of version 2 names its scope by
+  an unkeyed digest over the identifier and the session's id (ADR-0036): anyone who reads it and
+  guesses a scope identifier can test the guess against each sealed session and learn which are
+  of that scope, with their counts and seal times. Considered and not taken here: serving
+  `/registry` under `identity` only to a caller that reaches every source. That would move the
+  anchor a verifier fetches without a token behind one, so a third-party verifier would verify
+  exports instead, and it changes the open routes the listener's rule (engine version 19) and
+  several pages describe; the seal's form, merged in #477 and in no release yet, is unchanged
+  either way. SPEC.md §6 and the operator page state the disclosure and advise scope
+  identifiers of at least 128 bits of entropy where it matters.
+- Revisit when a delegation carries scope identifiers (decision 5), when the registry is kept
+  per scope, or before the seal of version 2 is first released, if a keyed digest is wanted.
 
 ## More information
 
