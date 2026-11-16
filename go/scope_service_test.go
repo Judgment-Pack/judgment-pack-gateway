@@ -216,7 +216,10 @@ func TestAGatewayFixingNoScopeRefusesTheMember(t *testing.T) {
 
 // A delegated request to a scoped source that names none or another is
 // refused before the delegation counts the call or the session is
-// admitted; the same request naming the scope is counted once.
+// admitted; the same request naming the scope is counted once where caller
+// scope identifiers are unchecked. Where they are checked, the default, a
+// delegated request reaches no scope identifier (ADR-0037, decision 5), and
+// the request naming the scope is refused the same way, uncounted.
 func TestADelegatedRequestForAnotherScopeIsNotCounted(t *testing.T) {
 	h := newDelegationHarness(t, false)
 	live := h.g.sources["tickets/live"]
@@ -235,6 +238,18 @@ func TestADelegatedRequestForAnotherScopeIsNotCounted(t *testing.T) {
 	body := func(scope string) string {
 		return strings.Replace(h.acquireBody("s-scoped", "query"), `"source":"tickets/live",`, `"source":"tickets/live",`+scope, 1)
 	}
+	asFixed := `"scope":` + jsonText(t, testScope) + `,`
+	for _, entry := range []callerEntry{unscopedEntry, {installation: true}} {
+		h.g.identity.callers = callerScopes{entries: map[string]callerEntry{testSubjectSub: entry}}
+		status, out := h.present(t, "/acquire", body(asFixed), cred)
+		if status != http.StatusBadRequest || out["error"] != scopeRefusal {
+			t.Fatalf("checked, the scope as fixed: %d %v", status, out)
+		}
+		if h.host.counted() != counted || h.host.readCount() != reads || h.g.started.Load() != started || sessionHeld(h.g, "s-scoped") {
+			t.Fatal("checked: a refused delegated request was counted, read, run or admitted")
+		}
+	}
+	h.g.identity.callers = callerScopes{unchecked: true}
 	for _, scope := range []string{``, `"scope":"équipe-b",`, `"scope":"",`} {
 		status, out := h.present(t, "/acquire", body(scope), cred)
 		if status != http.StatusBadRequest || out["error"] != scopeRefusal {
@@ -244,7 +259,7 @@ func TestADelegatedRequestForAnotherScopeIsNotCounted(t *testing.T) {
 			t.Fatalf("scope %q: a refused request was counted (%d), read (%d), run or admitted", scope, h.host.counted()-counted, h.host.readCount()-reads)
 		}
 	}
-	status, out := h.present(t, "/acquire", body(`"scope":`+jsonText(t, testScope)+`,`), cred)
+	status, out := h.present(t, "/acquire", body(asFixed), cred)
 	if status != http.StatusOK || out["receipt"].(map[string]any)["scope"] != testScope {
 		t.Fatalf("the scope as fixed: %d %v", status, out)
 	}

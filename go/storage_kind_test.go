@@ -162,8 +162,8 @@ func TestTheStorageMemberTakesAStartWaitFromVersion25(t *testing.T) {
 			"engine configuration: storage.startWaitSeconds 9007199254740991 is outside 1 to 3600"},
 		{"a string", at("25", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":"60"}`),
 			"engine configuration: storage.startWaitSeconds must be an integer"},
-		{"version 27", at("27", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":60}`),
-			`engine configuration: unsupported engineVersion "27" (latest "26")`},
+		{"version 28", at("28", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":60}`),
+			`engine configuration: unsupported engineVersion "28" (latest "27")`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parseEngineConfig([]byte(tc.config))
@@ -455,6 +455,9 @@ func TestAScopedSourceOverAKindOfNoKnownLayoutIsRefused(t *testing.T) {
 	}
 	issuer := newIssuer(t)
 	id := identityFor(t, issuer)
+	// an installation caller, which reaches every scope identifier with a
+	// claimless token (ADR-0037)
+	id.callers = callerScopes{entries: map[string]callerEntry{"user-7": {installation: true}}}
 	token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
 	for _, tc := range []struct {
 		name  string

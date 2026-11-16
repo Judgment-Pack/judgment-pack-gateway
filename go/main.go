@@ -468,6 +468,9 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	if line := callerScopesStartLine(identity, sources); line != "" {
+		fmt.Fprintln(os.Stderr, "start:", line)
+	}
 	delegation, err := loadDelegation(cfg.delegation)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)

@@ -26,6 +26,9 @@ type identityConfig struct {
 	issuer   string
 	audience string
 	keys     map[string]publicKey // by key id
+	// callers is identity.callerScopes (caller_scopes.go); its zero value
+	// is checked, every subject "unscoped".
+	callers callerScopes
 }
 
 // publicKey is one verification key from the issuer's key set, with the
@@ -50,6 +53,11 @@ type caller struct {
 	// table authenticated it (SPEC.md §11.8); nil for a request made under no
 	// delegation. issuer and subject above are then the delegation's subject.
 	delegated *delegatedSender
+	// scopeClaim is the token's scope_ids as it was signed, claimed false
+	// where the token has none (caller_scopes.go): read only where caller
+	// scope identifiers are checked, and held to its form there.
+	scopeClaim value
+	claimed    bool
 }
 
 // errNotEngineAudience is the refusal of a token that names an audience
@@ -409,7 +417,8 @@ func verifyTokenFor(token string, id identityConfig, audience string, now time.T
 		return caller{}, errors.New("token is not yet valid")
 	}
 	sum := sha256.Sum256([]byte(token))
-	return caller{issuer: issuer, subject: subject, tokenDigest: "sha256:" + hex.EncodeToString(sum[:]), audiences: audiences}, nil
+	scopeClaim, claimed := claims.get(scopeClaimName)
+	return caller{issuer: issuer, subject: subject, tokenDigest: "sha256:" + hex.EncodeToString(sum[:]), audiences: audiences, scopeClaim: scopeClaim, claimed: claimed}, nil
 }
 
 // verifySignature checks a JWS signature with the key's algorithm.

@@ -49,6 +49,10 @@ const (
 	// The line a configuration that gives some platform writeRequesters
 	// adds (write_requesters.go); one that gives none reports no such line.
 	protectionWriteRequesters = "write-requesters"
+	// The line a configuration that fixes some source to a scope identifier
+	// adds (caller_scopes.go): whether a caller is held to the scope
+	// identifiers its token and the configuration allow.
+	protectionCallerScopes = "caller-scope-identifiers"
 )
 
 // envPostureProbe and the two probe arguments together select the probe
@@ -90,6 +94,10 @@ type postureInput struct {
 	// caller, so an input that does not say where the gateway listens is
 	// never judged to listen on loopback.
 	listener listenerReach
+	// callerScopes is how callers are held to scope identifiers
+	// (callerScopesMode), which adds its line where some source is fixed to
+	// one; "" adds none.
+	callerScopes string
 }
 
 // listenerReach is what posture reads of the gateway's listener: whether
@@ -252,7 +260,7 @@ func hostPosture(in postureInput) postureReport {
 		seedPosture(in),
 		programConfinementPosture(programs),
 		listenerPosture(in),
-	}, append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...)...)}
+	}, append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources)...)...)}
 }
 
 // sourceUserPosture is whether every source runs as a user of its own
@@ -468,6 +476,10 @@ func postureOfConfig(path string, account func(string) (int, string, error)) (po
 	}
 	in := postureInput{configured: true, seed: cfg.seed, sources: deriveSources(cfg, bindings),
 		listener: listenerReach{loopback: listenIsLoopback(cfg.listen), authenticated: cfg.identity != nil}}
+	in.callerScopes = "no-identity"
+	if cfg.identity != nil {
+		in.callerScopes = callerScopesMode(&identityConfig{callers: cfg.identity.callers})
+	}
 	if cfg.delegation != nil {
 		in.delegation = &delegationPosture{bearerReadOnly: cfg.delegation.bearerReadOnly}
 	}
