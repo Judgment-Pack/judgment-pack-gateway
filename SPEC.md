@@ -2028,9 +2028,11 @@ A claim wider than the entry is refused, never narrowed. A request under a deleg
 carries no claim and its subject is the issuing host's statement: it reaches the sources of no
 scope identifier where its subject's claimless token would, and never a scope identifier. With
 `"unchecked"` the claim is not read and every caller reaches every source; without `identity`
-every request reaches every source. Where some source is fixed to a scope identifier the start
-says which of the three holds, and `/posture` reports `caller-scope-identifiers`, `enforced`
-where checked and `not-enforced` otherwise.
+every request reaches every source. Where `identity` is configured, or some source is fixed to a
+scope identifier, the start says which of the three holds, and `/posture` reports
+`caller-scope-identifiers`, `enforced` where checked and `not-enforced` otherwise: with
+`identity` and no scoped source a token whose claim names a scope identifier its subject is
+not granted is still refused `401`, and the start and `/posture` say so.
 
 **Each route's rule.**
 

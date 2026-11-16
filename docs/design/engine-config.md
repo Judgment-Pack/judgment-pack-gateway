@@ -659,10 +659,12 @@ canonical JSON (SPEC.md §1.1), so two answers compare byte for byte:
 - After the six, a configuration with `delegation` adds its three lines (SPEC.md §11.9), and one
   where some platform gives `writeRequesters` adds `write-requesters`: `enforced` when every
   write tool is held to a requester list, `not-enforced` otherwise, the tools counted and no
-  requester named. One where some platform is fixed to a scope identifier adds
-  `caller-scope-identifiers`: `enforced` where callers are held to the scope identifiers their
-  token and `identity.callerScopes` allow, `not-enforced` where `callerScopes` is `"unchecked"`
-  or no `identity` is configured, naming no subject and no scope identifier.
+  requester named. One with an `identity`, or where some platform is fixed to a scope identifier,
+  adds `caller-scope-identifiers`: `enforced` where callers are held to the scope identifiers
+  their token and `identity.callerScopes` allow (with no scoped platform it says that a token
+  whose `scope_ids` names a scope identifier the configuration does not grant is refused `401`),
+  `not-enforced` where `callerScopes` is `"unchecked"` or no `identity` is configured, naming no
+  subject and no scope identifier.
 
 Windows has no shipped restricted-command backend. Engine versions 13 and later
 wrap every configured source adapter, including adapters for remote and container
@@ -2115,11 +2117,12 @@ it may be granted.
 
 The check is the default, at every version: a configuration with `identity` and no
 `callerScopes`, a file of version 26 or earlier included, holds every caller to the sources of
-no scope identifier. Where some platform is fixed to a scope identifier the start says which
-rule holds, one of:
+no scope identifier. Wherever `identity` is configured, or some platform is fixed to a scope
+identifier, the start says which rule holds, one of:
 
 ```text
 start: caller scope identifiers are checked: a request is held to the scope identifiers its token's scope_ids names and identity.callerScopes grants its subject
+start: caller scope identifiers are checked: a request is held to the scope identifiers its token's scope_ids names and identity.callerScopes grants its subject; no platform is fixed to a scope identifier, and a token whose scope_ids names one the configuration does not grant its subject is refused 401
 start: identity.callerScopes is "unchecked": no caller is held to scope identifiers, and every caller reaches every source
 start: no identity is configured, so no caller is held to scope identifiers: every request reaches every source
 ```
@@ -2135,6 +2138,15 @@ serves its scoped sources after the upgrade only to the callers `callerScopes` g
 upgrading, raise `engineVersion` to `"27"` and write the entries, issuing tokens whose
 `scope_ids` names what each caller is for, or write `"callerScopes": "unchecked"` to keep the
 behavior before. A gateway older than this one refuses a version-27 file by its version.
+
+The same holds with `identity` and no scoped platform. A token whose `scope_ids` names a scope
+identifier is refused `401` on every route but `/registry` and `/publickey` unless its
+subject's entry grants it. That happens when the issuer is shared with the Runner and a
+caller's tokens gain `scope_ids` for the Runner: the caller is locked out of this gateway after
+the upgrade. Before upgrading such a configuration, write an entry for each such subject
+granting what its tokens name (or `"installation"` for a Runner), have the issuer leave the
+claim out of the tokens it issues for this gateway's audience, or write
+`"callerScopes": "unchecked"`. The start line and `/posture` say the rule in this case too.
 
 ## Keyed actions (engine version 14 and later)
 

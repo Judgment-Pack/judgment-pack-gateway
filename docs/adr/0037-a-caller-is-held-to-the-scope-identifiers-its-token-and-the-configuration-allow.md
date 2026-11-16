@@ -101,9 +101,12 @@ the caller, and `/seal` and `/verify` read none either.
      No registry line carries a scope identifier or a caller.
 7. **Unchecked, and no identity.** With `"unchecked"` the claim is not read and every caller
    reaches every source, as before. Without `identity` there is no caller to hold, and every
-   request reaches every source, as before. Where some source is fixed to a scope identifier,
-   the start writes which of the three holds, and `/posture` reports `caller-scope-identifiers`
-   `enforced` (checked) or `not-enforced` (unchecked, or no identity).
+   request reaches every source, as before. Wherever an identity is configured, or some source
+   is fixed to a scope identifier, the start writes which of the three holds, and `/posture`
+   reports `caller-scope-identifiers` `enforced` (checked) or `not-enforced` (unchecked, or no
+   identity): with an identity and no scoped source, a token whose claim names a scope
+   identifier the entry does not grant is refused `401` all the same (an issuer shared with the
+   Runner), and the operator is told.
 8. **What is recorded.** The receipt's `caller` is as before, and the claim is not recorded: the
    receipt's `scope` is the identifier the request was held to. A scoped caller's subject and
    issuer are written into its scope's receipts alone; no record another scope's caller or an
@@ -119,7 +122,9 @@ the caller, and `/seal` and `/verify` read none either.
   scope identifier no longer tells a session of a scope from one of none.
 - Bad, because an installation with `identity` and scoped sources holds every caller to the
   sources of no scope identifier after the upgrade until the operator writes the entries or
-  `"unchecked"`. The release notes say so.
+  `"unchecked"`. One with `identity` and no scoped source refuses `401` a caller whose tokens
+  gain `scope_ids` for the Runner from a shared issuer. The release notes and the operator
+  page's upgrade note say both.
 - Bad, because a subject that works in a scope identifier and in the sources of no scope
   identifier needs a claim holding both and an entry granting both.
 - Bad, because the session namespace is one across scopes (ADR-0033): a caller that reaches the

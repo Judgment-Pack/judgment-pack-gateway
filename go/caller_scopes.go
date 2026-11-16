@@ -227,29 +227,42 @@ func callerScopesMode(id *identityConfig) string {
 	return "checked"
 }
 
-// callerScopesStartLine is the start's line, given only where some source is
-// fixed to a scope identifier ("" elsewhere).
+// callerScopesStartLine is the start's line, given wherever an identity is
+// configured or some source is fixed to a scope identifier ("" elsewhere): a
+// configuration with an identity refuses 401 a token whose claim its
+// subject's entry does not grant, scoped sources or none, so the start says
+// so whenever it can happen.
 func callerScopesStartLine(id *identityConfig, sources map[string]sourceSpec) string {
-	if !anyScoped(sources) {
-		return ""
-	}
+	scoped := anyScoped(sources)
 	switch callerScopesMode(id) {
 	case "no-identity":
+		if !scoped {
+			return ""
+		}
 		return "no identity is configured, so no caller is held to scope identifiers: every request reaches every source"
 	case "unchecked":
 		return "identity.callerScopes is \"unchecked\": no caller is held to scope identifiers, and every caller reaches every source"
 	}
-	return fmt.Sprintf("caller scope identifiers are checked: a request is held to the scope identifiers its token's %s names and identity.callerScopes grants its subject", scopeClaimName)
+	line := fmt.Sprintf("caller scope identifiers are checked: a request is held to the scope identifiers its token's %s names and identity.callerScopes grants its subject", scopeClaimName)
+	if !scoped {
+		line += fmt.Sprintf("; no platform is fixed to a scope identifier, and a token whose %s names one the configuration does not grant its subject is refused 401", scopeClaimName)
+	}
+	return line
 }
 
-// callerScopesLine is /posture's line, given only where some source is fixed
-// to a scope identifier.
+// callerScopesLine is /posture's line, given wherever an identity is
+// configured or some source is fixed to a scope identifier.
 func callerScopesLine(mode string, sources map[string]sourceSpec) []postureLine {
-	if mode == "" || !anyScoped(sources) {
+	scoped := anyScoped(sources)
+	if mode == "" || mode == "no-identity" && !scoped {
 		return nil
 	}
 	switch mode {
 	case "checked":
+		if !scoped {
+			return []postureLine{{protectionCallerScopes, postureEnforced,
+				"no source is fixed to a scope identifier; a token whose " + scopeClaimName + " names one the configuration does not grant its subject is refused 401"}}
+		}
 		return []postureLine{{protectionCallerScopes, postureEnforced,
 			"a request to a source fixed to a scope identifier is served only to a caller whose token names it and whose subject the configuration grants it"}}
 	case "unchecked":

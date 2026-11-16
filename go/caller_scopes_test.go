@@ -278,10 +278,21 @@ func TestUncheckedCallerScopesServeAsBeforeAndAreReported(t *testing.T) {
 	if !strings.Contains(callerScopesStartLine(&unchecked, service.sources), `"unchecked"`) || !strings.Contains(callerScopesStartLine(nil, service.sources), "no identity") {
 		t.Fatal("the start line does not say which")
 	}
-	// a configuration fixing no source to a scope identifier gets neither
+	// a configuration fixing no source to a scope identifier gets both
+	// where it has an identity, since a token whose claim names a scope
+	// identifier is refused 401 there too, and neither where it has none
 	plain := map[string]sourceSpec{"plain": service.sources["plain"]}
-	if callerScopesStartLine(&checked, plain) != "" || callerScopesLine("checked", plain) != nil {
-		t.Fatal("a line where no source is scoped")
+	if line := callerScopesStartLine(&checked, plain); !strings.Contains(line, "are checked") || !strings.Contains(line, "refused 401") {
+		t.Fatalf("checked, no source scoped: the start line is %q", line)
+	}
+	if lines := callerScopesLine("checked", plain); len(lines) != 1 || lines[0].state != postureEnforced || !strings.Contains(lines[0].reason, "refused 401") {
+		t.Fatalf("checked, no source scoped: the posture line is %+v", lines)
+	}
+	if callerScopesStartLine(&unchecked, plain) == "" || callerScopesLine("unchecked", plain) == nil {
+		t.Fatal("unchecked, no source scoped: no line")
+	}
+	if callerScopesStartLine(nil, plain) != "" || callerScopesLine("no-identity", plain) != nil {
+		t.Fatal("a line where there is no identity and no source is scoped")
 	}
 }
 
