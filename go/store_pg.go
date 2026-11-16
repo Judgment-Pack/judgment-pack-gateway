@@ -715,23 +715,44 @@ func (l pgLog) appendRecord(data []byte) (int, error) {
 
 // appendJudged appends, as appendRecord does, what build answers for the
 // log's bytes as they stand under the append's lock: the lock is taken
-// first, the log read whole in the same transaction, at READ COMMITTED, so
-// what build judges is every record committed before this append, and none
-// commits after it but this one until its commit (judgedAppendLog).
-func (l pgLog) appendJudged(build func(existing []byte) ([]byte, error)) (int, error) {
+// first, and build reads the log, from the cursor it names, in the same
+// transaction, at READ COMMITTED, so what build judges is every record
+// committed before this append, and none commits after it but this one
+// until its commit (judgedAppendLog). A seal's build reads the bytes
+// appended since its writer's last reading (registryRead), so the
+// transaction stays well within its idle bound, and the lock is held
+// briefly, whatever the log's size.
+func (l pgLog) appendJudged(build func(read func(from int64) ([]byte, error)) ([]byte, error)) (int, error) {
 	var refused error
 	var data []byte
-	present, made := false, false
+	made := false
 	err := l.k.transact(pgWriteCommitted, func(tx pgTx) error {
 		if _, err := tx.exec(`SELECT pg_catalog.pg_advisory_xact_lock($1)`, int64(pgLogAppendLock)); err != nil {
 			return err
 		}
-		existing, there, err := l.readTx(tx, 0)
-		if err != nil || !there {
-			return err
+		// a read's failure is the transaction's; what the read answers of
+		// the log -- not there, not within it, not one chain -- is build's
+		// to answer
+		var failed error
+		read := func(from int64) ([]byte, error) {
+			if from < 0 {
+				return nil, pgRefused("read-log", "the cursor is not within the log")
+			}
+			out, there, err := l.readTx(tx, from)
+			switch {
+			case err != nil && faultOf(err) == "":
+				failed = err
+			case err == nil && !there:
+				err = pgAbsent("append")
+			}
+			return out, err
 		}
-		present = true
-		if data, refused = build(existing); refused != nil {
+		data, refused = build(read)
+		if failed != nil {
+			refused = nil
+			return failed
+		}
+		if refused != nil {
 			return refused
 		}
 		if len(data) == 0 || len(data) > pgMaxValue {
@@ -755,7 +776,7 @@ func (l pgLog) appendJudged(build func(existing []byte) ([]byte, error)) (int, e
 		return len(data), &storeError{fault: faultDurability, op: "append", written: len(data), committing: true, err: err}
 	case err != nil:
 		return 0, pgFailure("append", true, err)
-	case !present || !made:
+	case !made:
 		return 0, &storeError{fault: faultAbsent, op: "append"}
 	}
 	return len(data), nil

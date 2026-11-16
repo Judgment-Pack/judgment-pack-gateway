@@ -358,6 +358,136 @@ func TestPostgresInstancesSealingOneSessionAtOnceAppendOneSeal(t *testing.T) {
 	}
 }
 
+// pgSealLine is a seal of today's form of session, signed under seed, as a
+// registry line without its newline.
+func pgSealLine(seed []byte, session string, count int64, sealedAt string) string {
+	priv := ed25519.NewKeyFromSeed(seed)
+	keyID := keyIDFor(priv.Public().(ed25519.PublicKey))
+	record := newObject()
+	record.set("sessionId", vString(session))
+	record.set("finalCount", vInt(count))
+	record.set("sealedAt", vString(sealedAt))
+	record.set("keyId", vString(keyID))
+	record.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, sealSigningInput(session, count, sealedAt, keyID)))))
+	return string(canon(record))
+}
+
+// pgFillRegistry appends n seals of sessions bulk-<i> to the registry, one
+// record each, as the owner, in one statement.
+func pgFillRegistry(t *testing.T, db *pgTestDB, seed []byte, n int) {
+	t.Helper()
+	lines := make([]string, n)
+	for i := range n {
+		lines[i] = pgSealLine(seed, fmt.Sprintf("bulk-%06d", i), int64(i%7+1), "2026-11-15T00:00:00Z")
+	}
+	asOwnerIn(t, db, pgNoScope, `INSERT INTO gateway.log_records (log, start, data)
+		SELECT 'registry', COALESCE(pg_catalog.sum(pg_catalog.octet_length(l.data)) OVER (ORDER BY l.n ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0), l.data
+		FROM (SELECT t.n, pg_catalog.convert_to(t.line || E'\n', 'UTF8') AS data
+			FROM pg_catalog.string_to_table($1, E'\n') WITH ORDINALITY AS t(line, n)) l
+		ORDER BY l.n`, strings.Join(lines, "\n"))
+}
+
+// A seal on a registry of 100,000 seals reads and walks, in the append's
+// transaction, only what was appended since its writer last read the
+// registry: each stays far within the transaction's idle bound, shortened
+// here to 2 seconds, which reading and walking the whole registry there
+// outlasts. What the writer read at its open, and a seal another writer
+// appended since, each still refuse a second seal of their session.
+func TestAPostgresSealOnALargeRegistryReadsOnlyWhatWasAppendedSince(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	a, _ := severalKind(t, db, testSeed, pgStartLeasePeriod)
+	b, _ := severalKind(t, db, testSeed, pgStartLeasePeriod)
+	if err := a.registry().createLog(); err != nil {
+		t.Fatal(err)
+	}
+	const n = 100000
+	pgFillRegistry(t, db, testSeed, n)
+	a.idle = 2 * time.Second
+	writer, err := newRegistryWriterOn(a.registry(), pgRegistryName, testSeed, func() (bool, error) { return true, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal := func(session string) error {
+		t.Helper()
+		began := time.Now()
+		_, err := writer.seal(session, 1, nowStamp())
+		if took := time.Since(began); took >= a.idle {
+			t.Fatalf("the seal of %s took %s on a registry of %d seals", session, took, n)
+		}
+		return err
+	}
+	if err := seal("fresh-0"); err != nil {
+		t.Fatalf("a seal on a registry of %d seals: %v", n, err)
+	}
+	if err := seal("bulk-042424"); !errors.Is(err, errSessionAlreadySealed) {
+		t.Fatalf("a session the registry sealed before the writer opened: %v", err)
+	}
+	if _, err := b.registry().appendRecord([]byte(pgSealLine(testSeed, "other-0", 3, nowStamp()) + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := seal("other-0"); !errors.Is(err, errSessionAlreadySealed) {
+		t.Fatalf("a session another writer sealed since: %v", err)
+	}
+	for i := 1; i <= 5; i++ {
+		if err := seal(fmt.Sprintf("fresh-%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := a.registry().readLog(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bytes.Count(data, []byte("\n")); got != n+7 {
+		t.Fatalf("the registry holds %d lines, not %d", got, n+7)
+	}
+}
+
+// A writer whose registry is no longer the one it read -- its last record
+// gone and another in its place, of the same length, as a database that
+// lost its last commits to a failover may hold -- reads the registry whole
+// again before it seals, and refuses a session the record in that place
+// seals.
+func TestAPostgresSealRereadsARegistryThatIsNotTheOneItRead(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	a, _ := severalKind(t, db, testSeed, pgStartLeasePeriod)
+	if err := a.registry().createLog(); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := newRegistryWriterOn(a.registry(), pgRegistryName, testSeed, func() (bool, error) { return true, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range []string{"seal-a", "seal-b"} {
+		if _, err := writer.seal(session, 1, "2026-11-15T00:00:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// a seal before the writer's last reading, so it holds a cursor past
+	// seal-b's record
+	if _, err := writer.seal("seal-b", 1, nowStamp()); !errors.Is(err, errSessionAlreadySealed) {
+		t.Fatalf("seal-b again: %v", err)
+	}
+	replaced := pgSealLine(testSeed, "seal-c", 1, "2026-11-15T00:00:00Z") + "\n"
+	rows := asOwnerIn(t, db, pgNoScope, `DELETE FROM gateway.log_records WHERE log = 'registry'
+		AND stop = (SELECT pg_catalog.max(stop) FROM gateway.log_records WHERE log = 'registry') RETURNING start, pg_catalog.octet_length(data)::int8`)
+	if len(rows.rows) != 1 {
+		t.Fatalf("the record replaced: %v", rows.rows)
+	}
+	start, _ := pgInt8(rows.rows[0][0])
+	if size, _ := pgInt8(rows.rows[0][1]); size != int64(len(replaced)) {
+		t.Fatalf("the record replaced is of %d bytes, its replacement of %d", size, len(replaced))
+	}
+	asOwnerIn(t, db, pgNoScope, `INSERT INTO gateway.log_records (log, start, data) VALUES ('registry', $1, $2)`, start, []byte(replaced))
+	if _, err := writer.seal("seal-c", 2, nowStamp()); !errors.Is(err, errSessionAlreadySealed) {
+		t.Fatalf("a session the record now in the last one's place seals: %v", err)
+	}
+	if _, err := writer.seal("seal-b", 2, nowStamp()); err != nil {
+		t.Fatalf("seal-b, whose record is gone: %v", err)
+	}
+}
+
 // A start that finds the registry made since its read goes on with it.
 func TestAPostgresStartFindingTheRegistryMadeSinceItsReadGoesOn(t *testing.T) {
 	db := newPgTestDB(t)

@@ -366,8 +366,15 @@ records itself as the session's holder when it admits the call, before the sourc
   after the interruption ("Sealing the sessions an instance left open", below). Two instances that
   take up one session at once are not both admitted: the second is answered `409`.
 - **The registry** stays one chain: a seal is judged against the registry in the append's own
-  transaction, under its lock, so no session is sealed twice. A start that finds the registry
-  made by another instance since its read goes on with it.
+  transaction, under its lock, so no session is sealed twice. An instance keeps its walk of the
+  registry from its start on, and a seal reads and walks there only what was appended since the
+  instance last read it: the transaction and the lock's hold stay short whatever the registry's
+  size (the start still reads and walks the whole registry, outside any transaction, as before).
+  The registry is append-only to the run-time login (below), so what the instance walked stays as
+  it was; its last line is found again in its place before what follows is read, and a registry
+  that is not the one the instance read -- a database restored under it, or one that lost its last
+  commits to a failover -- is read and walked whole again. A start that finds the registry made by
+  another instance since its read goes on with it.
 - **A migration, and `gateway store remove-scope`,** run with every instance stopped: each holds the
   start lease's lock and every row of it, and is refused while any instance's lease is live.
 - **Throughput:** acquisitions scale with instances across sessions; one session's calls serialise

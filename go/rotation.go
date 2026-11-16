@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -193,6 +194,36 @@ func (w *registryWalk) position(keyID string) int {
 // stops the walk with its finding.
 func walkRegistry(data []byte, pinned ed25519.PublicKey) *registryWalk {
 	w := &registryWalk{seals: map[string]seal{}, conflicted: map[string]bool{}, keys: []reachedKey{{key: pinned, keyID: keyIDFor(pinned)}}}
+	w.walkLines(data)
+	return w
+}
+
+// continued is the walk of more, the bytes that follow those w walked, which
+// end a line, continued from where w stopped: from the keys w reached, its
+// seals those of more alone. w is not changed; absorb takes the walk into it.
+// Walking w's bytes and then more is walking the two as one, but where w
+// ends at a rotation whose continuation is the first line of more -- and
+// that w finds rotation-break, so a walk with a finding is never continued.
+func (w *registryWalk) continued(more []byte) *registryWalk {
+	next := &registryWalk{seals: map[string]seal{}, conflicted: map[string]bool{}, keys: slices.Clone(w.keys)}
+	next.walkLines(more)
+	return next
+}
+
+// absorb takes next, w's walk continued (continued), into w: w is then the
+// walk of its bytes and next's as one.
+func (w *registryWalk) absorb(next *registryWalk) {
+	w.keys, w.finding = next.keys, next.finding
+	for _, id := range next.order {
+		w.take(next.seals[id])
+	}
+	for id := range next.conflicted {
+		w.conflicted[id] = true
+	}
+}
+
+// walkLines walks data's lines on from where w stands.
+func (w *registryWalk) walkLines(data []byte) {
 	lines := strings.Split(string(data), "\n")
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
@@ -231,7 +262,6 @@ func walkRegistry(data []byte, pinned ed25519.PublicKey) *registryWalk {
 		}
 		w.finding = finding{"status": status, "rotation": int64(w.followed() + 1)}
 	}
-	return w
 }
 
 // follow takes the rotation a key-rotation statement states, with the line
@@ -482,11 +512,20 @@ func registryRefusal(err error) string {
 // under the key rotated to (rotation-forged) alike.
 func engineWalk(data []byte, own ed25519.PublicKey) (*registryWalk, error) {
 	w := walkRegistry(data, registryFirstKey(data, own))
-	if w.finding != nil {
-		return nil, rotationWalkError{fmt.Sprintf("the registry's rotations do not hold: %s at rotation %d; a rotation whose append was interrupted is finished by gateway rotate-key --resume, and nothing else", w.finding["status"], w.finding["rotation"])}
-	}
-	if !bytes.Equal(w.current().key, own) {
-		return nil, rotationWalkError{fmt.Sprintf("the registry's rotations end at key %s, not this gateway's key %s: a gateway does not start under a key its registry rotated from, and a rotation pending its switch is finished by gateway rotate-key --resume", w.current().keyID, keyIDFor(own))}
+	if err := w.ownReading(own); err != nil {
+		return nil, err
 	}
 	return w, nil
+}
+
+// ownReading is engineWalk's judgment of a walk: a refusal where it found
+// something, or ends at a key other than own.
+func (w *registryWalk) ownReading(own ed25519.PublicKey) error {
+	if w.finding != nil {
+		return rotationWalkError{fmt.Sprintf("the registry's rotations do not hold: %s at rotation %d; a rotation whose append was interrupted is finished by gateway rotate-key --resume, and nothing else", w.finding["status"], w.finding["rotation"])}
+	}
+	if !bytes.Equal(w.current().key, own) {
+		return rotationWalkError{fmt.Sprintf("the registry's rotations end at key %s, not this gateway's key %s: a gateway does not start under a key its registry rotated from, and a rotation pending its switch is finished by gateway rotate-key --resume", w.current().keyID, keyIDFor(own))}
+	}
+	return nil
 }

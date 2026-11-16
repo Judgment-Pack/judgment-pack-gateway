@@ -270,6 +270,22 @@ C built in #471 (gateway #467): schema version 6 and engine configuration versio
 `storage.instances` `"several"` opting in; `docs/postgresql-store.md`, "Several instances on one
 database". No verification step, record, finding or vector changed.
 
+The already-sealed check in the append's transaction. As built in #471 it read and walked the
+whole registry there, a JSON parse and a signature check per line, under the append's lock and
+against the transaction's 10-second idle bound: past about 70,000 seals every seal failed, and
+below that every instance's seals waited on the lock for the walk (the v0.30.0 release review).
+Before v0.30.0 was tagged, each instance keeps its walk of the registry from its start on, and a
+seal reads and walks, in the same transaction and under the same lock, only what was appended
+since the instance last read it. Its cost is what was appended since, not the registry's size.
+This was chosen over a keyed table of the sealed sessions, written in the append's transaction,
+because it is the smaller change and keeps the registry the one record a seal is judged by. A
+table needs a migration. It needs filling from the registry's signed lines, which SQL cannot
+check. And it would be a second record of what is sealed, which could disagree with the chain a
+verifier reads. The walk relies on the registry being append-only: the run-time login may only
+insert into it, and schema version 4 admits a record only at the log's end. The line that ends
+where the instance last read is found in its place before what follows is read. A registry that
+is not the one the instance read is read and walked whole again, as at an instance's first seal.
+
 ### Consequences
 
 - Good, because no step changes a record, a finding or a vector: a store written by one instance

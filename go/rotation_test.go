@@ -883,3 +883,45 @@ func TestTheExportNamesTheFirstKeyAfterARotation(t *testing.T) {
 		}
 	}
 }
+
+// A walk continued from the walk of a registry's first lines, at a line's
+// end where that walk finds nothing (registryRead), and taken into it, is
+// the walk of the whole: its seals, in their order, the keys reached, the
+// conflicts and the finding.
+func TestAWalkContinuedAtALinesEndIsTheWalkOfTheWhole(t *testing.T) {
+	k0, k1, k2 := rotationKey("zero"), rotationKey("one"), rotationKey("two")
+	at, at2 := "2026-10-25T00:00:00Z", "2026-10-26T00:00:00Z"
+	rot01, rot12 := rotationLines(k0, k1, 1, at), rotationLines(k1, k2, 2, at2)
+	head := strings.Repeat("ab", 64)
+	interrupted := func(k ed25519.PrivateKey, session string) string {
+		return interruptionSealLineBy(k, keyIDFor(publicOf(k)), session, 2, head, at, sealedViaStart) + "\n"
+	}
+	for i, registry := range []string{
+		sealLine(t, k0, "a", 1) + rot01 + sealLine(t, k1, "b", 1) + sealLine(t, k1, "b", 2) + rot12 + sealLine(t, k2, "c", 1),
+		rot01 + sealLine(t, k0, "a", 1) + sealLine(t, k1, "a", 1) + interrupted(k1, "a") + interrupted(k1, "d"),
+		sealLine(t, k0, "a", 1) + forwardLine(k0, 1, at, publicOf(k1)) + "\n" + sealLine(t, k0, "b", 1),
+		rot01 + rotationLines(k1, k2, 3, at2) + rot12 + sealLine(t, k1, "b", 1) + sealLine(t, k2, "c", 1),
+		sealLine(t, k0, "a", 1) + "\n\n" + rot01 + "\n" + sealLine(t, k1, "b", 1) + strings.TrimSuffix(sealLine(t, k1, "c", 1), "\n"),
+	} {
+		data := []byte(registry)
+		whole := walkRegistry(data, publicOf(k0))
+		continuedAt := 0
+		for cut := 0; cut <= len(data); cut++ {
+			if cut > 0 && data[cut-1] != '\n' {
+				continue
+			}
+			first := walkRegistry(data[:cut], publicOf(k0))
+			if first.finding != nil {
+				continue
+			}
+			continuedAt++
+			first.absorb(first.continued(data[cut:]))
+			if fmt.Sprint(first.order, first.seals, first.conflicted, first.finding, first.keys) != fmt.Sprint(whole.order, whole.seals, whole.conflicted, whole.finding, whole.keys) {
+				t.Fatalf("registry %d continued at byte %d:\n%v %v %v\nwhole:\n%v %v %v", i, cut, first.order, first.conflicted, first.finding, whole.order, whole.conflicted, whole.finding)
+			}
+		}
+		if continuedAt < 2 {
+			t.Fatalf("registry %d was continued at %d lines' ends only", i, continuedAt)
+		}
+	}
+}
