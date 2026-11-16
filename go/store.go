@@ -313,6 +313,13 @@ func newRegistryWriterOn(log appendLog, name string, seed []byte, history func()
 	// and its registry may hold that session's seal -- an empty one made in
 	// its place would reopen it. An operator who knows no session was ever
 	// sealed makes the registry, empty, by hand.
+	//
+	// Where instances serve one database beside one another, another
+	// instance's start may make the registry, and admit a session, between
+	// this read and the history's answer: a store found holding sessions has
+	// its registry read again before it is refused, and one there now is read
+	// and walked as a registry found is. Nothing is made then, so nothing
+	// could reopen a session.
 	_, shared := log.(judgedAppendLog)
 	existing, err := log.readLog(0)
 	if faultOf(err) == faultAbsent {
@@ -320,18 +327,31 @@ func newRegistryWriterOn(log appendLog, name string, seed []byte, history func()
 		if err != nil {
 			return nil, err
 		}
-		if held {
-			return nil, fmt.Errorf("the store holds sessions and the registry is not there: %s; restore the registry, or, knowing no session was ever sealed, make it empty by hand", name)
-		}
-		if err := log.createLog(); err != nil {
-			// Where instances serve one database beside one another, another
-			// instance's start may have made the registry since this read: it
-			// is there, and is read and walked as a registry found is.
-			if !shared || faultOf(err) != faultTaken {
+		there := false
+		if held && shared {
+			existing, err = log.readLog(0)
+			switch {
+			case err == nil:
+				there = true
+			case faultOf(err) != faultAbsent:
 				return nil, err
 			}
-			if existing, err = log.readLog(0); err != nil {
-				return nil, err
+		}
+		switch {
+		case there:
+		case held:
+			return nil, fmt.Errorf("the store holds sessions and the registry is not there: %s; restore the registry, or, knowing no session was ever sealed, make it empty by hand", name)
+		default:
+			if err := log.createLog(); err != nil {
+				// Where instances serve one database beside one another, another
+				// instance's start may have made the registry since this read: it
+				// is there, and is read and walked as a registry found is.
+				if !shared || faultOf(err) != faultTaken {
+					return nil, err
+				}
+				if existing, err = log.readLog(0); err != nil {
+					return nil, err
+				}
 			}
 		}
 	} else if err != nil {

@@ -387,7 +387,9 @@ records itself as the session's holder when it admits the call, before the sourc
   it was; its last line is found again in its place before what follows is read, and a registry
   that is not the one the instance read -- a database restored under it, or one that lost its last
   commits to a failover -- is read and walked whole again. A start that finds the registry made by
-  another instance since its read goes on with it.
+  another instance since its read goes on with it, and so does one that finds no registry and then
+  a session in the store, once a second read finds the registry another instance made meanwhile;
+  where that read finds none, the start is refused as ever.
 - **A migration, and `gateway store remove-scope`,** run with every instance stopped: each holds the
   start lease's lock and every row of it, and is refused while any instance's lease is live.
 - **Throughput:** acquisitions scale with instances across sessions; one session's calls serialise

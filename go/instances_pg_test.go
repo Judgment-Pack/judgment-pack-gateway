@@ -548,6 +548,30 @@ func TestAPostgresStartFindingTheRegistryMadeSinceItsReadGoesOn(t *testing.T) {
 	}
 }
 
+// A start whose read found no registry, and whose store holds a session by
+// the time it asks -- another instance's start made the registry and
+// admitted a session in between -- reads the registry again and goes on
+// with it, sealing as one that found it; it makes nothing.
+func TestAPostgresStartFindingASessionAdmittedSinceItsReadReadsTheRegistryAgain(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	a, _ := severalKind(t, db, testSeed, pgStartLeasePeriod)
+	b, _ := severalKind(t, db, testSeed, pgStartLeasePeriod)
+	history := func() (bool, error) { return true, b.registry().createLog() }
+	writer, err := newRegistryWriterOn(a.registry(), pgRegistryName, testSeed, history)
+	if err != nil {
+		t.Fatalf("the start that found a session admitted since its read: %v", err)
+	}
+	if _, err := writer.seal("since-read", 1, nowStamp()); err != nil {
+		t.Fatalf("a seal by the start that read the registry again: %v", err)
+	}
+	if rows := pgTestQuery(t, db.runtime, "SELECT count(*) FROM gateway.logs"); len(rows.rows) != 1 {
+		t.Fatal("the registry's logs could not be counted")
+	} else if n, _ := pgInt8(rows.rows[0][0]); n != 1 {
+		t.Fatalf("%d registries", n)
+	}
+}
+
 // An instance killed: the other refuses its sessions until its row has
 // expired -- seal-open passes over them, or refuses one named -- and then
 // a start, two at once, seals each once.
