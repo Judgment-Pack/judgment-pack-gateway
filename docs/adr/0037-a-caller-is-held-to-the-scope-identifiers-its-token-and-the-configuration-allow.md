@@ -12,7 +12,9 @@ A caller's signed token names the scope identifiers it is for in one claim, `sco
 claim the Runner reads in the same form (its ADR 0002, issue #304), so that one issuer serves
 both. Engine configuration version 27 adds `identity.callerScopes`, which grants each subject
 what it may be for. A request is held to the claim's scope identifiers, each of which the
-subject's entry must grant, or the token is refused `401` before any route. The check is the
+subject's entry must grant, or the token is refused `401` before any route reads the request
+(but the witness's `/witness/*` routes, which check the token and carry no scope data, and the
+open `/registry` and `/publickey`). The check is the
 default: a configuration without the member holds every caller to the sources of no scope
 identifier, and `callerScopes: "unchecked"` is written to keep the behavior before this change.
 The start and `/posture` say which. Every route that reaches a session of a scope identifier
@@ -66,7 +68,11 @@ the caller, and `/seal` and `/verify` read none either.
 4. **One refusal for a token the entry does not grant.** A claim wider than the entry, and a
    claimless token whose entry is a list without the marker, are refused `401` with one
    sentence: "the token's scope_ids names a scope identifier the configuration does not grant
-   its subject". Neither names a scope identifier or the subject.
+   its subject". Neither names a scope identifier or the subject. The refusal is made where a
+   gateway route authenticates its caller, before the route reads the request: every route but
+   `/registry` and `/publickey`, which take no token, and the witness's `/witness/*` routes,
+   which verify a token under the same identity, read no claim, and carry no scope data (a
+   witness statement names a trail, never a scope identifier).
 5. **A delegated request** (SPEC.md §11) carries no claim, and the chain's subject is stated by
    the issuing host, not by the identity's issuer: it reaches the sources of no scope identifier
    where its subject's claimless token would reach them, and never a scope identifier, an

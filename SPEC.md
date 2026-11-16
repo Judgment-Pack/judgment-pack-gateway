@@ -2024,6 +2024,10 @@ own caller, a Runner for one, that may use any configured scope identifier.
 
 The two `401`s are one sentence: `the token's scope_ids names a scope identifier the
 configuration does not grant its subject`; neither names a scope identifier or the subject.
+They, and the claim's form refusal, are answered before the route reads the request on every
+route that takes a token, but the witness's `/witness/*` routes: those verify the token under
+the same identity, do not read the claim, and carry no scope data. `/registry` and
+`/publickey` take no token.
 A claim wider than the entry is refused, never narrowed. A request under a delegation (§11)
 carries no claim and its subject is the issuing host's statement: it reaches the sources of no
 scope identifier where its subject's claimless token would, and never a scope identifier. With

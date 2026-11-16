@@ -28,8 +28,10 @@ const unscopedMarker = "unscoped"
 // maxCallerScopes bounds a claim and a configuration's list.
 const maxCallerScopes = 256
 
-// The two refusals of a token the identity verified, answered 401 before any
-// route, quoting nothing of the token or the configuration. A claimless token
+// The two refusals of a token the identity verified, answered 401 before the
+// route reads the request (authenticate) on every route that takes a token
+// but the witness's /witness/*, which verify the token, read no claim and
+// carry no scope data; they quote nothing of the token or the configuration. A claimless token
 // whose subject's entry is a list without the marker is refused with the
 // wider claim's sentence (ADR-0037, decision 4).
 var (

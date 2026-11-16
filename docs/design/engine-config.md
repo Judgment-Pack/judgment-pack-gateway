@@ -2145,7 +2145,8 @@ upgrading, raise `engineVersion` to `"27"` and write the entries, issuing tokens
 behavior before. A gateway older than this one refuses a version-27 file by its version.
 
 The same holds with `identity` and no scoped platform. A token whose `scope_ids` names a scope
-identifier is refused `401` on every route but `/registry` and `/publickey` unless its
+identifier is refused `401` on every route but `/registry` and `/publickey` (which take no
+token) and a witness's `/witness/*` (which reads no claim and carries no scope data) unless its
 subject's entry grants it. That happens when the issuer is shared with the Runner and a
 caller's tokens gain `scope_ids` for the Runner: the caller is locked out of this gateway after
 the upgrade. Before upgrading such a configuration, write an entry for each such subject
