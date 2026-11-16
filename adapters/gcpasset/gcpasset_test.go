@@ -218,6 +218,8 @@ func TestWriteCheckRefuses(t *testing.T) {
 		"a permission not asked":   func([]string) (int, string) { return 200, `{"permissions":["storage.objects.get"]}` },
 		"permissions not an array": func([]string) (int, string) { return 200, `{"permissions":"run.services.update"}` },
 		"a member named twice":     func([]string) (int, string) { return 200, `{"permissions":[],"permissions":[]}` },
+		"an error served as 200":   func([]string) (int, string) { return 200, `{"error":{"status":"INTERNAL"}}` },
+		"another member only":      func([]string) (int, string) { return 200, `{"x":1}` },
 	}
 	for name, answer := range failures {
 		t.Run(name, func(t *testing.T) {

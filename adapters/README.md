@@ -970,7 +970,7 @@ cannot be read, is `credential-scope-unknown`. The token sources
 **The write check** (`gcp-asset-write-list/1`): `testIamPermissions` on every configured project, by the read-only
 token, over the list below in calls of at most 100. A permission granted refuses
 `credential-can-write: <the first granted, in the list's order>`; a call that fails refuses as
-well. It runs whenever a token is obtained: at the start, where a refusal refuses the start, and
+well, and so does an answer that is neither `{}` nor an object with `permissions`. It runs whenever a token is obtained: at the start, where a refusal refuses the start, and
 with every token after it, where a refusal closes the source until the engine restarts.
 
 - `resourcemanager.projects.setIamPolicy`
@@ -1010,6 +1010,37 @@ with every token after it, where a refusal closes the source until the engine re
 - `cloudasset.savedqueries.create`
 - `cloudasset.savedqueries.update`
 - `cloudasset.savedqueries.delete`
+- `iam.serviceAccounts.signBlob`
+- `iam.serviceAccounts.signJwt`
+- `iam.serviceAccounts.implicitDelegation`
+- `iam.serviceAccounts.getOpenIdToken`
+- `iam.serviceAccountKeys.delete`
+- `storage.objects.update`
+- `storage.objects.setIamPolicy`
+- `run.jobs.create`
+- `run.jobs.update`
+- `run.jobs.delete`
+- `run.jobs.run`
+- `run.jobs.setIamPolicy`
+- `compute.instances.create`
+- `compute.instances.delete`
+- `compute.instances.setMetadata`
+- `compute.instances.setServiceAccount`
+- `compute.projects.setCommonInstanceMetadata`
+- `compute.firewalls.create`
+- `compute.firewalls.update`
+- `compute.firewalls.delete`
+- `cloudfunctions.functions.create`
+- `cloudfunctions.functions.update`
+- `cloudfunctions.functions.delete`
+- `cloudfunctions.functions.setIamPolicy`
+- `cloudbuild.builds.create`
+- `serviceusage.services.enable`
+- `serviceusage.services.disable`
+- `orgpolicy.policy.set`
+
+The list is fixed, not complete: a permission outside it is not checked. Grant the source only
+read-only roles; the check is a guard against a credential that was granted more by mistake.
 
 **Resource bindings.** On every `IAM_POLICY` page, a binding of the source's own principal
 (`serviceAccount:<email>`) to a role outside the read-only list refuses

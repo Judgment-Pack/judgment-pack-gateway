@@ -286,6 +286,10 @@ accepts `cloud-platform` only.
   source may add these to what it grants. The list is closed, and any other scope is refused.
 - The write list adds the Cloud Asset writes the `cloudasset` scope admits: creating, updating
   and deleting feeds and saved queries.
+- It also adds the permissions that mint a token or a signature as a service account
+  (`signBlob`, `signJwt`, `implicitDelegation`, `getOpenIdToken`), and the common writes on
+  objects, jobs, compute instances and firewalls, functions, builds, services and organization
+  policy. An answer to the check that is neither `{}` nor an object with `permissions` refuses.
 
 ### A3. Where the tokens come from
 

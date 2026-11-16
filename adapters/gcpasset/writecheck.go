@@ -28,7 +28,10 @@ const WriteListVersion = "gcp-asset-write-list/1"
 const maxPermissionsPerCall = 100
 
 // writeList is every write permission the check asks about, in the order a
-// refusal names the first one granted. The adapter's README lists it.
+// refusal names the first one granted. The adapter's README lists it. It is
+// a fixed list, not a proof that a credential cannot write: a permission
+// outside it is not checked, so the read-only role on the source's own
+// principal stays the primary control.
 var writeList = []string{
 	"resourcemanager.projects.setIamPolicy",
 	"resourcemanager.projects.update",
@@ -67,6 +70,34 @@ var writeList = []string{
 	"cloudasset.savedqueries.create",
 	"cloudasset.savedqueries.update",
 	"cloudasset.savedqueries.delete",
+	"iam.serviceAccounts.signBlob",
+	"iam.serviceAccounts.signJwt",
+	"iam.serviceAccounts.implicitDelegation",
+	"iam.serviceAccounts.getOpenIdToken",
+	"iam.serviceAccountKeys.delete",
+	"storage.objects.update",
+	"storage.objects.setIamPolicy",
+	"run.jobs.create",
+	"run.jobs.update",
+	"run.jobs.delete",
+	"run.jobs.run",
+	"run.jobs.setIamPolicy",
+	"compute.instances.create",
+	"compute.instances.delete",
+	"compute.instances.setMetadata",
+	"compute.instances.setServiceAccount",
+	"compute.projects.setCommonInstanceMetadata",
+	"compute.firewalls.create",
+	"compute.firewalls.update",
+	"compute.firewalls.delete",
+	"cloudfunctions.functions.create",
+	"cloudfunctions.functions.update",
+	"cloudfunctions.functions.delete",
+	"cloudfunctions.functions.setIamPolicy",
+	"cloudbuild.builds.create",
+	"serviceusage.services.enable",
+	"serviceusage.services.disable",
+	"orgpolicy.policy.set",
 }
 
 // WriteList is a copy of the write list, for the README's test.
@@ -147,6 +178,11 @@ func (s *source) testPermissions(ctx context.Context, token, parent string, aske
 		return nil, false
 	}
 	if _, present := answer["permissions"]; !present {
+		// The platform answers {} when it grants none; any other shape
+		// without the member is not an answer the check can read.
+		if len(answer) != 0 {
+			return nil, false
+		}
 		return nil, true
 	}
 	list, ok := array(answer["permissions"])
