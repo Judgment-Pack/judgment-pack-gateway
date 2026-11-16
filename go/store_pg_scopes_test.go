@@ -424,6 +424,25 @@ func TestThePostgresKindServesScopedPlatformsAndExportsWhatTheFilesystemKindWoul
 			t.Fatalf("seal %s: %d %v", session, code, body)
 		}
 	}
+	// each session's seal loads, and names the scope identifier of the
+	// session's series, s-none's (of no scope) being §3's form (ADR-0036,
+	// decision 2)
+	data, err := db.open(t, nil).registry().readLog(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	walk, err := engineWalk(data, started.service.publicKey)
+	if err != nil || len(walk.seals) != 3 {
+		t.Fatalf("the registry after the seals: %v %v\n%s", walk, err, data)
+	}
+	for session, scope := range map[string]string{"s-a": "scope-a", "s-b": "scope-b", "s-none": ""} {
+		if got := walk.seals[session].scope; got != scope {
+			t.Errorf("the seal of %s names the scope %q, want %q", session, got, scope)
+		}
+	}
+	if bytes.Count(data, []byte(`"sealVersion":"2"`)) != 2 {
+		t.Fatalf("the registry holds other than two seals of version 2:\n%s", data)
+	}
 	// a sealed session is refused as sealed, whatever the scope asking
 	if code, got := post(t, server, "/acquire", `{"session":"s-a","source":"never","arguments":{"q":"acme"}}`); code != http.StatusBadRequest || fmt.Sprint(got["error"]) != "session is sealed: s-a" {
 		t.Fatalf("an acquisition of no scope into sealed s-a: %d %v", code, got)

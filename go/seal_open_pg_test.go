@@ -102,8 +102,8 @@ func sealOpenPgLeaveOpen(t *testing.T, cfg engineConfig, sources map[string]sour
 }
 
 // sealOpenPgHeads is, for each session of each scope ("" for none), the
-// signature of its last receipt and how many it holds, as the store holds
-// them.
+// signature of its last receipt, how many it holds and its scope, as the
+// store holds them.
 func sealOpenPgHeads(t *testing.T, db *pgTestDB, sessions map[string]string) map[string]sealOpenTarget {
 	t.Helper()
 	kind := db.open(t, nil)
@@ -128,14 +128,15 @@ func sealOpenPgHeads(t *testing.T, db *pgTestDB, sessions map[string]string) map
 		if !ok {
 			t.Fatalf("session %s's last receipt names no signature", session)
 		}
-		heads[session] = sealOpenTarget{sessionID: session, count: int64(len(entries)), head: signature}
+		heads[session] = sealOpenTarget{sessionID: session, count: int64(len(entries)), head: signature, scope: scope}
 	}
 	return heads
 }
 
 // sealOpenPgSeals reads the seals of lines, each after prefix, and holds
-// each to §3c's form, sealedVia via, and to heads; it answers the sessions
-// sealed, in order.
+// each to §3c's form, sealedVia via, and to heads: a session of a scope
+// identifier's seal names it, of ten members (ADR-0036, decision 3), and a
+// session of none's is §3c's eight; it answers the sessions sealed, in order.
 func sealOpenPgSeals(t *testing.T, lines []string, prefix, via string, heads map[string]sealOpenTarget) []string {
 	t.Helper()
 	var sessions []string
@@ -151,7 +152,14 @@ func sealOpenPgSeals(t *testing.T, lines []string, prefix, via string, heads map
 		session, _ := record["sessionId"].(string)
 		want, known := heads[session]
 		count, _ := record["finalCount"].(float64)
-		if !known || record["kind"] != sealKindInterruption || record["sealedVia"] != via || int64(count) != want.count || record["headSignature"] != want.head || len(record) != 8 {
+		members, scope := 8, any(nil)
+		if want.scope != "" {
+			members, scope = 10, want.scope
+			if record["sealVersion"] != sealVersionScoped {
+				t.Fatalf("a seal %s of a session of a scope identifier, of no version 2", text)
+			}
+		}
+		if !known || record["kind"] != sealKindInterruption || record["sealedVia"] != via || int64(count) != want.count || record["headSignature"] != want.head || record["scope"] != scope || len(record) != members {
 			t.Fatalf("a seal %s, where the store holds %+v", text, want)
 		}
 		sessions = append(sessions, session)
