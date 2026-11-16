@@ -98,7 +98,9 @@ scopes in one session is refused) falls on a use that ADR-0026 recorded as a gap
    eight members and `scope` and `sealVersion: "2"`, signed under
    `"judgment-pack-gateway/seal-after-interruption/2:"`; a session of no scope, and a session an
    earlier release left open holding receipts of several scopes, or of a scope and none, in §3c's
-   form as before. On the PostgreSQL kind the session's scope is its series' row.
+   form as before. On either kind the scope sealed is the one the session's receipts carry, as
+   verification reads them (every receipt of a session to be sealed passes the ladder), not a
+   binding in memory, which a stopped process took with it.
 
 4. **What a verifier checks.** A seal of either kind that names a scope anchors its session as
    its form without the member anchors it (counts, head). Beside that, at §4 step 3, a session

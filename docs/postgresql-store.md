@@ -651,9 +651,9 @@ available with this kind yet").
   cannot make a session another scope holds, and learns that the name is taken. An acquisition
   into a session that holds the receipts of another scope, or of none, is refused `400` before its
   source runs: `session <id> holds the receipts of a scope other than this source's (another
-  scope identifier, or none): with the PostgreSQL storage kind a session's receipts are of one
-  scope, so acquire into a new session`. The refusal names neither scope. (The filesystem kind
-  keeps one layout for every scope and takes such an acquisition.)
+  scope identifier, or none): a session's receipts are of one scope, so acquire into a new
+  session`. The refusal names neither scope. The filesystem kind refuses such an acquisition
+  alike (ADR-0036), and an `/act` into a scoped session is refused on either kind.
 - **The record of the scope identifiers** (`gateway.scope_identifiers`, schema version 3) holds each
   scope identifier a start has opened a view for, written by that start before the view writes
   anything, never changed, and removed only with the scope's rows by `gateway store
@@ -678,11 +678,13 @@ available with this kind yet").
   into a session of the source's own scope took about 2 ms at either.
 - **The registry** is one chain across scopes: its tables carry no scope column, and every view
   reads the whole registry. Its lines are seals (SPEC.md §3, §3c): a session's id, its count of
-  receipts, its time, the key's identifier and a signature. None carries a receipt, a payload, an
-  argument or a scope identifier, so a seal of a scoped session is a line of no scope. A gateway
-  of one scope reads every seal: the ids and counts of every scope's sealed sessions, and nothing
-  more of their rows. `gateway verify` reads the chain from an export, which holds every line.
-  Whether a seal names its scope is issue #442.
+  receipts, its time, the key's identifier and a signature, and, for a session of a scope
+  identifier, that identifier and `sealVersion` `"2"` (ADR-0036; SPEC.md §3, "A seal of version
+  2"). None carries a receipt, a payload or an argument. The registry's rows are still of no
+  scope: a seal naming a scope identifier is a row every view reads, so a gateway of one scope
+  reads every seal, the ids, counts and scope identifiers of every scope's sealed sessions, and
+  nothing more of their rows. `gateway verify` reads the chain from an export, which holds every
+  line; neither it nor the export selects by scope (engine-config.md, "A platform's scope").
 - **The export** reads every scope recorded, whichever scopes the configuration names now, and
   writes the layout of SPEC.md §1.3 the filesystem kind writes: a session once, under its name; a
   payload two scopes hold alike once, its bytes read from each and compared, and refused where

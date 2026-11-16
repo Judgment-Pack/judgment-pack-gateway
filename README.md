@@ -162,7 +162,9 @@ of what it removes, then removes the files, and prints the records (SPEC.md §1.
 "Removing one scope identifier's records"). The store then verifies, each removed sealed
 session observed `session-removed` instead of `sealed-session-missing`; with its record taken
 away it is `sealed-session-missing` again. A session holding receipts of the scope identifier
-beside receipts of another, of none, or that do not verify, a receipt left in the store that
+beside receipts of another, of none, or that do not verify (which a gateway of this version,
+holding a session to one scope, does not make, but a store an earlier one wrote may hold), a
+receipt left in the store that
 cites one it would remove, and a session's directory holding anything but receipt files, refuse
 the whole call by name, and nothing is removed. A run
 cut off is completed by running it again. Do not export the store while the command runs: the
