@@ -1,0 +1,109 @@
+{
+  "assets": [
+    {
+      "assetType": "run.googleapis.com/Service",
+      "name": "//run.googleapis.com/projects/example-project-1/locations/europe-west1/services/orders",
+      "resource": {
+        "data": {
+          "generation": "7",
+          "ingress": "INGRESS_TRAFFIC_ALL",
+          "labels": {"env": "staging"},
+          "launchStage": "GA",
+          "name": "projects/example-project-1/locations/europe-west1/services/orders",
+          "template": {
+            "containers": [
+              {
+                "env": [
+                  {"name": "LOG_LEVEL"},
+                  {"name": "DATABASE_PASSWORD", "valueSource": {"secretKeyRef": {"secret": "projects/example-project-1/secrets/orders-db", "version": "4"}}},
+                  {"name": "ODD"}
+                ],
+                "image": "europe-docker.pkg.dev/example-project-1/apps/orders@sha256:0000000000000000000000000000000000000000000000000000000000000001",
+                "name": "orders"
+              }
+            ],
+            "revision": "orders-00007",
+            "serviceAccount": "orders-runtime@example-project-1.iam.gserviceaccount.com"
+          },
+          "traffic": [
+            {"percent": 100, "tag": "live", "type": "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"}
+          ],
+          "uid": "00000000-0000-4000-8000-000000000001"
+        },
+        "location": "europe-west1",
+        "parent": "//cloudresourcemanager.googleapis.com/projects/100000000001"
+      },
+      "updateTime": "2026-11-15T09:30:00Z"
+    },
+    {
+      "assetType": "secretmanager.googleapis.com/Secret",
+      "name": "//secretmanager.googleapis.com/projects/100000000001/secrets/orders-db",
+      "resource": {
+        "data": {
+          "createTime": "2026-01-01T00:00:00Z",
+          "labels": {"owner": "orders"},
+          "name": "projects/100000000001/secrets/orders-db",
+          "replication": {"automatic": {}},
+          "versionAliases": {"current": "4"}
+        },
+        "parent": "//cloudresourcemanager.googleapis.com/projects/100000000001"
+      },
+      "updateTime": "2026-11-01T00:00:00Z"
+    },
+    {
+      "assetType": "secretmanager.googleapis.com/SecretVersion",
+      "name": "//secretmanager.googleapis.com/projects/100000000001/secrets/orders-db/versions/4",
+      "resource": {
+        "data": {
+          "createTime": "2026-11-01T00:00:00Z",
+          "name": "projects/100000000001/secrets/orders-db/versions/4",
+          "state": "ENABLED"
+        }
+      }
+    },
+    {
+      "assetType": "iam.googleapis.com/ServiceAccount",
+      "name": "//iam.googleapis.com/projects/example-project-1/serviceAccounts/100000000000000000001",
+      "resource": {
+        "data": {
+          "disabled": false,
+          "displayName": "orders runtime",
+          "email": "orders-runtime@example-project-1.iam.gserviceaccount.com",
+          "name": "projects/example-project-1/serviceAccounts/orders-runtime@example-project-1.iam.gserviceaccount.com",
+          "uniqueId": "100000000000000000001"
+        }
+      }
+    },
+    {
+      "assetType": "storage.googleapis.com/Bucket",
+      "name": "//storage.googleapis.com/example-project-1-exports",
+      "resource": {
+        "data": {
+          "iamConfiguration": {"uniformBucketLevelAccess": {"enabled": true}},
+          "labels": {},
+          "location": "EUROPE-WEST1",
+          "name": "example-project-1-exports",
+          "retentionPolicy": {"retentionPeriod": "86400"},
+          "storageClass": "STANDARD",
+          "versioning": {"enabled": true}
+        },
+        "location": "europe-west1"
+      }
+    },
+    {
+      "assetType": "cloudresourcemanager.googleapis.com/Project",
+      "name": "//cloudresourcemanager.googleapis.com/projects/100000000001",
+      "resource": {
+        "data": {
+          "labels": {"team": "orders"},
+          "lifecycleState": "ACTIVE",
+          "parent": {"id": "200000000001", "type": "folder"},
+          "projectId": "example-project-1",
+          "projectNumber": "100000000001"
+        }
+      }
+    }
+  ],
+  "nextPageToken": "page-2-token-as-written",
+  "readTime": "2026-11-16T12:00:00.000000Z"
+}

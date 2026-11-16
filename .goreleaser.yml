@@ -79,6 +79,10 @@ builds:
     main: ./cmd/adapter-drive
     binary: adapter-drive
   - <<: *adapter
+    id: adapter-gcp-asset
+    main: ./cmd/adapter-gcp-asset
+    binary: adapter-gcp-asset
+  - <<: *adapter
     id: adapter-gmail
     main: ./cmd/adapter-gmail
     binary: adapter-gmail

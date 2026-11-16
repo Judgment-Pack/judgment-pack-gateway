@@ -578,6 +578,17 @@ func serveUntilStopped(service *gatewayService, cfg engineConfig, delegation *de
 	// the signer's admission gate, for the rotation contract: SIGUSR1
 	// closes it, SIGUSR2 reopens it
 	installOperatorControls(service.ctx, service)
+	// Every gcp-asset source's read-only check, before anything is served:
+	// a refusal, or a check that did not complete, refuses the start
+	// (gcp_asset_binding.go).
+	said := s.said
+	if said == nil {
+		said = os.Stderr
+	}
+	if err := service.gcpAssetStart(said); err != nil {
+		fmt.Fprintln(said, "start:", err)
+		return 1
+	}
 	lost := make(chan error, 1)
 	if keep != nil {
 		// ended, and waited for, before serving returns

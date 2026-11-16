@@ -162,8 +162,8 @@ func TestTheStorageMemberTakesAStartWaitFromVersion25(t *testing.T) {
 			"engine configuration: storage.startWaitSeconds 9007199254740991 is outside 1 to 3600"},
 		{"a string", at("25", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":"60"}`),
 			"engine configuration: storage.startWaitSeconds must be an integer"},
-		{"version 29", at("29", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":60}`),
-			`engine configuration: unsupported engineVersion "29" (latest "28")`},
+		{"version 30", at("30", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":60}`),
+			`engine configuration: unsupported engineVersion "30" (latest "29")`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parseEngineConfig([]byte(tc.config))

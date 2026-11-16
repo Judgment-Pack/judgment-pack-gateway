@@ -927,6 +927,168 @@ end-to-end tests spawn the built adapter as a declared source (`go/adapter_http_
 the engine's source of an `http` binding (`go/http_binding_e2e_test.go`, against a plaintext
 loopback stand-in) and verify the store that results.
 
+## adapter-gcp-asset
+
+The read-only Cloud Asset Inventory source ([ADR-0039](../docs/adr/0039-a-read-only-asset-inventory-connection-for-configuration-drift.md)
+and its Amendment; engine configuration version 29, docs/design/engine-config.md). `gateway serve
+--config` starts it for a platform whose binding's live operation is of the `gcp-asset` shape, as
+the platform's user with its live credentials file, under the source sandbox; its envelope and
+receipt are those of the http shape. Each acquisition makes one `assets.list` call: one configured
+project, one content type, the asset types named, the caller's page token, page size and read
+time. The next page token is returned as the platform wrote it, or null, and never followed.
+
+```json
+{"bindingVersion": "1", "platform": "inventory", "operations": {"live": {"shape": "gcp-asset", "licence": "Apache-2.0",
+  "parents": ["projects/example-project-1"], "assetTypes": ["run.googleapis.com/Service"], "contentTypes": ["RESOURCE", "IAM_POLICY"]}}}
+```
+
+- `parents`: projects only, each `projects/<project-id>`; a folder is refused at load (gateway #489).
+- `assetTypes`: an explicit list, no pattern; the adapter refuses at the start a type it has no
+  projection for.
+- `contentTypes`: `RESOURCE`, `IAM_POLICY` or both.
+- `members`: `"count-users"` carries, on an `IAM_POLICY` page, the count of each binding's `user:`
+  members in place of them; absent (the default), members are carried as written.
+
+A request (stdin) is `{"parent", "contentType", "assetTypes", "pageToken"?, "pageSize"?,
+"readTime"?}`. The signer holds it to this form and the configuration, the parent first
+(`parent-not-configured`), after the caller's reach to the platform's scope identifier and
+before any token is obtained.
+
+**Tokens.** Two, each requested for one scope alone: `https://www.googleapis.com/auth/cloudasset` for the list call, and `https://www.googleapis.com/auth/cloud-platform.read-only`
+for `testIamPermissions`. `https://www.googleapis.com/auth/cloud-platform` is never requested.
+The scopes each token was granted are read (the token answer's `scope`, or the
+token-information endpoint where the answer has none) and must be the scope requested and
+nothing beyond it but an identity scope, a closed list: `openid`, `https://www.googleapis.com/auth/userinfo.email`, `email`. Anything else, or a grant that
+cannot be read, is `credential-scope-unknown`. The token sources
+(`credentials.live.tokenSource.kind`):
+
+- `metadata`: the metadata server of the platform's own compute, no key on disk; the live
+  credentials file holds `{"sealKey": "<64 hex digits>"}`, the key the list token is sealed
+  under while the signer holds it.
+- `key`: a service account's key in the live credentials file, the least preferred.
+
+**The write check** (`gcp-asset-write-list/2`): `testIamPermissions` on every configured project, by the read-only
+token, over the list below in calls of at most 100. A permission granted refuses
+`credential-can-write: <the first granted, in the list's order>`; a call that fails refuses as
+well, and so does an answer that is neither `{}` nor an object with `permissions`. It runs whenever a token is obtained: at the start, where a refusal refuses the start, and
+with every token after it, where a refusal closes the source until the engine restarts.
+
+- `resourcemanager.projects.setIamPolicy`
+- `resourcemanager.projects.update`
+- `resourcemanager.projects.delete`
+- `run.services.create`
+- `run.services.update`
+- `run.services.delete`
+- `run.services.setIamPolicy`
+- `secretmanager.secrets.create`
+- `secretmanager.secrets.update`
+- `secretmanager.secrets.delete`
+- `secretmanager.secrets.setIamPolicy`
+- `secretmanager.versions.add`
+- `secretmanager.versions.enable`
+- `secretmanager.versions.disable`
+- `secretmanager.versions.destroy`
+- `iam.serviceAccounts.create`
+- `iam.serviceAccounts.update`
+- `iam.serviceAccounts.delete`
+- `iam.serviceAccounts.setIamPolicy`
+- `iam.serviceAccounts.actAs`
+- `iam.serviceAccounts.getAccessToken`
+- `iam.serviceAccountKeys.create`
+- `iam.roles.create`
+- `iam.roles.update`
+- `iam.roles.delete`
+- `storage.buckets.create`
+- `storage.buckets.update`
+- `storage.buckets.delete`
+- `storage.buckets.setIamPolicy`
+- `storage.objects.create`
+- `storage.objects.delete`
+- `cloudasset.feeds.create`
+- `cloudasset.feeds.update`
+- `cloudasset.feeds.delete`
+- `cloudasset.savedqueries.create`
+- `cloudasset.savedqueries.update`
+- `cloudasset.savedqueries.delete`
+- `iam.serviceAccounts.signBlob`
+- `iam.serviceAccounts.signJwt`
+- `iam.serviceAccounts.implicitDelegation`
+- `iam.serviceAccounts.getOpenIdToken`
+- `iam.serviceAccountKeys.delete`
+- `storage.objects.update`
+- `storage.objects.setIamPolicy`
+- `run.jobs.create`
+- `run.jobs.update`
+- `run.jobs.delete`
+- `run.jobs.run`
+- `run.jobs.setIamPolicy`
+- `compute.instances.create`
+- `compute.instances.delete`
+- `compute.instances.setMetadata`
+- `compute.instances.setServiceAccount`
+- `compute.projects.setCommonInstanceMetadata`
+- `compute.firewalls.create`
+- `compute.firewalls.update`
+- `compute.firewalls.delete`
+- `cloudfunctions.functions.create`
+- `cloudfunctions.functions.update`
+- `cloudfunctions.functions.delete`
+- `cloudfunctions.functions.setIamPolicy`
+- `cloudbuild.builds.create`
+- `serviceusage.services.enable`
+- `serviceusage.services.disable`
+- `orgpolicy.policy.set`
+- `container.pods.create`
+- `artifactregistry.repositories.uploadArtifacts`
+- `deploymentmanager.deployments.create`
+- `iam.workloadIdentityPoolProviders.create`
+- `iam.workloadIdentityPoolProviders.update`
+- `cloudkms.cryptoKeyVersions.destroy`
+- `logging.sinks.create`
+- `cloudscheduler.jobs.create`
+- `appengine.versions.create`
+- `composer.environments.create`
+- `dataflow.jobs.create`
+- `cloudsql.instances.update`
+- `pubsub.topics.publish`
+- `bigquery.tables.updateData`
+
+The list is fixed, not complete: a permission outside it is not checked. Grant the source only
+read-only roles; the check is a guard against a credential that was granted more by mistake.
+
+**Resource bindings.** On every `IAM_POLICY` page, a binding of the source's own principal
+(`serviceAccount:<email>`) to a role outside the read-only list refuses
+`credential-bound-at-resource: <asset name>` and closes the source. A custom role is never on the
+list, whatever its name. Where the platform serves no `IAM_POLICY`, the start and `/posture` say
+`resource-bindings: unchecked`. The read-only roles: `roles/viewer`, `roles/browser`, `roles/iam.securityReviewer`, `roles/iam.roleViewer`, `roles/cloudasset.viewer`, `roles/run.viewer`, `roles/secretmanager.viewer`, `roles/storage.objectViewer`, `roles/storage.legacyBucketReader`, `roles/storage.legacyObjectReader`, `roles/logging.viewer`, `roles/monitoring.viewer`, `roles/serviceusage.serviceUsageViewer`, `roles/artifactregistry.reader`.
+
+**Projections.** `resource.data` is cut to an allow-list per asset type before the envelope is
+formed, so the digest is of the projected page; a member not listed is dropped.
+
+| Asset type | Members kept |
+|---|---|
+| `run.googleapis.com/Service` | v1: `apiVersion`, `kind`, `metadata` (`name`, `namespace`, `generation`, `labels`), `spec.template` (`metadata.name`, `spec.serviceAccountName`, `spec.containers`), `spec.traffic`; v2: `name`, `uid`, `generation`, `labels`, `ingress`, `launchStage`, `template` (`revision`, `serviceAccount`, `containers`), `traffic`. A container keeps `name`, `image` and its environment's names and secret references, never a value |
+| `secretmanager.googleapis.com/Secret` | `name`, `labels`, `replication`, `versionAliases`, `createTime` |
+| `secretmanager.googleapis.com/SecretVersion` | `name`, `state`, `createTime`, `destroyTime` |
+| `iam.googleapis.com/ServiceAccount` | `name`, `email`, `uniqueId`, `disabled`, `displayName` |
+| `storage.googleapis.com/Bucket` | `name`, `location`, `storageClass`, `labels`, `versioning`, `iamConfiguration`, `retentionPolicy` |
+| `cloudresourcemanager.googleapis.com/Project` | `projectId`, `projectNumber`, `lifecycleState`, `labels`, `parent` |
+
+**Exit statuses.** 0 with the envelope; 1 any other failure; 2 usage; 3 to 6 as a token step's
+(no credential, refused, rejected, seal unusable); 8 with `{"referenceExpired":{"status":410}}`
+for an expired page token, only on a request that sent one; 9 with
+`{"refused":{"reason":R,"subject":S}}` for a read-only refusal, on which the signer closes the
+source. A report beside 9 out of its form is a refusal all the same. No output names a token.
+
+**Not confirmed against the platform.** The form of an expired page token's answer (read as 410
+on a request that sent one); the scopes the metadata server and a key's grant report for each
+scope requested; the Cloud Run resource form (both are projected); whether every permission of
+the write list is reported at project level. Federation (workload identity with
+impersonation) is withheld: the impersonation call grants no scope narrower than
+`cloud-platform`, which this adapter never requests. `count-users` counts a `deleted:user:`
+member as a user. `gateway connect` does not write a platform of this shape; write its entry by
+hand.
+
 ## adapter-document
 
 A document a person attaches in a desk — a PDF, a scanned form, a text export — read for its

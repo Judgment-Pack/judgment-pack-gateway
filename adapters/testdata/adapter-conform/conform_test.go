@@ -84,6 +84,7 @@ func TestMain(m *testing.M) {
 var noEnvelope = map[string]string{
 	"adapter-sandbox":     "a native process launcher and posture/policy reporter; its child remains responsible for the source envelope",
 	"adapter-document":    "a bare source, of the command shape: what it writes is the attachment record itself (ADR-0004)",
+	"adapter-gcp-asset":   "a program of the gcp-asset shape (ADR-0039), which adapter-conform does not take (it runs airbyte, mcp and http); its own tests run it against a stand-in of the platform",
 	"adapter-render":      "a bare source, of the command shape: what it writes is the render record itself (ADR-0006)",
 	"gateway-connections": "the connection companion over its parent's pipe, not a source",
 	"ocr-cloud":           "an OCR program the document adapters run, not a source",

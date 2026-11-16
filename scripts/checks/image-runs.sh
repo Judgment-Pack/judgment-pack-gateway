@@ -4,6 +4,7 @@ set -e
 docker run --rm --entrypoint /usr/local/bin/adapter-mcp engine:ci --check 2>&1 | grep -q 'usage: adapter-mcp' || { echo "adapter-mcp does not run"; exit 1; }
 docker run --rm --entrypoint /usr/local/bin/adapter-airbyte engine:ci 2>&1 | grep -q 'usage: adapter-airbyte' || { echo "adapter-airbyte does not run"; exit 1; }
 docker run --rm --entrypoint /usr/local/bin/adapter-http engine:ci 2>&1 | grep -q 'usage: adapter-http' || { echo "adapter-http does not run"; exit 1; }
+docker run --rm --entrypoint /usr/local/bin/adapter-gcp-asset engine:ci 2>&1 | grep -q 'usage: adapter-gcp-asset' || { echo "adapter-gcp-asset does not run"; exit 1; }
 docker run --rm --entrypoint /usr/local/bin/adapter-document engine:ci positional 2>&1 | grep -q 'usage: adapter-document' || { echo "adapter-document does not run"; exit 1; }
 # The runtime reports the pinned release's version, as the signer
 # and as a platform user: it is everyone's to run. The first line

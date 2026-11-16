@@ -75,6 +75,10 @@ type postureReport struct {
 	platform string
 	programs []postureProgram
 	lines    []postureLine
+	// readOnly are the gcp-asset sources (gcp_asset_binding.go), each with
+	// its token source, its check and whether it serves; listed as programs
+	// are, by the reach of the caller the report is served to.
+	readOnly []readOnlySourcePosture
 }
 
 // postureInput is the configuration a posture is judged under: the seed's
@@ -250,8 +254,8 @@ var postureStatements = map[string]map[string]postureLine{
 
 // hostPosture judges every protection under the configuration given: the
 // lines every report gives, the listener's last of them, then a
-// delegation's, then writeRequesters', each only where the configuration
-// carries it.
+// delegation's, then writeRequesters', then the caller scopes', then the
+// read-only credentials', each only where the configuration carries it.
 func hostPosture(in postureInput) postureReport {
 	programs := sourceProgramPosture(in.sources)
 	if in.public {
@@ -266,7 +270,8 @@ func hostPosture(in postureInput) postureReport {
 		seedPosture(in),
 		programConfinementPosture(programs),
 		listenerPosture(in),
-	}, append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources)...)...)}
+	}, append(append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources)...), readOnlyCredentialsLines(in.sources)...)...),
+		readOnly: readOnlySourcePostures(in.sources, in.reach)}
 	if in.reach != nil {
 		var listed []postureProgram
 		for _, p := range programs {
@@ -414,6 +419,13 @@ func (r postureReport) canonical() []byte {
 		}
 		top.set("programs", programs)
 	}
+	if len(r.readOnly) > 0 {
+		readOnly := vArray{}
+		for _, p := range r.readOnly {
+			readOnly = append(readOnly, p.value())
+		}
+		top.set("readOnlySources", readOnly)
+	}
 	return canon(top)
 }
 
@@ -425,6 +437,9 @@ func (r postureReport) text() string {
 	}
 	for _, p := range r.programs {
 		fmt.Fprintf(&sb, "%s %s %s %s %s preset=%s %s\n", p.source, p.class, p.report.Protection.Mode, p.report.Protection.Backend, p.report.Protection.State, p.report.Preset, p.report.Protection.Reason)
+	}
+	for _, p := range r.readOnly {
+		fmt.Fprintln(&sb, p.text())
 	}
 	return sb.String()
 }

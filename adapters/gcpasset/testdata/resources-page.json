@@ -1,0 +1,125 @@
+{
+  "readTime": "2026-11-16T12:00:00.000000Z",
+  "assets": [
+    {
+      "name": "//run.googleapis.com/projects/example-project-1/locations/europe-west1/services/orders",
+      "assetType": "run.googleapis.com/Service",
+      "updateTime": "2026-11-15T09:30:00Z",
+      "ancestors": ["projects/100000000001"],
+      "resource": {
+        "version": "v2",
+        "discoveryDocumentUri": "https://run.googleapis.com/$discovery/rest",
+        "discoveryName": "Service",
+        "parent": "//cloudresourcemanager.googleapis.com/projects/100000000001",
+        "location": "europe-west1",
+        "data": {
+          "name": "projects/example-project-1/locations/europe-west1/services/orders",
+          "uid": "00000000-0000-4000-8000-000000000001",
+          "generation": "7",
+          "labels": {"env": "staging"},
+          "annotations": {"note": "dropped"},
+          "creator": "dropped@example.com",
+          "ingress": "INGRESS_TRAFFIC_ALL",
+          "launchStage": "GA",
+          "template": {
+            "revision": "orders-00007",
+            "serviceAccount": "orders-runtime@example-project-1.iam.gserviceaccount.com",
+            "scaling": {"maxInstanceCount": 3},
+            "containers": [
+              {
+                "name": "orders",
+                "image": "europe-docker.pkg.dev/example-project-1/apps/orders@sha256:0000000000000000000000000000000000000000000000000000000000000001",
+                "command": ["/bin/orders"],
+                "args": ["--dropped"],
+                "env": [
+                  {"name": "LOG_LEVEL", "value": "plain-value-never-carried"},
+                  {"name": "DATABASE_PASSWORD", "valueSource": {"secretKeyRef": {"secret": "projects/example-project-1/secrets/orders-db", "version": "4"}}},
+                  {"name": "ODD", "valueSource": {"secretKeyRef": {"secret": "projects/example-project-1/secrets/odd", "version": 5}}}
+                ]
+              }
+            ]
+          },
+          "traffic": [
+            {"type": "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST", "percent": 100, "tag": "live", "dropped": true}
+          ]
+        }
+      }
+    },
+    {
+      "name": "//secretmanager.googleapis.com/projects/100000000001/secrets/orders-db",
+      "assetType": "secretmanager.googleapis.com/Secret",
+      "updateTime": "2026-11-01T00:00:00Z",
+      "resource": {
+        "parent": "//cloudresourcemanager.googleapis.com/projects/100000000001",
+        "data": {
+          "name": "projects/100000000001/secrets/orders-db",
+          "labels": {"owner": "orders"},
+          "replication": {"automatic": {}},
+          "versionAliases": {"current": "4"},
+          "createTime": "2026-01-01T00:00:00Z",
+          "etag": "\"dropped\"",
+          "topics": [{"name": "dropped"}]
+        }
+      }
+    },
+    {
+      "name": "//secretmanager.googleapis.com/projects/100000000001/secrets/orders-db/versions/4",
+      "assetType": "secretmanager.googleapis.com/SecretVersion",
+      "resource": {
+        "data": {
+          "name": "projects/100000000001/secrets/orders-db/versions/4",
+          "state": "ENABLED",
+          "createTime": "2026-11-01T00:00:00Z",
+          "payload": {"data": "c2VjcmV0LXZhbHVlLW5ldmVyLWNhcnJpZWQ="}
+        }
+      }
+    },
+    {
+      "name": "//iam.googleapis.com/projects/example-project-1/serviceAccounts/100000000000000000001",
+      "assetType": "iam.googleapis.com/ServiceAccount",
+      "resource": {
+        "data": {
+          "name": "projects/example-project-1/serviceAccounts/orders-runtime@example-project-1.iam.gserviceaccount.com",
+          "email": "orders-runtime@example-project-1.iam.gserviceaccount.com",
+          "uniqueId": "100000000000000000001",
+          "disabled": false,
+          "displayName": "orders runtime",
+          "oauth2ClientId": "dropped"
+        }
+      }
+    },
+    {
+      "name": "//storage.googleapis.com/example-project-1-exports",
+      "assetType": "storage.googleapis.com/Bucket",
+      "resource": {
+        "location": "europe-west1",
+        "data": {
+          "name": "example-project-1-exports",
+          "location": "EUROPE-WEST1",
+          "storageClass": "STANDARD",
+          "labels": {},
+          "versioning": {"enabled": true},
+          "iamConfiguration": {"uniformBucketLevelAccess": {"enabled": true}},
+          "retentionPolicy": {"retentionPeriod": "86400"},
+          "owner": {"entity": "dropped"},
+          "acl": [{"entity": "dropped"}]
+        }
+      }
+    },
+    {
+      "name": "//cloudresourcemanager.googleapis.com/projects/100000000001",
+      "assetType": "cloudresourcemanager.googleapis.com/Project",
+      "resource": {
+        "data": {
+          "projectId": "example-project-1",
+          "projectNumber": "100000000001",
+          "lifecycleState": "ACTIVE",
+          "labels": {"team": "orders"},
+          "parent": {"type": "folder", "id": "200000000001"},
+          "name": "dropped display name"
+        }
+      }
+    }
+  ],
+  "nextPageToken": "page-2-token-as-written"
+}

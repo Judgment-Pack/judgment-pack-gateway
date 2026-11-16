@@ -1,0 +1,45 @@
+{
+  "readTime": "2026-11-16T12:00:00Z",
+  "assets": [
+    {
+      "name": "//run.googleapis.com/projects/example-project-1/locations/europe-west1/services/billing",
+      "assetType": "run.googleapis.com/Service",
+      "resource": {
+        "version": "v1",
+        "data": {
+          "apiVersion": "serving.knative.dev/v1",
+          "kind": "Service",
+          "metadata": {
+            "name": "billing",
+            "namespace": "100000000001",
+            "generation": 3,
+            "labels": {"cloud.googleapis.com/location": "europe-west1"},
+            "annotations": {"run.googleapis.com/creator": "dropped@example.com"}
+          },
+          "spec": {
+            "template": {
+              "metadata": {"name": "billing-00003", "annotations": {"autoscaling.knative.dev/maxScale": "3"}},
+              "spec": {
+                "serviceAccountName": "billing-runtime@example-project-1.iam.gserviceaccount.com",
+                "containerConcurrency": 80,
+                "containers": [
+                  {
+                    "name": "billing",
+                    "image": "europe-docker.pkg.dev/example-project-1/apps/billing:3",
+                    "env": [
+                      {"name": "REGION", "value": "plain-value-never-carried"},
+                      {"name": "API_KEY", "valueFrom": {"secretKeyRef": {"name": "billing-api-key", "key": "latest"}}}
+                    ],
+                    "resources": {"limits": {"memory": "512Mi"}}
+                  }
+                ]
+              }
+            },
+            "traffic": [{"revisionName": "billing-00003", "percent": 100, "latestRevision": true, "url": "https://dropped.example"}]
+          },
+          "status": {"url": "https://dropped.example"}
+        }
+      }
+    }
+  ]
+}
