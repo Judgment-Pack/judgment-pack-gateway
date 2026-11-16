@@ -60,8 +60,10 @@ const (
 	refusalOtherScope = "session %s holds the receipts of a scope other than this source's (another scope identifier, or none): a session's receipts are of one scope, so acquire into a new session"
 	// refusalActionInScope is an action's into a session of a scope
 	// identifier: an action receipt carries no scope (ADR-0026), and a
-	// session's receipts are of one scope (ADR-0036). It names no scope.
-	refusalActionInScope = "session %s holds the receipts of a scope identifier, and an action receipt carries none: a session's receipts are of one scope, so an action opens a session of its own"
+	// session's receipts are of one scope (ADR-0036). It is the acquisition's
+	// sentence, which names no scope and does not say whether the session's
+	// is another identifier or none.
+	refusalActionInScope = refusalOtherScope
 	// refusalHeldElsewhere is a read's and a seal's, where instances serve
 	// one database beside one another, into a session another instance
 	// holds whose row of the start lease is live. It names no instance.

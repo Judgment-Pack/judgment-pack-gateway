@@ -84,7 +84,9 @@ func TestASessionIsOfOneScopeOnTheFilesystemKind(t *testing.T) {
 func TestAnActionIsRefusedInASessionOfAScope(t *testing.T) {
 	service, _, _ := scopedService(t)
 	service.sessions["bound"] = &sessionState{scope: testScope, created: true, index: 1}
-	want := fmt.Sprintf(refusalActionInScope, "bound")
+	// the acquisition's sentence, which does not tell a scoped session from
+	// one of none
+	want := fmt.Sprintf(refusalOtherScope, "bound")
 	if got := service.sessionOpen("bound"); got != want {
 		t.Fatalf("the session step: %q", got)
 	}
