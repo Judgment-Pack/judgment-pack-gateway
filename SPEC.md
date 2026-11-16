@@ -2083,6 +2083,31 @@ The receipt's `caller` is the caller as before; the claim is not recorded, the r
 in its scope's receipts alone: no seal, registry line, `/verify` finding or `/posture` line
 carries either.
 
+### The MCP server on scoped platforms
+
+The MCP front (`docs/design/mcp-server.md`) serves platforms fixed to a scope identifier only
+in one of two forms of engine configuration version 28
+(`docs/adr/0038-the-mcp-server-on-platforms-fixed-to-a-scope-identifier.md`). An `mcp` of
+neither form serves no such platform, and a configuration that fixes one beside it is refused.
+
+- **Fixed** (`mcp.scope`): the front serves the live tools of the platforms fixed to that
+  scope identifier and no other, and every `/acquire` it sends names it.
+- **Of each caller** (`mcp.scopeFrom: "caller"`): the front serves every platform, and each
+  `/acquire` it sends names the scope identifier of its tool's platform, or no `scope` for a
+  platform of none. This form requires `identity` with `callerScopes` checked, and is served
+  over HTTP only, where each request carries its caller's token. Over stdio it is refused at
+  start.
+
+In both forms, `tools/list` lists and `tools/call` admits only the platform tools whose
+platform's scope identifier the caller's token reaches, by the rule above. The seal tool is
+listed to every caller. A call of any other tool is refused exactly as a call of a tool the
+front does not hold, and nothing is sent. A token this section refuses `401` is refused `401`
+at the front's HTTP transport, and over stdio the server does not start. A scope identifier
+is never read from the client: no tool's input schema has a member for one, and a call's
+arguments and `_meta` do not change the `scope` sent. Every `/acquire` the front sends carries
+the caller's token and is held by this section as a direct request is. The receipt's `scope` is
+the identifier sent. The front serves no write tool.
+
 ### When an acquisition does not happen
 
 An `/acquire` that is refused, or whose source fails, mints nothing, retains nothing and

@@ -12,7 +12,7 @@ Engine configuration version 28 gives `mcp` two forms that serve platforms fixed
 identifier. `mcp.scope` fixes the server to one scope identifier: it serves that identifier's
 platforms and no other, and every forward names it. `mcp.scopeFrom: "caller"` serves the
 platforms of every scope identifier over HTTP: each call names its tool's platform's identifier.
-In both, a caller is listed, and may call, only the tools of the sources its verified token
+In both, a caller is listed, and may call, only the tools of the sources its token
 reaches. The rule is ADR-0037's, computed by the signer's own function. A scope identifier never
 comes from the client, and the server forwards nothing the caller could not send to `/acquire`
 itself.
@@ -51,7 +51,8 @@ argument naming the scope would let the client choose it, which is the thing ADR
    the value.
 2. **The fixed form** (`mcp.scope`). The tool table holds the live tools of the platforms fixed
    to that identifier and no other, and every acquisition it forwards names it. Where no
-   platform is fixed to it, the server refuses to start.
+   platform is fixed to it, the server refuses to start. The configuration refuses the marker
+   `"unscoped"`, to which no platform of version 27 or later is fixed.
 3. **The caller form** (`mcp.scopeFrom: "caller"`). The table holds the live tools of every
    platform. Each acquisition names its tool's platform's scope identifier, or none for a
    platform of none. The form needs `identity` with `callerScopes` checked. Without `identity`,
