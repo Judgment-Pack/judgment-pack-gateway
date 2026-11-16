@@ -2131,7 +2131,10 @@ and `/posture` reports it (`caller-scope-identifiers`, above). The receipt names
 before and does not record the claim: its `scope` is the identifier the request was held to.
 
 Refused by name, `engine configuration: …`: `identity.callerScopes` in a file of version 26 or
-earlier (`is a version-27 member`), a value of another form, and a member whose name is empty.
+earlier (`is a version-27 member`), a value of another form, a member whose name is empty, and,
+from version 27, a platform whose `scope` is `"unscoped"`, the marker, which no caller is
+granted as a scope identifier (a file of version 26 or earlier loads such a platform as before,
+and only an `"installation"` caller reaches it).
 
 **Upgrading.** A configuration with `identity` and a platform fixed to a scope identifier
 serves its scoped sources after the upgrade only to the callers `callerScopes` grants. Before

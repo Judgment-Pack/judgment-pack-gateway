@@ -19,8 +19,9 @@ import (
 const scopeClaimName = "scope_ids"
 
 // unscopedMarker, in a claim or in a configuration's list, names the sources
-// of no scope identifier. It is never a scope identifier a caller is granted:
-// a platform fixed to an identifier of these bytes is reached by an
+// of no scope identifier. It is never a scope identifier a caller is granted,
+// and from engine version 27 no platform is fixed to it (parsePlatformScope);
+// a platform of an earlier file fixed to these bytes is reached by an
 // installation caller alone.
 const unscopedMarker = "unscoped"
 
