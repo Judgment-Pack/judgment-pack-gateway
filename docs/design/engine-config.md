@@ -1686,7 +1686,13 @@ of one operator's sources can be told apart by the party each serves.
   the scope identifier of the one session it seals; no line carries a scope identifier, so a
   registry, an export's or a copy, lists none, and on the PostgreSQL kind a gateway of one scope
   reads none of another's from it (ADR-0036, decision 9). The digest is not a secret: one who
-  guesses an identifier can digest it in a session's id and test it. A verifier
+  guesses an identifier can digest it in a session's id and test it.
+- **`/seal` answers with the seal.** Any caller the gateway admits that names a session this
+  process holds may seal it, whatever its scope (ADR-0033, decision 5), and the response is the
+  seal's record, so a caller that knows or guesses another scope's session id learns that the
+  session is of a scope identifier and the digest it is named by, which tests a guessed
+  identifier. The refusals name no scope. Holding a caller to the scope identifiers its
+  identity allows is #479, which closes this. A verifier
   written before this gateway reads a seal of version 2 as a seal it cannot verify and reports
   the session `unregistered-session`: readers of a store with scoped sessions need a verifier of
   this version.

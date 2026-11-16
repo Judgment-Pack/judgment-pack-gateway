@@ -198,6 +198,11 @@ scopes in one session is refused) falls on a use that ADR-0026 recorded as a gap
   credential; the digest keeps the registry from listing identifiers or grouping sessions by
   scope, and does not hide an identifier a reader can guess. A removal of a scope leaves its
   sessions' digests in the registry, digests of rows no longer held.
+- Bad, because `/seal` answers with the seal it wrote and still names a session alone (ADR-0033,
+  decision 5): any caller the gateway admits that knows or guesses a session id of another scope
+  can seal that session and read in the response that it is of a scope identifier, and its
+  digest, against which it can test a guessed identifier. The operator page states it; holding a
+  caller to its scope identifiers (#479) closes it.
 - Revisit when a verdict by scope is designed (its own issue), when a caller's token is held to a
   scope (ADR-0026), or when the registry is kept per scope.
 
