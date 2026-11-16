@@ -387,3 +387,65 @@ func TestCallerScopesConfigurationIsHeldToItsForm(t *testing.T) {
 		t.Fatalf("absent: %+v %v", cfg.identity, err)
 	}
 }
+
+// After a restart, a session another process left open in a store of the
+// filesystem kind is answered by its scope too (ADR-0037): A's caller is told
+// of B's session what it is told of one the gateway does not hold, byte for
+// byte but the name, and an acquisition of A's into it gets the other
+// scope's refusal; B's caller, and an installation caller, are told it was
+// left open. A session whose receipt does not say its scope is not there for
+// a caller held to scope identifiers.
+func TestASessionLeftOpenIsAnsweredByItsScopeAfterARestart(t *testing.T) {
+	callers := callerScopes{entries: map[string]callerEntry{
+		subjectA:       {grants: map[string]bool{callerScopeA: true}},
+		subjectB:       {grants: map[string]bool{callerScopeB: true}},
+		"installation": {installation: true},
+	}}
+	earlier, earlierServer, issuer := callerScopesService(t, callers)
+	tokenA := tokenFor(t, issuer, subjectA, []any{callerScopeA})
+	tokenB := tokenFor(t, issuer, subjectB, []any{callerScopeB})
+	installation := tokenFor(t, issuer, "installation", nil)
+	if code, out := authed(t, earlierServer, "/acquire", acquireBodyFor("s-b", "scoped-b", callerScopeB), tokenB); code != http.StatusOK {
+		t.Fatalf("B's caller on B: %d %v", code, out)
+	}
+	earlierServer.Close()
+	torn := filepath.Join(earlier.storeRoot, "receipts", "s-torn")
+	if err := os.MkdirAll(torn, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(torn, "0.json"), []byte(`{"scope":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := newGatewayService(earlier.storeRoot, testSeed, "gateway:test", earlier.regPath, earlier.sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.identity = earlier.identity
+	server := httptest.NewServer(restarted.handler())
+	t.Cleanup(server.Close)
+	started := restarted.started.Load()
+	for _, tc := range []struct {
+		name, route, body, token, answer string
+	}{
+		{"A seals B's", "/seal", `{"session":"s-b"}`, tokenA, "no such session: s-b"},
+		{"A seals the torn one", "/seal", `{"session":"s-torn"}`, tokenA, "no such session: s-torn"},
+		{"A acquires into B's", "/acquire", acquireBodyFor("s-b", "scoped-a", callerScopeA), tokenA, fmt.Sprintf(refusalOtherScope, "s-b")},
+		{"B seals its own", "/seal", `{"session":"s-b"}`, tokenB, fmt.Sprintf(refusalLeftOpen, "s-b")},
+		{"B acquires into its own", "/acquire", acquireBodyFor("s-b", "scoped-b", callerScopeB), tokenB, fmt.Sprintf(refusalLeftOpen, "s-b")},
+		{"the installation seals B's", "/seal", `{"session":"s-b"}`, installation, fmt.Sprintf(refusalLeftOpen, "s-b")},
+		{"the installation seals the torn one", "/seal", `{"session":"s-torn"}`, installation, fmt.Sprintf(refusalLeftOpen, "s-torn")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out := authed(t, server, tc.route, tc.body, tc.token)
+			if code != http.StatusBadRequest || fmt.Sprint(out["error"]) != tc.answer {
+				t.Fatalf("%d %v", code, out)
+			}
+		})
+	}
+	if code, raw := postRawWith(t, server, "/seal", `{"session":"s-b"}`, tokenA); code != http.StatusBadRequest || string(raw) != strings.Replace(string(postRawBody(t, server, "/seal", `{"session":"s-x"}`, tokenA)), "s-x", "s-b", 1) {
+		t.Fatalf("a seal of B's session after a restart: %d %s", code, raw)
+	}
+	if restarted.started.Load() != started {
+		t.Fatal("a source started for a refused request")
+	}
+}

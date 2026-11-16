@@ -409,6 +409,9 @@ type scopeKeeper interface {
 	// seriesHeld is whether a session of the name is held, of any scope;
 	// whether it is of scope ("" for none); and whether it holds a receipt.
 	seriesHeld(name, scope string) (held, ofScope, entries bool, err error)
+	// seriesScope is whether a session of the name is held, of any scope,
+	// and the scope it is of ("" for none).
+	seriesScope(name string) (held bool, scope string, err error)
 }
 
 // sourceScopes is every scope identifier a source is fixed to, once each,
@@ -2042,10 +2045,15 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 	return g.sealFor(sessionID, scopeReach{every: true})
 }
 
-// sealFor is /seal for a caller of this reach (ADR-0037): a session this
-// process holds whose scope the caller does not reach is answered as one it
-// does not hold, before anything else of the session is read, so the answer
-// tells the caller nothing of a session of another scope identifier.
+// sealFor is /seal for a caller of this reach (ADR-0037): a session whose
+// scope the caller does not reach is answered as one the gateway does not
+// hold, before anything else of the session is read, so the answer tells the
+// caller nothing of a session of another scope identifier. That holds of a
+// session this process holds, and of one it does not -- left open by another
+// process, held by another instance, or unreadable -- whose scope the store
+// gives (storedScope); a caller held to scope identifiers is answered so too
+// where the store cannot say the session's scope. A seal in the registry is
+// said to be one: /registry serves every seal to anyone.
 func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err}
@@ -2066,6 +2074,11 @@ func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string
 		return nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
 	}
 	if !seen {
+		if !reach.every {
+			if held, scope, known := g.storedScope(sessionID); !known || held && !reach.holds(scope) {
+				return nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
+			}
+		}
 		if refused := g.leftInStore(sessionID, "", false); refused != nil {
 			return nil, refused
 		}

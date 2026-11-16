@@ -82,9 +82,15 @@ the caller, and `/seal` and `/verify` read none either.
      that does not reach the sources of no scope identifier is refused `403`, `refusedAt:
      "scope-identifier"`, before the body is read, so every answer it gets is the same whatever
      session it names. A caller that reaches them is answered as before.
-   - `/seal`: a session this process holds whose scope the caller does not reach is answered
-     `no such session`, byte for byte the answer for a session it does not hold, before anything
-     else of the session is read.
+   - `/seal`: a session whose scope the caller does not reach is answered `no such session`,
+     byte for byte the answer for a session the gateway does not hold, before anything else of
+     the session is read: one this process holds, and one it does not -- left open by another
+     process, held by another instance serving the database, or unreadable -- whose scope the
+     store gives (on the PostgreSQL kind its series' scope, on the filesystem kind its first
+     receipt's). Where the store cannot give the scope, a caller that does not reach every source
+     is answered so too. A seal in the registry is said to be one, since `/registry` serves it
+     to anyone. An `/acquire` into a session of another scope than its source's is refused with
+     the other-scope sentence whatever else the session holds, on both kinds.
    - `/verify`: the verdict is of the whole store and cannot be cut by scope (ADR-0036, decision
      7). It is served to a caller that reaches every source, and, where the configuration fixes
      no source to a scope identifier, to one that reaches the sources of no scope identifier;

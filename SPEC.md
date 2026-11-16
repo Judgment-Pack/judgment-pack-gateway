@@ -2042,8 +2042,14 @@ where checked and `not-enforced` otherwise.
   is of no scope identifier, and this caller's token does not reach the sources of none",
   "refusedAt": "scope-identifier"}`, before the body is read, whatever session it names; a
   request naming a `reservation` is held so again as the delegation's subject.
-- `/seal`: a session the gateway holds whose scope the caller does not reach is answered `400`
-  `no such session: <id>`, the answer for a session the gateway does not hold.
+- `/seal`: a session whose scope the caller does not reach is answered `400` `no such session:
+  <id>`, the answer for a session the gateway does not hold, whatever its state: held by this
+  process, left open by another (§3c), held by another instance serving the database (`409`
+  otherwise), or unreadable. A caller that does not reach every source gets that answer too
+  where the store cannot say the session's scope. A session sealed in the registry is said to
+  be so, as `/registry` serves its seal to anyone. An `/acquire` into a session whose receipts
+  are of a scope other than the source's is refused `400` with that refusal's sentence,
+  whatever else the session holds.
 - `/verify`: served to a caller that reaches every source, and, where no source is fixed to a
   scope identifier, to one that reaches the sources of none; otherwise `403` before the store
   is read. The verdict covers every scope's sessions and is not cut by scope.

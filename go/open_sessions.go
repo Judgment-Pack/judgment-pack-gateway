@@ -168,7 +168,7 @@ func (g *gatewayService) leftInStoreRefusal(sessionID, scope string, acquiring b
 		case err != nil:
 			return refused(refusalUnread)
 		case len(entries) > 0:
-			return refused(refusalLeftOpen)
+			return refused(g.leftOpenRefusal(sessionID, scope, acquiring))
 		}
 		return ""
 	}
@@ -191,7 +191,7 @@ func (g *gatewayService) leftInStoreRefusal(sessionID, scope string, acquiring b
 		entries, err := dir.ReadDir(leftInStoreBatch)
 		for _, e := range entries {
 			if strings.HasSuffix(e.Name(), ".json") {
-				return refused(refusalLeftOpen)
+				return refused(g.leftOpenRefusal(sessionID, scope, acquiring))
 			}
 		}
 		if err == io.EOF {
@@ -201,4 +201,106 @@ func (g *gatewayService) leftInStoreRefusal(sessionID, scope string, acquiring b
 			return refused(refusalUnread)
 		}
 	}
+}
+
+// leftOpenRefusal is the refusal of a session another process left receipts
+// in, on a kind that keeps no scope's rows apart: an acquisition into one
+// whose receipts are of a scope other than the source's is refused as one
+// into another scope's session is on every kind (refusalOtherScope), whatever
+// else it holds, so the answer says nothing of the state of a session of
+// another scope identifier (ADR-0037); a seal, and an acquisition of the
+// session's own scope, are told it was left open.
+func (g *gatewayService) leftOpenRefusal(sessionID, scope string, acquiring bool) string {
+	if acquiring {
+		if held, of, known := g.storedScope(sessionID); held && known && of != scope {
+			return refusalOtherScope
+		}
+	}
+	return refusalLeftOpen
+}
+
+// receiptScopeLimit bounds the receipt storedScope reads for its scope.
+const receiptScopeLimit = 8 << 20
+
+// storedScope is, of a session this process does not hold, whether the
+// store holds it, the scope identifier it is of ("" for none), and whether
+// that scope is known. On a kind that keeps each scope's rows apart the
+// kind says it (seriesScope), whatever the session holds; on any other the
+// first receipt's scope member does (a session's receipts are of one scope,
+// ADR-0036), and a session holding no receipt is not held. A look that fails,
+// a receipt that does not read as one JSON object, and an entry that is not
+// a session's directory leave the scope unknown.
+func (g *gatewayService) storedScope(sessionID string) (held bool, scope string, known bool) {
+	if g.keeper != nil {
+		held, scope, err := g.keeper.seriesScope(sessionID)
+		return held, scope, err == nil
+	}
+	if g.kind != nil {
+		entries, err := g.store.receipts.listEntries(sessionID)
+		switch {
+		case faultOf(err) == faultAbsent:
+			return false, "", true
+		case err != nil:
+			return true, "", false
+		case len(entries) == 0:
+			return false, "", true
+		}
+		data, err := g.store.receipts.getEntry(sessionID, entries[0])
+		if err != nil {
+			return true, "", false
+		}
+		scope, known := receiptScope(data)
+		return true, scope, known
+	}
+	path := filepath.Join(g.storeRoot, "receipts", sessionID)
+	entry, err := os.Lstat(path)
+	switch {
+	case err != nil && absent(err):
+		return false, "", true
+	case err != nil || !entry.IsDir():
+		return true, "", false
+	}
+	dir, err := os.Open(path)
+	if err != nil {
+		return true, "", false
+	}
+	defer dir.Close()
+	for {
+		entries, err := dir.ReadDir(leftInStoreBatch)
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".json") {
+				// a regular file alone, opened without blocking (readBounded)
+				data, err := readBounded(filepath.Join(path, e.Name()), receiptScopeLimit)
+				if err != nil {
+					return true, "", false
+				}
+				scope, known := receiptScope(data)
+				return true, scope, known
+			}
+		}
+		if err == io.EOF {
+			return false, "", true
+		}
+		if err != nil {
+			return true, "", false
+		}
+	}
+}
+
+// receiptScope is a receipt's top-level scope member ("" where it holds
+// none), and whether the receipt read as one JSON object whose scope, where
+// it holds one, is a string.
+func receiptScope(data []byte) (string, bool) {
+	v, err := parseJSON(data)
+	if err != nil {
+		return "", false
+	}
+	obj, isObject := v.(*vObject)
+	if !isObject {
+		return "", false
+	}
+	if _, present := obj.get("scope"); !present {
+		return "", true
+	}
+	return memberString(obj, "scope")
 }
