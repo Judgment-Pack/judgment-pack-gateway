@@ -1945,7 +1945,8 @@ the configuration fixes to none; each is refused with the same sentence, which n
 no scope identifier, neither the source's nor the request's. A `scope` that is not a
 string is refused `400` too. A gateway whose configuration fixes no source to a scope
 identifier reads `scope` as any member `/acquire` does not read, and refuses it, as it
-did before the member existed. A session is of one scope, on every storage kind: the scope
+did before the member existed. The caller's token must reach the identifier too ("Caller
+scope identifiers", below). A session is of one scope, on every storage kind: the scope
 of its first acquisition the process admits, the source's identifier or none
 (`docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md`). An
 acquisition into a session of another scope identifier, of a scoped source into a session
@@ -1985,6 +1986,74 @@ A `source` is an operator-configured subprocess that reads the canonical argumen
 stdin and emits a JSON result on stdout. The gateway attaches no transport of its own
 — it attests whatever bytes a configured source returns, which is exactly the inline
 core's boundary: **proof of the bytes, not proof of their truth.**
+
+### Caller scope identifiers
+
+A caller is held to the scope identifiers its verified identity allows
+(`docs/adr/0037-a-caller-is-held-to-the-scope-identifiers-its-token-and-the-configuration-allow.md`).
+"Scope identifier" here is §1.2a's `scope`, never a delegation's scope (§11) or an action
+key's.
+
+**The claim.** A caller's signed token may carry `scope_ids`: a JSON array of 1 to 256
+strings, each once, each a scope identifier in §1.2a's form or the marker `"unscoped"`, which
+names the sources of no scope identifier and is never a scope identifier a caller is granted.
+The Runner reads the same claim in the same form, so one issuer serves both. It is read only
+after the token's signature, issuer, audience, subject and validity hold. A claim present and
+not of the form is refused `401` with `the token's scope_ids is not 1 to 256 scope
+identifiers, each once`.
+
+**The configuration.** `identity.callerScopes` (engine configuration version 27): the string
+`"unchecked"`, or an object whose names are subjects of the identity's issuer and whose values
+are `"unscoped"`, `"installation"`, or an array of 1 to 256 strings, each once, each a scope
+identifier or `"unscoped"`. A subject with no entry is `"unscoped"`; without the member every
+subject is. `"installation"` grants every scope identifier and the marker: an installation's
+own caller, a Runner for one, that may use any configured scope identifier.
+
+**What a token reaches**, where caller scope identifiers are checked:
+
+| Claim | Entry | The request reaches |
+|---|---|---|
+| absent | `"installation"` | every source |
+| absent | `"unscoped"`, none, or an array holding `"unscoped"` | the sources of no scope identifier |
+| absent | an array without `"unscoped"` | refused `401` |
+| present, every member granted | any | the claim's scope identifiers, and the sources of no scope identifier only where the claim holds `"unscoped"` |
+| present, a member not granted | any | refused `401` |
+
+The two `401`s are one sentence: `the token's scope_ids names a scope identifier the
+configuration does not grant its subject`; neither names a scope identifier or the subject.
+A claim wider than the entry is refused, never narrowed. A request under a delegation (§11)
+carries no claim and its subject is the issuing host's statement: it reaches the sources of no
+scope identifier where its subject's claimless token would, and never a scope identifier. With
+`"unchecked"` the claim is not read and every caller reaches every source; without `identity`
+every request reaches every source. Where some source is fixed to a scope identifier the start
+says which of the three holds, and `/posture` reports `caller-scope-identifiers`, `enforced`
+where checked and `not-enforced` otherwise.
+
+**Each route's rule.**
+
+- `/acquire`: the source's scope identifier must be the one the request names and one the
+  caller reaches; otherwise the request is refused `400` with the sentence of a wrong scope,
+  `scope: the request's scope does not match the source's`, before the trail, the publisher
+  policy, the grant, the admission, a delegation's count or the source. The store, the
+  admission and the receipt take the source's scope identifier once both hold; on the
+  PostgreSQL kind the transaction's view is that one, never one the body alone names.
+- `/act`: a write source and an action receipt are of no scope identifier. A caller that does
+  not reach the sources of none is refused `403`, `{"error": "scope identifier: a write source
+  is of no scope identifier, and this caller's token does not reach the sources of none",
+  "refusedAt": "scope-identifier"}`, before the body is read, whatever session it names; a
+  request naming a `reservation` is held so again as the delegation's subject.
+- `/seal`: a session the gateway holds whose scope the caller does not reach is answered `400`
+  `no such session: <id>`, the answer for a session the gateway does not hold.
+- `/verify`: served to a caller that reaches every source, and, where no source is fixed to a
+  scope identifier, to one that reaches the sources of none; otherwise `403` before the store
+  is read. The verdict covers every scope's sessions and is not cut by scope.
+- `/registry` and `/publickey` need no token and are served whole: no registry line carries a
+  scope identifier or a caller, and a registry cut by scope would not walk.
+
+The receipt's `caller` is the caller as before; the claim is not recorded, the receipt's
+`scope` being the identifier the request was held to. A scoped caller's subject and issuer are
+in its scope's receipts alone: no seal, registry line, `/verify` finding or `/posture` line
+carries either.
 
 ### When an acquisition does not happen
 

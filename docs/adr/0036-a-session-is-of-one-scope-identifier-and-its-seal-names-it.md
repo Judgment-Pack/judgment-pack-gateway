@@ -202,7 +202,8 @@ scopes in one session is refused) falls on a use that ADR-0026 recorded as a gap
   decision 5): any caller the gateway admits that knows or guesses a session id of another scope
   can seal that session and read in the response that it is of a scope identifier, and its
   digest, against which it can test a guessed identifier. The operator page states it; holding a
-  caller to its scope identifiers (#479) closes it.
+  caller to its scope identifiers (#479, ADR-0037) closes it where caller scope identifiers are
+  checked.
 - Revisit when a verdict by scope is designed (its own issue), when a caller's token is held to a
   scope (ADR-0026), or when the registry is kept per scope.
 

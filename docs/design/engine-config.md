@@ -62,7 +62,7 @@ entry is `{"file": …}`, and a live one's may carry `tokenStep` beside `file`. 
 absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"26"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"27"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
@@ -77,8 +77,9 @@ absolute.
   below), version 23 `measureSandboxAtStart` ("Measuring the sandbox at the start (engine
   version 23)", below), version 24 `storage` ("The storage kind (engine version 24)",
   below), version 25 `storage`'s `startWaitSeconds` ("A start that waits for the start lease
-  (engine version 25)", below), and version 26 `storage`'s `instances` ("Several instances on one
-  database (engine version 26)", below). A
+  (engine version 25)", below), version 26 `storage`'s `instances` ("Several instances on one
+  database (engine version 26)", below), and version 27 `identity`'s `callerScopes` ("Caller
+  scope identifiers (engine version 27)", below). A
   file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -394,7 +395,10 @@ verification requires their retained evidence (SPEC.md §9).
   one verified the same way but under `witness.audience`, which the engine's own endpoints refuse
   in turn; its two reads stay open, as `/registry` does. A receipt then carries
   `caller: {issuer, subject, tokenDigest}` (SPEC.md §1.2a). The key file is read once, when
-  the engine starts; a key not in it is a key the engine does not know.
+  the engine starts; a key not in it is a key the engine does not know. From version 27,
+  `identity.callerScopes` grants each subject the scope identifiers its token may name; a
+  caller is held to them at every version ("Caller scope identifiers (engine version 27)",
+  below).
 - `platforms` maps an operator-chosen name — with `/history` or `/live` appended, the `source`
   a receipt will carry — to a **binding** from the catalog, pinned by digest, to where its
   credentials are — **one file per operation** the binding offers, `history` and `live`, and
@@ -655,7 +659,10 @@ canonical JSON (SPEC.md §1.1), so two answers compare byte for byte:
 - After the six, a configuration with `delegation` adds its three lines (SPEC.md §11.9), and one
   where some platform gives `writeRequesters` adds `write-requesters`: `enforced` when every
   write tool is held to a requester list, `not-enforced` otherwise, the tools counted and no
-  requester named.
+  requester named. One where some platform is fixed to a scope identifier adds
+  `caller-scope-identifiers`: `enforced` where callers are held to the scope identifiers their
+  token and `identity.callerScopes` allow, `not-enforced` where `callerScopes` is `"unchecked"`
+  or no `identity` is configured, naming no subject and no scope identifier.
 
 Windows has no shipped restricted-command backend. Engine versions 13 and later
 wrap every configured source adapter, including adapters for remote and container
@@ -1691,8 +1698,10 @@ of one operator's sources can be told apart by the party each serves.
   process holds may seal it, whatever its scope (ADR-0033, decision 5), and the response is the
   seal's record, so a caller that knows or guesses another scope's session id learns that the
   session is of a scope identifier and the digest it is named by, which tests a guessed
-  identifier. The refusals name no scope. Holding a caller to the scope identifiers its
-  identity allows is #479, which closes this. A verifier
+  identifier. The refusals name no scope. Where caller scope identifiers are checked ("Caller
+  scope identifiers (engine version 27)", below) a caller that does not reach the session's
+  scope is answered `no such session`, as for a session the gateway does not hold, and learns
+  neither; with `"unchecked"`, or without `identity`, the disclosure stands. A verifier
   written before this gateway reads a seal of version 2 as a seal it cannot verify and reports
   the session `unregistered-session`: readers of a store with scoped sessions need a verifier of
   this version.
@@ -2044,6 +2053,81 @@ Refused by name, `engine configuration: …`: `storage.instances` in a file of v
 instances serve one database beside one another, stop every instance, run `gateway store
 migrate`, raise `engineVersion` to `"26"` on each, add `"instances": "several"` to `storage`, and
 start them; a gateway older than this one refuses a version-26 file by its version.
+
+## Caller scope identifiers (engine version 27)
+
+Version 27 adds `identity`'s optional `callerScopes`, by which a caller is held to the scope
+identifiers its verified identity allows
+([ADR-0037](../adr/0037-a-caller-is-held-to-the-scope-identifiers-its-token-and-the-configuration-allow.md);
+SPEC.md §6, "Caller scope identifiers"). Two keys must agree: the caller's token names the scope
+identifiers it is for in its `scope_ids` claim, and the configuration grants each subject what
+it may be granted.
+
+```json
+"identity": {
+  "issuer": "https://login.example",
+  "audience": "gateway:acme",
+  "keys": "/etc/gateway/issuer-keys.json",
+  "callerScopes": {
+    "analyst-a": ["équipe-a"],
+    "analyst-ab": ["équipe-a", "équipe-b", "unscoped"],
+    "operator": "unscoped",
+    "runner": "installation"
+  }
+}
+```
+
+- **The claim**, `scope_ids`: 1 to 256 strings, each once, each a scope identifier or the
+  marker `"unscoped"`, which names the sources of no scope identifier. The Runner reads the
+  same claim, so one issuer's token means the same at both.
+- **An entry**: `"unscoped"`, the sources of no scope identifier alone; `"installation"`, every
+  scope identifier and the sources of none, for an installation's own caller such as a Runner;
+  or 1 to 256 strings, each once, each a scope identifier or `"unscoped"`. A subject with no
+  entry is `"unscoped"`.
+- **What a token reaches.** A token with a claim reaches the claim's scope identifiers, and the
+  sources of no scope identifier only where the claim holds `"unscoped"`; each member must be
+  one the entry grants, or the token is refused `401`, never narrowed. A token with no claim
+  reaches every source where its subject is `"installation"`, the sources of no scope identifier
+  where the entry is `"unscoped"` or holds the marker, and is refused `401` where the entry is a
+  list without it. The two `401`s are one sentence, `the token's scope_ids names a scope
+  identifier the configuration does not grant its subject`; a claim out of form is `the token's
+  scope_ids is not 1 to 256 scope identifiers, each once`. Neither names a scope identifier or
+  the subject. A request under a delegation reaches the sources of no scope identifier where
+  its subject's claimless token would, and never a scope identifier: the chain's subject is the
+  issuing host's statement, and a host does not widen it.
+- **The routes.** `/acquire` answers a scope identifier the caller does not reach with the
+  wrong-scope sentence, before anything runs, and on the PostgreSQL kind opens the view of the
+  scope identifier both checks held, never one the body alone names. `/act` is refused `403`
+  (`refusedAt: "scope-identifier"`) to a caller that does not reach the sources of none, since a
+  write source is of none, before its body is read. `/seal` answers a session of a scope the
+  caller does not reach `no such session`. `/verify` is served to a caller that reaches every
+  source, and, where no source is fixed to a scope identifier, to one that reaches the sources of
+  none; otherwise `403`. `/registry` and `/publickey` stay open and whole.
+- **`"unchecked"`** reads no claim: every caller reaches every source, as before the member.
+  Without `identity` there is no caller to hold and every request reaches every source.
+
+The check is the default, at every version: a configuration with `identity` and no
+`callerScopes`, a file of version 26 or earlier included, holds every caller to the sources of
+no scope identifier. Where some platform is fixed to a scope identifier the start says which
+rule holds, one of:
+
+```text
+start: caller scope identifiers are checked: a request is held to the scope identifiers its token's scope_ids names and identity.callerScopes grants its subject
+start: identity.callerScopes is "unchecked": no caller is held to scope identifiers, and every caller reaches every source
+start: no identity is configured, so no caller is held to scope identifiers: every request reaches every source
+```
+
+and `/posture` reports it (`caller-scope-identifiers`, above). The receipt names its caller as
+before and does not record the claim: its `scope` is the identifier the request was held to.
+
+Refused by name, `engine configuration: …`: `identity.callerScopes` in a file of version 26 or
+earlier (`is a version-27 member`), a value of another form, and a member whose name is empty.
+
+**Upgrading.** A configuration with `identity` and a platform fixed to a scope identifier
+serves its scoped sources after the upgrade only to the callers `callerScopes` grants. Before
+upgrading, raise `engineVersion` to `"27"` and write the entries, issuing tokens whose
+`scope_ids` names what each caller is for, or write `"callerScopes": "unchecked"` to keep the
+behavior before. A gateway older than this one refuses a version-27 file by its version.
 
 ## Keyed actions (engine version 14 and later)
 
