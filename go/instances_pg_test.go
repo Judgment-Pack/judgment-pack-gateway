@@ -443,7 +443,6 @@ func TestAPostgresSealOnALargeRegistryReadsOnlyWhatWasAppendedSince(t *testing.T
 	db := newPgTestDB(t)
 	db.migrate(t)
 	a, _ := severalKind(t, db, testSeed, pgStartLeasePeriod)
-	b, _ := severalKind(t, db, testSeed, pgStartLeasePeriod)
 	if err := a.registry().createLog(); err != nil {
 		t.Fatal(err)
 	}
@@ -469,6 +468,9 @@ func TestAPostgresSealOnALargeRegistryReadsOnlyWhatWasAppendedSince(t *testing.T
 	if err := seal("bulk-042424"); !errors.Is(err, errSessionAlreadySealed) {
 		t.Fatalf("a session the registry sealed before the writer opened: %v", err)
 	}
+	// The other instance starts here, after the fill: filling the registry can
+	// outlast a start lease on a slow host.
+	b, _ := severalKind(t, db, testSeed, pgStartLeasePeriod)
 	if _, err := b.registry().appendRecord([]byte(pgSealLine(testSeed, "other-0", 3, nowStamp()) + "\n")); err != nil {
 		t.Fatal(err)
 	}
