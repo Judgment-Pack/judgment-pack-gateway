@@ -1,0 +1,40 @@
+{
+  "assets": [
+    {
+      "assetType": "storage.googleapis.com/Bucket",
+      "iamPolicy": {
+        "bindings": [
+          {
+            "members": [
+              "user:analyst@example.com",
+              "deleted:user:former@example.com?uid=123456789012345678901",
+              "group:readers@example.com",
+              "serviceAccount:drift-reader@example-project-1.iam.gserviceaccount.com"
+            ],
+            "role": "roles/storage.objectViewer"
+          },
+          {
+            "condition": {"expression": "request.time < timestamp(\"2027-01-01T00:00:00Z\")", "title": "until year end"},
+            "members": ["serviceAccount:orders-runtime@example-project-1.iam.gserviceaccount.com", "domain:example.com"],
+            "role": "roles/storage.admin"
+          }
+        ],
+        "version": 3
+      },
+      "name": "//storage.googleapis.com/example-project-1-exports",
+      "updateTime": "2026-11-10T00:00:00Z"
+    },
+    {
+      "assetType": "cloudresourcemanager.googleapis.com/Project",
+      "iamPolicy": {
+        "bindings": [
+          {"members": ["serviceAccount:drift-reader@example-project-1.iam.gserviceaccount.com", "user:owner@example.com"], "role": "roles/viewer"}
+        ],
+        "version": 1
+      },
+      "name": "//cloudresourcemanager.googleapis.com/projects/100000000001"
+    }
+  ],
+  "nextPageToken": null,
+  "readTime": "2026-11-16T12:00:00Z"
+}

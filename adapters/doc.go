@@ -25,6 +25,9 @@
 //	                       over stdio, one tool call per acquisition
 //	httpsource/            the HTTP-shaped adapter: one request over TLS to an
 //	                       endpoint the operator fixed, one request per acquisition
+//	gcpasset/              the read-only Cloud Asset Inventory adapter: one list
+//	                       call per acquisition, its page projected, its two narrow
+//	                       tokens held to their scopes and a write check of each
 //	attachment/            the document attachment record, version 1
 //	                       (docs/design/attachments.md): its types, its text
 //	                       normalisation and Check, the reference check of its rules
@@ -39,6 +42,7 @@
 //	cmd/adapter-airbyte/   their commands
 //	cmd/adapter-mcp/
 //	cmd/adapter-http/
+//	cmd/adapter-gcp-asset/
 //	cmd/adapter-document/
 //	cmd/adapter-render/
 //	internal/canon/        §1.1 canonical form, answering to corpus/canon.json

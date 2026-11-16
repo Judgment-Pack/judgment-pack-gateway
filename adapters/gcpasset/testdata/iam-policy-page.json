@@ -1,0 +1,41 @@
+{
+  "readTime": "2026-11-16T12:00:00Z",
+  "assets": [
+    {
+      "name": "//storage.googleapis.com/example-project-1-exports",
+      "assetType": "storage.googleapis.com/Bucket",
+      "updateTime": "2026-11-10T00:00:00Z",
+      "iamPolicy": {
+        "version": 3,
+        "etag": "BwXdropped=",
+        "bindings": [
+          {
+            "role": "roles/storage.objectViewer",
+            "members": [
+              "user:analyst@example.com",
+              "deleted:user:former@example.com?uid=123456789012345678901",
+              "group:readers@example.com",
+              "serviceAccount:drift-reader@example-project-1.iam.gserviceaccount.com"
+            ]
+          },
+          {
+            "role": "roles/storage.admin",
+            "members": ["serviceAccount:orders-runtime@example-project-1.iam.gserviceaccount.com", "domain:example.com"],
+            "condition": {"title": "until year end", "description": "dropped", "expression": "request.time < timestamp(\"2027-01-01T00:00:00Z\")"}
+          }
+        ]
+      }
+    },
+    {
+      "name": "//cloudresourcemanager.googleapis.com/projects/100000000001",
+      "assetType": "cloudresourcemanager.googleapis.com/Project",
+      "iamPolicy": {
+        "version": 1,
+        "bindings": [
+          {"role": "roles/viewer", "members": ["serviceAccount:drift-reader@example-project-1.iam.gserviceaccount.com", "user:owner@example.com"]}
+        ]
+      }
+    }
+  ],
+  "nextPageToken": ""
+}

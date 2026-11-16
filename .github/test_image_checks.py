@@ -88,6 +88,7 @@ def good(**over):
     spec["usr/local/bin/adapter-airbyte"] = dict(kind="file", data=b"a", mode=0o755)
     spec["usr/local/bin/adapter-mcp"] = dict(kind="file", data=b"m", mode=0o755)
     spec["usr/local/bin/adapter-http"] = dict(kind="file", data=b"h", mode=0o755)
+    spec["usr/local/bin/adapter-gcp-asset"] = dict(kind="file", data=b"c", mode=0o755)
     spec["usr/local/bin/adapter-document"] = dict(kind="file", data=b"d", mode=0o755)
     spec["usr/local/bin/jpack"] = dict(kind="file", data=RUNTIME, mode=0o755)
     for document in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "CONFORMANCE.md"):

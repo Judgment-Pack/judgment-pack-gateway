@@ -37,6 +37,7 @@ RUN export GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
  && go build -buildvcs=false -o /out/adapter-mcp ./cmd/adapter-mcp \
  && go build -buildvcs=false -o /out/adapter-sandbox ./cmd/adapter-sandbox \
  && go build -buildvcs=false -o /out/adapter-http ./cmd/adapter-http \
+ && go build -buildvcs=false -o /out/adapter-gcp-asset ./cmd/adapter-gcp-asset \
  && go build -buildvcs=false -o /out/adapter-document ./cmd/adapter-document
 # The signer runs as a user of its own and switches each adapter to its
 # platform's user: that takes CAP_SETUID, CAP_SETGID and CAP_KILL, held
@@ -127,7 +128,7 @@ COPY --from=build /out/etc/passwd /out/etc/group /etc/
 # executable by the signer alone: with file capabilities on it, a
 # platform user's process that executed it would take them up, and the
 # engine refuses to start otherwise.
-COPY --from=build /out/adapter-airbyte /out/adapter-mcp /out/adapter-http /out/adapter-document /out/adapter-sandbox /usr/local/bin/
+COPY --from=build /out/adapter-airbyte /out/adapter-mcp /out/adapter-http /out/adapter-gcp-asset /out/adapter-document /out/adapter-sandbox /usr/local/bin/
 # The runtime beside them, root's and executable by everyone like the
 # adapters: it holds no seed and no credential, and whoever runs it -- a
 # desk, an orchestrator, a shell in a derived image -- runs it as itself.

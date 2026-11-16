@@ -1,0 +1,18 @@
+{
+  "error": {
+    "code": 400,
+    "message": "Request contains an invalid argument.",
+    "status": "INVALID_ARGUMENT",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.BadRequest",
+        "fieldViolations": [
+          {
+            "field": "asset_types",
+            "description": "An asset type is not supported."
+          }
+        ]
+      }
+    ]
+  }
+}
