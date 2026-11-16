@@ -18,6 +18,7 @@ import (
 	"errors"
 	"slices"
 	"sort"
+	"strings"
 )
 
 // ofNoScope is the kind's view of no scope, whatever view k is.
@@ -206,6 +207,33 @@ func (k *pgKind) seriesHeld(name, scope string) (held, ofScope, entries bool, er
 		return false, false, false, pgFailure("list-entries", false, err)
 	}
 	return held, ofScope, entries, nil
+}
+
+// seriesScope is whether the kind holds a series of the name, of no scope
+// or of any scope identifier recorded, and the scope it is of ("" for none):
+// what a seal of a session this instance does not hold is answered by for a
+// caller held to scope identifiers (ADR-0037), before anything else of the
+// session is read. A session's name is one across scopes, so at most one
+// scope holds it.
+func (k *pgKind) seriesScope(name string) (held bool, scope string, err error) {
+	if !validListedSeries(name) {
+		return false, "", pgRefused("list-entries", "not a series' name")
+	}
+	err = k.ownScopeFirst(pgReadSnapshot, k.ofNoScope(), func(tx pgTx, row string) (bool, error) {
+		rows, err := tx.exec(`SELECT 1 FROM gateway.series WHERE scope = $1 AND name = $2`, row, name)
+		if err != nil || len(rows.rows) == 0 {
+			return false, err
+		}
+		held = true
+		if row != pgNoScope {
+			scope = strings.TrimPrefix(row, pgScopePrefix)
+		}
+		return true, nil
+	})
+	if err != nil {
+		return false, "", pgFailure("list-entries", false, err)
+	}
+	return held, scope, nil
 }
 
 // pgEveryScope is the kind as an export cuts it (exportCut): the rows of no

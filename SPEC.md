@@ -1093,8 +1093,11 @@ every receipt of the session carries, of the form §1.2a gives it, digested in t
 `"judgment-pack-gateway/seal-scope/1:" + canon({"scope": <identifier>, "sessionId": <the
 seal's sessionId>})`. A registry line therefore carries no scope identifier: a reader of the
 registry learns of a sealed session that it is of some scope, and can tell which only by
-digesting an identifier it already holds; the session's id is in the digest, so two sessions
-of one scope carry different digests. `finalCount` is an integer from
+digesting an identifier it already holds or guesses; the session's id is in the digest, so two
+sessions of one scope carry different digests. The digest is not keyed, and `/registry` is open
+(§6), so a reader who guesses a scope identifier can test it against each sealed session and
+learn which sessions are of it, with their `finalCount` and `sealedAt`: a scope identifier hides
+which sessions are its own only where it cannot be guessed (§6, "Caller scope identifiers"). `finalCount` is an integer from
 0 to 2^53−1; `keyId` 32 lowercase hexadecimal characters; `sealedAt` `YYYY-MM-DDThh:mm:ssZ` in
 UTC. A session of no scope is sealed in the form above, the bytes it was sealed with before.
 The member `sealVersion` is what selects the form: a registry line that is one JSON object
@@ -2021,13 +2024,19 @@ own caller, a Runner for one, that may use any configured scope identifier.
 
 The two `401`s are one sentence: `the token's scope_ids names a scope identifier the
 configuration does not grant its subject`; neither names a scope identifier or the subject.
+They, and the claim's form refusal, are answered before the route reads the request on every
+route that takes a token, but the witness's `/witness/*` routes: those verify the token under
+the same identity, do not read the claim, and carry no scope data. `/registry` and
+`/publickey` take no token.
 A claim wider than the entry is refused, never narrowed. A request under a delegation (§11)
 carries no claim and its subject is the issuing host's statement: it reaches the sources of no
 scope identifier where its subject's claimless token would, and never a scope identifier. With
 `"unchecked"` the claim is not read and every caller reaches every source; without `identity`
-every request reaches every source. Where some source is fixed to a scope identifier the start
-says which of the three holds, and `/posture` reports `caller-scope-identifiers`, `enforced`
-where checked and `not-enforced` otherwise.
+every request reaches every source. Where `identity` is configured, or some source is fixed to a
+scope identifier, the start says which of the three holds, and `/posture` reports
+`caller-scope-identifiers`, `enforced` where checked and `not-enforced` otherwise: with
+`identity` and no scoped source a token whose claim names a scope identifier its subject is
+not granted is still refused `401`, and the start and `/posture` say so.
 
 **Each route's rule.**
 
@@ -2036,19 +2045,38 @@ where checked and `not-enforced` otherwise.
   `scope: the request's scope does not match the source's`, before the trail, the publisher
   policy, the grant, the admission, a delegation's count or the source. The store, the
   admission and the receipt take the source's scope identifier once both hold; on the
-  PostgreSQL kind the transaction's view is that one, never one the body alone names.
+  PostgreSQL kind the transaction's view is that one, never one the body alone names. A caller
+  that does not reach every source gets the same answer for a source the configuration does
+  not name (or a write source), rather than `unknown source`, so it does not learn which names
+  the sources of other scopes have.
 - `/act`: a write source and an action receipt are of no scope identifier. A caller that does
   not reach the sources of none is refused `403`, `{"error": "scope identifier: a write source
   is of no scope identifier, and this caller's token does not reach the sources of none",
   "refusedAt": "scope-identifier"}`, before the body is read, whatever session it names; a
   request naming a `reservation` is held so again as the delegation's subject.
-- `/seal`: a session the gateway holds whose scope the caller does not reach is answered `400`
-  `no such session: <id>`, the answer for a session the gateway does not hold.
+- `/seal`: a session whose scope the caller does not reach is answered `400` `no such session:
+  <id>`, the answer for a session the gateway does not hold, whatever its state: held by this
+  process, left open by another (§3c), held by another instance serving the database (`409`
+  otherwise), or unreadable. A caller that does not reach every source gets that answer too
+  where the store cannot say the session's scope. A session sealed in the registry is said to
+  be so, as `/registry` serves its seal to anyone. An `/acquire` into a session whose receipts
+  are of a scope other than the source's is refused `400` with that refusal's sentence,
+  whatever else the session holds.
 - `/verify`: served to a caller that reaches every source, and, where no source is fixed to a
-  scope identifier, to one that reaches the sources of none; otherwise `403` before the store
-  is read. The verdict covers every scope's sessions and is not cut by scope.
+  scope identifier and the store holds no session of one (no receipt holding `scope`, no seal
+  of version 2), to one that reaches the sources of none; otherwise `403`, before the store is
+  read where the configuration decides it, and with the same answer once the verdict finds a
+  session of a scope identifier, one of a scope since removed from the configuration among
+  them. The verdict covers every scope's sessions and is not cut by scope.
 - `/registry` and `/publickey` need no token and are served whole: no registry line carries a
-  scope identifier or a caller, and a registry cut by scope would not walk.
+  scope identifier or a caller, and a registry cut by scope would not walk. A seal of version 2
+  names its session's scope by an unkeyed digest over the identifier and the session's id
+  (§3), so anyone who reads `/registry` and guesses a scope identifier (a tenant's name, say)
+  can test the guess against each sealed session and learn which sessions are of that scope,
+  their `finalCount` and their `sealedAt`, though never a receipt. Where that must stay
+  hidden, scope identifiers are chosen with at least 128 bits of entropy (for instance 22 or
+  more characters drawn at random from a 64-character alphabet), and a name a person reads is
+  kept outside the identifier.
 
 The receipt's `caller` is the caller as before; the claim is not recorded, the receipt's
 `scope` being the identifier the request was held to. A scoped caller's subject and issuer are

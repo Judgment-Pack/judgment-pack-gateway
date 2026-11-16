@@ -278,10 +278,21 @@ func TestUncheckedCallerScopesServeAsBeforeAndAreReported(t *testing.T) {
 	if !strings.Contains(callerScopesStartLine(&unchecked, service.sources), `"unchecked"`) || !strings.Contains(callerScopesStartLine(nil, service.sources), "no identity") {
 		t.Fatal("the start line does not say which")
 	}
-	// a configuration fixing no source to a scope identifier gets neither
+	// a configuration fixing no source to a scope identifier gets both
+	// where it has an identity, since a token whose claim names a scope
+	// identifier is refused 401 there too, and neither where it has none
 	plain := map[string]sourceSpec{"plain": service.sources["plain"]}
-	if callerScopesStartLine(&checked, plain) != "" || callerScopesLine("checked", plain) != nil {
-		t.Fatal("a line where no source is scoped")
+	if line := callerScopesStartLine(&checked, plain); !strings.Contains(line, "are checked") || !strings.Contains(line, "refused 401") {
+		t.Fatalf("checked, no source scoped: the start line is %q", line)
+	}
+	if lines := callerScopesLine("checked", plain); len(lines) != 1 || lines[0].state != postureEnforced || !strings.Contains(lines[0].reason, "refused 401") {
+		t.Fatalf("checked, no source scoped: the posture line is %+v", lines)
+	}
+	if callerScopesStartLine(&unchecked, plain) == "" || callerScopesLine("unchecked", plain) == nil {
+		t.Fatal("unchecked, no source scoped: no line")
+	}
+	if callerScopesStartLine(nil, plain) != "" || callerScopesLine("no-identity", plain) != nil {
+		t.Fatal("a line where there is no identity and no source is scoped")
 	}
 }
 
@@ -300,6 +311,31 @@ func TestVerifyIsServedToACallerThatReachesWhatItCovers(t *testing.T) {
 	plain.identity = service.identity
 	if code, out := authed(t, plainServer, "/verify", ``, tokenFor(t, issuer, "unscoped", nil)); code != http.StatusOK {
 		t.Fatalf("an unscoped caller where no source is scoped: %d %v", code, out)
+	}
+	// "no source is scoped" holds of the store too: a store holding a
+	// session of a scope identifier since removed from the configuration is
+	// verified for a caller that reaches every source alone, open or sealed
+	service.identity = nil
+	for _, session := range []string{"s-open", "s-sealed"} {
+		if code, out := authed(t, server, "/acquire", acquireBodyFor(session, "scoped-a", callerScopeA), ""); code != http.StatusOK {
+			t.Fatalf("acquire %s: %d %v", session, code, out)
+		}
+	}
+	if code, out := authed(t, server, "/seal", `{"session":"s-sealed"}`, ""); code != http.StatusOK {
+		t.Fatalf("seal: %d %v", code, out)
+	}
+	removed, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, map[string]sourceSpec{"plain": service.sources["plain"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed.identity = plain.identity
+	removedServer := httptest.NewServer(removed.handler())
+	t.Cleanup(removedServer.Close)
+	if code, out := authed(t, removedServer, "/verify", ``, tokenFor(t, issuer, "unscoped", nil)); code != http.StatusForbidden || out["error"] != reachRefusalVerify {
+		t.Fatalf("an unscoped caller where the store holds a scope's sessions: %d %v", code, out)
+	}
+	if code, out := authed(t, removedServer, "/verify", ``, tokenFor(t, issuer, "installation", nil)); code != http.StatusOK || !strings.Contains(fmt.Sprint(out["findings"]), "s-sealed") {
+		t.Fatalf("an installation caller where the store holds a scope's sessions: %d %v", code, out)
 	}
 }
 
@@ -385,5 +421,100 @@ func TestCallerScopesConfigurationIsHeldToItsForm(t *testing.T) {
 	cfg, err := parseEngineConfig([]byte(strings.Replace(withCallers("27", `"unchecked"`), `,"callerScopes":"unchecked"`, ``, 1)))
 	if err != nil || cfg.identity.callers.unchecked || len(cfg.identity.callers.entries) != 0 {
 		t.Fatalf("absent: %+v %v", cfg.identity, err)
+	}
+}
+
+// After a restart, a session another process left open in a store of the
+// filesystem kind is answered by its scope too (ADR-0037): A's caller is told
+// of B's session what it is told of one the gateway does not hold, byte for
+// byte but the name, and an acquisition of A's into it gets the other
+// scope's refusal; B's caller, and an installation caller, are told it was
+// left open. A session whose receipt does not say its scope is not there for
+// a caller held to scope identifiers.
+func TestASessionLeftOpenIsAnsweredByItsScopeAfterARestart(t *testing.T) {
+	callers := callerScopes{entries: map[string]callerEntry{
+		subjectA:       {grants: map[string]bool{callerScopeA: true}},
+		subjectB:       {grants: map[string]bool{callerScopeB: true}},
+		"installation": {installation: true},
+	}}
+	earlier, earlierServer, issuer := callerScopesService(t, callers)
+	tokenA := tokenFor(t, issuer, subjectA, []any{callerScopeA})
+	tokenB := tokenFor(t, issuer, subjectB, []any{callerScopeB})
+	installation := tokenFor(t, issuer, "installation", nil)
+	if code, out := authed(t, earlierServer, "/acquire", acquireBodyFor("s-b", "scoped-b", callerScopeB), tokenB); code != http.StatusOK {
+		t.Fatalf("B's caller on B: %d %v", code, out)
+	}
+	earlierServer.Close()
+	torn := filepath.Join(earlier.storeRoot, "receipts", "s-torn")
+	if err := os.MkdirAll(torn, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(torn, "0.json"), []byte(`{"scope":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := newGatewayService(earlier.storeRoot, testSeed, "gateway:test", earlier.regPath, earlier.sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.identity = earlier.identity
+	server := httptest.NewServer(restarted.handler())
+	t.Cleanup(server.Close)
+	started := restarted.started.Load()
+	for _, tc := range []struct {
+		name, route, body, token, answer string
+	}{
+		{"A seals B's", "/seal", `{"session":"s-b"}`, tokenA, "no such session: s-b"},
+		{"A seals the torn one", "/seal", `{"session":"s-torn"}`, tokenA, "no such session: s-torn"},
+		{"A acquires into B's", "/acquire", acquireBodyFor("s-b", "scoped-a", callerScopeA), tokenA, fmt.Sprintf(refusalOtherScope, "s-b")},
+		{"B seals its own", "/seal", `{"session":"s-b"}`, tokenB, fmt.Sprintf(refusalLeftOpen, "s-b")},
+		{"B acquires into its own", "/acquire", acquireBodyFor("s-b", "scoped-b", callerScopeB), tokenB, fmt.Sprintf(refusalLeftOpen, "s-b")},
+		{"the installation seals B's", "/seal", `{"session":"s-b"}`, installation, fmt.Sprintf(refusalLeftOpen, "s-b")},
+		{"the installation seals the torn one", "/seal", `{"session":"s-torn"}`, installation, fmt.Sprintf(refusalLeftOpen, "s-torn")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out := authed(t, server, tc.route, tc.body, tc.token)
+			if code != http.StatusBadRequest || fmt.Sprint(out["error"]) != tc.answer {
+				t.Fatalf("%d %v", code, out)
+			}
+		})
+	}
+	if code, raw := postRawWith(t, server, "/seal", `{"session":"s-b"}`, tokenA); code != http.StatusBadRequest || string(raw) != strings.Replace(string(postRawBody(t, server, "/seal", `{"session":"s-x"}`, tokenA)), "s-x", "s-b", 1) {
+		t.Fatalf("a seal of B's session after a restart: %d %s", code, raw)
+	}
+	if restarted.started.Load() != started {
+		t.Fatal("a source started for a refused request")
+	}
+}
+
+// A caller held to scope identifiers is told of a source no configuration
+// names what it is told of a source of a scope it does not reach, byte for
+// byte, so it does not learn which names other scopes' sources have; a
+// caller that reaches every source is told the source is unknown.
+func TestAnUnknownSourceIsAnsweredAsAnotherScopesToACallerHeldToScopes(t *testing.T) {
+	callers := callerScopes{entries: map[string]callerEntry{
+		subjectA:       {grants: map[string]bool{callerScopeA: true}},
+		"installation": {installation: true},
+	}}
+	service, server, issuer := callerScopesService(t, callers)
+	started := service.started.Load()
+	for _, token := range []string{tokenFor(t, issuer, subjectA, []any{callerScopeA}), tokenFor(t, issuer, "unscoped", nil)} {
+		_, other := postRawWith(t, server, "/acquire", acquireBodyFor("s-1", "scoped-b", callerScopeB), token)
+		for _, body := range []string{
+			acquireBodyFor("s-1", "nothing/here", callerScopeB),
+			acquireBodyFor("s-1", "nothing/here", ""),
+			acquireBodyFor("s-1", "plain/write", ""),
+		} {
+			code, raw := postRawWith(t, server, "/acquire", body, token)
+			if code != http.StatusBadRequest || string(raw) != string(other) || !bytes.Contains(raw, []byte(scopeRefusal)) {
+				t.Fatalf("%s: %d %s, want %s", body, code, raw, other)
+			}
+		}
+	}
+	code, out := authed(t, server, "/acquire", acquireBodyFor("s-1", "nothing/here", ""), tokenFor(t, issuer, "installation", nil))
+	if code != http.StatusBadRequest || !strings.HasPrefix(fmt.Sprint(out["error"]), "unknown source: ") {
+		t.Fatalf("an installation caller: %d %v", code, out)
+	}
+	if service.started.Load() != started {
+		t.Fatal("a source started for a refused request")
 	}
 }

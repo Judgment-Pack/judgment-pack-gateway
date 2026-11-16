@@ -12,7 +12,9 @@ A caller's signed token names the scope identifiers it is for in one claim, `sco
 claim the Runner reads in the same form (its ADR 0002, issue #304), so that one issuer serves
 both. Engine configuration version 27 adds `identity.callerScopes`, which grants each subject
 what it may be for. A request is held to the claim's scope identifiers, each of which the
-subject's entry must grant, or the token is refused `401` before any route. The check is the
+subject's entry must grant, or the token is refused `401` before any route reads the request
+(but the witness's `/witness/*` routes, which check the token and carry no scope data, and the
+open `/registry` and `/publickey`). The check is the
 default: a configuration without the member holds every caller to the sources of no scope
 identifier, and `callerScopes: "unchecked"` is written to keep the behavior before this change.
 The start and `/posture` say which. Every route that reaches a session of a scope identifier
@@ -66,7 +68,11 @@ the caller, and `/seal` and `/verify` read none either.
 4. **One refusal for a token the entry does not grant.** A claim wider than the entry, and a
    claimless token whose entry is a list without the marker, are refused `401` with one
    sentence: "the token's scope_ids names a scope identifier the configuration does not grant
-   its subject". Neither names a scope identifier or the subject.
+   its subject". Neither names a scope identifier or the subject. The refusal is made where a
+   gateway route authenticates its caller, before the route reads the request: every route but
+   `/registry` and `/publickey`, which take no token, and the witness's `/witness/*` routes,
+   which verify a token under the same identity, read no claim, and carry no scope data (a
+   witness statement names a trail, never a scope identifier).
 5. **A delegated request** (SPEC.md §11) carries no claim, and the chain's subject is stated by
    the issuing host, not by the identity's issuer: it reaches the sources of no scope identifier
    where its subject's claimless token would reach them, and never a scope identifier, an
@@ -77,27 +83,41 @@ the caller, and `/seal` and `/verify` read none either.
      the trail, the publisher policy, the grant, the admission, a delegation's count or the
      source. The scope the store, the admission and the receipt take is the source's, once both
      hold; on the PostgreSQL kind it chooses the transaction's view, so the view is one the
-     caller's identity reaches, never one the body alone names.
+     caller's identity reaches, never one the body alone names. A source the configuration does
+     not name is answered so too to a caller that does not reach every source, not `unknown
+     source`, so the names of other scopes' sources are not learned from the difference.
    - `/act`: a write source and an action receipt are of no scope identifier (ADR-0026). A caller
      that does not reach the sources of no scope identifier is refused `403`, `refusedAt:
      "scope-identifier"`, before the body is read, so every answer it gets is the same whatever
      session it names. A caller that reaches them is answered as before.
-   - `/seal`: a session this process holds whose scope the caller does not reach is answered
-     `no such session`, byte for byte the answer for a session it does not hold, before anything
-     else of the session is read.
+   - `/seal`: a session whose scope the caller does not reach is answered `no such session`,
+     byte for byte the answer for a session the gateway does not hold, before anything else of
+     the session is read: one this process holds, and one it does not -- left open by another
+     process, held by another instance serving the database, or unreadable -- whose scope the
+     store gives (on the PostgreSQL kind its series' scope, on the filesystem kind its first
+     receipt's). Where the store cannot give the scope, a caller that does not reach every source
+     is answered so too. A seal in the registry is said to be one, since `/registry` serves it
+     to anyone. An `/acquire` into a session of another scope than its source's is refused with
+     the other-scope sentence whatever else the session holds, on both kinds.
    - `/verify`: the verdict is of the whole store and cannot be cut by scope (ADR-0036, decision
      7). It is served to a caller that reaches every source, and, where the configuration fixes
-     no source to a scope identifier, to one that reaches the sources of no scope identifier;
-     every other caller is refused `403` before the store is read.
+     no source to a scope identifier and the store holds no session of one (a receipt holding
+     `scope`, or a seal of version 2), to one that reaches the sources of no scope identifier;
+     every other caller is refused `403`, before the store is read where the configuration
+     decides it, and with the same answer once the verdict finds such a session (of a scope
+     since removed from the configuration, say).
    - `/registry` and `/publickey`: served whole to every caller, as open routes that need no
      token. Refusing a token there closes nothing, since the same bytes are served without one;
      filtering breaks the registry's chain, which a verifier walks whole (ADR-0036, decision 9).
      No registry line carries a scope identifier or a caller.
 7. **Unchecked, and no identity.** With `"unchecked"` the claim is not read and every caller
    reaches every source, as before. Without `identity` there is no caller to hold, and every
-   request reaches every source, as before. Where some source is fixed to a scope identifier,
-   the start writes which of the three holds, and `/posture` reports `caller-scope-identifiers`
-   `enforced` (checked) or `not-enforced` (unchecked, or no identity).
+   request reaches every source, as before. Wherever an identity is configured, or some source
+   is fixed to a scope identifier, the start writes which of the three holds, and `/posture`
+   reports `caller-scope-identifiers` `enforced` (checked) or `not-enforced` (unchecked, or no
+   identity): with an identity and no scoped source, a token whose claim names a scope
+   identifier the entry does not grant is refused `401` all the same (an issuer shared with the
+   Runner), and the operator is told.
 8. **What is recorded.** The receipt's `caller` is as before, and the claim is not recorded: the
    receipt's `scope` is the identifier the request was held to. A scoped caller's subject and
    issuer are written into its scope's receipts alone; no record another scope's caller or an
@@ -113,14 +133,26 @@ the caller, and `/seal` and `/verify` read none either.
   scope identifier no longer tells a session of a scope from one of none.
 - Bad, because an installation with `identity` and scoped sources holds every caller to the
   sources of no scope identifier after the upgrade until the operator writes the entries or
-  `"unchecked"`. The release notes say so.
+  `"unchecked"`. One with `identity` and no scoped source refuses `401` a caller whose tokens
+  gain `scope_ids` for the Runner from a shared issuer. The release notes and the operator
+  page's upgrade note say both.
 - Bad, because a subject that works in a scope identifier and in the sources of no scope
   identifier needs a claim holding both and an entry granting both.
 - Bad, because the session namespace is one across scopes (ADR-0033): a caller that reaches the
   sources of no scope identifier still learns from a refusal that a session name is taken by
   some scope, not which. Closing it needs a namespace per scope.
-- Revisit when a delegation carries scope identifiers (decision 5), or when the registry is kept
-  per scope.
+- Bad, because `/registry` stays open (decision 6) while a seal of version 2 names its scope by
+  an unkeyed digest over the identifier and the session's id (ADR-0036): anyone who reads it and
+  guesses a scope identifier can test the guess against each sealed session and learn which are
+  of that scope, with their counts and seal times. Considered and not taken here: serving
+  `/registry` under `identity` only to a caller that reaches every source. That would move the
+  anchor a verifier fetches without a token behind one, so a third-party verifier would verify
+  exports instead, and it changes the open routes the listener's rule (engine version 19) and
+  several pages describe; the seal's form, merged in #477 and in no release yet, is unchanged
+  either way. SPEC.md §6 and the operator page state the disclosure and advise scope
+  identifiers of at least 128 bits of entropy where it matters.
+- Revisit when a delegation carries scope identifiers (decision 5), when the registry is kept
+  per scope, or before the seal of version 2 is first released, if a keyed digest is wanted.
 
 ## More information
 

@@ -340,6 +340,11 @@ func TestThePlatformScopeConfiguration(t *testing.T) {
 	if _, sources, err := load(t, text); err != nil || len(sources) != 1 || sources["records/live"].shape != "http" || sources["records/live"].scope != testScope {
 		t.Fatalf("an http live source: %v %+v", err, sources)
 	}
+	// Before version 27 the bytes of the caller scope marker are a scope
+	// identifier like any other, as they were.
+	if _, sources, err := load(t, at("26", ``, `,"scope":"unscoped"`)); err != nil || sources["warehouse/history"].scope != "unscoped" {
+		t.Fatalf("version 26 fixed to the marker's bytes: %v %+v", err, sources)
+	}
 	// A version-20 file without the member loads, its sources fixed to none.
 	if _, sources, err := load(t, at("20", ``, ``)); err != nil || sources["warehouse/history"].scope != "" || sources["warehouse/live"].scope != "" {
 		t.Fatalf("version 20 without a scope: %v %+v", err, sources)
@@ -363,6 +368,7 @@ func TestThePlatformScopeConfiguration(t *testing.T) {
 		{"a lone surrogate", at("20", ``, `,"scope":"kappa\ud800a"`), "lone surrogate", "kappa"},
 		{"beside write", at("20", ``, `,"write":true,"scope":"kappa-a"`, "history", "live", "write"), "platform warehouse: scope fixes the platform's reads to a scope identifier, /act takes none, and the platform sets write: true", "kappa-a"},
 		{"beside mcp", at("20", `,"mcp":{"listen":"127.0.0.1:8788"}`, `,"scope":"kappa-a"`), "platform warehouse: scope is refused beside mcp", "kappa-a"},
+		{"the caller scope marker at version 27", at("27", ``, `,"scope":"unscoped"`), `platform warehouse: scope is "unscoped", the marker of the sources of no scope identifier from engineVersion 27`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := load(t, tc.text)

@@ -822,6 +822,14 @@ func parsePlatformScope(v value, name, version string, write bool, mcp *mcpConfi
 	if !ok || !isScopeIdentifier(s) {
 		return "", fmt.Errorf("engine configuration: platform %s: scope must be a scope identifier, %s", name, scopeForm)
 	}
+	// From version 27 the bytes "unscoped" are the caller scope marker
+	// (ADR-0037), which names the sources of no scope identifier and is never
+	// a scope identifier a caller is granted: a platform fixed to them would
+	// be reached by an installation caller alone. An earlier file loads as it
+	// did.
+	if s == unscopedMarker && versionAtLeast(version, "27") {
+		return "", fmt.Errorf("engine configuration: platform %s: scope is %q, the marker of the sources of no scope identifier from engineVersion 27, which no caller is granted as a scope identifier; fix the platform to another scope identifier, or leave scope out", name, unscopedMarker)
+	}
 	// /act takes no scope: a write the platform allowed would be run
 	// under a receipt that does not name it.
 	if write {

@@ -659,10 +659,12 @@ canonical JSON (SPEC.md §1.1), so two answers compare byte for byte:
 - After the six, a configuration with `delegation` adds its three lines (SPEC.md §11.9), and one
   where some platform gives `writeRequesters` adds `write-requesters`: `enforced` when every
   write tool is held to a requester list, `not-enforced` otherwise, the tools counted and no
-  requester named. One where some platform is fixed to a scope identifier adds
-  `caller-scope-identifiers`: `enforced` where callers are held to the scope identifiers their
-  token and `identity.callerScopes` allow, `not-enforced` where `callerScopes` is `"unchecked"`
-  or no `identity` is configured, naming no subject and no scope identifier.
+  requester named. One with an `identity`, or where some platform is fixed to a scope identifier,
+  adds `caller-scope-identifiers`: `enforced` where callers are held to the scope identifiers
+  their token and `identity.callerScopes` allow (with no scoped platform it says that a token
+  whose `scope_ids` names a scope identifier the configuration does not grant is refused `401`),
+  `not-enforced` where `callerScopes` is `"unchecked"` or no `identity` is configured, naming no
+  subject and no scope identifier.
 
 Windows has no shipped restricted-command backend. Engine versions 13 and later
 wrap every configured source adapter, including adapters for remote and container
@@ -2096,23 +2098,33 @@ it may be granted.
   its subject's claimless token would, and never a scope identifier: the chain's subject is the
   issuing host's statement, and a host does not widen it.
 - **The routes.** `/acquire` answers a scope identifier the caller does not reach with the
-  wrong-scope sentence, before anything runs, and on the PostgreSQL kind opens the view of the
+  wrong-scope sentence, before anything runs (and a source no platform gives, to a caller that
+  does not reach every source, with the same sentence), and on the PostgreSQL kind opens the view of the
   scope identifier both checks held, never one the body alone names. `/act` is refused `403`
   (`refusedAt: "scope-identifier"`) to a caller that does not reach the sources of none, since a
   write source is of none, before its body is read. `/seal` answers a session of a scope the
   caller does not reach `no such session`. `/verify` is served to a caller that reaches every
-  source, and, where no source is fixed to a scope identifier, to one that reaches the sources of
+  source, and, where no source is fixed to a scope identifier and the store holds no session of
+  one (a scope since removed from the configuration counts), to one that reaches the sources of
   none; otherwise `403`. `/registry` and `/publickey` stay open and whole.
+- **What `/registry` tells anyone.** A seal of a scoped session names its scope by an unkeyed
+  digest over the scope identifier and the session's id (SPEC.md §3). Anyone who can reach
+  `/registry` and guesses a scope identifier can test it against each sealed session and learn
+  which sessions are of that scope, with their final counts and seal times (never a receipt).
+  Where tenants must not learn of one another's sessions, choose scope identifiers with at
+  least 128 bits of entropy (22 or more characters drawn at random from a 64-character
+  alphabet, for example), and keep the names people read outside the identifier.
 - **`"unchecked"`** reads no claim: every caller reaches every source, as before the member.
   Without `identity` there is no caller to hold and every request reaches every source.
 
 The check is the default, at every version: a configuration with `identity` and no
 `callerScopes`, a file of version 26 or earlier included, holds every caller to the sources of
-no scope identifier. Where some platform is fixed to a scope identifier the start says which
-rule holds, one of:
+no scope identifier. Wherever `identity` is configured, or some platform is fixed to a scope
+identifier, the start says which rule holds, one of:
 
 ```text
 start: caller scope identifiers are checked: a request is held to the scope identifiers its token's scope_ids names and identity.callerScopes grants its subject
+start: caller scope identifiers are checked: a request is held to the scope identifiers its token's scope_ids names and identity.callerScopes grants its subject; no platform is fixed to a scope identifier, and a token whose scope_ids names one the configuration does not grant its subject is refused 401
 start: identity.callerScopes is "unchecked": no caller is held to scope identifiers, and every caller reaches every source
 start: no identity is configured, so no caller is held to scope identifiers: every request reaches every source
 ```
@@ -2121,13 +2133,26 @@ and `/posture` reports it (`caller-scope-identifiers`, above). The receipt names
 before and does not record the claim: its `scope` is the identifier the request was held to.
 
 Refused by name, `engine configuration: …`: `identity.callerScopes` in a file of version 26 or
-earlier (`is a version-27 member`), a value of another form, and a member whose name is empty.
+earlier (`is a version-27 member`), a value of another form, a member whose name is empty, and,
+from version 27, a platform whose `scope` is `"unscoped"`, the marker, which no caller is
+granted as a scope identifier (a file of version 26 or earlier loads such a platform as before,
+and only an `"installation"` caller reaches it).
 
 **Upgrading.** A configuration with `identity` and a platform fixed to a scope identifier
 serves its scoped sources after the upgrade only to the callers `callerScopes` grants. Before
 upgrading, raise `engineVersion` to `"27"` and write the entries, issuing tokens whose
 `scope_ids` names what each caller is for, or write `"callerScopes": "unchecked"` to keep the
 behavior before. A gateway older than this one refuses a version-27 file by its version.
+
+The same holds with `identity` and no scoped platform. A token whose `scope_ids` names a scope
+identifier is refused `401` on every route but `/registry` and `/publickey` (which take no
+token) and a witness's `/witness/*` (which reads no claim and carries no scope data) unless its
+subject's entry grants it. That happens when the issuer is shared with the Runner and a
+caller's tokens gain `scope_ids` for the Runner: the caller is locked out of this gateway after
+the upgrade. Before upgrading such a configuration, write an entry for each such subject
+granting what its tokens name (or `"installation"` for a Runner), have the issuer leave the
+claim out of the tokens it issues for this gateway's audience, or write
+`"callerScopes": "unchecked"`. The start line and `/posture` say the rule in this case too.
 
 ## Keyed actions (engine version 14 and later)
 

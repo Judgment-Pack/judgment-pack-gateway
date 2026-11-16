@@ -95,8 +95,8 @@ type postureInput struct {
 	// never judged to listen on loopback.
 	listener listenerReach
 	// callerScopes is how callers are held to scope identifiers
-	// (callerScopesMode), which adds its line where some source is fixed to
-	// one; "" adds none.
+	// (callerScopesMode), which adds its line where an identity is
+	// configured or some source is fixed to one; "" adds none.
 	callerScopes string
 }
 

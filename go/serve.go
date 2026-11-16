@@ -409,6 +409,9 @@ type scopeKeeper interface {
 	// seriesHeld is whether a session of the name is held, of any scope;
 	// whether it is of scope ("" for none); and whether it holds a receipt.
 	seriesHeld(name, scope string) (held, ofScope, entries bool, err error)
+	// seriesScope is whether a session of the name is held, of any scope,
+	// and the scope it is of ("" for none).
+	seriesScope(name string) (held bool, scope string, err error)
 }
 
 // sourceScopes is every scope identifier a source is fixed to, once each,
@@ -1080,6 +1083,20 @@ func (g *gatewayService) reachOf(who *caller) scopeReach {
 	return reach
 }
 
+// reachesEverySource is whether a reach takes every source this gateway
+// serves, of every scope identifier a source is fixed to and of none.
+func (g *gatewayService) reachesEverySource(reach scopeReach) bool {
+	if reach.every {
+		return true
+	}
+	for _, spec := range g.sources {
+		if !reach.holds(spec.scope) {
+			return false
+		}
+	}
+	return true
+}
+
 // memberText reads a string-valued member of a request envelope, or "" when
 // the envelope does not carry it and when it carries it as null -- which is
 // what the endpoint's own refusal then speaks about, as it did when these
@@ -1143,6 +1160,12 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	if !known || strings.HasSuffix(source, "/write") {
 		// A write source is the executor's alone (executor.md): a read
 		// that writes is not a read, and /acquire names no such source.
+		// A caller that does not reach every source is answered as for a
+		// source of a scope it does not reach (ADR-0037), so it does not
+		// learn which names the sources of other scopes have.
+		if !g.reachesEverySource(g.reachOf(who)) {
+			return nil, badRequest{errors.New(scopeRefusal)}
+		}
 		return nil, badRequest{fmt.Errorf("unknown source: %s", requestText(source))}
 	}
 	// The scope identifier the source is fixed to (ADR-0026), held first:
@@ -2042,10 +2065,15 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 	return g.sealFor(sessionID, scopeReach{every: true})
 }
 
-// sealFor is /seal for a caller of this reach (ADR-0037): a session this
-// process holds whose scope the caller does not reach is answered as one it
-// does not hold, before anything else of the session is read, so the answer
-// tells the caller nothing of a session of another scope identifier.
+// sealFor is /seal for a caller of this reach (ADR-0037): a session whose
+// scope the caller does not reach is answered as one the gateway does not
+// hold, before anything else of the session is read, so the answer tells the
+// caller nothing of a session of another scope identifier. That holds of a
+// session this process holds, and of one it does not -- left open by another
+// process, held by another instance, or unreadable -- whose scope the store
+// gives (storedScope); a caller held to scope identifiers is answered so too
+// where the store cannot say the session's scope. A seal in the registry is
+// said to be one: /registry serves every seal to anyone.
 func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err}
@@ -2066,6 +2094,11 @@ func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string
 		return nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
 	}
 	if !seen {
+		if !reach.every {
+			if held, scope, known := g.storedScope(sessionID); !known || held && !reach.holds(scope) {
+				return nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
+			}
+		}
 		if refused := g.leftInStore(sessionID, "", false); refused != nil {
 			return nil, refused
 		}
@@ -2102,13 +2135,23 @@ func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string
 }
 
 func (g *gatewayService) verify() (map[string]any, error) {
-	if g.kind != nil {
-		return nil, storageUnsupported("/verify, which verifies the store on disk; export the store and verify the export,")
-	}
-	rep, err := verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
+	rep, err := g.verifyReport()
 	if err != nil {
 		return nil, err
 	}
+	return verdictMap(rep)
+}
+
+// verifyReport is the engine's verdict on its store, as /verify serves it.
+func (g *gatewayService) verifyReport() (*report, error) {
+	if g.kind != nil {
+		return nil, storageUnsupported("/verify, which verifies the store on disk; export the store and verify the export,")
+	}
+	return verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
+}
+
+// verdictMap is a verdict as the JSON object /verify answers.
+func verdictMap(rep *report) (map[string]any, error) {
 	raw, err := rep.marshal()
 	if err != nil {
 		return nil, err
@@ -2557,18 +2600,31 @@ func (g *gatewayService) handler() http.Handler {
 		}
 		// The verdict is of the whole store and is not cut by scope
 		// (ADR-0036, decision 7): it is served to a caller that reaches
-		// every source, and, where no source is fixed to a scope identifier,
-		// to one that reaches the sources of none (ADR-0037), before the
-		// store is read.
-		if reach := g.reachOf(who); !reach.every && (scoped || !reach.none) {
+		// every source, and, where no source is fixed to a scope identifier
+		// and the store holds no session of one, to one that reaches the
+		// sources of none (ADR-0037). The configuration is judged before the
+		// store is read; the store, which may hold sessions of a scope since
+		// removed from the configuration, once its verdict is made, and a
+		// verdict covering one is refused with the same answer.
+		reach := g.reachOf(who)
+		if !reach.every && (scoped || !reach.none) {
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": reachRefusalVerify})
 			return
 		}
-		out, err := g.verify()
+		rep, err := g.verifyReport()
 		if errors.Is(err, errStorageKindUnsupported) {
 			writeJSON(w, http.StatusNotImplemented, map[string]any{"error": err.Error()})
 			return
 		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		if !reach.every && rep.scoped {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": reachRefusalVerify})
+			return
+		}
+		out, err := verdictMap(rep)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
