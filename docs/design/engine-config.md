@@ -1331,6 +1331,10 @@ Legacy/unavailable selections use mode `unconfigured`, backend `none`, state
 `not-enforced`, preset `custom`, approval `""` and operations `[]`. A completed
 probe reports its actual selection; policy version 1 has empty approval/families.
 No-source posture has the six lines above and no `programs`.
+With `identity.callerScopes` checked, the `/posture` endpoint lists in `programs`
+only the sources the caller reaches (ADR-0037), and omits `programs` when it reaches
+none; the installation's caller, `"unchecked"` and a gateway without `identity`
+list every source. Every protection line is judged over every source, whoever asks.
 Container-helper entries concern the local runtime client, and are partial even
 when its backend enforces all filesystem writes: the external daemon is not
 confined by that client boundary. Such a source's probe and launch keep

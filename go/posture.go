@@ -98,6 +98,12 @@ type postureInput struct {
 	// (callerScopesMode), which adds its line where an identity is
 	// configured or some source is fixed to one; "" adds none.
 	callerScopes string
+	// reach, where not nil, is the reach of the caller the report is
+	// served to (ADR-0037): programs lists only the sources it takes, so
+	// the names of other scopes' sources are not learned from the report,
+	// as /acquire does not tell them from unknown ones. Every line is
+	// still judged over every source. nil lists every source.
+	reach *scopeReach
 }
 
 // listenerReach is what posture reads of the gateway's listener: whether
@@ -253,7 +259,7 @@ func hostPosture(in postureInput) postureReport {
 			programs[i].report.Protection.Reason = publicProgramReason(programs[i])
 		}
 	}
-	return postureReport{platform: runtime.GOOS, programs: programs, lines: append([]postureLine{
+	report := postureReport{platform: runtime.GOOS, programs: programs, lines: append([]postureLine{
 		sourceUserPosture(in, requireUserSwitching, sourceUserIsRoot),
 		descendantPosture(),
 		custodyPosture(in.public),
@@ -261,6 +267,16 @@ func hostPosture(in postureInput) postureReport {
 		programConfinementPosture(programs),
 		listenerPosture(in),
 	}, append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources)...)...)}
+	if in.reach != nil {
+		var listed []postureProgram
+		for _, p := range programs {
+			if in.reach.holds(in.sources[p.source].scope) {
+				listed = append(listed, p)
+			}
+		}
+		report.programs = listed
+	}
+	return report
 }
 
 // sourceUserPosture is whether every source runs as a user of its own
