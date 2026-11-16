@@ -1,0 +1,206 @@
+---
+status: proposed
+date: 2026-11-16
+deciders: maintainer
+---
+
+# A read-only Asset Inventory connection for configuration drift
+
+## Recommendation
+
+Add one custody connection, `gcp-asset-inventory`, under `adapters/connections/`. It reads a
+Google Cloud project's or folder's resources and IAM policies through the Cloud Asset Inventory
+list operation, one page per `/acquire`, and returns them as an attested result for a caller to
+compare against an adopter's registry (the registry companion of the specification, RFC 0034).
+The connection is read-only by construction and by check:
+
+- its token carries the read-only scope alone;
+- at start, and on every token refresh, it asks the platform which of a fixed list of write
+  permissions the credential holds on each configured parent, and refuses to serve if any is
+  held;
+- a parent outside the configured set is refused before that check and before any request.
+
+It keeps no payload by default (ADR-0028, `artifact: "not-retained"`). It keeps no cursor:
+Asset Inventory's page token comes back in the result, and the caller sends it on the next
+`/acquire` (the Runner's paged operation source, RFC 0033). An expired page token is answered
+with the existing `410 source_reference_expired`. Facts compared through an ordinary pack; the
+gateway judges nothing.
+
+## Context and problem statement
+
+An adopter keeps its environments' intended configuration in a registry: the entries of
+adopter-declared kinds, resolved per environment, with secret references pinned to a store,
+a project and a version (RFC 0034, RFC 0035). Its question is drift: does the platform hold
+what the registry says, now? Examples are a Cloud Run service's image, its environment and the
+secret versions it mounts, and who holds a role on a project.
+
+The registry side can already turn entries into facts (RFC 0037). The other side, the
+platform's state, needs a source the gateway attests, so that a drift finding can be shown to
+rest on what the platform answered at a given time. No connection reads that state today. A
+connection with any write capability on a production project is not acceptable for this use:
+a drift reader that could change what it reads is a control surface, not a witness. A new
+connection kind with a new refusal and a new start check is a material decision, so this is
+an ADR and not only an adapter.
+
+## Decision drivers
+
+- Read-only is checked, not assumed. A credential that could write is refused, and the refusal
+  says why without disclosing the credential.
+- The gateway stays a witness. It reads and attests, and decides nothing about drift.
+- Paging is the caller's, as for every other source (`docs/design/engine-config.md`, "The
+  engine keeps no cursor"; ADR-0029). One `/acquire` is one upstream request and one receipt.
+- Values the gateway should not hold are not held. Environment variable values are not kept
+  at all, and a result payload is not kept by default.
+- Nothing about an existing connection, receipt, store or frozen vector changes.
+- Tests use in-process servers and hand-written synthetic fixtures only. No live project, and
+  no fixture recorded from a run.
+
+## Considered options
+
+1. **A custody connection, read-only by check, one page per request.** Chosen.
+2. **Gateway-side paging.** The connection would follow page tokens itself and return the whole
+   listing as one result. Rejected: the Runner owns the loop and the cursor (RFC 0033). One
+   receipt would stand for many upstream requests and no `callIndex` would name a page. A
+   partial listing after a failure would have no shape a caller could resume, and the gateway
+   would hold state between pages that it holds nowhere else.
+3. **The generic `http` source with a token step (ADR-0027).** Rejected. It fixes endpoints,
+   paths and methods, but it has no place for the write-capability check at start and on
+   refresh, the parent allow-list, or the per-asset-type projection that drops values. Those
+   are what makes the source acceptable.
+4. **Read-only by documentation, as the Databricks and Azure DevOps connections are.** Their
+   headers say what the credential may do is "the credential's scopes and its identity's
+   permissions". Rejected for this connection: its purpose is to be pointed at production
+   projects, and an operator's duty is not a check.
+5. **Members hashed in the result.** A keyed hash of each IAM member would keep identities out
+   of the result. Rejected: the registry side cannot reproduce a key it does not hold, so the
+   comparison would fail for every member. Members are carried as written, and the result is
+   not kept by default (decision 5).
+
+## Decision outcome
+
+Chosen option 1.
+
+### 1. The connection
+
+- Name `gcp-asset-inventory`. It is wired as the existing custody connections are:
+  - `provider.go`, `store.go`, `broker.go`;
+  - `cmd/adapter-sources`, `cmd/gateway-connections`;
+  - the operation and effect tables in `catalog_v5.go` and `catalog_v4.go`;
+  - ADR-0017's research-capability table (`[]`);
+  - SPEC.md's grants record;
+  - a section of `adapters/README.md`.
+- One operation, `list`, of effect read. There is no write operation, and the catalog file has
+  no `write` member. A configuration that sets `write: true` on it is refused at start.
+- Configuration names:
+  - one or more parents, each `projects/<project-id>` or `folders/<number>`;
+  - the asset types served, an explicit list with no wildcard;
+  - the content types served, `RESOURCE`, `IAM_POLICY` or both.
+- A request names one configured parent, one content type and a subset of the configured asset
+  types, and may name a page token and a page size up to the platform's bound. A request
+  naming anything else is refused before any upstream call (decision 3).
+- `readTime` is the caller's. The connection does not choose one. A caller that wants pages of
+  one instant sends the same `readTime` with each page.
+
+### 2. Paging is the caller's
+
+- One `/acquire` is one call to the list operation and one receipt, with its `callIndex` as for
+  any source. `/seal` fixes the count.
+- The result carries Asset Inventory's `nextPageToken` as written, or `null` on the last page.
+  The connection never follows it. This is the Runner's paged operation source (RFC 0033,
+  dialect format 4.1.0, accepted for specVersion 0.6.0), the same caller-driven form as
+  Databricks' `next_page_token` and Azure DevOps' `continuationToken`.
+- Asset Inventory refuses a page token it no longer honours. The connection answers that as
+  `410` with `{"referenceExpired":{"status":410}}`, as SPEC.md §6 defines it: not receipted, no
+  `callIndex`, the session left open, the caller to start the listing again. It applies only
+  when the request sent a page token, so a refusal of a first page is never classed as an
+  expired reference. The `410` is today defined for the `http` shape alone. This decision
+  extends it to this connection, and to no other.
+- No new RFC is needed. RFC 0033 already gives the caller's side.
+
+### 3. The credential is read-only, checked
+
+- **Scope.** The token step requests exactly the read-only scope
+  (`https://www.googleapis.com/auth/cloud-platform.read-only`). A token obtained another way, a
+  federated token file (ADR-0027), has its granted scopes read from the platform's token
+  information answer. A token with any other scope is refused.
+- **Parents first.** Every configured parent is checked against its own form before the
+  credential is used, and a request's parent against the configured set before any upstream
+  call. A parent outside the set is refused as `parent-not-configured`. The refusal names the
+  parent the request gave, which is the caller's own text.
+- **Write permissions.** For each configured parent, the connection calls the platform's
+  `testIamPermissions` with a fixed list of write permissions. If the answer grants any of
+  them, the connection refuses to serve: `credential-can-write: <permission>`, naming the first
+  permission granted in the list's order. The list is part of the connection's code and
+  versioned with it. It covers at least:
+  - setting IAM policy on the project or folder;
+  - updating and deleting Cloud Run services;
+  - adding and destroying secret versions;
+  - creating service account keys;
+  - updating storage buckets;
+  - creating Asset Inventory feeds.
+  The adapter's README lists it in full.
+- **When.** The check runs at start, before the connection is offered, and again each time the
+  token is refreshed, before the new token is used for any request. A refusal on refresh closes
+  the connection for every request after it, and the start report and `/posture` say so.
+- **Never the token.** No refusal, event, log line or posture entry carries the token, its
+  digest or any part of it. A refusal names the permission found, or the parent, and nothing
+  else.
+- Each refusal path emits its event, and each event validates against the event schema with a
+  malformed input, as AGENTS.md (e) requires.
+
+### 4. What the result holds
+
+- Each asset type served has an allow-list projection. Only the members named in it are carried
+  into the result, and everything else is dropped before the result is digested.
+- For Cloud Run services, environment variable values are never carried. A variable that names
+  a secret carries the secret's name and version (`secretKeyRef`), because those are what a
+  registry pins and what drift is checked against. A plain value carries the variable's name
+  alone.
+- The projections are listed in the adapter's README and held by tests, one per asset type.
+
+### 5. IAM members, and the payload not kept
+
+- IAM policy bindings carry their members as written (`user:`, `serviceAccount:`, `group:`,
+  `domain:` and so on). That is what the registry side can compare (option 5).
+- The connection's default is `artifact: "not-retained"` (ADR-0028): the gateway returns the
+  result to the caller with its receipt and keeps only `resultDigest`. An operator who wants
+  the bytes kept sets `artifact` explicitly, and the start report says so.
+- An optional reduction, `members: "count-users"`, replaces each binding's `user:` members with
+  their count and keeps the other members as written. It is off by default, because a count
+  cannot be compared with a registry that lists users. It is for an adopter that checks only
+  service accounts and groups, and wants no user identities in the result at all.
+
+### 6. Where judgment happens
+
+The connection returns attested state. A drift finding is a pack over two sets of facts: the
+registry's (RFC 0037) and these. It is evaluated by the Runner or the runtime like any other
+pack. Facts compared through an ordinary pack; the gateway judges nothing.
+
+### Consequences
+
+- Good: a drift reader that cannot be quietly pointed at a writable credential, with a refusal
+  an operator can act on.
+- Good: no new paging model. The Runner's loop, the receipt per page, `/seal` and the `410` are
+  all existing behaviour.
+- Good: secret values and environment values never reach the gateway's store, and by default
+  no payload does.
+- Bad: the write list is fixed. A write permission the platform adds later, or one not on the
+  list, goes undetected until the list is revised. The list is revisited when the asset types
+  served change and on each release of the connection.
+- Bad: `testIamPermissions` on a project or folder does not see a grant made on a single
+  resource below it, for example on one secret. Such a grant gives no write capability over
+  what this connection reads at the parent's level, but it is not detected. The README says so.
+- Bad: one more custody connection to keep. Tests are in-process only, and v1 has no live test.
+- Neutral: the token information read is one more request at start and on refresh, and only
+  for a federated token.
+
+## More information
+
+- Specification: RFC 0033 (paged operation source), RFC 0034 (registry profile), RFC 0035
+  (references), RFC 0037 (facts contracts).
+- Gateway: ADR-0015 (custody connections arrive through it), ADR-0017, ADR-0027 (token step),
+  ADR-0028 (payloads not kept), ADR-0029 (paging is the caller's), SPEC.md §6
+  (`source_reference_expired`).
+- Review: this decision sets a security boundary. It had one same-vendor review round before
+  merge, not a cross-vendor claim. The gateway's different-vendor review rule for material
+  decisions is the maintainer's to apply or waive.
