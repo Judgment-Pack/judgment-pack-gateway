@@ -900,11 +900,18 @@ func (s *mcpServer) admitCall(sess *mcpSession, token string, req mcpRequest) mc
 		}
 		arguments = params["arguments"]
 	}
+	// where the server names a scope identifier, the token is verified
+	// before the name is looked up, whatever the name, so a name the table
+	// holds and one it does not take the same work
+	reach := s.callReach(sess, token)
+	if s.cfg.mcp.scoped() {
+		reach()
+	}
 	tool, known := s.tools[name]
 	// a tool of a source the caller's token does not reach, where the server
 	// names a scope identifier, is answered as one the table does not hold,
 	// and nothing is forwarded (mcp_scope.go)
-	if known && !s.reachable(tool, s.callReach(sess, token)) {
+	if known && !s.reachable(tool, reach) {
 		known = false
 	}
 	if invalid == nil && !known {

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The MCP server on platforms fixed to a scope identifier (ADR-0038): the
@@ -265,6 +266,31 @@ func TestAnMCPServerOfSeveralScopesServesEachCallerItsOwn(t *testing.T) {
 	code, header, body := f.call(t, http.MethodPost, "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`, nil)
 	if code != http.StatusUnauthorized || body["error"] != errScopeClaimWider.Error() || !strings.Contains(header.Get("WWW-Authenticate"), "resource_metadata=") {
 		t.Fatalf("a wider claim: %d %v %v", code, header, body)
+	}
+}
+
+// The token is verified before the tool's name is looked up: a call of a
+// tool the caller does not reach and one of a name the table does not hold
+// read the clock -- once for the window, once for the token -- alike, so
+// neither answers sooner for the name.
+func TestAnMCPServerOfSeveralScopesVerifiesTheTokenWhateverTheName(t *testing.T) {
+	f := scopedMCPFixture(t, mcpConfig{scopeFromCaller: true})
+	tokenA := tokenFor(t, f.issuer, subjectA, []any{callerScopeA})
+	clock := f.server.now
+	reads := 0
+	f.server.now = func() time.Time { reads++; return clock() }
+	counted := map[string]int{}
+	for _, name := range []string{"c.lookup", "b.lookup"} {
+		reads = 0
+		params, _ := json.Marshal(map[string]any{"name": name, "arguments": map[string]any{}})
+		out := f.server.admitCall(f.server.newSession(), tokenA, mcpRequest{id: json.RawMessage("1"), method: "tools/call", params: params})
+		if out.run != nil || !strings.Contains(string(out.response), "unknown tool: "+name) {
+			t.Fatalf("%s: %s", name, out.response)
+		}
+		counted[name] = reads
+	}
+	if counted["c.lookup"] != counted["b.lookup"] {
+		t.Fatalf("the clock is read %v times", counted)
 	}
 }
 
