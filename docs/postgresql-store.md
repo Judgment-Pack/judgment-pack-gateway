@@ -459,6 +459,32 @@ start, with nothing sealed. Seals are appended to the registry by its one serial
 judged in the append's transaction and refused where the registry holds a seal for its session
 already; a session another instance's start sealed since it was judged is passed over by `--all`.
 
+## Upgrading from v0.29.0
+
+v0.30.0 carries schema version 6. The step to it is made with every instance stopped; the orderly
+hand-over ("Handing over to a new instance") does not carry it, since `gateway store migrate` is
+refused while any instance's lease is live and a v0.30.0 instance refuses a database at schema
+version 5. In this order:
+
+1. Stop every instance and wait for each to exit.
+2. Back the database up. Migration 6 is one-way: it drops `gateway.start_lease` and makes it again,
+   empty, in its new form (a row for each instance), and records from then on the instance that
+   holds each session.
+   A v0.29.0 binary refuses a database at schema version 6, by its start and by its
+   `gateway store migrate` alike: "a gateway older than its schema does not run on it". Going back
+   to v0.29.0 means restoring that backup.
+3. Run `gateway store migrate` as the migration login (`{"applied":[6],…,"schemaVersion":6}`).
+4. Start the v0.30.0 instances.
+
+A configuration of engine version 25 or earlier keeps the one-instance mode: one instance per
+database, as before. To go from one instance to several, give every instance v0.30.0 and a
+configuration of engine version 26 with `"instances": "several"` ("Several instances on one
+database"), each with the same seed and authority. The two modes refuse each other on one
+database: an instance of the several-instances mode is refused, `start-lease-held`, while an
+instance of the one-instance mode serves it, and the other way round. So stop the instance of the
+one-instance mode before the first instance of the several-instances mode serves, and stop every
+instance of that mode before going back to one.
+
 ## The migration command
 
 ```text
@@ -748,8 +774,9 @@ the same work, of no scope and of scope identifiers alike (a test).
 
 - what "Not available with this kind yet" lists;
 - moving a store from one kind to the other;
-- more than one live gateway instance on one database: the start lease refuses a second ("One
-  instance per database");
+- more than one live gateway instance on one database in the one-instance mode, the default: the
+  start lease refuses a second ("One instance per database"); instances serve one database beside
+  one another in the several-instances mode alone ("Several instances on one database");
 - passwords outside printable ASCII;
 - connection poolers: the settings the gateway makes are transaction local, which a pooler in
   transaction mode keeps, but no pooler is tested;
