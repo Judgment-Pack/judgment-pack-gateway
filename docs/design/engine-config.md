@@ -2197,7 +2197,10 @@ Refused by name, `engine configuration: …`, quoting nothing of the value:
 `scopeFrom` over `--stdio`, where one token is given at start for the life of the process.
 
 **Upgrading.** A file of version 27 or earlier loads as before, and an MCP server without
-either member serves as before. To serve a scoped platform over MCP, raise `engineVersion` to
+either member serves as before, with one change in a file of any version: under `identity`
+with `callerScopes` checked, the server's HTTP transport refuses `401`, before any session, a token whose `scope_ids` claim is
+out of form or wider than its subject's entry, with the signer's sentence. Before, that token
+was refused at the forward, by the signer. To serve a scoped platform over MCP, raise `engineVersion` to
 `"28"` and add one member. A gateway older than this one refuses a version-28 file by its
 version.
 

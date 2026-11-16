@@ -302,7 +302,9 @@ token reaches. The rule is ADR-0037's, computed by the signer's own function. An
 other tool is answered `unknown tool: <name>`, exactly as a name the table does not hold, and
 nothing is forwarded. `engine.seal` is listed to every caller, because the signer holds
 `/seal` to the caller itself. Over HTTP the reach is read from each request's token. Over
-stdio it is read once at start, with `ENGINE_TOKEN`. A token the signer refuses `401` (a
+stdio it is read once at start, with `ENGINE_TOKEN`, and holds until the next start: after the
+token expires, or the subject's grant is narrowed, `tools/list` still lists the tools of the
+start, and the signer refuses each call of them (`401`, or the scope refusal). A token the signer refuses `401` (a
 `scope_ids` claim out of form, or wider than its subject's entry) is refused `401` at the
 transport with the signer's sentence, or stops a stdio start.
 
