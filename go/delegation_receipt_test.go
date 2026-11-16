@@ -166,10 +166,12 @@ func TestUndelegatedReceiptsAreByteIdentical(t *testing.T) {
 		t.Fatalf("only %d receipts rebuilt", rebuilt)
 	}
 	// v3-scope-valid's two, v3-scope-at-the-bound's and v3-scope-on-an-action's,
-	// and the thirty the v3-session-removed* vectors hold (a scope's sessions,
-	// removed or kept beside them).
-	if scoped != 34 {
-		t.Fatalf("%d receipts holding a scope rebuilt, want 34", scoped)
+	// the thirty the v3-session-removed* vectors hold (a scope's sessions,
+	// removed or kept beside them), and the twenty-four of the twelve
+	// v3-seal-scope-* vectors whose session s1 holds two receipts of scope-a
+	// (the others' receipts carry no scope).
+	if scoped != 58 {
+		t.Fatalf("%d receipts holding a scope rebuilt, want 58", scoped)
 	}
 }
 
