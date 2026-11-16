@@ -2289,11 +2289,11 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 		"v3-session-removed-anchored-by-an-interruption-seal", "v3-session-removed-beside-a-seal-conflict",
 	}
 	// The seal-of-a-scope vectors (SPEC.md §3, "A seal of version 2"): the
-	// eleven that state observations each observe one, session-open where the
+	// twelve that state observations each observe one, session-open where the
 	// seal loads nothing, sealed-after-interruption where §3c's seal loads,
 	// session-removed where a record of the seal's scope names the session.
 	sealScopeObserving := []string{
-		"v3-seal-scope-session-removed",
+		"v3-seal-scope-session-removed", "v3-seal-scope-after-interruption-over-receipts-of-none",
 		"v3-seal-scope-after-interruption", "v3-seal-scope-after-interruption-mismatch",
 		"v3-seal-scope-after-interruption-under-the-first-prefix", "v3-seal-scope-changed-after-signing",
 		"v3-seal-scope-member-more", "v3-seal-scope-other-version", "v3-seal-scope-out-of-form",
@@ -2346,8 +2346,8 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 			if err != nil {
 				t.Fatalf("no run: %v", err)
 			}
-			if count != 213 {
-				t.Fatalf("%d store vectors read, want 213", count)
+			if count != 215 {
+				t.Fatalf("%d store vectors read, want 215", count)
 			}
 			disagreeing := map[string]bool{}
 			for _, failure := range failures {
@@ -2525,7 +2525,7 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 	// observes in.
 	if got, want := []int{len(stores), len(okTrue), len(withFindings), len(withWitnesses), len(withRotations), len(stating),
 		len(witnesses), len(refusals), len(readings), len(okReadings), len(withHead)},
-		[]int{213, 50, 213, 3, 14, 26, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
+		[]int{215, 50, 215, 3, 14, 27, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
 		t.Fatalf("the corpus's vectors, by what their answers give: %v, want %v", got, want)
 	}
 	for name := range stating {
