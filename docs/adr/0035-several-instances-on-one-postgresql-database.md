@@ -121,8 +121,8 @@ one instance must not change under any option.
   §2, §6), and the registry holds one seal per session.
 - No write of an instance commits after it lost the right to write, as decided by the database's
   clock (ADR-0032, decision 4).
-- Every instance on one database signs with one key under one authority; a start that would not
-  is refused.
+- Every instance on one database signs with one key under one authority; a start that would not,
+  beside a live instance, is refused (decision 8).
 - A call the instance it reached cannot serve is refused by name before its source runs, never
   served from an empty memory.
 - The run-time login gains no DELETE, and no table but documents and the lease rows becomes
@@ -285,6 +285,14 @@ verifier reads. The walk relies on the registry being append-only: the run-time 
 insert into it, and schema version 4 admits a record only at the log's end. The line that ends
 where the instance last read is found in its place before what follows is read. A registry that
 is not the one the instance read is read and walked whole again, as at an instance's first seal.
+
+The one key and the one authority. A start compares them with the live instances' rows, as
+decision 8 says, and not with rows that ran out. Once every instance has stopped, a start is
+compared with none, as in the one-instance mode. A key changed then is still refused by the start's
+walk of the registry, which refuses a seed that is not the key the registry's rotations end at. An
+authority changed then is not refused, and keeping it is the operator's (`docs/postgresql-store.md`,
+"Several instances on one database"). Comparing with rows that ran out as well would refuse such a
+change for good, since no row is ever removed. That is left for when a deployment needs it.
 
 ### Consequences
 

@@ -358,8 +358,12 @@ records itself as the session's holder when it admits the call, before the sourc
   refused, `instance-mismatch`, where an instance whose lease is live signs under another key id
   or names another authority; it is refused, `start-lease-held`, beside a live instance of the
   one-instance mode, and an instance of the one-instance mode is refused beside one of this mode.
-  The sources are not compared: give every instance the same ones, or a session's later calls may
-  meet a source its holder lacks.
+  The comparison is with live instances alone: once every instance has stopped and its lease has
+  run out, a start is compared with none, as in the one-instance mode. A key changed then is still
+  refused, by the start's walk of the registry, unless the registry's rotations end at it
+  (`gateway rotate-key`); an authority changed then is not, so keep one authority for the
+  database's life. The sources are not compared: give every instance the same ones, or a session's
+  later calls may meet a source its holder lacks.
 - **Connections:** `connections` + 1 for each instance in the server's connection budget.
 - **Delegated runs:** a delegation's credential is bound, and revoked, at the instance that bound
   it; keep a delegated run's calls to that instance. The admission read still refuses a revoked

@@ -711,10 +711,10 @@ func TestPostgresInstancesRefuseAnotherModeKeyOrAuthorityAndHoldersOfEveryRow(t 
 	if _, _, err := take(one); !errors.Is(err, errStartLeaseHeld) || !strings.Contains(err.Error(), "an instance in the one-instance mode does not start beside it") {
 		t.Fatalf("one beside several: %v", err)
 	}
-	if _, _, err := take(instanceFor(&storageSpec{several: true}, otherSeed, "gateway:test")); !errors.Is(err, errInstanceMismatch) || !strings.Contains(err.Error(), "every instance on one database signs with one key") {
+	if _, _, err := take(instanceFor(&storageSpec{several: true}, otherSeed, "gateway:test")); !errors.Is(err, errInstanceMismatch) || !strings.Contains(err.Error(), "every instance serving one database at once signs with one key") {
 		t.Fatalf("another key id beside several: %v", err)
 	}
-	if _, _, err := take(instanceFor(&storageSpec{several: true}, testSeed, "gateway:other")); !errors.Is(err, errInstanceMismatch) || !strings.Contains(err.Error(), "every instance on one database names one authority") {
+	if _, _, err := take(instanceFor(&storageSpec{several: true}, testSeed, "gateway:other")); !errors.Is(err, errInstanceMismatch) || !strings.Contains(err.Error(), "every instance serving one database at once names one authority") {
 		t.Fatalf("another authority beside several: %v", err)
 	}
 	if _, _, err := take(several); err != nil {
