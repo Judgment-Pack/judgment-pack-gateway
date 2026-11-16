@@ -18,6 +18,8 @@ The connection is read-only by construction and by check:
 - at start, and on every token refresh, it asks the platform which of a fixed list of write
   permissions the credential holds on each configured parent, and refuses to serve if any is
   held;
+- while serving IAM policies, it refuses if any resource binds its own principal to a role
+  outside a fixed read-only list;
 - a parent outside the configured set is refused before that check and before any request.
 
 It keeps no payload by default (ADR-0028, `artifact: "not-retained"`). It keeps no cursor:
@@ -98,6 +100,11 @@ Chosen option 1.
 - A request names one configured parent, one content type and a subset of the configured asset
   types, and may name a page token and a page size up to the platform's bound. A request
   naming anything else is refused before any upstream call (decision 3).
+- **Scope identifiers.** A `gcp-asset-inventory` source is fixed to at most one scope
+  identifier, like any source (ADR-0026, ADR-0037). Every parent it names belongs to that
+  scope, and parents of another scope need another source. On `/acquire`, the caller's reach
+  to the source's scope identifier is checked first, with ADR-0037's rule and refusal. The
+  parent check comes after it.
 - `readTime` is the caller's. The connection does not choose one. A caller that wants pages of
   one instant sends the same `readTime` with each page.
 
@@ -109,20 +116,27 @@ Chosen option 1.
   The connection never follows it. This is the Runner's paged operation source (RFC 0033,
   dialect format 4.1.0, accepted for specVersion 0.6.0), the same caller-driven form as
   Databricks' `next_page_token` and Azure DevOps' `continuationToken`.
-- Asset Inventory refuses a page token it no longer honours. The connection answers that as
-  `410` with `{"referenceExpired":{"status":410}}`, as SPEC.md §6 defines it: not receipted, no
+- Asset Inventory refuses a page token it no longer honours. That answer is HTTP `400`, with
+  `error.status` `INVALID_ARGUMENT` and a bad-request detail whose field violation names the
+  page token. The builder confirms this form against the platform's documentation, and a
+  hand-written fixture holds it. The connection answers it as `410` with
+  `{"referenceExpired":{"status":410}}`, as SPEC.md §6 defines it: not receipted, no
   `callIndex`, the session left open, the caller to start the listing again. It applies only
   when the request sent a page token, so a refusal of a first page is never classed as an
-  expired reference. The `410` is today defined for the `http` shape alone. This decision
+  expired reference. Every other upstream error on a request with a page token, another `400`
+  included, stays the ordinary upstream error. The `410` is today defined for the `http` shape alone. This decision
   extends it to this connection, and to no other.
 - No new RFC is needed. RFC 0033 already gives the caller's side.
 
 ### 3. The credential is read-only, checked
 
 - **Scope.** The token step requests exactly the read-only scope
-  (`https://www.googleapis.com/auth/cloud-platform.read-only`). A token obtained another way, a
-  federated token file (ADR-0027), has its granted scopes read from the platform's token
-  information answer. A token with any other scope is refused.
+  (`https://www.googleapis.com/auth/cloud-platform.read-only`). A token obtained another way is
+  read from the platform's token-information endpoint, and only one form is: an access token
+  from a federated token file (ADR-0027). The connection refuses any other form as
+  `credential-scope-unknown`. A token with any scope beyond the read-only one is refused.
+  The check fails closed: an answer from the token-information endpoint that is missing,
+  unreadable, or carries no scopes is refused as `credential-scope-unknown`, not passed.
 - **Parents first.** Every configured parent is checked against its own form before the
   credential is used, and a request's parent against the configured set before any upstream
   call. A parent outside the set is refused as `parent-not-configured`. The refusal names the
@@ -138,7 +152,18 @@ Chosen option 1.
   - creating service account keys;
   - updating storage buckets;
   - creating Asset Inventory feeds.
-  The adapter's README lists it in full.
+  The adapter's README lists it in full. The platform accepts at most 100 permissions in one
+  `testIamPermissions` call, so the list is checked in calls of at most 100. If any call
+  fails, the start (or the refresh) is refused, just as for a grant.
+- **Bound at a resource.** `testIamPermissions` on a parent does not see a role granted on one
+  resource below it. Yet a grant such as `run.services.update` on one service, or
+  `secretmanager.versions.add` on one secret, is write capability over something this
+  connection reads. So, while serving an `IAM_POLICY` page, the connection looks at every
+  binding in it. If a binding names its own principal (the service account, or the federated
+  principal) with a role outside a fixed list of read-only roles, the connection refuses with
+  `credential-bound-at-resource: <asset name>`. It then closes, as on a refresh refusal. The
+  read-only list holds predefined roles only, and a custom role is never on it, whatever its
+  name.
 - **When.** The check runs at start, before the connection is offered, and again each time the
   token is refreshed, before the new token is used for any request. A refusal on refresh closes
   the connection for every request after it, and the start report and `/posture` say so.
@@ -169,6 +194,8 @@ Chosen option 1.
   their count and keeps the other members as written. It is off by default, because a count
   cannot be compared with a registry that lists users. It is for an adopter that checks only
   service accounts and groups, and wants no user identities in the result at all.
+- The projection (decision 4) and `count-users` both run before `resultDigest` is taken. So the
+  digest is of the projected result, and it is the same for every caller of the source.
 
 ### 6. Where judgment happens
 
@@ -187,9 +214,13 @@ pack. Facts compared through an ordinary pack; the gateway judges nothing.
 - Bad: the write list is fixed. A write permission the platform adds later, or one not on the
   list, goes undetected until the list is revised. The list is revisited when the asset types
   served change and on each release of the connection.
-- Bad: `testIamPermissions` on a project or folder does not see a grant made on a single
-  resource below it, for example on one secret. Such a grant gives no write capability over
-  what this connection reads at the parent's level, but it is not detected. The README says so.
+- Bad: the check of bindings at a resource sees only what this connection reads. Two cases
+  still go undetected, and the README says so:
+  - a binding on a resource whose asset type is not served, or whose IAM policy is not read
+    because only `RESOURCE` is served;
+  - a custom role whose name looks read-only. The check goes by role name, and it cannot tell
+    what such a role grants. So the read-only list never holds a custom role, and a binding
+    of the connection's principal to one is refused rather than trusted by its name.
 - Bad: one more custody connection to keep. Tests are in-process only, and v1 has no live test.
 - Neutral: the token information read is one more request at start and on refresh, and only
   for a federated token.
@@ -202,5 +233,5 @@ pack. Facts compared through an ordinary pack; the gateway judges nothing.
   ADR-0028 (payloads not kept), ADR-0029 (paging is the caller's), SPEC.md §6
   (`source_reference_expired`).
 - Review: this decision sets a security boundary. It had one same-vendor review round before
-  merge, not a cross-vendor claim. The gateway's different-vendor review rule for material
-  decisions is the maintainer's to apply or waive.
+  merge, not a cross-vendor claim. The maintainer waived the different-vendor review for the
+  registry line, and that waiver covers this decision.
