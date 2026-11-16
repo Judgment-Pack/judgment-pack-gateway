@@ -2103,7 +2103,8 @@ it may be granted.
   (`refusedAt: "scope-identifier"`) to a caller that does not reach the sources of none, since a
   write source is of none, before its body is read. `/seal` answers a session of a scope the
   caller does not reach `no such session`. `/verify` is served to a caller that reaches every
-  source, and, where no source is fixed to a scope identifier, to one that reaches the sources of
+  source, and, where no source is fixed to a scope identifier and the store holds no session of
+  one (a scope since removed from the configuration counts), to one that reaches the sources of
   none; otherwise `403`. `/registry` and `/publickey` stay open and whole.
 - **What `/registry` tells anyone.** A seal of a scoped session names its scope by an unkeyed
   digest over the scope identifier and the session's id (SPEC.md §3). Anyone who can reach

@@ -2115,13 +2115,23 @@ func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string
 }
 
 func (g *gatewayService) verify() (map[string]any, error) {
-	if g.kind != nil {
-		return nil, storageUnsupported("/verify, which verifies the store on disk; export the store and verify the export,")
-	}
-	rep, err := verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
+	rep, err := g.verifyReport()
 	if err != nil {
 		return nil, err
 	}
+	return verdictMap(rep)
+}
+
+// verifyReport is the engine's verdict on its store, as /verify serves it.
+func (g *gatewayService) verifyReport() (*report, error) {
+	if g.kind != nil {
+		return nil, storageUnsupported("/verify, which verifies the store on disk; export the store and verify the export,")
+	}
+	return verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
+}
+
+// verdictMap is a verdict as the JSON object /verify answers.
+func verdictMap(rep *report) (map[string]any, error) {
 	raw, err := rep.marshal()
 	if err != nil {
 		return nil, err
@@ -2570,18 +2580,31 @@ func (g *gatewayService) handler() http.Handler {
 		}
 		// The verdict is of the whole store and is not cut by scope
 		// (ADR-0036, decision 7): it is served to a caller that reaches
-		// every source, and, where no source is fixed to a scope identifier,
-		// to one that reaches the sources of none (ADR-0037), before the
-		// store is read.
-		if reach := g.reachOf(who); !reach.every && (scoped || !reach.none) {
+		// every source, and, where no source is fixed to a scope identifier
+		// and the store holds no session of one, to one that reaches the
+		// sources of none (ADR-0037). The configuration is judged before the
+		// store is read; the store, which may hold sessions of a scope since
+		// removed from the configuration, once its verdict is made, and a
+		// verdict covering one is refused with the same answer.
+		reach := g.reachOf(who)
+		if !reach.every && (scoped || !reach.none) {
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": reachRefusalVerify})
 			return
 		}
-		out, err := g.verify()
+		rep, err := g.verifyReport()
 		if errors.Is(err, errStorageKindUnsupported) {
 			writeJSON(w, http.StatusNotImplemented, map[string]any{"error": err.Error()})
 			return
 		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		if !reach.every && rep.scoped {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": reachRefusalVerify})
+			return
+		}
+		out, err := verdictMap(rep)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return

@@ -312,6 +312,31 @@ func TestVerifyIsServedToACallerThatReachesWhatItCovers(t *testing.T) {
 	if code, out := authed(t, plainServer, "/verify", ``, tokenFor(t, issuer, "unscoped", nil)); code != http.StatusOK {
 		t.Fatalf("an unscoped caller where no source is scoped: %d %v", code, out)
 	}
+	// "no source is scoped" holds of the store too: a store holding a
+	// session of a scope identifier since removed from the configuration is
+	// verified for a caller that reaches every source alone, open or sealed
+	service.identity = nil
+	for _, session := range []string{"s-open", "s-sealed"} {
+		if code, out := authed(t, server, "/acquire", acquireBodyFor(session, "scoped-a", callerScopeA), ""); code != http.StatusOK {
+			t.Fatalf("acquire %s: %d %v", session, code, out)
+		}
+	}
+	if code, out := authed(t, server, "/seal", `{"session":"s-sealed"}`, ""); code != http.StatusOK {
+		t.Fatalf("seal: %d %v", code, out)
+	}
+	removed, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, map[string]sourceSpec{"plain": service.sources["plain"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed.identity = plain.identity
+	removedServer := httptest.NewServer(removed.handler())
+	t.Cleanup(removedServer.Close)
+	if code, out := authed(t, removedServer, "/verify", ``, tokenFor(t, issuer, "unscoped", nil)); code != http.StatusForbidden || out["error"] != reachRefusalVerify {
+		t.Fatalf("an unscoped caller where the store holds a scope's sessions: %d %v", code, out)
+	}
+	if code, out := authed(t, removedServer, "/verify", ``, tokenFor(t, issuer, "installation", nil)); code != http.StatusOK || !strings.Contains(fmt.Sprint(out["findings"]), "s-sealed") {
+		t.Fatalf("an installation caller where the store holds a scope's sessions: %d %v", code, out)
+	}
 }
 
 // A caller that reaches the sources of none acts as before: its /act is

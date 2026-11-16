@@ -93,8 +93,11 @@ the caller, and `/seal` and `/verify` read none either.
      the other-scope sentence whatever else the session holds, on both kinds.
    - `/verify`: the verdict is of the whole store and cannot be cut by scope (ADR-0036, decision
      7). It is served to a caller that reaches every source, and, where the configuration fixes
-     no source to a scope identifier, to one that reaches the sources of no scope identifier;
-     every other caller is refused `403` before the store is read.
+     no source to a scope identifier and the store holds no session of one (a receipt holding
+     `scope`, or a seal of version 2), to one that reaches the sources of no scope identifier;
+     every other caller is refused `403`, before the store is read where the configuration
+     decides it, and with the same answer once the verdict finds such a session (of a scope
+     since removed from the configuration, say).
    - `/registry` and `/publickey`: served whole to every caller, as open routes that need no
      token. Refusing a token there closes nothing, since the same bytes are served without one;
      filtering breaks the registry's chain, which a verifier walks whole (ADR-0036, decision 9).

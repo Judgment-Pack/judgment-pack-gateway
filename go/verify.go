@@ -61,6 +61,12 @@ type report struct {
 	// namedAt is, for each of them, when the receipts naming it were
 	// minted, earliest first; the reader's report says so (witness fetch).
 	namedAt map[witnessTriple][]string
+	// scoped is whether the store holds a session of a scope identifier, as
+	// far as the store says it: a receipt holding a scope member, whatever
+	// its status, or a seal naming a scope (a seal of version 2). /verify
+	// serves a verdict that covers one only to a caller that reaches every
+	// source (ADR-0037).
+	scoped bool
 }
 
 // rotationsFollowed is a report's rotations: how many the walk followed, and
@@ -728,6 +734,7 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 		counts[sessionID] = result.count
 		whole[sessionID] = result.whole
 		results[sessionID] = result
+		rep.scoped = rep.scoped || result.scoped
 		signatures[sessionID] = result.signatures
 		actions = append(actions, result.actions...)
 		reconciling = append(reconciling, result.reconciling...)
@@ -748,6 +755,9 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 	// target's answer; the report says which, beside ok.
 	rep.Observations = append(rep.Observations, deliveryObservations(actions, reconciling)...)
 	rep.witnessesNamed(naming)
+	for _, s := range seals {
+		rep.scoped = rep.scoped || s.scopeDigest != ""
+	}
 	// SPEC.md §3b: the walk's finding, at most one, names the rotation it
 	// could not take and no session.
 	if walk.finding != nil {
@@ -1050,6 +1060,9 @@ type sessionResult struct {
 	// (ADR-0036).
 	scopes  map[string]bool
 	noScope bool
+	// scoped is whether any receipt of the session, whatever its status,
+	// holds a scope member: one that reads as a JSON object (report.scoped).
+	scoped bool
 }
 
 // offScope is whether a receipt that passed the ladder holds no scope member,
@@ -1179,6 +1192,13 @@ func verifySessionRead(sessionID, authority string, keys []reachedKey, ret *rete
 		r, status, err := checkReceiptProbed(data, reading.probe, sessionID, name, authority, keys, ret)
 		if err != nil {
 			return nil, err
+		}
+		if r != nil {
+			if _, held := r.obj.get("scope"); held {
+				result.scoped = true
+			}
+		} else if scope, read := receiptScope(data); read && scope != "" {
+			result.scoped = true
 		}
 		if r == nil {
 			findings = append(findings, finding{

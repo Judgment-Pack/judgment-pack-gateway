@@ -2056,8 +2056,11 @@ not granted is still refused `401`, and the start and `/posture` say so.
   are of a scope other than the source's is refused `400` with that refusal's sentence,
   whatever else the session holds.
 - `/verify`: served to a caller that reaches every source, and, where no source is fixed to a
-  scope identifier, to one that reaches the sources of none; otherwise `403` before the store
-  is read. The verdict covers every scope's sessions and is not cut by scope.
+  scope identifier and the store holds no session of one (no receipt holding `scope`, no seal
+  of version 2), to one that reaches the sources of none; otherwise `403`, before the store is
+  read where the configuration decides it, and with the same answer once the verdict finds a
+  session of a scope identifier, one of a scope since removed from the configuration among
+  them. The verdict covers every scope's sessions and is not cut by scope.
 - `/registry` and `/publickey` need no token and are served whole: no registry line carries a
   scope identifier or a caller, and a registry cut by scope would not walk. A seal of version 2
   names its session's scope by an unkeyed digest over the identifier and the session's id
