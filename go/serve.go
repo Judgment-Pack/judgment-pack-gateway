@@ -1083,6 +1083,20 @@ func (g *gatewayService) reachOf(who *caller) scopeReach {
 	return reach
 }
 
+// reachesEverySource is whether a reach takes every source this gateway
+// serves, of every scope identifier a source is fixed to and of none.
+func (g *gatewayService) reachesEverySource(reach scopeReach) bool {
+	if reach.every {
+		return true
+	}
+	for _, spec := range g.sources {
+		if !reach.holds(spec.scope) {
+			return false
+		}
+	}
+	return true
+}
+
 // memberText reads a string-valued member of a request envelope, or "" when
 // the envelope does not carry it and when it carries it as null -- which is
 // what the endpoint's own refusal then speaks about, as it did when these
@@ -1146,6 +1160,12 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	if !known || strings.HasSuffix(source, "/write") {
 		// A write source is the executor's alone (executor.md): a read
 		// that writes is not a read, and /acquire names no such source.
+		// A caller that does not reach every source is answered as for a
+		// source of a scope it does not reach (ADR-0037), so it does not
+		// learn which names the sources of other scopes have.
+		if !g.reachesEverySource(g.reachOf(who)) {
+			return nil, badRequest{errors.New(scopeRefusal)}
+		}
 		return nil, badRequest{fmt.Errorf("unknown source: %s", requestText(source))}
 	}
 	// The scope identifier the source is fixed to (ADR-0026), held first:

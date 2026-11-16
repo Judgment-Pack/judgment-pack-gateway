@@ -2098,7 +2098,8 @@ it may be granted.
   its subject's claimless token would, and never a scope identifier: the chain's subject is the
   issuing host's statement, and a host does not widen it.
 - **The routes.** `/acquire` answers a scope identifier the caller does not reach with the
-  wrong-scope sentence, before anything runs, and on the PostgreSQL kind opens the view of the
+  wrong-scope sentence, before anything runs (and a source no platform gives, to a caller that
+  does not reach every source, with the same sentence), and on the PostgreSQL kind opens the view of the
   scope identifier both checks held, never one the body alone names. `/act` is refused `403`
   (`refusedAt: "scope-identifier"`) to a caller that does not reach the sources of none, since a
   write source is of none, before its body is read. `/seal` answers a session of a scope the

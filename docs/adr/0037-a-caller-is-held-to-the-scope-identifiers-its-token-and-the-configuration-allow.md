@@ -77,7 +77,9 @@ the caller, and `/seal` and `/verify` read none either.
      the trail, the publisher policy, the grant, the admission, a delegation's count or the
      source. The scope the store, the admission and the receipt take is the source's, once both
      hold; on the PostgreSQL kind it chooses the transaction's view, so the view is one the
-     caller's identity reaches, never one the body alone names.
+     caller's identity reaches, never one the body alone names. A source the configuration does
+     not name is answered so too to a caller that does not reach every source, not `unknown
+     source`, so the names of other scopes' sources are not learned from the difference.
    - `/act`: a write source and an action receipt are of no scope identifier (ADR-0026). A caller
      that does not reach the sources of no scope identifier is refused `403`, `refusedAt:
      "scope-identifier"`, before the body is read, so every answer it gets is the same whatever

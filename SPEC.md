@@ -2041,7 +2041,10 @@ not granted is still refused `401`, and the start and `/posture` say so.
   `scope: the request's scope does not match the source's`, before the trail, the publisher
   policy, the grant, the admission, a delegation's count or the source. The store, the
   admission and the receipt take the source's scope identifier once both hold; on the
-  PostgreSQL kind the transaction's view is that one, never one the body alone names.
+  PostgreSQL kind the transaction's view is that one, never one the body alone names. A caller
+  that does not reach every source gets the same answer for a source the configuration does
+  not name (or a write source), rather than `unknown source`, so it does not learn which names
+  the sources of other scopes have.
 - `/act`: a write source and an action receipt are of no scope identifier. A caller that does
   not reach the sources of none is refused `403`, `{"error": "scope identifier: a write source
   is of no scope identifier, and this caller's token does not reach the sources of none",

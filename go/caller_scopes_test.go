@@ -485,3 +485,36 @@ func TestASessionLeftOpenIsAnsweredByItsScopeAfterARestart(t *testing.T) {
 		t.Fatal("a source started for a refused request")
 	}
 }
+
+// A caller held to scope identifiers is told of a source no configuration
+// names what it is told of a source of a scope it does not reach, byte for
+// byte, so it does not learn which names other scopes' sources have; a
+// caller that reaches every source is told the source is unknown.
+func TestAnUnknownSourceIsAnsweredAsAnotherScopesToACallerHeldToScopes(t *testing.T) {
+	callers := callerScopes{entries: map[string]callerEntry{
+		subjectA:       {grants: map[string]bool{callerScopeA: true}},
+		"installation": {installation: true},
+	}}
+	service, server, issuer := callerScopesService(t, callers)
+	started := service.started.Load()
+	for _, token := range []string{tokenFor(t, issuer, subjectA, []any{callerScopeA}), tokenFor(t, issuer, "unscoped", nil)} {
+		_, other := postRawWith(t, server, "/acquire", acquireBodyFor("s-1", "scoped-b", callerScopeB), token)
+		for _, body := range []string{
+			acquireBodyFor("s-1", "nothing/here", callerScopeB),
+			acquireBodyFor("s-1", "nothing/here", ""),
+			acquireBodyFor("s-1", "plain/write", ""),
+		} {
+			code, raw := postRawWith(t, server, "/acquire", body, token)
+			if code != http.StatusBadRequest || string(raw) != string(other) || !bytes.Contains(raw, []byte(scopeRefusal)) {
+				t.Fatalf("%s: %d %s, want %s", body, code, raw, other)
+			}
+		}
+	}
+	code, out := authed(t, server, "/acquire", acquireBodyFor("s-1", "nothing/here", ""), tokenFor(t, issuer, "installation", nil))
+	if code != http.StatusBadRequest || !strings.HasPrefix(fmt.Sprint(out["error"]), "unknown source: ") {
+		t.Fatalf("an installation caller: %d %v", code, out)
+	}
+	if service.started.Load() != started {
+		t.Fatal("a source started for a refused request")
+	}
+}
