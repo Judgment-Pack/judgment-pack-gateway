@@ -409,6 +409,9 @@ type scopeKeeper interface {
 	// seriesHeld is whether a session of the name is held, of any scope;
 	// whether it is of scope ("" for none); and whether it holds a receipt.
 	seriesHeld(name, scope string) (held, ofScope, entries bool, err error)
+	// seriesScope is whether a session of the name is held, of any scope,
+	// and the scope it is of ("" for none).
+	seriesScope(name string) (held bool, scope string, err error)
 }
 
 // sourceScopes is every scope identifier a source is fixed to, once each,
@@ -1059,6 +1062,41 @@ func scopeHolds(spec sourceSpec, asked requestedScope) bool {
 	return asked.named && subtle.ConstantTimeCompare([]byte(asked.value), []byte(spec.scope)) == 1
 }
 
+// acquisitionHeld is whether an acquisition may be for its source's scope
+// identifier: the request names it (scopeHolds), and the caller's identity
+// reaches it (ADR-0037). A scope identifier the caller may not use and one
+// that is not the source's are one refusal (scopeRefusal), so a caller does
+// not learn which.
+func acquisitionHeld(spec sourceSpec, asked requestedScope, reach scopeReach) bool {
+	return scopeHolds(spec, asked) && reach.holds(spec.scope)
+}
+
+// reachOf is the caller's reach under this gateway's identity
+// (caller_scopes.go). A token its subject's entry does not grant was refused
+// 401 when it was authenticated; a caller reaching here with one reaches
+// nothing.
+func (g *gatewayService) reachOf(who *caller) scopeReach {
+	reach, err := reachOf(g.identity, who)
+	if err != nil {
+		return scopeReach{}
+	}
+	return reach
+}
+
+// reachesEverySource is whether a reach takes every source this gateway
+// serves, of every scope identifier a source is fixed to and of none.
+func (g *gatewayService) reachesEverySource(reach scopeReach) bool {
+	if reach.every {
+		return true
+	}
+	for _, spec := range g.sources {
+		if !reach.holds(spec.scope) {
+			return false
+		}
+	}
+	return true
+}
+
 // memberText reads a string-valued member of a request envelope, or "" when
 // the envelope does not carry it and when it carries it as null -- which is
 // what the endpoint's own refusal then speaks about, as it did when these
@@ -1122,13 +1160,23 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	if !known || strings.HasSuffix(source, "/write") {
 		// A write source is the executor's alone (executor.md): a read
 		// that writes is not a read, and /acquire names no such source.
+		// A caller that does not reach every source is answered as for a
+		// source of a scope it does not reach (ADR-0037), so it does not
+		// learn which names the sources of other scopes have.
+		if !g.reachesEverySource(g.reachOf(who)) {
+			return nil, badRequest{errors.New(scopeRefusal)}
+		}
 		return nil, badRequest{fmt.Errorf("unknown source: %s", requestText(source))}
 	}
 	// The scope identifier the source is fixed to (ADR-0026), held first:
 	// before the trail's witness, the publisher policy, the grant, the session's
-	// admission, a delegation's count and the source. The refusal is one
-	// sentence whatever differs, and names neither identifier.
-	if !scopeHolds(spec, scope) {
+	// admission, a delegation's count and the source. The request must name
+	// it, and the caller's verified identity must reach it (ADR-0037): the
+	// scope the store, the admission and the receipt take below is the
+	// source's once both hold, so on the PostgreSQL kind the transaction's
+	// view is one the identity reaches, never one the body alone names. The
+	// refusal is one sentence whatever differs, and names neither identifier.
+	if !acquisitionHeld(spec, scope, g.reachOf(who)) {
 		return nil, badRequest{errors.New(scopeRefusal)}
 	}
 	if spec.scope != "" && g.receiptVersion != receiptVersion3 {
@@ -2014,6 +2062,19 @@ func (g *gatewayService) release(sessionID string) {
 }
 
 func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
+	return g.sealFor(sessionID, scopeReach{every: true})
+}
+
+// sealFor is /seal for a caller of this reach (ADR-0037): a session whose
+// scope the caller does not reach is answered as one the gateway does not
+// hold, before anything else of the session is read, so the answer tells the
+// caller nothing of a session of another scope identifier. That holds of a
+// session this process holds, and of one it does not -- left open by another
+// process, held by another instance, or unreadable -- whose scope the store
+// gives (storedScope); a caller held to scope identifiers is answered so too
+// where the store cannot say the session's scope. A seal in the registry is
+// said to be one: /registry serves every seal to anyone.
+func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err}
 	}
@@ -2029,7 +2090,15 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	state, seen := g.sessions[sessionID]
+	if seen && !reach.holds(state.scope) {
+		return nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
+	}
 	if !seen {
+		if !reach.every {
+			if held, scope, known := g.storedScope(sessionID); !known || held && !reach.holds(scope) {
+				return nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
+			}
+		}
 		if refused := g.leftInStore(sessionID, "", false); refused != nil {
 			return nil, refused
 		}
@@ -2066,13 +2135,23 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 }
 
 func (g *gatewayService) verify() (map[string]any, error) {
-	if g.kind != nil {
-		return nil, storageUnsupported("/verify, which verifies the store on disk; export the store and verify the export,")
-	}
-	rep, err := verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
+	rep, err := g.verifyReport()
 	if err != nil {
 		return nil, err
 	}
+	return verdictMap(rep)
+}
+
+// verifyReport is the engine's verdict on its store, as /verify serves it.
+func (g *gatewayService) verifyReport() (*report, error) {
+	if g.kind != nil {
+		return nil, storageUnsupported("/verify, which verifies the store on disk; export the store and verify the export,")
+	}
+	return verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
+}
+
+// verdictMap is a verdict as the JSON object /verify answers.
+func verdictMap(rep *report) (map[string]any, error) {
 	raw, err := rep.marshal()
 	if err != nil {
 		return nil, err
@@ -2199,6 +2278,11 @@ func (g *gatewayService) handler() http.Handler {
 			witness = g.witness.spec
 		}
 		who, err := engineCaller(g.identity, witness, r.Header.Get("Authorization"), time.Now())
+		if err == nil {
+			// a token its subject's entry does not grant is refused here,
+			// before any route reads the request (ADR-0037, decision 4)
+			_, err = reachOf(g.identity, who)
+		}
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
@@ -2342,6 +2426,14 @@ func (g *gatewayService) handler() http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": errNoRequester.Error() + "; this engine has no identity configured", "refusedAt": "requester"})
 			return
 		}
+		// A write source and an action receipt are of no scope identifier
+		// (ADR-0026): a caller that does not reach the sources of none is
+		// refused before the body is read, with one answer whatever session
+		// it names (ADR-0037), on every kind.
+		if !g.reachOf(who).holds("") {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": reachRefusalAct, "refusedAt": "scope-identifier"})
+			return
+		}
 		// An action reads its session, its journal and its evidence on
 		// disk (act.go): with another kind keeping the store, it is refused
 		// before the body is read, never answered from an empty directory.
@@ -2389,6 +2481,12 @@ func (g *gatewayService) handler() http.Handler {
 					return
 				}
 				who = &caller{issuer: scope.sub.issuer, subject: scope.sub.subject, tokenDigest: who.tokenDigest, delegated: sender}
+			}
+			// the action is the delegation subject's now, held as a
+			// delegated request is (ADR-0037, decision 5)
+			if !g.reachOf(who).holds("") {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": reachRefusalAct, "refusedAt": "scope-identifier"})
+				return
 			}
 		}
 		out, err := g.actKeyed(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, actionKeyMembers{key: body["actionKey"], keyScope: body["keyScope"], reconcile: body["reconcile"]})
@@ -2470,7 +2568,8 @@ func (g *gatewayService) handler() http.Handler {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 			return
 		}
-		if _, ok := authenticate(w, r); !ok {
+		who, ok := authenticate(w, r)
+		if !ok {
 			return
 		}
 		limitBody(w, r)
@@ -2484,7 +2583,7 @@ func (g *gatewayService) handler() http.Handler {
 			fail(w, badRequest{err})
 			return
 		}
-		out, err := g.sealSession(session)
+		out, err := g.sealFor(session, g.reachOf(who))
 		if err != nil {
 			fail(w, err)
 			return
@@ -2495,14 +2594,37 @@ func (g *gatewayService) handler() http.Handler {
 	// /registry and /publickey stay open: they are the anchors a verifier
 	// fetches from the key holder, and a verifier holds no token.
 	mux.HandleFunc("/verify", func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := authenticate(w, r); !ok {
+		who, ok := authenticate(w, r)
+		if !ok {
 			return
 		}
-		out, err := g.verify()
+		// The verdict is of the whole store and is not cut by scope
+		// (ADR-0036, decision 7): it is served to a caller that reaches
+		// every source, and, where no source is fixed to a scope identifier
+		// and the store holds no session of one, to one that reaches the
+		// sources of none (ADR-0037). The configuration is judged before the
+		// store is read; the store, which may hold sessions of a scope since
+		// removed from the configuration, once its verdict is made, and a
+		// verdict covering one is refused with the same answer.
+		reach := g.reachOf(who)
+		if !reach.every && (scoped || !reach.none) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": reachRefusalVerify})
+			return
+		}
+		rep, err := g.verifyReport()
 		if errors.Is(err, errStorageKindUnsupported) {
 			writeJSON(w, http.StatusNotImplemented, map[string]any{"error": err.Error()})
 			return
 		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		if !reach.every && rep.scoped {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": reachRefusalVerify})
+			return
+		}
+		out, err := verdictMap(rep)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -2552,7 +2674,8 @@ func (g *gatewayService) handler() http.Handler {
 			return
 		}
 		in := postureInput{configured: true, seed: g.seedPath, sources: g.sources, public: true,
-			listener: listenerReach{loopback: boundToLoopback(g.listening), authenticated: g.identity != nil}}
+			listener:     listenerReach{loopback: boundToLoopback(g.listening), authenticated: g.identity != nil},
+			callerScopes: callerScopesMode(g.identity)}
 		if g.delegation != nil {
 			in.delegation = &delegationPosture{bearerReadOnly: g.delegation.bearerReadOnly}
 		}

@@ -72,14 +72,18 @@ import (
 // "one" (the default) or "several", by which instances on the PostgreSQL
 // kind serve one database beside one another, each session held by the
 // instance that admitted its first call (ADR-0035, option C;
-// store_pg_lease.go):
+// store_pg_lease.go), and version 27 identity's optional `callerScopes`,
+// by which a caller is held to the scope identifiers its token's scope_ids
+// names and the configuration grants its subject (ADR-0037;
+// caller_scopes.go) -- the check is the default at every version, and
+// "unchecked" keeps the behavior before it:
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "26"
+const engineVersion = "27"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -227,6 +231,9 @@ type identitySpec struct {
 	issuer   string
 	audience string
 	keys     string // an absolute path to a JSON Web Key Set
+	// callers is callerScopes (version 27); its zero value, the member
+	// absent, is checked with every subject "unscoped".
+	callers callerScopes
 }
 
 // binding is a catalog entry: which pinned artifact serves which operation
@@ -438,7 +445,10 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		if err != nil {
 			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 		}
-		if err := exactlyMembers(identity, map[string]bool{"issuer": true, "audience": true, "keys": true}, "identity"); err != nil {
+		if _, present := identity.get("callerScopes"); present && !versionAtLeast(version, "27") {
+			return engineConfig{}, fmt.Errorf("engine configuration: identity.callerScopes is a version-27 member; engineVersion %s has no identity.callerScopes", version)
+		}
+		if err := exactlyMembers(identity, map[string]bool{"issuer": true, "audience": true, "keys": true, "callerScopes": false}, "identity"); err != nil {
 			return engineConfig{}, err
 		}
 		spec := &identitySpec{}
@@ -450,6 +460,11 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		}
 		if spec.keys, err = requireAbsolutePath(identity, "keys"); err != nil {
 			return engineConfig{}, fmt.Errorf("engine configuration: identity.%v", err)
+		}
+		if v, present := identity.get("callerScopes"); present {
+			if spec.callers, err = parseCallerScopes(v); err != nil {
+				return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
+			}
 		}
 		cfg.identity = spec
 	}
@@ -789,6 +804,14 @@ func parsePlatformScope(v value, name, version string, write, mcp bool) (string,
 	s, ok := stringOf(v)
 	if !ok || !isScopeIdentifier(s) {
 		return "", fmt.Errorf("engine configuration: platform %s: scope must be a scope identifier, %s", name, scopeForm)
+	}
+	// From version 27 the bytes "unscoped" are the caller scope marker
+	// (ADR-0037), which names the sources of no scope identifier and is never
+	// a scope identifier a caller is granted: a platform fixed to them would
+	// be reached by an installation caller alone. An earlier file loads as it
+	// did.
+	if s == unscopedMarker && versionAtLeast(version, "27") {
+		return "", fmt.Errorf("engine configuration: platform %s: scope is %q, the marker of the sources of no scope identifier from engineVersion 27, which no caller is granted as a scope identifier; fix the platform to another scope identifier, or leave scope out", name, unscopedMarker)
 	}
 	// /act takes no scope: a write the platform allowed would be run
 	// under a receipt that does not name it.
@@ -2577,7 +2600,7 @@ func loadIdentity(spec *identitySpec) (*identityConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("identity.keys: %v", err)
 	}
-	return &identityConfig{issuer: spec.issuer, audience: spec.audience, keys: keys}, nil
+	return &identityConfig{issuer: spec.issuer, audience: spec.audience, keys: keys, callers: spec.callers}, nil
 }
 
 // loadEngineConfig reads and resolves a configuration file: the file, every

@@ -625,6 +625,16 @@ no scope through the view of no scope. Every transaction of a view sets `gateway
 view's form for itself alone (`set_config(…, true)`), and names its scope in every statement
 besides.
 
+**Whose scope it is.** The view an acquisition opens is the source's scope identifier, taken
+only once the request names it and the caller's verified identity reaches it (engine
+configuration version 27, `identity.callerScopes`;
+[ADR-0037](adr/0037-a-caller-is-held-to-the-scope-identifiers-its-token-and-the-configuration-allow.md)):
+a caller of one scope identifier that names another is refused before any transaction of that
+scope opens, and leaves no row in its view, and a seal of a session of a scope the caller does
+not reach is answered as one the gateway does not hold. Where `callerScopes` is `"unchecked"`,
+or no `identity` is configured, the view is the one the request names, as before; the start and
+`/posture` say so.
+
 **How it maps to records.** For a source fixed to the scope identifier `scope-a`:
 
 | Record | Where | Row's `scope` |
