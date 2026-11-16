@@ -516,7 +516,10 @@ the identifier the receipt carries is the configuration's and the request's alik
 receipt of a source the configuration fixes to no scope identifier is the receipt it
 was before the member existed. The format admits the member on either kind; this
 gateway mints it on acquisitions alone, since a platform fixed to a scope identifier
-allows no write. A seal (§3) never carries it, and a registry line names none.
+allows no write. A seal never carries the identifier, and a registry line names none: the
+seal of a session of a scope identifier, a seal of version 2 (§3, "A seal of version 2"; §3c,
+"Naming the scope"), carries its digest in the session, `scopeDigest`, under the signature, and
+a verifier holds the session's accepted receipts to it (§4 step 3, `seal-scope-mismatch`).
 
 **What `scope` establishes.** On a receipt that verifies under the operator's gateway
 key: that the holder of that key, minting the receipt, held the source it names fixed
@@ -525,8 +528,9 @@ not establish who or what the identifier stands for; that the caller was entitle
 it — a scope identifier is a label the operator fixes and a request repeats, not a
 credential, and any caller the gateway admits that names a source's identifier is
 served by that source; that no other source, platform or gateway is fixed to the same
-identifier; that the receipts of one session share one scope identifier, which nothing
-holds them to; or anything about the operator's honesty. A receipt without the member
+identifier; that the receipts of one session share one scope identifier, which only a seal
+of version 2 holds them to, and a seal of an earlier form, or none, does not; or anything
+about the operator's honesty. A receipt without the member
 establishes nothing about a scope, and not that its source was fixed to none. The
 member is unrelated to a delegation's scope (§11.5) and to an action key's first scope
 (§1.2b).
