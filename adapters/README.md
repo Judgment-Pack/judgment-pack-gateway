@@ -967,7 +967,7 @@ cannot be read, is `credential-scope-unknown`. The token sources
   under while the signer holds it.
 - `key`: a service account's key in the live credentials file, the least preferred.
 
-**The write check** (`gcp-asset-write-list/1`): `testIamPermissions` on every configured project, by the read-only
+**The write check** (`gcp-asset-write-list/2`): `testIamPermissions` on every configured project, by the read-only
 token, over the list below in calls of at most 100. A permission granted refuses
 `credential-can-write: <the first granted, in the list's order>`; a call that fails refuses as
 well, and so does an answer that is neither `{}` nor an object with `permissions`. It runs whenever a token is obtained: at the start, where a refusal refuses the start, and
@@ -1038,6 +1038,20 @@ with every token after it, where a refusal closes the source until the engine re
 - `serviceusage.services.enable`
 - `serviceusage.services.disable`
 - `orgpolicy.policy.set`
+- `container.pods.create`
+- `artifactregistry.repositories.uploadArtifacts`
+- `deploymentmanager.deployments.create`
+- `iam.workloadIdentityPoolProviders.create`
+- `iam.workloadIdentityPoolProviders.update`
+- `cloudkms.cryptoKeyVersions.destroy`
+- `logging.sinks.create`
+- `cloudscheduler.jobs.create`
+- `appengine.versions.create`
+- `composer.environments.create`
+- `dataflow.jobs.create`
+- `cloudsql.instances.update`
+- `pubsub.topics.publish`
+- `bigquery.tables.updateData`
 
 The list is fixed, not complete: a permission outside it is not checked. Grant the source only
 read-only roles; the check is a guard against a credential that was granted more by mistake.

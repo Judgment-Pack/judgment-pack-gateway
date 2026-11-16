@@ -221,10 +221,16 @@ func TestWriteCheckRefuses(t *testing.T) {
 		"an error served as 200":   func([]string) (int, string) { return 200, `{"error":{"status":"INTERNAL"}}` },
 		"another member only":      func([]string) (int, string) { return 200, `{"x":1}` },
 	}
+	failures["a 403 of {}"] = func([]string) (int, string) { return 403, `{}` }
+	failures["a 302 to an answer of {}"] = func([]string) (int, string) { return 302, `` }
+	failures["{} not served as JSON"] = func([]string) (int, string) { return 200, `{}` }
 	for name, answer := range failures {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
 			f.permissionsAnswer = answer
+			if name == "{} not served as JSON" {
+				f.permissionsType = "text/plain"
+			}
 			_, err := Acquire(ctx, f.config(t), resourceRequest())
 			r := refusal(t, err, ReasonCanWrite)
 			if r.Subject != nil || !strings.Contains(err.Error(), "did not complete") || len(f.callsTo("/asset/")) != 0 {

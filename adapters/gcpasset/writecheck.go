@@ -21,7 +21,7 @@ import (
 // WriteListVersion names the write list below; it changes whenever the
 // list does, and is revisited when the asset types served change and on
 // each release of this adapter.
-const WriteListVersion = "gcp-asset-write-list/1"
+const WriteListVersion = "gcp-asset-write-list/2"
 
 // maxPermissionsPerCall is the platform's bound on one testIamPermissions
 // call.
@@ -98,6 +98,20 @@ var writeList = []string{
 	"serviceusage.services.enable",
 	"serviceusage.services.disable",
 	"orgpolicy.policy.set",
+	"container.pods.create",
+	"artifactregistry.repositories.uploadArtifacts",
+	"deploymentmanager.deployments.create",
+	"iam.workloadIdentityPoolProviders.create",
+	"iam.workloadIdentityPoolProviders.update",
+	"cloudkms.cryptoKeyVersions.destroy",
+	"logging.sinks.create",
+	"cloudscheduler.jobs.create",
+	"appengine.versions.create",
+	"composer.environments.create",
+	"dataflow.jobs.create",
+	"cloudsql.instances.update",
+	"pubsub.topics.publish",
+	"bigquery.tables.updateData",
 }
 
 // WriteList is a copy of the write list, for the README's test.

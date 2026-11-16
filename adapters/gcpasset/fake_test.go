@@ -74,6 +74,10 @@ type fake struct {
 	// permissionsAnswer, when set, answers every call instead.
 	granted           map[string][]string
 	permissionsAnswer func(asked []string) (int, string)
+	// permissionsType, when set, is the content type permissionsAnswer is
+	// served with. A 3xx answer redirects to /redirected, which answers
+	// 200 {} as JSON, so only the refusal of redirects refuses it.
+	permissionsType string
 	// page answers assets.list.
 	page func(r *http.Request) (int, string)
 	// metadataFlavor is the header the metadata server answers with;
@@ -182,6 +186,8 @@ func (f *fake) serveAPI(w http.ResponseWriter, r *http.Request) {
 	scope, known := f.minted[token]
 	f.mu.Unlock()
 	switch {
+	case r.URL.Path == "/redirected":
+		writeJSON(w, 200, `{}`)
 	case r.URL.Path == "/token":
 		form, _ := url.ParseQuery(string(body))
 		claims, ok := f.verifyAssertion(form.Get("assertion"))
@@ -219,7 +225,17 @@ func (f *fake) serveAPI(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(body, &asked)
 		if f.permissionsAnswer != nil {
 			status, answer := f.permissionsAnswer(asked.Permissions)
-			writeJSON(w, status, answer)
+			switch {
+			case status >= 300 && status < 400:
+				w.Header().Set("Location", "/redirected")
+				w.WriteHeader(status)
+			case f.permissionsType != "":
+				w.Header().Set("Content-Type", f.permissionsType)
+				w.WriteHeader(status)
+				io.WriteString(w, answer)
+			default:
+				writeJSON(w, status, answer)
+			}
 			return
 		}
 		project := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/rm/v3/"), ":testIamPermissions")
