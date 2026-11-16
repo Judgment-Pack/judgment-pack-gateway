@@ -188,8 +188,12 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	if err != nil {
 		return nil, actRefusal{"cites", "the cited receipts cannot be resolved: the store's removal records cannot be read"}
 	}
+	// A citation is resolved within the caller's reach (ADR-0037): a
+	// session of a scope identifier the caller does not reach is answered
+	// as one this engine does not hold, as /seal answers it.
+	reach := g.reachOf(who)
 	for _, c := range cites {
-		if reason := g.resolveCitationWith(c, keys, removals); reason != "" {
+		if reason := g.resolveCitationWith(c, keys, removals, reach); reason != "" {
 			return nil, actRefusal{"cites", fmt.Sprintf("citation %s/%d does not resolve in this engine's store: %s", c.sessionID, c.callIndex, reason)}
 		}
 	}
@@ -991,12 +995,25 @@ func (g *gatewayService) resolveCitation(c citation, keys []reachedKey) string {
 	if err != nil {
 		return "the store's removal records cannot be read"
 	}
-	return g.resolveCitationWith(c, keys, removals)
+	return g.resolveCitationWith(c, keys, removals, scopeReach{every: true})
 }
 
 // resolveCitationWith is resolveCitation under removal records already
-// read: a request citing many receipts reads the file once.
-func (g *gatewayService) resolveCitationWith(c citation, keys []reachedKey, removals map[string][]removalRecord) string {
+// read, for a caller of this reach: a request citing many receipts reads
+// the file once. A caller that does not reach every source is held to the
+// scope of the cited session before anything else of it is read, so its
+// receipt count and its signatures are never compared for a session of a
+// scope identifier the caller does not reach: such a session, one whose
+// scope the store cannot say, and one holding no receipt are each "no such
+// session", the answer for a session the store does not hold -- and so is
+// a cited receipt whose own scope the caller does not reach, read before
+// it is checked.
+func (g *gatewayService) resolveCitationWith(c citation, keys []reachedKey, removals map[string][]removalRecord, reach scopeReach) string {
+	if !reach.every {
+		if held, scope, known := g.storedScope(c.sessionID); !held || !known || !reach.holds(scope) {
+			return "no such session"
+		}
+	}
 	sessions, err := os.ReadDir(filepath.Join(g.storeRoot, "receipts"))
 	if err != nil {
 		return "the store's receipts cannot be listed"
@@ -1015,6 +1032,11 @@ func (g *gatewayService) resolveCitationWith(c citation, keys []reachedKey, remo
 	data, err := os.ReadFile(filepath.Join(g.storeRoot, "receipts", c.sessionID, fileName))
 	if err != nil {
 		return "the receipt cannot be read"
+	}
+	if !reach.every {
+		if scope, known := receiptScope(data); !known || !reach.holds(scope) {
+			return "no such session"
+		}
 	}
 	r, status, err := checkReceiptWith(data, g.storeRoot, c.sessionID, fileName, g.authority, keys, &retention{removals: removals})
 	if err != nil {
