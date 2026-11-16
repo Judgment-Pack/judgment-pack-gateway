@@ -294,6 +294,16 @@ authority changed then is not refused, and keeping it is the operator's (`docs/p
 "Several instances on one database"). Comparing with rows that ran out as well would refuse such a
 change for good, since no row is ever removed. That is left for when a deployment needs it.
 
+The lease's clock. The leases are judged by the database's `clock_timestamp()`. The design assumes
+that clock does not step backward past a row's expiry once something has acted on that expiry. A row
+is never removed. The settle that seals a stopped instance's sessions holds the expired row and does
+not change it. A database host whose clock steps back past an expired row's expiry would let that
+instance's paused renewal, and its fence, pass again, so it could append receipts to a session
+sealed after the interruption. A verifier reports such a session (the receipts past the seal), and
+the instance's own seal of it is refused as already sealed. The assumption is stated in
+`docs/postgresql-store.md`, "Time". Marking a settled row so that it cannot be renewed is left for
+when a deployment needs it.
+
 ### Consequences
 
 - Good, because no step changes a record, a finding or a vector: a store written by one instance

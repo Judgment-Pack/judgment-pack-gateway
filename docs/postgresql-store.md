@@ -728,6 +728,14 @@ Receipt and seal times are the gateway's, never the database's. A lease of the s
 database's clock: its statements read `clock_timestamp()`, and no other statement the gateway
 sends, or schema file it carries, reads the database's clock (a test).
 
+The start lease assumes the database host's clock does not step backward: keep it synchronized and
+slewed, not stepped. A row is never removed, and the seal of a stopped instance's sessions holds
+that instance's expired row without changing it. Were the clock to step back past an expired row's
+expiry, that instance's renewal and its fence would pass again, if it had only paused: it could
+append receipts to a session sealed after the interruption. Nothing is lost silently: a verifier
+reports such a session's receipts past its seal, and the paused instance's own seal of it is refused
+as already sealed.
+
 ## Backup and restore
 
 The database's backup and restore are the operator's, with PostgreSQL's own tools. Restore into a
