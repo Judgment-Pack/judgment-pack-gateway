@@ -2216,6 +2216,56 @@ was refused at the forward, by the signer. To serve a scoped platform over MCP, 
 `"28"` and add one member. A gateway older than this one refuses a version-28 file by its
 version.
 
+## A read-only Cloud Asset Inventory source (engine version 29)
+
+A binding's live operation of the `gcp-asset` shape ([ADR-0039](../adr/0039-a-read-only-asset-inventory-connection-for-configuration-drift.md)
+and its Amendment; adapters/README.md, "adapter-gcp-asset") is derived as `<platform>/live`,
+served by adapter-gcp-asset as the platform's user with its live credentials file, under the
+source sandbox. Its envelope and receipt are the http shape's.
+
+```json
+"engineVersion": "29",
+"platforms": { "inventory": { "binding": "inventory@sha256:…", "user": "engine-inventory",
+  "credentials": { "live": { "file": "/etc/gateway/inventory-live.json", "tokenSource": { "kind": "metadata" } } } } }
+```
+
+- `credentials.live.tokenSource`, required on a platform of the shape and refused on any other:
+  `{"kind": "metadata"}` or `{"kind": "key"}`.
+- `artifact`: the shape keeps no payload by default, as `"not-retained"`; `"retained"`, a
+  version-29 value that only a platform of the shape takes, keeps them.
+- `scope`, as on any platform: at most one scope identifier; a caller's reach to it is checked
+  before the parent.
+
+Refused by name, `engine configuration: …`, quoting nothing of the value: the shape in a file
+of version 28 or earlier; `write: true`; no `tokenSource`, one of another kind or form, or one on
+another operation or another shape's platform; a `tokenStep`, a `grant`, an `endpoint`; an
+`environment` setting `ADAPTER_GCP_ASSET_SEALED_TOKEN`; `artifact: "retained"` on another shape's
+platform.
+
+**At the start**, before anything is served, each gcp-asset source obtains its sealed list
+token, which the adapter answers only once both tokens are held to their scopes and the write
+check passed; the start says each source's token source, the check, its artifact and
+`resource-bindings: checked` or `unchecked`. A refusal, or a check that did not complete,
+refuses the start. **After it**, every token obtained runs the check again before it is used. A
+read-only refusal there, or on a page, closes the source: `serve: source <name> closed on a
+refresh|page: <refusal>` on stderr, once, and every acquisition after it is refused until the
+engine restarts. A request naming a parent outside the configuration is refused
+`parent-not-configured` before any token is obtained.
+
+**`/posture`** adds the line `read-only-credentials` (enforced where every gcp-asset source
+serves `IAM_POLICY`, partial otherwise, with the count closed) and `readOnlySources`, one entry
+per source within the caller's reach: `source`, `tokenSource`, `writeCheck` (`passed`,
+`refused`, `not-run`), `state` (`serving`, `closed`, `not-started`), `artifact`,
+`resourceBindings`, and `refusal`, `null` or `{reason, on}`; the refusal's subject is said on
+stderr and in the acquisition's answer only.
+
+`gateway connect` refuses a gcp-asset binding, whose `tokenSource` it has no flag for: write the
+platform's entry by hand.
+
+**Upgrading.** A file of version 28 or earlier loads as before, and nothing about the other
+shapes changes. To configure the shape, raise `engineVersion` to `"29"`. A gateway older than
+this one refuses a version-29 file by its version.
+
 ## Keyed actions (engine version 14 and later)
 
 Version 14 and every later version require a caller-chosen `actionKey` on `/act`: 64 lowercase hex

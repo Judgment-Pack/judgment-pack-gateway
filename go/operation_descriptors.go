@@ -10,11 +10,12 @@ import (
 )
 
 // enabledMCPOperations are the MCP operations a platform enables: its
-// binding's live operation, unless it is of the http shape (ADR-0024), and
+// binding's live operation, unless it is of the http shape (ADR-0024) or the
+// gcp-asset shape (ADR-0039), and
 // its write operation when the platform allows writes.
 func enabledMCPOperations(p platformConfig, b binding) map[string]*operation {
 	ops := map[string]*operation{}
-	if b.live != nil && b.live.http == nil {
+	if b.live != nil && b.live.http == nil && b.live.gcpAsset == nil {
 		ops["live"] = b.live
 	}
 	if p.write && b.write != nil {

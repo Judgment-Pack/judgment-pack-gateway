@@ -145,6 +145,12 @@ type sourceSpec struct {
 	// its operation's paths and methods: a request naming another is
 	// refused before a token is obtained for it (token_step.go).
 	requestPaths, requestMethods []string
+	// gcpAsset is, for a source of a gcp-asset binding (engineVersion 29,
+	// gcp_asset_binding.go), what the signer holds of it: the configured
+	// set a request is held to and whether the source serves, shared by
+	// every copy of the spec; nil for every other source. Its shape is
+	// "http", whose envelope and receipt it has.
+	gcpAsset *gcpAssetSource
 }
 
 // adapterShapes are the shapes --source-shape may declare: every shape of
@@ -1682,6 +1688,13 @@ func (g *gatewayService) runSourceUnder(ctx context.Context, cancel context.Canc
 			// it wrote beside the status (source_reference_expired.go); a
 			// report out of its form is a failure as any other.
 			return nil, "", "", &sourceReferenceExpired{failed: failed}
+		}
+		if code == sourceExitRefused && spec.gcpAsset != nil {
+			// adapter-gcp-asset's read-only refusal, read from the report
+			// it wrote beside the status (gcp_asset_binding.go); a report
+			// out of its form is a refusal all the same, of no stated
+			// reason, never a failure the source serves on after.
+			return nil, "", "", &gcpAssetRefusedRun{refusal: readOnlyRefusalReport(stdout.buf.Bytes()), failed: failed}
 		}
 		return nil, "", "", failed
 	}

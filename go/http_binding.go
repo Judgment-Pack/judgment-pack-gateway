@@ -370,10 +370,13 @@ func argumentValue(argv []string, prefix string) string {
 }
 
 // describeSourceCheck says what a derived source's check reported, in one
-// line: an http source's by describeHTTPCheck, against the endpoint and
-// the check path its command line was given; every other shape's by
-// describeCheck.
+// line: a gcp-asset source's by describeGCPAssetCheck; an http source's by
+// describeHTTPCheck, against the endpoint and the check path its command
+// line was given; every other shape's by describeCheck.
 func describeSourceCheck(spec sourceSpec, report []byte) (string, error) {
+	if spec.gcpAsset != nil {
+		return describeGCPAssetCheck(report, spec)
+	}
 	if spec.shape == "http" {
 		return describeHTTPCheck(report, argumentValue(spec.argv, "--endpoint="), argumentValue(spec.check, "--check-path="))
 	}

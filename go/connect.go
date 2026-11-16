@@ -286,6 +286,12 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if err != nil {
 		return out, err
 	}
+	// A gcp-asset platform names its credentials.live.tokenSource, which
+	// connect has no flag for, and connect does not write one without it:
+	// the operator writes the entry (gcp_asset_binding.go).
+	if b.live != nil && b.live.gcpAsset != nil {
+		return out, fmt.Errorf("binding %s serves live by the gcp-asset shape, whose platform names credentials.live.tokenSource, which connect has no flag for; write the platform's entry in the configuration by hand (docs/design/engine-config.md)", ref)
+	}
 	for _, op := range enabledMCPOperations(platformConfig{write: req.write}, b) {
 		if err := currentToolOwners(op); err != nil {
 			return out, err

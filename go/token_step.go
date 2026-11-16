@@ -380,6 +380,11 @@ func exitStatus(waitErr error) int {
 // source with no token step, so what /acquire and the MCP side's forward
 // bound (mcpForwardTimeout) are sized for holds here too.
 func (g *gatewayService) runAcquisitionSource(source string, spec sourceSpec, stdin []byte) (value, string, string, error) {
+	// A gcp-asset source's adapter obtains its own tokens, and the signer
+	// holds the list token as for a token step (gcp_asset_binding.go).
+	if spec.gcpAsset != nil {
+		return g.runGCPAssetSource(source, spec, stdin)
+	}
 	if !spec.tokenStep {
 		return g.runSource(source, spec, stdin)
 	}

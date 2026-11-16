@@ -81,12 +81,17 @@ import (
 // platforms fixed to a scope identifier: fixed to one, or holding each caller
 // to the scope identifiers its token reaches (ADR-0038; mcp_scope.go):
 // a file of an earlier version without the member still loads, and one with
-// it is refused by name, as any member a version does not have. connect raises a file to
+// it is refused by name, as any member a version does not have, and version
+// 29 a live operation of the gcp-asset shape, a read-only Cloud Asset
+// Inventory source with a platform's `credentials.live.tokenSource` and its
+// `artifact` "retained" beside it (ADR-0039 and its Amendment;
+// gcp_asset_binding.go): a binding of the shape is refused under an earlier
+// version, and nothing about the other shapes changes. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "28"
+const engineVersion = "29"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -233,8 +238,18 @@ type platformConfig struct {
 	// notRetained is artifact: "not-retained" (engineVersion 22, SPEC.md
 	// §1.3a): the platform's history and live sources write no payload to
 	// the store, and their receipts say so; false when the platform keeps
-	// every payload, as before the member.
+	// every payload, as before the member. For a binding of the gcp-asset
+	// shape it is the default, set when the configuration is resolved,
+	// unless artifactRetained.
 	notRetained bool
+	// artifactRetained is artifact: "retained" (engineVersion 29), which
+	// only a platform of the gcp-asset shape gives: the operator keeps the
+	// payloads the shape does not keep by default.
+	artifactRetained bool
+	// tokenSource is credentials.live.tokenSource (engineVersion 29,
+	// gcp_asset_binding.go): where a gcp-asset source's adapter obtains
+	// its tokens, "metadata" or "key"; "" for every other platform.
+	tokenSource string
 }
 
 // identitySpec is the identity member as written: the token issuer, the
@@ -303,6 +318,9 @@ type operation struct {
 	// http is a live operation's of the http shape (ADR-0024): what
 	// adapter-http is started with; nil for every other shape.
 	http *httpOperation
+	// gcpAsset is a live operation's of the gcp-asset shape (ADR-0039):
+	// what adapter-gcp-asset is started with; nil for every other shape.
+	gcpAsset *gcpAssetOperation
 }
 
 // engineHost is what the engine asks the operating system while it holds
@@ -636,7 +654,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			if err != nil {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: %v", name, err)
 			}
-			if err := exactlyMembers(entry, map[string]bool{"file": true, "tokenStep": false}, "platform "+name+" credentials."+op); err != nil {
+			if err := exactlyMembers(entry, map[string]bool{"file": true, "tokenStep": false, "tokenSource": false}, "platform "+name+" credentials."+op); err != nil {
 				return engineConfig{}, err
 			}
 			if pc.credentials[op], err = requireAbsolutePath(entry, "file"); err != nil {
@@ -644,6 +662,11 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			}
 			if stepValue, present := entry.get("tokenStep"); present {
 				if pc.tokenStep, err = parseTokenStep(stepValue, name, op, version); err != nil {
+					return engineConfig{}, err
+				}
+			}
+			if sourceValue, present := entry.get("tokenSource"); present {
+				if pc.tokenSource, err = parseGCPAssetTokenSource(sourceValue, name, op, version); err != nil {
 					return engineConfig{}, err
 				}
 			}
@@ -671,6 +694,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 				}
 				if pc.tokenStep != nil && sameEnvKey(key, sealedTokenVariable) {
 					return engineConfig{}, fmt.Errorf("engine configuration: platform %s: environment may not set %s, in which the signer hands the token step's sealed token to the adapter", name, key)
+				}
+				if pc.tokenSource != "" && sameEnvKey(key, gcpAssetSealedTokenVariable) {
+					return engineConfig{}, fmt.Errorf("engine configuration: platform %s: environment may not set %s, in which the signer hands the sealed list token to the adapter", name, key)
 				}
 				pc.environment = append(pc.environment, key+"="+value)
 			}
@@ -778,10 +804,10 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			}
 		}
 		if artifactValue, present := p.get("artifact"); present {
-			if err := parsePlatformArtifact(artifactValue, name, version, pc.write); err != nil {
+			if pc.artifactRetained, err = parsePlatformArtifact(artifactValue, name, version, pc.write); err != nil {
 				return engineConfig{}, err
 			}
-			pc.notRetained = true
+			pc.notRetained = !pc.artifactRetained
 		}
 		cfg.platforms = append(cfg.platforms, pc)
 	}
@@ -792,21 +818,30 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 }
 
 // parsePlatformArtifact reads a platform's artifact (engineVersion 22,
-// ADR-0028): the one value "not-retained", on a platform that allows no
-// write, since /act and its recovery read an action's result back from the
-// store. A refusal names the platform and the form, and quotes nothing of
-// the value.
-func parsePlatformArtifact(v value, name, version string, write bool) error {
+// ADR-0028): "not-retained", on a platform that allows no write, since /act
+// and its recovery read an action's result back from the store; or, from
+// version 29, "retained", which a platform of the gcp-asset shape alone
+// gives (gcpAssetPlatformMatch) to keep the payloads it does not keep by
+// default. It reports whether the value is "retained". A refusal names the
+// platform and the form, and quotes nothing of the value.
+func parsePlatformArtifact(v value, name, version string, write bool) (bool, error) {
 	if !versionAtLeast(version, "22") {
-		return fmt.Errorf("engine configuration: platform %s: artifact is a version-22 member; engineVersion %s has no artifact", name, version)
+		return false, fmt.Errorf("engine configuration: platform %s: artifact is a version-22 member; engineVersion %s has no artifact", name, version)
 	}
-	if s, ok := stringOf(v); !ok || s != artifactNotRetained {
-		return fmt.Errorf("engine configuration: platform %s: artifact must be the string %q, the one value it has; a platform that keeps its payloads gives no artifact", name, artifactNotRetained)
+	s, ok := stringOf(v)
+	if ok && s == artifactRetained && versionAtLeast(version, "29") {
+		return true, nil
+	}
+	if !ok || s != artifactNotRetained {
+		if versionAtLeast(version, "29") {
+			return false, fmt.Errorf("engine configuration: platform %s: artifact must be the string %q or, on a platform of the gcp-asset shape, %q; a platform of another shape that keeps its payloads gives no artifact", name, artifactNotRetained, artifactRetained)
+		}
+		return false, fmt.Errorf("engine configuration: platform %s: artifact must be the string %q, the one value it has; a platform that keeps its payloads gives no artifact", name, artifactNotRetained)
 	}
 	if write {
-		return fmt.Errorf("engine configuration: platform %s: artifact %q keeps no payload, and the platform sets write: true, whose results /act and its recovery read back from the store; a platform that keeps no payload allows no write", name, artifactNotRetained)
+		return false, fmt.Errorf("engine configuration: platform %s: artifact %q keeps no payload, and the platform sets write: true, whose results /act and its recovery read back from the store; a platform that keeps no payload allows no write", name, artifactNotRetained)
 	}
-	return nil
+	return false, nil
 }
 
 // parsePlatformScope reads a platform's scope (engineVersion 20, ADR-0026):
@@ -1228,8 +1263,8 @@ func parseBinding(data []byte) (binding, error) {
 			}
 			b.history = &parsed
 		case "live":
-			if parsed.shape != "mcp" && parsed.shape != "http" {
-				return binding{}, fmt.Errorf("operation live is served by the mcp or the http shape, not %q", parsed.shape)
+			if parsed.shape != "mcp" && parsed.shape != "http" && parsed.shape != gcpAssetShape {
+				return binding{}, fmt.Errorf("operation live is served by the mcp, the http or the gcp-asset shape, not %q", parsed.shape)
 			}
 			b.live = &parsed
 		case "write":
@@ -1258,6 +1293,11 @@ func parseBinding(data []byte) (binding, error) {
 	// server's.
 	if b.live != nil && b.live.http != nil && (b.history != nil || b.write != nil) {
 		return binding{}, errors.New("operation live of the http shape is its binding's only operation")
+	}
+	// So is a gcp-asset live operation (ADR-0039): a read-only source has
+	// no write beside it, and nothing else reads its platform.
+	if b.live != nil && b.live.gcpAsset != nil && (b.history != nil || b.write != nil) {
+		return binding{}, errors.New("operation live of the gcp-asset shape is its binding's only operation")
 	}
 	if raw, present := obj.get("actionRecovery"); present {
 		if version != "3" {
@@ -1412,6 +1452,10 @@ func parseOperation(op *vObject, name string) (operation, error) {
 		if err := parseHTTPOperation(op, name, &o); err != nil {
 			return o, err
 		}
+	case gcpAssetShape:
+		if err := parseGCPAssetOperation(op, name, &o); err != nil {
+			return o, err
+		}
 	default:
 		return o, fmt.Errorf("operation %s: unknown shape %q", name, o.shape)
 	}
@@ -1550,6 +1594,15 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 				spec.requestMethods = append([]string(nil), b.live.http.methods...)
 			}
 			sources[p.name+"/live"] = spec
+		} else if b.live != nil && b.live.gcpAsset != nil {
+			// adapter-gcp-asset as the platform's user with its live
+			// credentials file (ADR-0039, Amendment A1): fixed to the
+			// platform's scope identifier, keeping no payload unless the
+			// operator said otherwise, its envelope and receipt those of the
+			// http shape; no tools, no descriptors, no grant.
+			op := *b.live.gcpAsset
+			sources[p.name+"/live"] = sourceSpec{argv: gcpAssetSourceArgv(adapter(gcpAssetAdapter), op, p.credentials["live"], p.tokenSource), env: env, user: p.user, shape: "http", binding: p.binding,
+				scope: p.scope, notRetained: p.notRetained, gcpAsset: newGCPAssetSource(op, p.tokenSource, p.artifactRetained)}
 		} else if b.live != nil {
 			argv := mcpServerArgv(adapter("adapter-mcp"), *b.live, p.credentials["live"], cfg.runtime, p.endpoint, p.name+"/"+b.live.name, append(ownerFileArguments(cfg, p, b.live), approvedArguments(cfg, p, b.live)...)...)
 			// Each as one word, flag=value: a value of "--" as its own word
@@ -2680,6 +2733,14 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		if err := tokenStepMatch(*p, b); err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
+		if err := gcpAssetPlatformMatch(*p, b, cfg.version); err != nil {
+			return nil, fmt.Errorf("platform %s: %v", p.name, err)
+		}
+		// A gcp-asset source keeps no payload unless the operator set
+		// artifact "retained" (decision 5).
+		if b.live != nil && b.live.gcpAsset != nil {
+			p.notRetained = !p.artifactRetained
+		}
 		// write: true says an executor may be pointed at the platform; a
 		// binding with no write operation has none to point it at, and the
 		// flag would read as a write the operator had enabled (#260: the
@@ -2732,7 +2793,7 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 // operation of the http shape, which has no tool to describe.
 func describedOperation(b binding, write bool) *operation {
 	if b.live != nil {
-		if b.live.http != nil {
+		if b.live.http != nil || b.live.gcpAsset != nil {
 			return nil
 		}
 		return b.live
