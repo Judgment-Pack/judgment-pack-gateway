@@ -72,7 +72,7 @@ func TestGenericCustomerBindingRegistersAcquiresAndVerifies(t *testing.T) {
 	frontCfg := cfg
 	frontCfg.mcp = &mcpConfig{concurrency: 1}
 	front, err := newMCPServer(frontCfg, bindings, nil, f.config)
-	if err != nil || len(front.toolList()) != 3 {
+	if err != nil || len(front.toolList(nil, "")) != 3 {
 		t.Fatalf("declared tools plus seal: %v", err)
 	}
 	service, server := connectedTestService(t, cfg)

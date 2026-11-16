@@ -142,7 +142,7 @@ func TestV2CustomerCatalogConnectAndDispatch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			listed := front.toolList()
+			listed := front.toolList(nil, "")
 			wantCount := 1
 			if b.live != nil {
 				wantCount += len(b.live.tools)

@@ -36,16 +36,26 @@ const mcpStdioBacklog = 64
 // -- at once, whatever is blocked on the streams, which the process's end
 // releases.
 func (s *mcpServer) serveStdio(ctx context.Context, in io.Reader, out io.Writer, token string) error {
+	// no call carries its caller's token here, so a server that takes its
+	// callers' scope identifiers is not served over stdio (mcp_scope.go)
+	if s.cfg.mcp.scopeFromCaller {
+		return errStdioScopeFromCaller
+	}
 	if s.identity == nil {
 		// no identity: the signer records caller null, and no token is sent,
 		// whatever the environment held
 		token = ""
-	} else if err := s.verifyBearer(token); err != nil {
+	}
+	// the token is verified once, here, and what it reaches is read once with
+	// it, for the life of the process
+	reach, err := s.callerReach(token)
+	if err != nil {
 		return fmt.Errorf("%s: %v", mcpTokenEnv, err)
 	}
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 	sess := s.newSession()
+	sess.reach = &reach
 	// answers are written one at a time; the first failure is kept apart
 	// from that lock, so ending never waits on a write stuck on the output
 	var writes, failures sync.Mutex

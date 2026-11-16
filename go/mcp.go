@@ -79,6 +79,9 @@ type mcpTool struct {
 	tool     string
 	binding  string
 	seal     bool
+	// scope is the scope identifier the tool's platform is fixed to
+	// (ADR-0026); "" for a platform of none and for the seal tool.
+	scope string
 }
 
 // mcpSession is one transport session: over HTTP one per Mcp-Session-Id,
@@ -91,6 +94,10 @@ type mcpSession struct {
 	windowStart    time.Time
 	windowCount    int
 	initialized    bool
+	// reach is, over stdio, what the token given at start reaches, read once
+	// there for the life of the process (mcp_scope.go); nil over HTTP, where
+	// each request carries its own token.
+	reach *scopeReach
 }
 
 // mcpServer is the server's state: the table, the identity, the signer's
@@ -159,7 +166,8 @@ type mcpServer struct {
 }
 
 // newMCPServer builds the server from a resolved configuration and its
-// bindings: the tool table from every platform's live tools, the seal tool
+// bindings: the tool table from every served platform's live tools (every
+// platform, or those fixed to the server's scope identifier), the seal tool
 // beside them, a collision a refusal, and the listing counted as it is
 // made; and, from the configuration's path, the listing, with each
 // platform that pins a snapshot described from it, read and verified here,
@@ -194,10 +202,16 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		stdioBacklog:   mcpStdioBacklog,
 	}
 	s.reports = newDiagnosticStream(func() io.Writer { return s.log })
+	// The platforms served: those fixed to the server's scope identifier,
+	// where it is fixed to one (mcp_scope.go), and every one otherwise.
+	served, err := servedPlatforms(cfg)
+	if err != nil {
+		return nil, err
+	}
 	// The listing is counted as the table is made, and refused the moment
 	// it passes its bound: the table holds no more than a listing can.
 	of := 1
-	for _, p := range cfg.platforms {
+	for _, p := range served {
 		if b, ok := bindings[p.name]; ok && b.live != nil {
 			of += len(b.live.tools)
 		}
@@ -228,13 +242,13 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 	if err := add(mcpTool{name: mcpSealTool, seal: true, taxonomy: ToolTaxonomy{Operation: "act", Effect: "act"}}); err != nil {
 		return nil, err
 	}
-	for _, p := range cfg.platforms { // in name order
+	for _, p := range served { // in name order
 		b, ok := bindings[p.name]
 		if !ok || b.live == nil {
 			continue
 		}
 		for _, tool := range b.live.tools {
-			if err := add(mcpTool{name: p.name + "." + tool, platform: p.name, tool: tool, binding: p.binding, taxonomy: b.live.taxonomies[tool]}); err != nil {
+			if err := add(mcpTool{name: p.name + "." + tool, platform: p.name, tool: tool, binding: p.binding, taxonomy: b.live.taxonomies[tool], scope: p.scope}); err != nil {
 				return nil, err
 			}
 		}
@@ -245,7 +259,7 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		return nil, err
 	}
 	defer dir.Close()
-	if s.listing, s.dropped, err = buildListing(s.order, s.tools, count, cfg.platforms, bindings, dir); err != nil {
+	if s.listing, s.dropped, err = buildListing(s.order, s.tools, count, served, bindings, dir); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -768,7 +782,7 @@ func (s *mcpServer) admit(sess *mcpSession, token string, data []byte) mcpOutcom
 	}
 	switch req.method {
 	case "tools/list":
-		return mcpOutcome{response: rpcResult(req.id, map[string]any{"tools": s.toolList()})}
+		return mcpOutcome{response: rpcResult(req.id, map[string]any{"tools": s.toolList(sess, token)})}
 	case "tools/call":
 		return s.admitCall(sess, token, req)
 	default:
@@ -835,10 +849,6 @@ func buildVersion() string {
 	return "unversioned build"
 }
 
-// toolList is what tools/list answers: one page, no cursor, rendered at
-// start.
-func (s *mcpServer) toolList() []json.RawMessage { return s.listing }
-
 // answerSession is how an answer names a session: as the client gave it
 // while the signer's own rule admits it (requireSession, SPEC.md §3a), which
 // holds a name to 128 bytes; a name the signer would refuse is a caller's
@@ -891,6 +901,12 @@ func (s *mcpServer) admitCall(sess *mcpSession, token string, req mcpRequest) mc
 		arguments = params["arguments"]
 	}
 	tool, known := s.tools[name]
+	// a tool of a source the caller's token does not reach, where the server
+	// names a scope identifier, is answered as one the table does not hold,
+	// and nothing is forwarded (mcp_scope.go)
+	if known && !s.reachable(tool, s.callReach(sess, token)) {
+		known = false
+	}
 	if invalid == nil && !known {
 		invalid = &jsonrpcError{rpcInvalidParams, "unknown tool: " + requestText(name)}
 	}
@@ -1019,7 +1035,15 @@ func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessag
 		sessionJSON, _ := json.Marshal(session)
 		sourceJSON, _ := json.Marshal(tool.platform + "/live")
 		toolJSON, _ := json.Marshal(tool.tool)
-		body = []byte(`{"session":` + string(sessionJSON) + `,"source":` + string(sourceJSON) + `,"arguments":{"tool":` + string(toolJSON) + `,"arguments":` + string(bytes.TrimSpace(arguments)) + `}}`)
+		// the scope identifier is the server's or the tool's platform's
+		// (mcp_scope.go), never the client's: the signer holds it to the
+		// source's and to the caller's token
+		scopeMember := ""
+		if scope, named := s.forwardScope(tool); named {
+			scopeJSON, _ := json.Marshal(scope)
+			scopeMember = `,"scope":` + string(scopeJSON)
+		}
+		body = []byte(`{"session":` + string(sessionJSON) + `,"source":` + string(sourceJSON) + scopeMember + `,"arguments":{"tool":` + string(toolJSON) + `,"arguments":` + string(bytes.TrimSpace(arguments)) + `}}`)
 	}
 	status, answer, err := s.forward(ctx, path, token, body)
 	answered = err == nil
@@ -1216,15 +1240,10 @@ func (s *mcpServer) metadataDocument() map[string]any {
 	return doc
 }
 
-// verifyBearer holds a token to the identity, as the signer does; "" with
+// verifyBearer holds a token to the identity, as the signer does, its
+// scope_ids to its subject's entry among it (ADR-0037, decision 4); "" with
 // no identity configured is admitted with no caller.
 func (s *mcpServer) verifyBearer(token string) error {
-	if s.identity == nil {
-		return nil
-	}
-	if token == "" {
-		return errors.New("a bearer token from the configured issuer is required")
-	}
-	_, err := engineToken(s.identity, s.witness, token, s.now())
+	_, err := s.callerReach(token)
 	return err
 }

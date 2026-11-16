@@ -76,14 +76,17 @@ import (
 // by which a caller is held to the scope identifiers its token's scope_ids
 // names and the configuration grants its subject (ADR-0037;
 // caller_scopes.go) -- the check is the default at every version, and
-// "unchecked" keeps the behavior before it:
+// "unchecked" keeps the behavior before it --, and version 28 the mcp
+// member's optional `scope` and `scopeFrom`, by which the MCP server serves
+// platforms fixed to a scope identifier: fixed to one, or holding each caller
+// to the scope identifiers its token reaches (ADR-0038; mcp_scope.go):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "27"
+const engineVersion = "28"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -158,11 +161,21 @@ type mcpConfig struct {
 	idleSeconds    int
 	concurrency    int
 	callsPerMinute int
+	// scope is the scope identifier the server is fixed to (engineVersion
+	// 28, ADR-0038): it serves the tools of the platforms fixed to it alone,
+	// and every acquisition it forwards names it; "" when not given.
+	scope string
+	// scopeFromCaller is scopeFrom: "caller" (engineVersion 28, ADR-0038):
+	// the server serves each caller the tools of the sources its token
+	// reaches (ADR-0037), and each acquisition names its platform's scope
+	// identifier; false when not given.
+	scopeFromCaller bool
 }
 
 var mcpMembers = map[string]bool{
 	"listen": true, "resource": false, "origins": false,
 	"sessions": false, "idleSeconds": false, "concurrency": false, "callsPerMinute": false,
+	"scope": false, "scopeFrom": false,
 }
 
 // mcpBounds are the four bounds' defaults and ranges, in the note's order.
@@ -561,8 +574,11 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 	}
 	if mcpValue, present := obj.get("mcp"); present {
-		m, err := parseMCPConfig(mcpValue)
+		m, err := parseMCPConfig(mcpValue, version)
 		if err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
+		}
+		if err := mcpScopeFromRefusal(m, cfg.identity); err != nil {
 			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 		}
 		// The frontend finds the signer by the configured address and
@@ -757,7 +773,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			}
 		}
 		if scopeValue, present := p.get("scope"); present {
-			if pc.scope, err = parsePlatformScope(scopeValue, name, version, pc.write, cfg.mcp != nil); err != nil {
+			if pc.scope, err = parsePlatformScope(scopeValue, name, version, pc.write, cfg.mcp); err != nil {
 				return engineConfig{}, err
 			}
 		}
@@ -795,9 +811,10 @@ func parsePlatformArtifact(v value, name, version string, write bool) error {
 
 // parsePlatformScope reads a platform's scope (engineVersion 20, ADR-0026):
 // a scope identifier of its form, on a platform that allows no write, in a
-// configuration with no MCP server. A refusal names the platform and the
-// form, and quotes nothing of the value.
-func parsePlatformScope(v value, name, version string, write, mcp bool) (string, error) {
+// configuration with no MCP server or one that names how it forwards a scope
+// identifier (ADR-0038). A refusal names the platform and the form, and
+// quotes nothing of the value.
+func parsePlatformScope(v value, name, version string, write bool, mcp *mcpConfig) (string, error) {
 	if !versionAtLeast(version, "20") {
 		return "", fmt.Errorf("engine configuration: platform %s: scope is a version-20 member; engineVersion %s has no scope", name, version)
 	}
@@ -810,10 +827,11 @@ func parsePlatformScope(v value, name, version string, write, mcp bool) (string,
 	if write {
 		return "", fmt.Errorf("engine configuration: platform %s: scope fixes the platform's reads to a scope identifier, /act takes none, and the platform sets write: true; a platform with a scope allows no write", name)
 	}
-	// The MCP server forwards an acquisition with no scope member, so it
-	// could serve none of the platform's sources.
-	if mcp {
-		return "", fmt.Errorf("engine configuration: platform %s: scope is refused beside mcp, since the MCP server names no scope identifier when it forwards a call", name)
+	// An MCP server of neither form forwards an acquisition with no scope
+	// member, so it could serve none of the platform's sources; one of
+	// either names one on each (ADR-0038).
+	if mcp != nil && !mcp.scoped() {
+		return "", fmt.Errorf("engine configuration: platform %s: scope is refused beside mcp unless mcp names scope or scopeFrom (engineVersion 28), since an MCP server of neither names no scope identifier when it forwards a call", name)
 	}
 	return s, nil
 }
@@ -843,9 +861,10 @@ func parsePlatformParameters(v value) (map[string]string, error) {
 
 // parseMCPConfig holds the `mcp` member to the note's shape: a loopback
 // listen address with an explicit port, a resource identifier that is an
-// absolute https URL without a fragment, exact origins, and the four
-// bounds within their ranges.
-func parseMCPConfig(v value) (*mcpConfig, error) {
+// absolute https URL without a fragment, exact origins, the four bounds
+// within their ranges, and, from version 28, the scope identifier it is
+// fixed to or that its scope identifiers are its callers' (mcp_scope.go).
+func parseMCPConfig(v value, version string) (*mcpConfig, error) {
 	obj, err := requireObject(v, "mcp")
 	if err != nil {
 		return nil, err
@@ -854,6 +873,9 @@ func parseMCPConfig(v value) (*mcpConfig, error) {
 		return nil, err
 	}
 	m := &mcpConfig{}
+	if err := parseMCPScope(obj, version, m); err != nil {
+		return nil, err
+	}
 	listen, err := requireString(obj, "listen")
 	if err != nil {
 		return nil, errors.New("mcp.listen must be a string")
