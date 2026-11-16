@@ -225,6 +225,102 @@ pack. Facts compared through an ordinary pack; the gateway judges nothing.
 - Neutral: the token information read is one more request at start and on refresh, and only
   for a federated token.
 
+## Amendment (gateway #488): an engine source, two narrow tokens, projects first
+
+The build found four points where the decision above does not meet the gateway or the
+platform. The decisions below replace the parts they name. Everything else stands.
+
+### A1. An engine source, not a custody connection
+
+Supersedes decision 1's wiring list (the custody path: provider, store, broker,
+`adapter-sources`, `gateway-connections`, the catalog tables, the grants record).
+
+The custody path applies none of the protections this ADR promises:
+
+- A source under plain `serve --source` has no scope identifier and no caller reach check.
+- It has no `notRetained`, and the adapter envelope cannot set it. So the gateway would keep
+  payloads the connection says it does not keep.
+- It has no token step, start report or `/posture`.
+
+Built as written, it would advertise protections the gateway does not apply.
+
+So the connection is an engine source (`serve --config`), as `http` is:
+
+- A new binding operation shape, `gcp-asset`, served by a new adapter, `adapter-gcp-asset`. It
+  is derived like `http` in `deriveSources`, and its source carries `scope`, `notRetained` and
+  its token source.
+- Engine configuration version 29 admits the shape. Earlier versions refuse it, and nothing
+  about the other shapes changes.
+- Core changes: `go/engine.go` (version 29, the shape, the derivation); the binding parser (the
+  shape's members: parents, asset types, content types, `members`); the start report and
+  `/posture` (the token source, the write check's result, a refusal on refresh, an `artifact`
+  other than `not-retained`); SPEC.md §6 (the shape, and its exit status 8 for the `410`, which
+  extends the Amendment of ADR-0029 to this shape alone); and docs/design/engine-config.md.
+- `write: true` on a platform of this shape is refused at start. A binding of this shape has
+  no write operation.
+
+### A2. Projects only, and two narrow tokens
+
+Supersedes decision 3's "Scope" paragraph (the wording "one read-only token" is withdrawn) and
+narrows decision 1's parents.
+
+The platform's published API descriptions show the read-only scope does not cover the calls:
+`assets.list` accepts `cloud-platform` or `cloudasset` only, and `folders.testIamPermissions`
+accepts `cloud-platform` only.
+
+- Parents are `projects/<project-id>` only in this version. A `folders/<number>` parent is
+  refused at start, and folders are left to gateway #489.
+- The adapter holds two tokens, each narrow to its use:
+  - one of scope `https://www.googleapis.com/auth/cloudasset`, for the list operation alone;
+  - one of scope `https://www.googleapis.com/auth/cloud-platform.read-only`, for
+    `projects.testIamPermissions` and nothing else.
+  The resource-binding check reads the `IAM_POLICY` page the first token returned, and makes no
+  call of its own.
+- `https://www.googleapis.com/auth/cloud-platform` is never requested. A token whose granted
+  scopes include it, or any scope beyond the one requested, is refused `credential-scope-unknown`.
+- The write list adds the Cloud Asset writes the `cloudasset` scope admits: creating, updating
+  and deleting feeds and saved queries.
+
+### A3. Where the tokens come from
+
+Supersedes decision 3's reliance on ADR-0027's token step. That step sends `client_credentials`
+with a client assertion, which the platform's token endpoint does not accept. The adapter has its
+own token source, one per platform, in this order of preference:
+
+1. **The metadata server** of the platform's own compute: the attached service account, with
+   each token's scope requested as it is minted. No key is on disk. This is the path when the
+   gateway runs on Cloud Run.
+2. **Federation:** an RFC 8693 token exchange at `https://sts.googleapis.com/v1/token`, then
+   service-account impersonation (`generateAccessToken` with the one scope) for each token.
+3. **A service-account key** with the `jwt-bearer` grant at `https://oauth2.googleapis.com/token`,
+   the scope in the assertion. This is the least preferred, for local use. The key file is read
+   under the gateway's existing secret-file rules.
+
+For every source, the scope check reads the scopes actually granted, from the token response's
+`scope` or from the token-information endpoint. It fails closed: an answer that is absent,
+unreadable or holds no scopes is refused `credential-scope-unknown`. The write check and the
+refresh re-check of decision 3 apply to every source.
+
+### A4. The expired page token is unconfirmed
+
+The platform documents that a page token expires 72 hours after the first page's token was
+issued. It does not document the error an expired token draws. The `400` `INVALID_ARGUMENT`
+form in decision 2 is an assumption: it stays as the one mapped form, held by a hand-written
+fixture. The adapter's README marks it unconfirmed, and it is to be checked in a first live run.
+
+### Consequences of the amendment
+
+- Good: every protection the decision names is one the gateway applies: scope, reach,
+  `not-retained`, the start report and `/posture`.
+- Good: on Cloud Run no key exists to leak. Neither token can call any API but its own.
+- Bad: the OAuth scope is no longer "read-only" in name. The `cloudasset` token could call the
+  Cloud Asset writes, were the identity granted them. The read-only guarantee rests, as the
+  maintainer's decision states it ("viewer roles only; refuses to start if its credential can
+  write"), on the `testIamPermissions` refusal. The scopes are defence in depth.
+- Bad: folders wait. An adopter with many projects configures each one.
+- Bad: more core surface than a custody connection: a new shape, a new engine version and a
+  new adapter.
+
 ## More information
 
 - Specification: RFC 0033 (paged operation source), RFC 0034 (registry profile), RFC 0035
