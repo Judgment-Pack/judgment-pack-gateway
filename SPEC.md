@@ -929,14 +929,16 @@ its own, so no record is read as another kind's, as a seal or as a receipt. Thei
 
 A `session-removal` record **names** a sealed session when its `sessionId` is the session's,
 its `sealSignature` is the signature of the session's first loaded seal and its `finalCount`
-that seal's, and its key is the key the seal loaded under or a key the walk reached after it.
-§4 step 4 reads it: a sealed session absent from the store that a record names is no finding,
+that seal's, and its key is the key the seal loaded under or a key the walk reached after it;
+where that seal is of version 2 (§3, "A seal of version 2"; §3c, "Naming the scope"), its
+`scope` digested in the session is also the seal's `scopeDigest`, so a record of another scope
+identifier names no such session. §4 step 4 reads it: a sealed session absent from the store that a record names is no finding,
 and the report carries the observation `session-removed`, of the session; one that no record
 names is `sealed-session-missing`, as before. A session a record names that the store still
 holds — a removal cut off before its files went — is verified as it is, and the record changes
 nothing for it. A record that names no sealed session is nothing the verifier reports. Records
-naming one seal by the same members add nothing a verifier need keep beyond the one whose key
-the walk reached last. No step of §4 reads a `scope-removal` record: it is what the call says
+naming one seal by the same members, `scope` among them, add nothing a verifier need keep
+beyond the one whose key the walk reached last. No step of §4 reads a `scope-removal` record: it is what the call says
 of itself, for a reader of the file. One who can write to the store can take a record away,
 which makes the session `sealed-session-missing`, a failure, never a pass; cannot write one
 that loads without the key; and cannot make one name another session's seal, since the seal's

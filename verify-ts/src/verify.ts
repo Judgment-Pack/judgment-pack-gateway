@@ -349,7 +349,9 @@ type Retention = { readonly removals: ReadonlyMap<string, readonly Removal[]>; r
 // A session-removal record that loaded (§1.3a, "A removed session"): it
 // names a sealed session by its id, its seal's signature and its seal's
 // count; kept by the session it names.
-type SessionRemoval = { readonly sealSignature: string; readonly finalCount: bigint; readonly keyPos: number };
+// scope is the scope identifier the record names, which a seal of version 2
+// is held to (§1.3a, "A removed session").
+type SessionRemoval = { readonly sealSignature: string; readonly finalCount: bigint; readonly scope: string; readonly keyPos: number };
 const sessionRemovalPrefix = "judgment-pack-gateway/session-removal/1:";
 const sessionRemovalMembers = ["finalCount", "keyId", "kind", "removedAt", "removedBy", "scope", "sealSignature", "sessionId", "signature"];
 
@@ -461,7 +463,7 @@ function sessionRemovalOf(v: Value | null, keys: readonly ReachedKey[]): (Sessio
   if (!signed(keys[keyPos]!.key, sessionRemovalPrefix, payload, signature)) {
     return null;
   }
-  return { sessionId: own(sessionId), sealSignature: own(sealSignature), finalCount: finalCount.integer, keyPos };
+  return { sessionId: own(sessionId), sealSignature: own(sealSignature), finalCount: finalCount.integer, scope: own(scope), keyPos };
 }
 
 // loadRemovals is the store's removal records (§1.3a, "Loading"; §4.1),
@@ -483,14 +485,14 @@ function loadRemovals(root: string, keys: readonly ReachedKey[], budget: Budget)
     const removed = sessionRemovalOf(parsed, keys);
     if (removed !== null) {
       const named = sessions.get(removed.sessionId);
-      const at = named?.findIndex((k) => k.sealSignature === removed.sealSignature && k.finalCount === removed.finalCount) ?? -1;
+      const at = named?.findIndex((k) => k.sealSignature === removed.sealSignature && k.finalCount === removed.finalCount && k.scope === removed.scope) ?? -1;
       if (at >= 0) {
         if (removed.keyPos > named![at]!.keyPos) {
           named![at] = removed;
         }
         return;
       }
-      budget.charge(entryCost + size(removed.sessionId) + size(removed.sealSignature), "the removal records");
+      budget.charge(entryCost + size(removed.sessionId) + size(removed.sealSignature) + size(removed.scope), "the removal records");
       if (named === undefined) {
         sessions.set(removed.sessionId, [removed]);
       } else {
@@ -938,10 +940,17 @@ export function verifyStore(
   const retention: Retention = { removals: loaded.removals, supplied: options.artifacts };
   // §4 step 4: a sealed session a session-removal record names, by its id,
   // its seal's signature and count, under the seal's key or one the walk
-  // reached after it.
+  // reached after it, and, for a seal of version 2, by the scope it names:
+  // the record's scope digested in the session is the seal's scopeDigest.
   const removedSession = (sessionId: string): boolean => {
     const seal = seals.get(sessionId)!;
-    return (loaded.sessions.get(sessionId) ?? []).some((r) => r.sealSignature === seal.signature && r.finalCount === seal.finalCount && r.keyPos >= seal.keyPos);
+    return (loaded.sessions.get(sessionId) ?? []).some(
+      (r) =>
+        r.sealSignature === seal.signature &&
+        r.finalCount === seal.finalCount &&
+        r.keyPos >= seal.keyPos &&
+        (seal.scopeDigest === undefined || sealScopeDigest(sessionId, r.scope) === seal.scopeDigest),
+    );
   };
 
   for (const [session, files] of store) {

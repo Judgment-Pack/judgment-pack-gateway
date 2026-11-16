@@ -298,13 +298,13 @@ func (set *removalRecords) load(line string, keys []reachedKey) {
 }
 
 // keepSessionRemoval keeps a session-removal record that loaded once for the
-// seal it names: one naming the same session, seal and count as one kept
-// replaces it only where its key was reached later, which is all
+// seal it names: one naming the same session, seal, count and scope as one
+// kept replaces it only where its key was reached later, which is all
 // sessionRemoved reads of either.
 func keepSessionRemoval(sessions map[string][]sessionRemoval, rec sessionRemoval) {
 	named := sessions[rec.sessionID]
 	for i := range named {
-		if named[i].sealSignature == rec.sealSignature && named[i].finalCount == rec.finalCount {
+		if named[i].sealSignature == rec.sealSignature && named[i].finalCount == rec.finalCount && named[i].scope == rec.scope {
 			if rec.keyPos > named[i].keyPos {
 				named[i] = rec
 			}
@@ -318,13 +318,16 @@ func keepSessionRemoval(sessions map[string][]sessionRemoval, rec sessionRemoval
 // sealed session (SPEC.md §1.3a, "A removed session"): its id, the signature
 // of its first seal that loaded as the registry holds it, and that seal's
 // count, under the key the seal loaded under or one the walk reached after
-// it.
+// it; and, where the seal is of version 2, the scope it names: the record's
+// scope identifier, digested in the session, is the seal's scopeDigest
+// (ADR-0036), so a record of another scope excuses no such session.
 func (ret *retention) sessionRemoved(sessionID string, s seal) bool {
 	if ret == nil {
 		return false
 	}
 	for _, rec := range ret.sessions[sessionID] {
-		if rec.sealSignature == s.signature && rec.finalCount == s.finalCount && rec.keyPos >= s.keyPos {
+		if rec.sealSignature == s.signature && rec.finalCount == s.finalCount && rec.keyPos >= s.keyPos &&
+			(s.scopeDigest == "" || sealScopeDigest(sessionID, rec.scope) == s.scopeDigest) {
 			return true
 		}
 	}
