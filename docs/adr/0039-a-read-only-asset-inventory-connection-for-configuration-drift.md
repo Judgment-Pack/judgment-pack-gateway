@@ -275,9 +275,15 @@ accepts `cloud-platform` only.
   - one of scope `https://www.googleapis.com/auth/cloud-platform.read-only`, for
     `projects.testIamPermissions` and nothing else.
   The resource-binding check reads the `IAM_POLICY` page the first token returned, and makes no
-  call of its own.
+  call of its own. So it runs only on the `IAM_POLICY` pages that callers request. A platform
+  configured without the `IAM_POLICY` content type has no resource-binding check at all. Its
+  start report and `/posture` say so (`resource-bindings: unchecked`). An operator who wants
+  the check serves `IAM_POLICY`, and a Runner that wants it read every page reads them.
 - `https://www.googleapis.com/auth/cloud-platform` is never requested. A token whose granted
   scopes include it, or any scope beyond the one requested, is refused `credential-scope-unknown`.
+  The one exception is a fixed list of identity scopes that grant no API access: `openid`,
+  `https://www.googleapis.com/auth/userinfo.email`, and their short form `email`. A token
+  source may add these to what it grants. The list is closed, and any other scope is refused.
 - The write list adds the Cloud Asset writes the `cloudasset` scope admits: creating, updating
   and deleting feeds and saved queries.
 
@@ -301,18 +307,29 @@ For every source, the scope check reads the scopes actually granted, from the to
 unreadable or holds no scopes is refused `credential-scope-unknown`. The write check and the
 refresh re-check of decision 3 apply to every source.
 
-### A4. The expired page token is unconfirmed
+### A4. What a first live run confirms
 
 The platform documents that a page token expires 72 hours after the first page's token was
 issued. It does not document the error an expired token draws. The `400` `INVALID_ARGUMENT`
 form in decision 2 is an assumption: it stays as the one mapped form, held by a hand-written
-fixture. The adapter's README marks it unconfirmed, and it is to be checked in a first live run.
+fixture. The adapter's README marks it unconfirmed.
+
+A first live run checks two things:
+- the error an expired page token draws;
+- the scopes each token source actually reports as granted (metadata server, federation with
+  impersonation, key), against the requested scope and the identity-scope list of A2.
+
+Until then, both are held by hand-written fixtures.
 
 ### Consequences of the amendment
 
 - Good: every protection the decision names is one the gateway applies: scope, reach,
   `not-retained`, the start report and `/posture`.
-- Good: on Cloud Run no key exists to leak. Neither token can call any API but its own.
+- Good: on Cloud Run no key exists to leak.
+- Neutral: the scopes narrow less than their names suggest. The `cloudasset` token reaches only
+  the Cloud Asset API. The `cloud-platform.read-only` token can READ every API the identity's
+  roles allow, but it cannot write through any of them. It is used only for
+  `testIamPermissions`, and it is never offered to a caller.
 - Bad: the OAuth scope is no longer "read-only" in name. The `cloudasset` token could call the
   Cloud Asset writes, were the identity granted them. The read-only guarantee rests, as the
   maintainer's decision states it ("viewer roles only; refuses to start if its credential can
