@@ -276,6 +276,26 @@ func TestAPostgresSessionWithNoReceiptIsTakenUpOnlyOnceItsHoldersRowExpired(t *t
 	}
 }
 
+// A claim that no scope answers -- the session's name taken by a series of
+// a scope the record of scope identifiers does not hold -- is refused, as a
+// session that could not be read, and never admitted here.
+func TestAPostgresClaimNoScopeAnswersIsRefused(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	a, _ := severalKind(t, db, testSeed, pgStartLeasePeriod)
+	unrecorded, err := a.inScope("unrecorded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if made, err := (pgIndexed{unrecorded}).makeSeries("orphan-1"); err != nil || !made {
+		t.Fatalf("the series of a scope not recorded: %v %v", made, err)
+	}
+	got, err := a.claimSeries("orphan-1", "")
+	if err == nil || faultOf(err) != faultUnreadable {
+		t.Fatalf("a claim no scope answered: %v %v", got, err)
+	}
+}
+
 // A seal appended by two instances at once is appended once: the registry's
 // check that the session is unsealed is made in the append's transaction,
 // under its lock. The first append is held between its judgment and its
