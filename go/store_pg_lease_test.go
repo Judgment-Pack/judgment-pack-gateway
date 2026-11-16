@@ -57,6 +57,7 @@ func TestThePostgresStartLeaseAdmitsOneInstanceAtATime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the first take: %v", err)
 	}
+	defer lease.closeOwn()
 	if err := pgWriteOne(first, "held"); err != nil {
 		t.Fatalf("a write under the lease: %v", err)
 	}
@@ -70,9 +71,11 @@ func TestThePostgresStartLeaseAdmitsOneInstanceAtATime(t *testing.T) {
 	if err := lease.release(); err != nil {
 		t.Fatalf("release: %v", err)
 	}
-	if _, err := second.takeStartLease(two, pgStartLeasePeriod, pgStartLeaseRenewal); err != nil {
+	taken, err := second.takeStartLease(two, pgStartLeasePeriod, pgStartLeaseRenewal)
+	if err != nil {
 		t.Fatalf("a take once the first released its lease: %v", err)
 	}
+	defer taken.closeOwn()
 	if err := pgWriteOne(first, "after"); !errors.Is(err, errStartLeaseLost) {
 		t.Fatalf("a write of the instance that released its lease: %v", err)
 	}
@@ -100,14 +103,17 @@ func TestThePostgresStartLeaseOfACrashedInstanceExpires(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer lease.closeOwn()
 	taken := time.Now()
 	if _, err := second.takeStartLease(two, period, 500*time.Millisecond); !errors.Is(err, errStartLeaseHeld) {
 		t.Fatalf("a take while the lease lives: %v", err)
 	}
 	time.Sleep(time.Until(taken.Add(period + 300*time.Millisecond)))
-	if _, err := second.takeStartLease(two, pgStartLeasePeriod, pgStartLeaseRenewal); err != nil {
+	next, err := second.takeStartLease(two, pgStartLeasePeriod, pgStartLeaseRenewal)
+	if err != nil {
 		t.Fatalf("a take once the lease expired: %v", err)
 	}
+	defer next.closeOwn()
 	if err := lease.renew(); !errors.Is(err, errStartLeaseLost) {
 		t.Fatalf("a renewal of an expired lease: %v", err)
 	}
@@ -121,6 +127,7 @@ func TestThePostgresStartLeaseOfACrashedInstanceExpires(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer expired.closeOwn()
 	time.Sleep(period + 300*time.Millisecond)
 	if err := pgWriteOne(third, "expired"); !errors.Is(err, errStartLeaseLost) {
 		t.Fatalf("a write after the lease expired: %v", err)
