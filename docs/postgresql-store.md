@@ -254,7 +254,13 @@ engine version 25, gives the wait in the `storage` member:
 ```
 
 `startWaitSeconds`, 1 to 3600, is how long a start that finds another instance's lease live waits
-for it; without the member the start is refused at once, as above. Then:
+for it; without the member the start is refused at once, as above. Within that time it also reads
+the lease again past a failure that is the database's for the moment: a connection that broke or
+could not be made (a failover, a reset), a server shutting down, not yet accepting connections or
+at its connection limit, a serialization failure or a deadlock. It says each such failure, and once
+the database answers it makes the start's checks again on fresh connections, as after any wait;
+when the time runs out the start is refused with the last failure, exit 1. Any other failure, and
+every failure of a start without the member, ends the start at once. Then:
 
 1. Start the new instance. It listens on its address at once and answers every request, on every
    route, `503` with `Retry-After: 10` and one fixed body,

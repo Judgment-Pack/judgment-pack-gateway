@@ -8,6 +8,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -510,5 +513,92 @@ func TestThePostgresStopWhileWaitingEndsTheStartHoldingNothing(t *testing.T) {
 	}
 	if got := pgLeaseHolder(t, db); got != held.holder || !pgLeaseLive(t, db) {
 		t.Fatalf("the stopped wait changed the lease: %q", got)
+	}
+}
+
+// A start that waits for the lease reads it again past a failure that is the
+// database's for the moment -- here its first two connections refused, as
+// in a failover -- and takes the lease once the database answers, then
+// re-checks what it found as a start that waited does; a start that does
+// not wait ends with the first failure.
+func TestThePostgresStartWaitingReadsTheLeaseAgainPastAFailedConnection(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	k := db.open(t, nil)
+	dial := pgDial
+	var mu sync.Mutex
+	failing := 0
+	pgDial = func(address string, deadline time.Time) (net.Conn, error) {
+		mu.Lock()
+		if failing > 0 {
+			failing--
+			mu.Unlock()
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+		}
+		mu.Unlock()
+		return dial(address, deadline)
+	}
+	t.Cleanup(func() { pgDial = dial })
+	fail := func(n int) {
+		mu.Lock()
+		failing = n
+		mu.Unlock()
+	}
+	every := 100 * time.Millisecond
+
+	fail(2)
+	if _, _, err := k.waitForStartLease(context.Background(), newTestLeaseHolder(t), pgStartLeasePeriod, every, 0, io.Discard); err == nil || !pgTransient(err) {
+		t.Fatalf("a start that does not wait, whose connection is refused: %v", err)
+	}
+
+	fail(2)
+	holder := newTestLeaseHolder(t)
+	var said strings.Builder
+	began := time.Now()
+	lease, waited, err := k.waitForStartLease(context.Background(), holder, pgStartLeasePeriod, every, 5*time.Second, &said)
+	if err != nil {
+		t.Fatalf("a start that waits, past two refused connections: %v\n%s", err, said.String())
+	}
+	t.Cleanup(lease.closeOwn)
+	if !waited || time.Since(began) < every {
+		t.Fatalf("the start took the lease without reading it again (waited %v, after %s)", waited, time.Since(began))
+	}
+	if got := pgLeaseHolder(t, db); got != holder {
+		t.Fatalf("the lease is held by %q, not the start that waited", got)
+	}
+	if !strings.Contains(said.String(), "start: the start lease could not be read") || !strings.Contains(said.String(), "start: the database answered again") {
+		t.Fatalf("what the start said: %s", said.String())
+	}
+}
+
+// What a waiting start polls past is a failure of the moment's -- the
+// connection's, the server's shutting down or not yet up, too many
+// connections, a serialization failure or a deadlock -- and nothing else: a
+// refusal of the statement or of the credentials, or a commit whose answer
+// never came, ends the start.
+func TestATransientFailureOfTheDatabaseIsToldFromOneThatEndsTheStart(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want bool
+	}{
+		{&pgTransportError{"the connection broke"}, true},
+		{fmt.Errorf("take: %w", &pgTransportError{"the database could not be reached"}), true},
+		{&pgError{code: "57P01"}, true},
+		{&pgError{code: "57P03"}, true},
+		{&pgError{code: "08006"}, true},
+		{&pgError{code: "53300"}, true},
+		{&pgError{code: pgSerialization}, true},
+		{&pgError{code: "40P01"}, true},
+		{nil, false},
+		{pgCommitUnknown{&pgTransportError{"the connection broke"}}, false},
+		{&pgError{code: "28P01"}, false},
+		{&pgError{code: pgInsufficientPriv}, false},
+		{&pgError{code: "42P01"}, false},
+		{errStartLeaseHeld, false},
+		{errors.New("store: no row of the start lease was taken"), false},
+	} {
+		if got := pgTransient(c.err); got != c.want {
+			t.Errorf("pgTransient(%v) = %v, want %v", c.err, got, c.want)
+		}
 	}
 }

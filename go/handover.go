@@ -45,6 +45,7 @@ import (
 	"net/http"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -151,16 +152,25 @@ func addressInUse(err error) bool {
 // every renewal interval, until it holds it (waited then says it polled
 // more than once), until wait has passed -- the last poll's refusal,
 // start-lease-held, is the start's -- or until stopped ends
-// (errStoppedWaiting). Whether a lease is live is the database's clock's
-// to say, in each poll's statement; a poll that is refused holds nothing.
+// (errStoppedWaiting). A poll the database failed for the moment
+// (pgTransient) -- a failover, a connection reset -- is polled again in
+// the same way, and at the wait's end that failure is the start's. Whether
+// a lease is live is the database's clock's to say, in each poll's
+// statement; a poll that is refused holds nothing.
 func (k *pgKind) waitForStartLease(stopped context.Context, holder string, period, every, wait time.Duration, said io.Writer) (lease *pgStartLease, waited bool, err error) {
 	began := time.Now()
 	until := began.Add(wait)
+	announced := false
 	for {
 		lease, err = k.takeStartLease(holder, period, every)
-		if err == nil || wait == 0 || !errors.Is(err, errStartLeaseHeld) {
-			if err == nil && waited {
+		held := errors.Is(err, errStartLeaseHeld)
+		transient := !held && pgTransient(err)
+		if err == nil || wait == 0 || (!held && !transient) {
+			switch {
+			case err == nil && announced:
 				fmt.Fprintf(said, "start: the start lease was released or expired, and this instance took it after waiting %s\n", time.Since(began).Round(time.Second))
+			case err == nil && waited:
+				fmt.Fprintf(said, "start: the database answered again, and this instance took the start lease after %s\n", time.Since(began).Round(time.Second))
 			}
 			return lease, waited, err
 		}
@@ -168,10 +178,14 @@ func (k *pgKind) waitForStartLease(stopped context.Context, holder string, perio
 		if left <= 0 {
 			return nil, waited, err
 		}
-		if !waited {
+		switch {
+		case transient:
+			fmt.Fprintf(said, "start: the start lease could not be read, and is read again every %s until %s have passed: %v\n", every, wait, err)
+		case !announced:
 			fmt.Fprintf(said, "start: waiting up to %s for the start lease, polled every %s: %v\n", wait, every, err)
-			waited = true
+			announced = true
 		}
+		waited = true
 		pause := time.NewTimer(min(every, left))
 		select {
 		case <-stopped.Done():
@@ -180,6 +194,30 @@ func (k *pgKind) waitForStartLease(stopped context.Context, holder string, perio
 		case <-pause.C:
 		}
 	}
+}
+
+// pgTransient is whether a take's failure is the database's for the
+// moment, which a start that waits for the lease polls past: the connection
+// failed or could not be made (a failover, a reset), the server is shutting
+// down or not yet accepting connections, or has too many, or the
+// transaction met a serialization failure or a deadlock. A take whose
+// commit's answer never came is not: whether it took a row is not known,
+// and the start ends as before.
+func pgTransient(err error) bool {
+	var unknown pgCommitUnknown
+	if err == nil || errors.As(err, &unknown) {
+		return false
+	}
+	var transport *pgTransportError
+	if errors.As(err, &transport) {
+		return true
+	}
+	code := pgCode(err)
+	switch code {
+	case "57P01", "57P02", "57P03", "53300", "40P01", pgSerialization:
+		return true
+	}
+	return strings.HasPrefix(code, "08")
 }
 
 // waitingFront answers every request of the listener 503 while the start

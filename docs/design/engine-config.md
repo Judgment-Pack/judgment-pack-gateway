@@ -1951,8 +1951,10 @@ lease is released or has expired it takes it, makes the start's checks again and
 listener it bound. Where `listen` is in use, as it is by the instance it takes over from on the
 same host, it waits without listening, nothing answering on its behalf, and binds `listen` once it
 holds the lease; any other failure to bind ends the start. When the wait runs out, the start is
-refused as before the member: exit 1, `start-lease-held`. Without the member the start is refused
-at once, as at version 24.
+refused as before the member: exit 1, `start-lease-held`. A read of the lease that fails for the
+moment (a connection broken or refused, the server shutting down or at its connection limit, a
+serialization failure or a deadlock) is read again within the same wait, and at its end that
+failure is the start's. Without the member the start is refused at once, as at version 24.
 
 The stop is the same at every version of the kind: a stop signal closes admission (each
 acquisition is answered `503` with `Retry-After`), lets what was admitted finish within
