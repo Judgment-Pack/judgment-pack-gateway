@@ -15,6 +15,8 @@
     ".goreleaser.yml",
     "Dockerfile",
     "adapters/agreement/agreement_test.go",
+    "adapters/gcpasset/testdata/resources-page.json",
+    "adapters/gcpasset/testdata/resources-projected.json",
     "adapters/go.mod",
     "adapters/go.sum",
     "build/engine-image.sh",
