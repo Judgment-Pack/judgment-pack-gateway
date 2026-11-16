@@ -89,7 +89,14 @@ the caller, and `/seal` and `/verify` read none either.
    - `/act`: a write source and an action receipt are of no scope identifier (ADR-0026). A caller
      that does not reach the sources of no scope identifier is refused `403`, `refusedAt:
      "scope-identifier"`, before the body is read, so every answer it gets is the same whatever
-     session it names. A caller that reaches them is answered as before.
+     session it names. A caller that reaches them has each citation resolved within its reach:
+     unless it reaches every source, a cited session whose scope (its first receipt's) it does
+     not reach, or whose scope the store cannot give, is answered `no such session`, the answer
+     for a session the store does not hold, before its receipts are counted or a signature is
+     compared, and so is a cited receipt whose own scope it does not reach. An action therefore
+     never cites a receipt of a scope identifier, the last one a v2 seal's `headSignature` names
+     in the open `/registry` included, and removing a scope identifier is never refused for an
+     action outside it citing into it (issue #485).
    - `/seal`: a session whose scope the caller does not reach is answered `no such session`,
      byte for byte the answer for a session the gateway does not hold, before anything else of
      the session is read: one this process holds, and one it does not -- left open by another

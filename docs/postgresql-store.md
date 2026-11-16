@@ -392,6 +392,16 @@ records itself as the session's holder when it admits the call, before the sourc
   where that read finds none, the start is refused as ever.
 - **A migration, and `gateway store remove-scope`,** run with every instance stopped: each holds the
   start lease's lock and every row of it, and is refused while any instance's lease is live.
+- **No instance older than v0.31.0 runs beside one of v0.31.0, or after it.** v0.31.0 seals a
+  session of a scope identifier with a seal of version 2 (SPEC.md §3, "A seal of version 2"),
+  which a gateway of v0.30.0 or earlier does not read: to it the session is still open, and its
+  `gateway seal-open`, or its start with `sealOpenAtStart`, seals the session again in the earlier
+  form, after which a v0.31.0 verifier reports the session `seal-conflict`, and keeps reporting
+  it. Nothing refuses the older instance: the schema is the same, and no start compares
+  versions. So stop every instance of v0.30.0 or earlier, and wait for each to
+  exit, before the first v0.31.0 instance serves; once a seal of version 2 is in the registry,
+  never start an older instance on the database, nor run an older `gateway seal-open` against it.
+  The upgrade is one-way.
 - **Throughput:** acquisitions scale with instances across sessions; one session's calls serialise
   in its instance; seals serialise on the registry's append. A take-up stalls its instance: it
   waits for every write of the stopped instance that still holds that instance's row -- at most

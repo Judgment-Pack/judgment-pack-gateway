@@ -2670,12 +2670,19 @@ func (g *gatewayService) handler() http.Handler {
 	// probe is kept for the process once it reaches a verdict. The listener
 	// judged is the one serveOn serves, as it was bound.
 	mux.HandleFunc("/posture", func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := authenticate(w, r); !ok {
+		who, ok := authenticate(w, r)
+		if !ok {
 			return
 		}
 		in := postureInput{configured: true, seed: g.seedPath, sources: g.sources, public: true,
 			listener:     listenerReach{loopback: boundToLoopback(g.listening), authenticated: g.identity != nil},
 			callerScopes: callerScopesMode(g.identity)}
+		// With caller scopes checked, programs names only the sources the
+		// caller reaches (ADR-0037); the installation's caller, "unchecked"
+		// and no identity reach every source and read every one, as before.
+		if reach := g.reachOf(who); !reach.every {
+			in.reach = &reach
+		}
 		if g.delegation != nil {
 			in.delegation = &delegationPosture{bearerReadOnly: g.delegation.bearerReadOnly}
 		}
