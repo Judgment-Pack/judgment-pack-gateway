@@ -369,7 +369,11 @@ func (k *pgKind) takeStartLease(holder string, period, every time.Duration) (*pg
 // admitBeside is whether an instance as is admitted beside the instances
 // whose rows are live: none, in the one-instance mode; in the
 // several-instances mode, instances of that mode alone, each under as's key
-// id and authority. Its refusal names the instance it found.
+// id and authority. Its refusal names the instance it found. Rows that ran
+// out are not compared (ADR-0035, decision 8): once every instance has
+// stopped, a start is compared with none, as in the one-instance mode, and
+// its key is held by the start's walk of the registry alone, which refuses
+// a seed that is not the chain's current key.
 func admitBeside(as pgInstance, live []pgLeaseRow) error {
 	for _, r := range live {
 		switch {
@@ -380,9 +384,9 @@ func admitBeside(as pgInstance, live []pgLeaseRow) error {
 		case !r.several:
 			return fmt.Errorf("%w: the database is served by gateway instance %s in the one-instance mode, whose start lease runs %d s more; an instance in the several-instances mode does not start beside it (docs/postgresql-store.md, \"Several instances on one database\")", errStartLeaseHeld, r.holder, r.left)
 		case r.keyID != as.keyID:
-			return fmt.Errorf("%w: gateway instance %s serves the database signing under key id %s, and this instance's seed is of key id %s; every instance on one database signs with one key (docs/postgresql-store.md, \"Several instances on one database\")", errInstanceMismatch, r.holder, r.keyID, as.keyID)
+			return fmt.Errorf("%w: gateway instance %s serves the database signing under key id %s, and this instance's seed is of key id %s; every instance serving one database at once signs with one key (docs/postgresql-store.md, \"Several instances on one database\")", errInstanceMismatch, r.holder, r.keyID, as.keyID)
 		case r.authority != as.authority:
-			return fmt.Errorf("%w: gateway instance %s serves the database for authority %q, and this instance names %q; every instance on one database names one authority (docs/postgresql-store.md, \"Several instances on one database\")", errInstanceMismatch, r.holder, r.authority, as.authority)
+			return fmt.Errorf("%w: gateway instance %s serves the database for authority %q, and this instance names %q; every instance serving one database at once names one authority (docs/postgresql-store.md, \"Several instances on one database\")", errInstanceMismatch, r.holder, r.authority, as.authority)
 		}
 	}
 	return nil

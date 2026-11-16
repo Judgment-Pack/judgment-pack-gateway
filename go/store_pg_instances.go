@@ -50,6 +50,9 @@ const (
 	// seriesUnclaimed: the series holds no receipt and no live instance
 	// holds it (seriesHolding alone).
 	seriesUnclaimed
+	// seriesUndecided: no scope answered for the series (claimSeries
+	// alone, before a scope answers): never an admission.
+	seriesUndecided
 )
 
 // claimsSeries is whether this kind records the instance that holds each
@@ -109,7 +112,8 @@ func (k *pgKind) claimSeries(name, scope string) (seriesClaim, error) {
 		}
 	}
 	me := k.fence
-	claim := seriesHeldHere
+	// undecided until a scope answers: a path that answers nothing refuses
+	claim := seriesUndecided
 	err := k.ownScopeFirst(pgWriteCommitted, own, func(tx pgTx, row string) (bool, error) {
 		if row != own.row {
 			// a series of another scope is never this call's
@@ -187,6 +191,12 @@ func (k *pgKind) claimSeries(name, scope string) (seriesClaim, error) {
 	}
 	if err != nil {
 		return 0, pgFailure("claim-series", true, err)
+	}
+	if claim == seriesUndecided {
+		// the name is taken, and neither the call's scope nor any scope
+		// recorded holds its series: nothing was written, and the call is
+		// refused as one whose session could not be read, never admitted
+		return 0, storeFailure(faultUnreadable, "claim-series", errors.New("store: the session's name is taken and no scope recorded holds its series"))
 	}
 	return claim, nil
 }

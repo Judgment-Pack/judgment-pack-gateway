@@ -634,7 +634,7 @@ func (g *gatewayService) closedRefusal() error {
 func (g *gatewayService) closeForStop(retryAfter int) (<-chan struct{}, int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.stopping = &gateStopped{retryAfter: retryAfter}
+	g.stopping = &gateStopped{retryAfter: retryAfter, several: g.claimer != nil}
 	c, fresh := g.gate.closeLocked()
 	g.gateReports().closed(c, fresh, g.gate.pending)
 	return c.done, g.gate.pending

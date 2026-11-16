@@ -121,8 +121,8 @@ one instance must not change under any option.
   §2, §6), and the registry holds one seal per session.
 - No write of an instance commits after it lost the right to write, as decided by the database's
   clock (ADR-0032, decision 4).
-- Every instance on one database signs with one key under one authority; a start that would not
-  is refused.
+- Every instance on one database signs with one key under one authority; a start that would not,
+  beside a live instance, is refused (decision 8).
 - A call the instance it reached cannot serve is refused by name before its source runs, never
   served from an empty memory.
 - The run-time login gains no DELETE, and no table but documents and the lease rows becomes
@@ -269,6 +269,40 @@ The filesystem kind stays one instance per store and registry (README.md), its l
 C built in #471 (gateway #467): schema version 6 and engine configuration version 26, with
 `storage.instances` `"several"` opting in; `docs/postgresql-store.md`, "Several instances on one
 database". No verification step, record, finding or vector changed.
+
+The already-sealed check in the append's transaction. As built in #471 it read and walked the
+whole registry there, a JSON parse and a signature check per line, under the append's lock and
+against the transaction's 10-second idle bound: past about 70,000 seals every seal failed, and
+below that every instance's seals waited on the lock for the walk (the v0.30.0 release review).
+Before v0.30.0 was tagged, each instance keeps its walk of the registry from its start on, and a
+seal reads and walks, in the same transaction and under the same lock, only what was appended
+since the instance last read it. Its cost is what was appended since, not the registry's size.
+This was chosen over a keyed table of the sealed sessions, written in the append's transaction,
+because it is the smaller change and keeps the registry the one record a seal is judged by. A
+table needs a migration. It needs filling from the registry's signed lines, which SQL cannot
+check. And it would be a second record of what is sealed, which could disagree with the chain a
+verifier reads. The walk relies on the registry being append-only: the run-time login may only
+insert into it, and schema version 4 admits a record only at the log's end. The line that ends
+where the instance last read is found in its place before what follows is read. A registry that
+is not the one the instance read is read and walked whole again, as at an instance's first seal.
+
+The one key and the one authority. A start compares them with the live instances' rows, as
+decision 8 says, and not with rows that ran out. Once every instance has stopped, a start is
+compared with none, as in the one-instance mode. A key changed then is still refused by the start's
+walk of the registry, which refuses a seed that is not the key the registry's rotations end at. An
+authority changed then is not refused, and keeping it is the operator's (`docs/postgresql-store.md`,
+"Several instances on one database"). Comparing with rows that ran out as well would refuse such a
+change for good, since no row is ever removed. That is left for when a deployment needs it.
+
+The lease's clock. The leases are judged by the database's `clock_timestamp()`. The design assumes
+that clock does not step backward past a row's expiry once something has acted on that expiry. A row
+is never removed. The settle that seals a stopped instance's sessions holds the expired row and does
+not change it. A database host whose clock steps back past an expired row's expiry would let that
+instance's paused renewal, and its fence, pass again, so it could append receipts to a session
+sealed after the interruption. A verifier reports such a session (the receipts past the seal), and
+the instance's own seal of it is refused as already sealed. The assumption is stated in
+`docs/postgresql-store.md`, "Time". Marking a settled row so that it cannot be renewed is left for
+when a deployment needs it.
 
 ### Consequences
 

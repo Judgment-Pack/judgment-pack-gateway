@@ -7,12 +7,14 @@ package main
 // in an append log, each of the filesystem kind (store_fs.go) as shipped.
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
+	"sync"
 	"time"
 )
 
@@ -178,6 +180,90 @@ type registryWriter struct {
 	seed  []byte
 	priv  ed25519.PrivateKey
 	keyID string
+	// read is what the writer has walked of a log several writers append to
+	// (judgedAppendLog), nil for any other
+	read *registryRead
+}
+
+// registryRead is a writer's walk of the first offset bytes of a log several
+// writers append to (judgedAppendLog), kept so that a seal reads and walks,
+// in the append's transaction and under its lock, only the bytes appended
+// since: a seal's cost is what was appended since the last, not the
+// registry's size, which the transaction's idle bound and the lock every
+// writer's seal waits for could not bear (#386). The log is append-only --
+// the run-time login may only insert into it, and the schema (version 4)
+// admits a record only at its end -- so the bytes before offset are the
+// bytes walked. The line that ends at offset is kept as well, and found
+// again where it was before what follows it is walked: a log that is not
+// the one walked -- a database restored, or one that lost its last commits
+// to a failover -- is read and walked whole again, as at the first seal.
+//
+// offset ends a line, or is 0: a last line not ended may yet be continued by
+// another writer's append, and is walked again with what follows it. walk
+// never holds a finding and ends at the writer's key; nil, the log is read
+// whole. One seal at a time uses it, holding mu.
+type registryRead struct {
+	mu     sync.Mutex
+	offset int64
+	last   []byte
+	walk   *registryWalk
+}
+
+// at moves the cursor to the end of data, the log's first bytes or those
+// that follow the cursor, where data ends a line; walk is the walk of the
+// log up to that end.
+func (r *registryRead) at(from int64, data []byte, walk *registryWalk) {
+	if len(data) == 0 || data[len(data)-1] != '\n' {
+		return
+	}
+	start := bytes.LastIndexByte(data[:len(data)-1], '\n') + 1
+	r.offset, r.last, r.walk = from+int64(len(data)), bytes.Clone(data[start:]), walk
+}
+
+// judge reads, through read, what the cursor has not walked of the log, in
+// the append's transaction, and walks it as engineWalk walks the registry,
+// refusing as it refuses: it answers whether the log holds a seal of
+// sessionID and the bytes read past the cursor. The cursor moves past them
+// where they end a line: they are committed (the append's lock is held,
+// and the read is at READ COMMITTED), and stay in the log whatever this
+// append comes to.
+func (r *registryRead) judge(read func(from int64) ([]byte, error), own ed25519.PublicKey, sessionID string) (bool, []byte, error) {
+	if r.walk != nil {
+		data, err := read(r.offset - int64(len(r.last)))
+		switch {
+		case err == nil && bytes.HasPrefix(data, r.last):
+			more := data[len(r.last):]
+			walk := r.walk.continued(more)
+			if err := walk.ownReading(own); err != nil {
+				return false, nil, err
+			}
+			_, sealed := walk.seals[sessionID]
+			if !sealed {
+				_, sealed = r.walk.seals[sessionID]
+			}
+			if len(more) > 0 && more[len(more)-1] == '\n' {
+				r.walk.absorb(walk)
+				r.at(r.offset, more, r.walk)
+			}
+			return sealed, more, nil
+		case err != nil && faultOf(err) != faultRefused:
+			return false, nil, err
+		}
+		// the line that ended at the cursor is not there, or the log ends
+		// before it: read whole, as at the first seal
+		r.offset, r.last, r.walk = 0, nil, nil
+	}
+	data, err := read(0)
+	if err != nil {
+		return false, nil, err
+	}
+	walk, err := engineWalk(data, own)
+	if err != nil {
+		return false, nil, err
+	}
+	_, sealed := walk.seals[sessionID]
+	r.at(0, data, walk)
+	return sealed, data, nil
 }
 
 // sealMayBeWritten is a failure to seal after the record may already be in
@@ -227,41 +313,76 @@ func newRegistryWriterOn(log appendLog, name string, seed []byte, history func()
 	// and its registry may hold that session's seal -- an empty one made in
 	// its place would reopen it. An operator who knows no session was ever
 	// sealed makes the registry, empty, by hand.
+	//
+	// Where instances serve one database beside one another, another
+	// instance's start may make the registry, and admit a session, between
+	// this read and the history's answer: a store found holding sessions has
+	// its registry read again before it is refused, and one there now is read
+	// and walked as a registry found is. Nothing is made then, so nothing
+	// could reopen a session.
+	_, shared := log.(judgedAppendLog)
 	existing, err := log.readLog(0)
 	if faultOf(err) == faultAbsent {
 		held, err := history()
 		if err != nil {
 			return nil, err
 		}
-		if held {
-			return nil, fmt.Errorf("the store holds sessions and the registry is not there: %s; restore the registry, or, knowing no session was ever sealed, make it empty by hand", name)
-		}
-		if err := log.createLog(); err != nil {
-			// Where instances serve one database beside one another, another
-			// instance's start may have made the registry since this read: it
-			// is there, and is read and walked as a registry found is.
-			if _, shared := log.(judgedAppendLog); !shared || faultOf(err) != faultTaken {
+		there := false
+		if held && shared {
+			existing, err = log.readLog(0)
+			switch {
+			case err == nil:
+				there = true
+			case faultOf(err) != faultAbsent:
 				return nil, err
 			}
-			if existing, err = log.readLog(0); err != nil {
-				return nil, err
+		}
+		switch {
+		case there:
+		case held:
+			return nil, fmt.Errorf("the store holds sessions and the registry is not there: %s; restore the registry, or, knowing no session was ever sealed, make it empty by hand", name)
+		default:
+			if err := log.createLog(); err != nil {
+				// Where instances serve one database beside one another, another
+				// instance's start may have made the registry since this read: it
+				// is there, and is read and walked as a registry found is.
+				if !shared || faultOf(err) != faultTaken {
+					return nil, err
+				}
+				if existing, err = log.readLog(0); err != nil {
+					return nil, err
+				}
 			}
 		}
 	} else if err != nil {
 		return nil, err
 	}
 	priv := ed25519.NewKeyFromSeed(seed)
+	own := priv.Public().(ed25519.PublicKey)
 	// The gateway's own reading of its registry (SPEC.md §3b): walked from
 	// its first key, it must find nothing and end at this seed's key, or the
 	// gateway does not start -- a rotation written and not switched to is
 	// pending, and the seed it names is the one to start with.
-	if _, err := engineWalk(existing, priv.Public().(ed25519.PublicKey)); err != nil {
+	walk, err := engineWalk(existing, own)
+	if err != nil {
 		return nil, fmt.Errorf("registry %s: %w", name, err)
 	}
-	return &registryWriter{
+	w := &registryWriter{
 		path: name, log: log, seed: seed, priv: priv,
-		keyID: keyIDFor(priv.Public().(ed25519.PublicKey)),
-	}, nil
+		keyID: keyIDFor(own),
+	}
+	if shared {
+		// the start's walk is where the seals' reading starts from: up to
+		// the last line ended, walked again where a line after it is not
+		// (registryRead)
+		w.read = &registryRead{}
+		if cut := bytes.LastIndexByte(existing, '\n') + 1; cut == len(existing) {
+			w.read.at(0, existing, walk)
+		} else if prefix := walkRegistry(existing[:cut], registryFirstKey(existing, own)); prefix.ownReading(own) == nil {
+			w.read.at(0, existing[:cut], prefix)
+		}
+	}
+	return w, nil
 }
 
 // seal appends a signed final count. Append-only: sealing an already sealed
@@ -322,10 +443,12 @@ var errSessionAlreadySealed = errors.New("session already sealed")
 // own lock, read in the append's transaction, so two writers never each
 // find a session unsealed and both append its seal.
 type judgedAppendLog interface {
-	// appendJudged reads the log whole under the append's lock and appends
-	// what build answers for those bytes, as appendRecord appends; a
-	// refusal of build appends nothing and is answered as it is.
-	appendJudged(build func(existing []byte) ([]byte, error)) (int, error)
+	// appendJudged takes the append's lock and appends what build answers,
+	// as appendRecord appends; build reads the log through read, from a
+	// cursor to its end, in the append's transaction, which sees every
+	// record committed before the lock was taken, and no other until its
+	// commit. A refusal of build appends nothing and is answered as it is.
+	appendJudged(build func(read func(from int64) ([]byte, error)) ([]byte, error)) (int, error)
 }
 
 // afterSealJudged, where a test sets it, runs once a seal appended to a
@@ -381,16 +504,25 @@ func (w *registryWriter) appendSeal(sessionID string, build func() *vObject) (*v
 }
 
 // appendSealJudged is appendSeal on a log several writers append to: the
-// registry is read, walked and judged in the append's transaction, under
-// its lock (judgedAppendLog).
+// registry is judged in the append's transaction, under its lock
+// (judgedAppendLog), as read and walked since the writer's last reading of
+// it (registryRead).
 func (w *registryWriter) appendSealJudged(log judgedAppendLog, sessionID string, build func() *vObject) (*vObject, error) {
 	var record *vObject
 	boundary := 0
-	n, err := log.appendJudged(func(existing []byte) ([]byte, error) {
-		line, b, r, err := w.sealLine(existing, sessionID, build)
+	w.read.mu.Lock()
+	defer w.read.mu.Unlock()
+	n, err := log.appendJudged(func(read func(int64) ([]byte, error)) ([]byte, error) {
+		sealed, more, err := w.read.judge(read, w.priv.Public().(ed25519.PublicKey), sessionID)
 		if err != nil {
 			return nil, err
 		}
+		if sealed {
+			return nil, fmt.Errorf("%w: %s", errSessionAlreadySealed, sessionID)
+		}
+		// what is read ends where the log does, after the cursor, which
+		// ends a line (registryRead)
+		line, b, r := recordLine(more, build)
 		if afterSealJudged != nil {
 			afterSealJudged()
 		}
@@ -424,8 +556,14 @@ func (w *registryWriter) sealLine(existing []byte, sessionID string, build func(
 	if _, sealed := walk.seals[sessionID]; sealed {
 		return nil, 0, nil, fmt.Errorf("%w: %s", errSessionAlreadySealed, sessionID)
 	}
-	record := build()
+	line, boundary, record := recordLine(existing, build)
+	return line, boundary, record, nil
+}
 
+// recordLine is the line that appends the record build makes to a log whose
+// bytes end as existing's do, and the offset in it where the record starts.
+func recordLine(existing []byte, build func() *vObject) ([]byte, int, *vObject) {
+	record := build()
 	// A record starts on a line of its own. A registry whose last line is
 	// unterminated -- an earlier seal written in part, or whole but for its
 	// newline -- is ended first: joined to that line, the record would make
@@ -436,7 +574,7 @@ func (w *registryWriter) sealLine(existing []byte, sessionID string, build func(
 	}
 	boundary := len(line)
 	line = append(append(line, canon(record)...), '\n')
-	return line, boundary, record, nil
+	return line, boundary, record
 }
 
 func nowStamp() string {

@@ -254,7 +254,13 @@ engine version 25, gives the wait in the `storage` member:
 ```
 
 `startWaitSeconds`, 1 to 3600, is how long a start that finds another instance's lease live waits
-for it; without the member the start is refused at once, as above. Then:
+for it; without the member the start is refused at once, as above. Within that time it also reads
+the lease again past a failure that is the database's for the moment: a connection that broke or
+could not be made (a failover, a reset), a server shutting down, not yet accepting connections or
+at its connection limit, a serialization failure or a deadlock. It says each such failure, and once
+the database answers it makes the start's checks again on fresh connections, as after any wait;
+when the time runs out the start is refused with the last failure, exit 1. Any other failure, and
+every failure of a start without the member, ends the start at once. Then:
 
 1. Start the new instance. It listens on its address at once and answers every request, on every
    route, `503` with `Retry-After: 10` and one fixed body,
@@ -352,8 +358,12 @@ records itself as the session's holder when it admits the call, before the sourc
   refused, `instance-mismatch`, where an instance whose lease is live signs under another key id
   or names another authority; it is refused, `start-lease-held`, beside a live instance of the
   one-instance mode, and an instance of the one-instance mode is refused beside one of this mode.
-  The sources are not compared: give every instance the same ones, or a session's later calls may
-  meet a source its holder lacks.
+  The comparison is with live instances alone: once every instance has stopped and its lease has
+  run out, a start is compared with none, as in the one-instance mode. A key changed then is still
+  refused, by the start's walk of the registry, unless the registry's rotations end at it
+  (`gateway rotate-key`); an authority changed then is not, so keep one authority for the
+  database's life. The sources are not compared: give every instance the same ones, or a session's
+  later calls may meet a source its holder lacks.
 - **Connections:** `connections` + 1 for each instance in the server's connection budget.
 - **Delegated runs:** a delegation's credential is bound, and revoked, at the instance that bound
   it; keep a delegated run's calls to that instance. The admission read still refuses a revoked
@@ -364,10 +374,22 @@ records itself as the session's holder when it admits the call, before the sourc
   reaches -- after every write of the old instance has ended, or failed at its fence -- and one
   that holds receipts is refused as one another process left open, `400`, until it is sealed
   after the interruption ("Sealing the sessions an instance left open", below). Two instances that
-  take up one session at once are not both admitted: the second is answered `409`.
+  take up one session at once are not both admitted: the second is answered `409`. A stopping
+  instance's `503` says so: another instance serves the call sent again once this one has
+  stopped, unless the call's session holds receipts already, which no other instance continues,
+  so the caller acquires into a new session.
 - **The registry** stays one chain: a seal is judged against the registry in the append's own
-  transaction, under its lock, so no session is sealed twice. A start that finds the registry
-  made by another instance since its read goes on with it.
+  transaction, under its lock, so no session is sealed twice. An instance keeps its walk of the
+  registry from its start on, and a seal reads and walks there only what was appended since the
+  instance last read it: the transaction and the lock's hold stay short whatever the registry's
+  size (the start still reads and walks the whole registry, outside any transaction, as before).
+  The registry is append-only to the run-time login (below), so what the instance walked stays as
+  it was; its last line is found again in its place before what follows is read, and a registry
+  that is not the one the instance read -- a database restored under it, or one that lost its last
+  commits to a failover -- is read and walked whole again. A start that finds the registry made by
+  another instance since its read goes on with it, and so does one that finds no registry and then
+  a session in the store, once a second read finds the registry another instance made meanwhile;
+  where that read finds none, the start is refused as ever.
 - **A migration, and `gateway store remove-scope`,** run with every instance stopped: each holds the
   start lease's lock and every row of it, and is refused while any instance's lease is live.
 - **Throughput:** acquisitions scale with instances across sessions; one session's calls serialise
@@ -436,6 +458,32 @@ are sealed (exit 1 for the command); a session that cannot be read stops the com
 start, with nothing sealed. Seals are appended to the registry by its one serialised append, each
 judged in the append's transaction and refused where the registry holds a seal for its session
 already; a session another instance's start sealed since it was judged is passed over by `--all`.
+
+## Upgrading from v0.29.0
+
+v0.30.0 carries schema version 6. The step to it is made with every instance stopped; the orderly
+hand-over ("Handing over to a new instance") does not carry it, since `gateway store migrate` is
+refused while any instance's lease is live and a v0.30.0 instance refuses a database at schema
+version 5. In this order:
+
+1. Stop every instance and wait for each to exit.
+2. Back the database up. Migration 6 is one-way: it drops `gateway.start_lease` and makes it again,
+   empty, in its new form (a row for each instance), and records from then on the instance that
+   holds each session.
+   A v0.29.0 binary refuses a database at schema version 6, by its start and by its
+   `gateway store migrate` alike: "a gateway older than its schema does not run on it". Going back
+   to v0.29.0 means restoring that backup.
+3. Run `gateway store migrate` as the migration login (`{"applied":[6],…,"schemaVersion":6}`).
+4. Start the v0.30.0 instances.
+
+A configuration of engine version 25 or earlier keeps the one-instance mode: one instance per
+database, as before. To go from one instance to several, give every instance v0.30.0 and a
+configuration of engine version 26 with `"instances": "several"` ("Several instances on one
+database"), each with the same seed and authority. The two modes refuse each other on one
+database: an instance of the several-instances mode is refused, `start-lease-held`, while an
+instance of the one-instance mode serves it, and the other way round. So stop the instance of the
+one-instance mode before the first instance of the several-instances mode serves, and stop every
+instance of that mode before going back to one.
 
 ## The migration command
 
@@ -706,6 +754,14 @@ Receipt and seal times are the gateway's, never the database's. A lease of the s
 database's clock: its statements read `clock_timestamp()`, and no other statement the gateway
 sends, or schema file it carries, reads the database's clock (a test).
 
+The start lease assumes the database host's clock does not step backward: keep it synchronized and
+slewed, not stepped. A row is never removed, and the seal of a stopped instance's sessions holds
+that instance's expired row without changing it. Were the clock to step back past an expired row's
+expiry, that instance's renewal and its fence would pass again, if it had only paused: it could
+append receipts to a session sealed after the interruption. Nothing is lost silently: a verifier
+reports such a session's receipts past its seal, and the paused instance's own seal of it is refused
+as already sealed.
+
 ## Backup and restore
 
 The database's backup and restore are the operator's, with PostgreSQL's own tools. Restore into a
@@ -718,8 +774,9 @@ the same work, of no scope and of scope identifiers alike (a test).
 
 - what "Not available with this kind yet" lists;
 - moving a store from one kind to the other;
-- more than one live gateway instance on one database: the start lease refuses a second ("One
-  instance per database");
+- more than one live gateway instance on one database in the one-instance mode, the default: the
+  start lease refuses a second ("One instance per database"); instances serve one database beside
+  one another in the several-instances mode alone ("Several instances on one database");
 - passwords outside printable ASCII;
 - connection poolers: the settings the gateway makes are transaction local, which a pooler in
   transaction mode keeps, but no pooler is tested;
