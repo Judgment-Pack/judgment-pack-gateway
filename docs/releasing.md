@@ -248,8 +248,9 @@ the evidence only when all of this holds, and refuses otherwise:
   `ubuntu-latest · Go 1.26`, `macos-latest · Go 1.26`, `windows-latest · Go 1.26 · shard 1 of 2`
   and `windows-latest · Go 1.26 · shard 2 of 2`, the three operating systems each by legs of its
   own (Windows runs the core's tests in two shards, each top-level test in exactly one; the script
-  that splits them, `.github/go_test_shard.py`, refuses unless Go selects exactly that); none was
-  skipped, and `check` passed every setup step and
+  that splits them, `.github/go_test_shard.py`, refuses unless Go selects exactly that), and
+  `postgresql · superuser` and `postgresql · non-superuser`, the PostgreSQL kind's two passes; none
+  was skipped, and `check` passed every setup step and
   every check, with no skip;
 - each job's evidence names the commit and the inputs the release's checkout holds; the Go of each
   leg and of `check` is the one `release.yml` names (`1.26.5`); the Linux runner image and its

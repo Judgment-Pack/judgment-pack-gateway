@@ -207,8 +207,17 @@
           "profile": "go-windows",
           "checks": []
         },
-        "postgresql": {
-          "name": "postgresql",
+        "postgresql-superuser": {
+          "name": "postgresql \u00b7 superuser",
+          "job_id": "postgresql",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "profile": "go-linux",
+          "checks": []
+        },
+        "postgresql-non-superuser": {
+          "name": "postgresql \u00b7 non-superuser",
           "job_id": "postgresql",
           "labels": [
             "ubuntu-latest"

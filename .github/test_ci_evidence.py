@@ -573,6 +573,22 @@ class ConfigurationTest(unittest.TestCase):
                 else:
                     self.assertIn("github.event_name != 'schedule'", job['if'])
 
+    def test_the_postgresql_passes_run_once_each_in_legs_of_their_own(self):
+        """The superuser pass and the pass as an administrator that is no superuser each run in
+        one leg, against the leg's own server, over the same tests; the storage scenario once."""
+        job = self.ci['jobs']['postgresql']
+        self.assertIn('postgres', job['services'])
+        steps = {step['name']: step for step in job['steps']}
+        passes = ("The PostgreSQL kind's tests, none skipped",
+                  "The PostgreSQL kind's tests as an administrator that is no superuser")
+        runs = {name: [values['role'] for values in legs(job) if runs_on_leg(steps[name].get('if'), values)]
+                for name in passes + ('The storage kinds through the binary',)}
+        self.assertEqual(runs, {passes[0]: ['superuser'], passes[1]: ['non-superuser'],
+                                'The storage kinds through the binary': ['superuser']})
+        selections = [re.findall(r"go test [^|]* -run '([^']+)' \.", steps[name]['run']) for name in passes]
+        self.assertEqual(len(selections[0]), 1)
+        self.assertEqual(selections[0], selections[1])
+
     def test_each_leg_has_its_job_id_labels_and_platform(self):
         by_name = {job['name']: (key, job) for key, job in self.spec['jobs'].items()}
         for name, job_id, job, values in self.ci_legs():

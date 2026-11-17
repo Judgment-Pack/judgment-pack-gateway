@@ -11,8 +11,10 @@ name: CI
 # (`check.sh --changed`); on a push to main, the whole list. Each of the steps that were jobs of
 # their own is a step of dev.json, and the longer ones are scripts under scripts/checks/ with the
 # comments they had here. `postgresql` runs the PostgreSQL storage kind's tests against a server in
-# a service container pinned by digest (docs/postgresql-store.md); without a server they skip, so
-# here a skip fails the job. The nightly run is the `go` matrix alone.
+# a service container pinned by digest (docs/postgresql-store.md), in two legs side by side, each
+# with a server of its own: as a superuser, and as an administrator that is no superuser. Without
+# a server the tests skip, so here a skip fails the leg (four, by one message, are expected in the
+# second). The nightly run is the `go` matrix alone.
 #
 # A push to main also records, in every job and every leg, the evidence a release takes instead
 # of running this workflow again (scripts/dev/release_evidence.py capture, configured by
@@ -264,12 +266,20 @@ jobs:
   # conformance suite, the corpus exports, the byte identity with the filesystem kind, and the
   # conditions the kind runs under, against PostgreSQL 16, the major version docs/postgresql-store.md
   # names, in a service container pinned by digest. The credentials are synthetic and the server
-  # lives as long as the job. The tests make roles and a database of their own per test and drop
+  # lives as long as the leg. The tests make roles and a database of their own per test and drop
   # them; without GATEWAY_TEST_POSTGRES_DSN they skip, and with GATEWAY_TEST_POSTGRES_REQUIRED set a
-  # missing or malformed one fails them, and any skip left fails the job.
+  # missing or malformed one fails them, and any skip left fails the leg. The same tests run in both
+  # legs, each leg against its own server: the superuser leg also runs the storage kinds through the
+  # binary.
   postgresql:
-    name: postgresql
+    name: postgresql · ${{ matrix.role }}
     if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: superuser
+          - role: non-superuser
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -296,6 +306,7 @@ jobs:
         with:
           go-version: "1.26.5"
       - name: The PostgreSQL kind's tests, none skipped
+        if: matrix.role == 'superuser'
         env:
           GATEWAY_TEST_POSTGRES_DSN: postgresql://gateway_test_admin:synthetic-ci-password@127.0.0.1:5432/gateway_test_admin?sslmode=disable
           GATEWAY_TEST_POSTGRES_REQUIRED: "1"
@@ -311,6 +322,7 @@ jobs:
       # and nothing more. Three cases need a superuser to set up and skip by
       # one message (docs/adr/0031, "Consequences"); any other skip fails.
       - name: The PostgreSQL kind's tests as an administrator that is no superuser
+        if: matrix.role == 'non-superuser'
         env:
           GATEWAY_TEST_POSTGRES_DSN: postgresql://gateway_test_creator:synthetic-ci-creator-password@127.0.0.1:5432/gateway_test_admin?sslmode=disable
           GATEWAY_TEST_POSTGRES_REQUIRED: "1"
@@ -328,18 +340,21 @@ jobs:
             exit 1
           fi
       - name: The storage kinds through the binary
+        if: matrix.role == 'superuser'
         env:
           GATEWAY_TEST_POSTGRES_DSN: postgresql://gateway_test_admin:synthetic-ci-password@127.0.0.1:5432/gateway_test_admin?sslmode=disable
         run: ../scripts/checks/storage-scenario.sh
       - name: Record exact CI inputs and coverage
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         working-directory: .
-        run: python3 scripts/dev/release_evidence.py capture --workflow ci --job postgresql --output "${RUNNER_TEMP}/evidence.json"
+        env:
+          JOB_KEY: postgresql-${{ matrix.role }}
+        run: python3 scripts/dev/release_evidence.py capture --workflow ci --job "${JOB_KEY}" --output "${RUNNER_TEMP}/evidence.json"
       - name: Upload immutable CI evidence
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ci-evidence-ci-postgresql-${{ github.run_attempt }}
+          name: ci-evidence-ci-postgresql-${{ matrix.role }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/evidence.json
           if-no-files-found: error
           retention-days: 7
