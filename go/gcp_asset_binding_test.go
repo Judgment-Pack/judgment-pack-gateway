@@ -389,7 +389,7 @@ func TestAGCPAssetRefusalClosesTheSource(t *testing.T) {
 		!strings.Contains(p[0].text(), "refusal=unstated on page") {
 		t.Fatalf("closed on a page: %+v", p)
 	}
-	if lines := readOnlyCredentialsLines(service.sources, nil); !strings.Contains(lines[0].reason, "1 closed") {
+	if lines := readOnlyCredentialsLines(service.sources, nil); !strings.HasSuffix(lines[0].reason, "; 1 of them closed") {
 		t.Fatalf("the posture line counts no closure: %+v", lines)
 	}
 	for _, text := range []string{said.String(), got.body, log.String(), p[0].text()} {
@@ -534,24 +534,35 @@ func TestGCPAssetTimed(t *testing.T) {
 // caller reaches; its state is judged over every source, as every line's
 // is; and what "checked" covers is said with it.
 func TestReadOnlyCredentialsCountsTheClosedTheCallerReaches(t *testing.T) {
-	closed := newGCPAssetSource(gcpStandInOp, gcpAssetTokenMetadata, false)
+	iamOp := gcpStandInOp
+	iamOp.contentTypes = []string{"RESOURCE", "IAM_POLICY"}
+	closed := newGCPAssetSource(iamOp, gcpAssetTokenMetadata, false)
 	closed.closed = &readOnlyRefusal{reason: refusalCredentialCanWrite, on: "refresh"}
 	sources := map[string]sourceSpec{
-		"a/live": {shape: "http", scope: "scope-a", gcpAsset: closed},
-		"b/live": {shape: "http", scope: "scope-b", gcpAsset: newGCPAssetSource(gcpStandInOp, gcpAssetTokenMetadata, false)},
+		"a/live":  {shape: "http", scope: "scope-a", gcpAsset: closed},
+		"b/live":  {shape: "http", scope: "scope-b", gcpAsset: newGCPAssetSource(gcpStandInOp, gcpAssetTokenMetadata, false)},
+		"b/iam":   {shape: "http", scope: "scope-b", gcpAsset: newGCPAssetSource(iamOp, gcpAssetTokenMetadata, false)},
+		"b/other": {shape: "http", scope: "scope-b", gcpAsset: newGCPAssetSource(gcpStandInOp, gcpAssetTokenMetadata, false)},
 	}
+	// Every count is of the sources the caller reaches; the state, as
+	// every protection line's, is judged over every source.
 	for _, c := range []struct {
 		name  string
 		reach *scopeReach
 		want  string
 	}{
-		{"every source", nil, "of those this caller reaches, 1 closed"},
-		{"scope A's caller", &scopeReach{ids: map[string]bool{"scope-a": true}}, "of those this caller reaches, 1 closed"},
-		{"scope B's caller", &scopeReach{ids: map[string]bool{"scope-b": true}}, "of those this caller reaches, 0 closed"},
+		{"every source", nil, "2 of the 4 read-only sources this caller reaches serve IAM_POLICY"},
+		{"scope A's caller", &scopeReach{ids: map[string]bool{"scope-a": true}}, "1 of the 1 read-only sources this caller reaches serve IAM_POLICY"},
+		{"scope B's caller", &scopeReach{ids: map[string]bool{"scope-b": true}}, "1 of the 3 read-only sources this caller reaches serve IAM_POLICY"},
+		{"a caller reaching none", &scopeReach{ids: map[string]bool{"scope-c": true}}, "0 of the 0 read-only sources this caller reaches serve IAM_POLICY"},
 	} {
+		closedWant := "; 0 of them closed"
+		if c.reach == nil || c.reach.ids["scope-a"] {
+			closedWant = "; 1 of them closed"
+		}
 		lines := readOnlyCredentialsLines(sources, c.reach)
-		if len(lines) != 1 || lines[0].state != posturePartial || !strings.Contains(lines[0].reason, "0 of the 2 read-only sources") ||
-			!strings.Contains(lines[0].reason, c.want) || !strings.Contains(lines[0].reason, "not a grant through a group") {
+		if len(lines) != 1 || lines[0].state != posturePartial || !strings.Contains(lines[0].reason, c.want) ||
+			!strings.HasSuffix(lines[0].reason, closedWant) || !strings.Contains(lines[0].reason, "not a grant through a group") {
 			t.Errorf("%s: %+v", c.name, lines)
 		}
 	}

@@ -2512,7 +2512,8 @@ stdout exactly
 — one member, `refused`, an object of exactly `reason` and `subject`: `reason` is
 `credential-scope-unknown` (the scopes a token was granted could not be shown to be the one
 requested alone), `credential-can-write` (the write check found a write permission granted on a
-configured project, or one of its calls failed) or `credential-bound-at-resource` (an
+configured project, or the platform answered one of its calls with neither a grant nor none) or
+`credential-bound-at-resource` (an
 `IAM_POLICY` page bound the source's own principal, or `allUsers` or `allAuthenticatedUsers`, to
 a role outside the adapter's read-only list); `subject` is the permission found or the asset
 named, a string of 1 to 1024 printable ASCII characters, or `null`; each member once, the whole

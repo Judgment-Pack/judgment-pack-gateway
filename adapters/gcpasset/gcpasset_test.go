@@ -450,6 +450,23 @@ func TestACheckThePlatformDidNotAnswerIsNoRefusal(t *testing.T) {
 			t.Fatalf("a 503 refuses, naming nothing: %v", err)
 		}
 	})
+	t.Run("a later project's grant beside an earlier one with no answer", func(t *testing.T) {
+		// The project read first in the configured order brought back no
+		// answer; one read after it grants, and that grant refuses.
+		f := newFake(t)
+		f.beforePermissions = func(r *http.Request) {
+			if strings.Contains(r.URL.Path, otherProject+":") {
+				panic(http.ErrAbortHandler)
+			}
+		}
+		f.granted[testProject] = []string{"run.services.update"}
+		cfg := f.config(t)
+		cfg.Parents = []string{otherProject, testProject}
+		out, err := ObtainSealed(ctx, cfg)
+		if r := refusal(t, err, ReasonCanWrite); out != nil || r.Subject == nil || *r.Subject != "run.services.update" {
+			t.Fatalf("the later project's grant refuses: %s %v", out, err)
+		}
+	})
 	t.Run("a grant beside a call with no answer", func(t *testing.T) {
 		f := newFake(t)
 		s, err := newSource(f.config(t))

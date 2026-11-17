@@ -694,29 +694,35 @@ func describeGCPAssetCheck(report []byte, spec sourceSpec) (string, error) {
 const protectionReadOnlyCredentials = "read-only-credentials"
 
 // readOnlyCredentialsLines is the line a configuration with some gcp-asset
-// source adds, judged over all of them and naming none: enforced where
-// every one serves IAM_POLICY, so the bindings of its own principal at a
-// resource are checked on every IAM_POLICY page read; partial where some
-// serve none, whose resource bindings are unchecked. Every one is checked
-// at the start and with every token after it, and closed on a refusal.
-// What "checked" covers is said with it: a grant to the principal itself
-// or to allUsers or allAuthenticatedUsers, not one through a group, whose
-// membership no read-only call resolves. The count closed is of the
-// sources the reach takes, every one where it is nil: whether a source the
-// caller cannot reach was refused is not the caller's to learn.
+// source adds, its state judged over all of them, as every protection
+// line is, and naming none: enforced where every one serves IAM_POLICY, so
+// the bindings of its own principal at a resource are checked on every
+// IAM_POLICY page read; partial where some serve none, whose resource
+// bindings are unchecked. Every one is checked at the start and with every
+// token after it, and closed on a refusal. What "checked" covers is said
+// with it: a grant to the principal itself or to allUsers or
+// allAuthenticatedUsers, not one through a group, whose membership no
+// read-only call resolves. Its counts -- the sources, those serving
+// IAM_POLICY, those closed -- are of the sources the reach takes, every
+// one where it is nil: how many sources other scopes hold, and whether one
+// was refused, is not the caller's to learn.
 func readOnlyCredentialsLines(sources map[string]sourceSpec, reach *scopeReach) []postureLine {
 	names := gcpAssetSourceNames(sources)
 	if len(names) == 0 {
 		return nil
 	}
-	checked, closed := 0, 0
+	servingAll := true
+	reached, checked, closed := 0, 0, 0
 	for _, name := range names {
 		s := sources[name].gcpAsset
-		if s.op.serves(gcpAssetContentIAMPolicy) {
-			checked++
-		}
+		iamPolicy := s.op.serves(gcpAssetContentIAMPolicy)
+		servingAll = servingAll && iamPolicy
 		if reach != nil && !reach.holds(sources[name].scope) {
 			continue
+		}
+		reached++
+		if iamPolicy {
+			checked++
 		}
 		s.mu.Lock()
 		if s.closed != nil {
@@ -725,12 +731,12 @@ func readOnlyCredentialsLines(sources map[string]sourceSpec, reach *scopeReach) 
 		s.mu.Unlock()
 	}
 	state := postureEnforced
-	if checked < len(names) {
+	if !servingAll {
 		state = posturePartial
 	}
 	return []postureLine{{protectionReadOnlyCredentials, state, fmt.Sprintf(
-		"%d of the %d read-only sources serve IAM_POLICY and check, on each IAM_POLICY page read, the roles granted at a resource to their own principal or to allUsers or allAuthenticatedUsers, not a grant through a group; every one is checked for a write permission at the start and with every token after it, and closed on a refusal; of those this caller reaches, %d closed",
-		checked, len(names), closed)}}
+		"%d of the %d read-only sources this caller reaches serve IAM_POLICY and check, on each IAM_POLICY page read, the roles granted at a resource to their own principal or to allUsers or allAuthenticatedUsers, not a grant through a group; every one is checked for a write permission at the start and with every token after it, and closed on a refusal; %d of them closed",
+		checked, reached, closed)}}
 }
 
 // readOnlySourcePosture is one gcp-asset source in the report: its token

@@ -106,10 +106,11 @@ type postureInput struct {
 	// served to (ADR-0037): programs lists only the sources it takes, so
 	// the names of other scopes' sources are not learned from the report,
 	// as /acquire does not tell them from unknown ones. Every line is
-	// still judged over every source; the one count that is the reach's is
-	// read-only-credentials' count of closed sources, so whether a source
-	// the caller cannot reach was refused is not learned either. nil lists
-	// and counts every source.
+	// still judged over every source; the counts that are the reach's are
+	// read-only-credentials' (its sources, those serving IAM_POLICY and
+	// those closed), so how many read-only sources another scope holds,
+	// and whether one was refused, is not learned either. nil lists and
+	// counts every source.
 	reach *scopeReach
 }
 
