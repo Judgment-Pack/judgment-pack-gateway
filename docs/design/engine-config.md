@@ -1334,7 +1334,9 @@ No-source posture has the six lines above and no `programs`.
 With `identity.callerScopes` checked, the `/posture` endpoint lists in `programs`
 only the sources the caller reaches (ADR-0037), and omits `programs` when it reaches
 none; the installation's caller, `"unchecked"` and a gateway without `identity`
-list every source. Every protection line is judged over every source, whoever asks.
+list every source. Every protection line is judged over every source, whoever asks; the one
+count that is the caller's is `read-only-credentials`' count of closed sources, of the sources the
+caller reaches.
 Container-helper entries concern the local runtime client, and are partial even
 when its backend enforces all filesystem writes: the external daemon is not
 confined by that client boundary. Such a source's probe and launch keep
@@ -2249,15 +2251,22 @@ check passed; the start says each source's token source, the check, its artifact
 refuses the start. **After it**, every token obtained runs the check again before it is used. A
 read-only refusal there, or on a page, closes the source: `serve: source <name> closed on a
 refresh|page: <refusal>` on stderr, once, and every acquisition after it is refused until the
-engine restarts. A request naming a parent outside the configuration is refused
+engine restarts. A check the adapter's own time ended before it completed is no refusal: the
+adapter, handed as `--timeout` what is left of the acquisition's time less a margin, exits 1,
+and the start is refused or that acquisition fails, with the source left serving (SPEC.md §6,
+"A read-only refusal"). A request naming a parent outside the configuration is refused
 `parent-not-configured` before any token is obtained.
 
 **`/posture`** adds the line `read-only-credentials` (enforced where every gcp-asset source
-serves `IAM_POLICY`, partial otherwise, with the count closed) and `readOnlySources`, one entry
+serves `IAM_POLICY`, partial otherwise, with the count closed among the sources the caller
+reaches) and `readOnlySources`, one entry
 per source within the caller's reach: `source`, `tokenSource`, `writeCheck` (`passed`,
 `refused`, `not-run`), `state` (`serving`, `closed`, `not-started`), `artifact`,
 `resourceBindings`, and `refusal`, `null` or `{reason, on}`; the refusal's subject is said on
-stderr and in the acquisition's answer only.
+stderr and in the acquisition's answer only. `enforced` and `resourceBindings: "checked"` cover
+a role granted at a resource to the source's own principal or to `allUsers` or
+`allAuthenticatedUsers`; a grant through a group, or on an asset type the source does not serve,
+is not seen (adapters/README.md, "Resource bindings").
 
 `gateway connect` refuses a gcp-asset binding, whose `tokenSource` it has no flag for: write the
 platform's entry by hand.

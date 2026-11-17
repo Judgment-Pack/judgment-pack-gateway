@@ -74,6 +74,9 @@ type fake struct {
 	// permissionsAnswer, when set, answers every call instead.
 	granted           map[string][]string
 	permissionsAnswer func(asked []string) (int, string)
+	// beforePermissions, when set, runs before each testIamPermissions
+	// call is answered: a test's delay, or a wait for the caller to leave.
+	beforePermissions func(r *http.Request)
 	// permissionsType, when set, is the content type permissionsAnswer is
 	// served with. A 3xx answer redirects to /redirected, which answers
 	// 200 {} as JSON, so only the refusal of redirects refuses it.
@@ -218,6 +221,9 @@ func (f *fake) serveAPI(w http.ResponseWriter, r *http.Request) {
 		if !known || scope != CheckScope {
 			writeJSON(w, 403, `{"error":{"code":403,"status":"PERMISSION_DENIED"}}`)
 			return
+		}
+		if f.beforePermissions != nil {
+			f.beforePermissions(r)
 		}
 		var asked struct {
 			Permissions []string `json:"permissions"`

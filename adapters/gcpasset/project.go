@@ -493,16 +493,25 @@ func ownPrincipals(email string) []string {
 	return []string{"serviceaccount:" + strings.ToLower(email), "principal://iam.googleapis.com/projects/-/serviceaccounts/" + strings.ToLower(email)}
 }
 
-// boundAtResource refuses a binding of the source's own principal to a
-// role outside the read-only list, naming the asset. Members are compared
-// without regard to case, so a spelling does not slip a binding past.
+// publicMembers are the members that grant every caller, the source's own
+// principal among them, as an allow policy names them, lower-cased: a role
+// granted to either is one the credential holds there.
+var publicMembers = []string{"allusers", "allauthenticatedusers"}
+
+// boundAtResource refuses a binding of the source's own principal, or of
+// allUsers or allAuthenticatedUsers, to a role outside the read-only list,
+// naming the asset. Members are compared without regard to case, so a
+// spelling does not slip a binding past. A member that names a set the
+// principal may belong to -- a group, a domain, a principal set -- is not
+// resolved: membership cannot be read with the read-only calls this
+// adapter makes, and the README says so.
 func boundAtResource(assetName string, bindings []binding, own []string) error {
 	for _, b := range bindings {
 		if readOnlyRoles[b.Role] {
 			continue
 		}
 		for _, m := range b.Members {
-			if contains(own, strings.ToLower(m)) {
+			if member := strings.ToLower(m); contains(own, member) || contains(publicMembers, member) {
 				return refused(ReasonBoundAtResource, assetName)
 			}
 		}

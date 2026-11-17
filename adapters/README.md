@@ -967,11 +967,25 @@ cannot be read, is `credential-scope-unknown`. The token sources
   under while the signer holds it.
 - `key`: a service account's key in the live credentials file, the least preferred.
 
+**What the platform grants the source.** `roles/cloudasset.viewer` on each configured project,
+and nothing more: it lists both content types, and `testIamPermissions` asks for no permission
+of its own. The adapter calls two APIs, the Cloud Asset API (the list call) and the Cloud
+Resource Manager API (the write check), and both must be enabled for the credential. A disabled
+API answers 403: on the write check that is a call that fails, refused `credential-can-write`
+with no permission named, at the start or on a refresh as any refusal is; on the list call it is
+an upstream error.
+
 **The write check** (`gcp-asset-write-list/2`): `testIamPermissions` on every configured project, by the read-only
 token, over the list below in calls of at most 100. A permission granted refuses
 `credential-can-write: <the first granted, in the list's order>`; a call that fails refuses as
 well, and so does an answer that is neither `{}` nor an object with `permissions`. It runs whenever a token is obtained: at the start, where a refusal refuses the start, and
-with every token after it, where a refusal closes the source until the engine restarts.
+with every token after it, where a refusal closes the source until the engine restarts. The
+projects are asked at most eight at a time. A check that the adapter's own time (`--timeout`;
+the signer hands it what is left of the acquisition's time, less a margin) ends before it
+completes is not a refusal, since nothing the platform answered shows the credential can write,
+and not a pass: the adapter exits 1 and seals no token, the start is refused or that acquisition
+fails, and the source is not closed, so the next acquisition obtains a token and checks again.
+A token-information read that time ends is the same.
 
 - `resourcemanager.projects.setIamPolicy`
 - `resourcemanager.projects.update`
@@ -1056,11 +1070,19 @@ with every token after it, where a refusal closes the source until the engine re
 The list is fixed, not complete: a permission outside it is not checked. Grant the source only
 read-only roles; the check is a guard against a credential that was granted more by mistake.
 
-**Resource bindings.** On every `IAM_POLICY` page, a binding of the source's own principal
-(`serviceAccount:<email>`) to a role outside the read-only list refuses
-`credential-bound-at-resource: <asset name>` and closes the source. A custom role is never on the
-list, whatever its name. Where the platform serves no `IAM_POLICY`, the start and `/posture` say
-`resource-bindings: unchecked`. The read-only roles: `roles/viewer`, `roles/browser`, `roles/iam.securityReviewer`, `roles/iam.roleViewer`, `roles/cloudasset.viewer`, `roles/run.viewer`, `roles/secretmanager.viewer`, `roles/storage.objectViewer`, `roles/storage.legacyBucketReader`, `roles/storage.legacyObjectReader`, `roles/logging.viewer`, `roles/monitoring.viewer`, `roles/serviceusage.serviceUsageViewer`, `roles/artifactregistry.reader`.
+**Resource bindings.** On every `IAM_POLICY` page, a binding to a role outside the read-only
+list of the source's own principal (`serviceAccount:<email>`, or its principal identifier), or
+of `allUsers` or `allAuthenticatedUsers`, which grant every caller and so the principal too,
+refuses `credential-bound-at-resource: <asset name>` and closes the source. A custom role is
+never on the list, whatever its name. The read-only roles: `roles/viewer`, `roles/browser`, `roles/iam.securityReviewer`, `roles/iam.roleViewer`, `roles/cloudasset.viewer`, `roles/run.viewer`, `roles/secretmanager.viewer`, `roles/storage.objectViewer`, `roles/storage.legacyBucketReader`, `roles/storage.legacyObjectReader`, `roles/logging.viewer`, `roles/monitoring.viewer`, `roles/serviceusage.serviceUsageViewer`, `roles/artifactregistry.reader`. Where the platform serves no `IAM_POLICY`, the start and
+`/posture` say `resource-bindings: unchecked`. Where it does, `checked` (and `enforced` on
+`/posture`'s `read-only-credentials` line) covers those grants alone. The check does not see:
+
+- a grant through a group the principal belongs to, or through any other member that stands
+  for a set of principals (a domain, a principal set): membership cannot be resolved with the
+  read-only calls this adapter makes;
+- a binding on a resource of an asset type the source does not serve, or on a page no caller
+  reads: the check reads the pages callers request and makes no call of its own.
 
 **Projections.** `resource.data` is cut to an allow-list per asset type before the envelope is
 formed, so the digest is of the projected page; a member not listed is dropped.
@@ -1078,7 +1100,8 @@ formed, so the digest is of the projected page; a member not listed is dropped.
 (no credential, refused, rejected, seal unusable); 8 with `{"referenceExpired":{"status":410}}`
 for an expired page token, only on a request that sent one; 9 with
 `{"refused":{"reason":R,"subject":S}}` for a read-only refusal, on which the signer closes the
-source. A report beside 9 out of its form is a refusal all the same. No output names a token.
+source. A report beside 9 out of its form is a refusal all the same. A check its time ended is
+1, never 9. No output names a token.
 
 **Not confirmed against the platform.** The form of an expired page token's answer (read as 410
 on a request that sent one); the scopes the metadata server and a key's grant report for each

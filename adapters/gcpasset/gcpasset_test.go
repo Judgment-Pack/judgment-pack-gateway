@@ -14,7 +14,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"adapters/internal/canon"
 )
@@ -266,13 +268,22 @@ func TestWriteCheckInCallsOfAtMost100(t *testing.T) {
 	if len(calls) != 6 {
 		t.Fatalf("three calls per project: %d", len(calls))
 	}
-	for p, project := range cfg.Parents {
+	// The projects are asked side by side, each project's calls in order.
+	for _, project := range cfg.Parents {
 		var asked []string
+		var own []call
+		for _, c := range calls {
+			if strings.Contains(c.path, project+":") {
+				own = append(own, c)
+			}
+		}
+		if len(own) != 3 {
+			t.Fatalf("three calls on %s: %d", project, len(own))
+		}
 		for i, want := range []int{100, 100, 50} {
-			c := calls[p*3+i]
 			var body struct{ Permissions []string }
-			json.Unmarshal([]byte(c.body), &body)
-			if len(body.Permissions) != want || !strings.Contains(c.path, project+":") {
+			json.Unmarshal([]byte(own[i].body), &body)
+			if len(body.Permissions) != want {
 				t.Fatalf("call %d on %s asks %d", i, project, len(body.Permissions))
 			}
 			asked = append(asked, body.Permissions...)
@@ -313,6 +324,101 @@ func TestEveryTokenObtainedIsChecked(t *testing.T) {
 	}
 	if _, err := Check(ctx, cfg); refusal(t, err, ReasonCanWrite) == nil {
 		t.Fatal("the operator's check refuses as the start does")
+	}
+}
+
+// A write check the run's time ended before it completed is not a
+// refusal: nothing the platform answered shows the credential can write,
+// so the gateway must not close the source on it under credential-can-write.
+// It is not a pass either: no token is sealed, and an acquisition lists
+// nothing. A token-information read the run's time ended is the same.
+func TestACheckTheRunsTimeEndedIsNoRefusal(t *testing.T) {
+	waitForTheCaller := func(r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second):
+		}
+	}
+	// within is a run's time: long enough for both tokens to be obtained,
+	// so what it ends is the check.
+	within := func(t *testing.T, d time.Duration) context.Context {
+		c, cancel := context.WithTimeout(ctx, d)
+		t.Cleanup(cancel)
+		return c
+	}
+	var r *Refused
+	t.Run("the write check", func(t *testing.T) {
+		f := newFake(t)
+		f.beforePermissions = waitForTheCaller
+		cfg := f.config(t)
+		cfg.Parents = []string{testProject, otherProject}
+		out, err := ObtainSealed(within(t, time.Second), cfg)
+		if out != nil || errors.As(err, &r) || !errors.Is(err, errCheckIncomplete) {
+			t.Fatalf("a token-only run: %s %v", out, err)
+		}
+		if _, err := Acquire(within(t, time.Second), cfg, resourceRequest()); errors.As(err, &r) || !errors.Is(err, errCheckIncomplete) || len(f.callsTo("/asset/")) != 0 {
+			t.Fatalf("an acquisition: %v", err)
+		}
+		if _, err := Check(within(t, time.Second), cfg); errors.As(err, &r) || !errors.Is(err, errCheckIncomplete) {
+			t.Fatalf("the operator's check: %v", err)
+		}
+	})
+	t.Run("a grant answered in time", func(t *testing.T) {
+		// A grant answered before the time ended refuses, whatever another
+		// project's calls did.
+		f := newFake(t)
+		f.beforePermissions = func(r *http.Request) {
+			if strings.Contains(r.URL.Path, otherProject+":") {
+				waitForTheCaller(r)
+			}
+		}
+		f.granted[testProject] = []string{"run.services.update"}
+		cfg := f.config(t)
+		cfg.Parents = []string{testProject, otherProject}
+		if _, err := ObtainSealed(within(t, 3*time.Second), cfg); refusal(t, err, ReasonCanWrite).Subject == nil {
+			t.Fatalf("a grant beside a check the time ended: %v", err)
+		}
+	})
+	t.Run("the token-information read", func(t *testing.T) {
+		f := newFake(t)
+		f.tokenInfo = func(string) (int, string) { time.Sleep(2 * time.Second); return 200, `{}` }
+		cfg := f.config(t)
+		cfg.TokenSource, cfg.Credentials = TokenSourceMetadata, sealKeyFile(t)
+		if _, err := ObtainSealed(within(t, time.Second), cfg); errors.As(err, &r) || !errors.Is(err, errCheckIncomplete) {
+			t.Fatalf("a token-information read the run's time ended: %v", err)
+		}
+	})
+}
+
+// The projects are asked side by side, at most maxConcurrentChecks at
+// once, so the most a configuration names is checked in a few round trips.
+func TestWriteCheckAsksProjectsSideBySide(t *testing.T) {
+	f := newFake(t)
+	var mu sync.Mutex
+	inFlight, most := 0, 0
+	f.beforePermissions = func(*http.Request) {
+		mu.Lock()
+		inFlight++
+		most = max(most, inFlight)
+		mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+	}
+	cfg := f.config(t)
+	cfg.Parents = nil
+	for i := range maxParents {
+		cfg.Parents = append(cfg.Parents, fmt.Sprintf("projects/example-project-%d", i+1))
+	}
+	if _, err := ObtainSealed(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(f.callsTo("/rm/")); got != maxParents {
+		t.Fatalf("every project asked once: %d", got)
+	}
+	if most < 2 || most > maxConcurrentChecks {
+		t.Fatalf("projects asked at once: %d, want 2 to %d", most, maxConcurrentChecks)
 	}
 }
 
@@ -606,6 +712,13 @@ func TestBoundAtResource(t *testing.T) {
 		{"an organization's custom role", "organizations/100000000009/roles/cloudasset.viewer", own, true},
 		{"a read-only role", "roles/secretmanager.viewer", own, false},
 		{"another principal's write role", "roles/owner", "serviceAccount:orders-runtime@example-project-1.iam.gserviceaccount.com", false},
+		// A role granted to every caller is one the credential holds there.
+		{"a write role granted allUsers", "roles/run.developer", "allUsers", true},
+		{"a write role granted allAuthenticatedUsers", "roles/secretmanager.secretVersionAdder", "allAuthenticatedUsers", true},
+		{"allUsers in another case", "roles/storage.objectAdmin", "ALLUSERS", true},
+		{"a read-only role granted allUsers", "roles/storage.objectViewer", "allUsers", false},
+		// A group is not resolved (README, "Resource bindings").
+		{"a group's write role", "roles/owner", "group:drift-readers@example.com", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

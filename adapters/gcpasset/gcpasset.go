@@ -12,11 +12,12 @@
 //   - each time it obtains a token -- at the gateway's start and at every
 //     refresh -- it asks testIamPermissions on every configured project
 //     whether the credential holds any of a fixed list of write
-//     permissions, and refuses if it does or if the answer cannot be had
-//     (writecheck.go);
+//     permissions, and refuses if it does or if a call fails; a check the
+//     run's time ended before it completed seals and uses no token, and is
+//     no refusal (writecheck.go);
 //   - on every IAM_POLICY page it serves, it refuses a binding of its own
-//     principal to a role outside a fixed list of read-only predefined
-//     roles (project.go).
+//     principal, or of allUsers or allAuthenticatedUsers, to a role outside
+//     a fixed list of read-only predefined roles (project.go).
 //
 // It keeps no cursor: the platform's nextPageToken is returned as written,
 // or null, and never followed. It imports nothing of the core module.

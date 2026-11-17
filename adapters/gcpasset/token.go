@@ -51,9 +51,8 @@ import (
 
 // endpoints are the platform's endpoints. They are fixed: a key file's own
 // token_uri is not read, so a key cannot carry its assertion elsewhere. A
-// test of this package sets them; the binary built with the
-// gcpasset_testendpoints tag reads them from its environment
-// (endpoints_testtag.go), and no other build can change them.
+// test of this package sets them, and no build of the command can change
+// them.
 var endpoints = struct {
 	Asset, ResourceManager, Metadata, OAuthToken, TokenInfo string
 }{
@@ -222,6 +221,9 @@ func (s *source) redacted(err error) error {
 	var notConfigured *ParentNotConfigured
 	if errors.As(err, &notConfigured) {
 		return notConfigured
+	}
+	if errors.Is(err, errCheckIncomplete) {
+		return errCheckIncomplete
 	}
 	return errors.New(redact.Diagnostic(err.Error(), false, s.secrets))
 }

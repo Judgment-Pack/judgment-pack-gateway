@@ -6,14 +6,23 @@ package gcpasset
 // naming the first granted in the list's order; a call that fails refuses
 // as a grant does. It runs whenever a token is obtained: at the gateway's
 // start and at every refresh, before the new token is used.
+//
+// The projects are asked at most maxConcurrentChecks at a time, so a
+// configuration of many projects is checked in a few round trips rather
+// than one per project. A check the run's own time (or a cancellation)
+// ended before it completed is neither a refusal nor a pass: nothing the
+// platform answered shows the credential can write, and no token is sealed
+// or used on it (errCheckIncomplete).
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
+	"sync"
 
 	"adapters/internal/canon"
 )
@@ -26,6 +35,18 @@ const WriteListVersion = "gcp-asset-write-list/2"
 // maxPermissionsPerCall is the platform's bound on one testIamPermissions
 // call.
 const maxPermissionsPerCall = 100
+
+// maxConcurrentChecks bounds how many projects the write check asks at
+// once: maxParents projects take maxParents/maxConcurrentChecks round trips.
+const maxConcurrentChecks = 8
+
+// errCheckIncomplete is a read-only check that the run's own time, or a
+// cancellation, ended before it completed. It is not a refusal, since
+// nothing the platform answered shows the credential can write, and not a
+// pass, since no token is sealed or used on it: the command exits 1, and
+// the gateway fails that start or that refresh without closing the source,
+// which checks again with the next token it asks for.
+var errCheckIncomplete = errors.New("the read-only check did not complete within the run's time; no token was sealed or used, and the check runs again with the next token")
 
 // writeList is every write permission the check asks about, in the order a
 // refusal names the first one granted. The adapter's README lists it. It is
@@ -131,25 +152,60 @@ func batches(list []string, size int) [][]string {
 }
 
 // writeCheck asks about list on every configured project, in calls of at
-// most maxPermissionsPerCall, and refuses on the first project that grants
-// any, naming the first granted in list's order, or on any call that
-// fails.
+// most maxPermissionsPerCall, at most maxConcurrentChecks projects at once.
+// Read in the configured order, the first project that grants any refuses,
+// naming the first granted in list's order, and so does the first whose
+// call failed; failing either, a project whose calls the run's time ended
+// makes the check incomplete (errCheckIncomplete), never a pass.
 func (s *source) writeCheck(ctx context.Context, token string, list []string) error {
-	for _, parent := range s.cfg.Parents {
-		granted := map[string]bool{}
-		for _, batch := range batches(list, maxPermissionsPerCall) {
-			answer, ok := s.testPermissions(ctx, token, parent, batch)
-			if !ok {
-				return &Refused{Reason: ReasonCanWrite}
-			}
-			for _, p := range answer {
-				granted[p] = true
-			}
+	outcomes := make([]error, len(s.cfg.Parents))
+	slots := make(chan struct{}, maxConcurrentChecks)
+	var wg sync.WaitGroup
+	for i, parent := range s.cfg.Parents {
+		slots <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() { <-slots; wg.Done() }()
+			outcomes[i] = s.checkProject(ctx, token, parent, list)
+		}()
+	}
+	wg.Wait()
+	incomplete := false
+	for _, err := range outcomes {
+		switch {
+		case errors.Is(err, errCheckIncomplete):
+			incomplete = true
+		case err != nil:
+			return err
 		}
-		for _, p := range list {
-			if granted[p] {
-				return refused(ReasonCanWrite, p)
+	}
+	if incomplete {
+		return errCheckIncomplete
+	}
+	return nil
+}
+
+// checkProject is the write check on one project: nil where none of list is
+// granted; a refusal naming the first granted in list's order, or naming
+// none for a call that failed; errCheckIncomplete for a call the run's time
+// or a cancellation ended.
+func (s *source) checkProject(ctx context.Context, token, parent string, list []string) error {
+	granted := map[string]bool{}
+	for _, batch := range batches(list, maxPermissionsPerCall) {
+		answer, ok := s.testPermissions(ctx, token, parent, batch)
+		if !ok {
+			if ctx.Err() != nil {
+				return errCheckIncomplete
 			}
+			return &Refused{Reason: ReasonCanWrite}
+		}
+		for _, p := range answer {
+			granted[p] = true
+		}
+	}
+	for _, p := range list {
+		if granted[p] {
+			return refused(ReasonCanWrite, p)
 		}
 	}
 	return nil

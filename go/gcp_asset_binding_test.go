@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -344,7 +345,7 @@ func TestAGCPAssetRefusalClosesTheSource(t *testing.T) {
 	if runs := gcpStandInRuns(dir); !reflect.DeepEqual(runs, []string{"TOKEN:false"}) {
 		t.Fatalf("the start's runs: %v", runs)
 	}
-	if lines := readOnlyCredentialsLines(service.sources); len(lines) != 1 || lines[0].state != posturePartial {
+	if lines := readOnlyCredentialsLines(service.sources, nil); len(lines) != 1 || lines[0].state != posturePartial {
 		t.Fatalf("the posture line: %+v", lines)
 	}
 	if p := readOnlySourcePostures(service.sources, nil); len(p) != 1 || p[0].state != "serving" || p[0].writeCheck != "passed" || p[0].refusal != nil {
@@ -388,7 +389,7 @@ func TestAGCPAssetRefusalClosesTheSource(t *testing.T) {
 		!strings.Contains(p[0].text(), "refusal=unstated on page") {
 		t.Fatalf("closed on a page: %+v", p)
 	}
-	if lines := readOnlyCredentialsLines(service.sources); !strings.Contains(lines[0].reason, "1 closed") {
+	if lines := readOnlyCredentialsLines(service.sources, nil); !strings.Contains(lines[0].reason, "1 closed") {
 		t.Fatalf("the posture line counts no closure: %+v", lines)
 	}
 	for _, text := range []string{said.String(), got.body, log.String(), p[0].text()} {
@@ -444,5 +445,117 @@ func TestTheStartRefusesAGCPAssetSourceNotShownReadOnly(t *testing.T) {
 	}
 	if p := readOnlySourcePostures(service.sources, nil); p[0].state != "not-started" || p[0].refusal != nil {
 		t.Fatalf("not started: %+v", p)
+	}
+}
+
+// handedTimeout is the --timeout= word's value on argv, wherever it is:
+// the stand-in's command line carries the adapter's flags after "--".
+func handedTimeout(argv []string) string {
+	for _, arg := range argv {
+		if value, ok := strings.CutPrefix(arg, "--timeout="); ok {
+			return value
+		}
+	}
+	return ""
+}
+
+// The adapter is handed the time left on the acquisition, less a margin
+// for its start and its report, as --timeout: on its token run and on its
+// page run. A check that time ended before it completed is the adapter's
+// status 1, not 9: it fails that refresh and the acquisition, closes
+// nothing, and the next acquisition obtains a token, and checks, again.
+func TestAGCPAssetCheckTheTimeEndedClosesNothing(t *testing.T) {
+	service, server := testService(t)
+	dir := t.TempDir()
+	service.sources = map[string]sourceSpec{"inventory/live": gcpStandIn(dir, gcpStandInOp, gcpStandInToken, 0, `{}`, 0)}
+	if err := service.gcpAssetStart(io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	handed := func(run string) time.Duration {
+		t.Helper()
+		argv := service.startedWith.Load()
+		if argv == nil || contains(*argv, "--token-only") != (run == "token") {
+			t.Fatalf("the %s run's command line: %v", run, argv)
+		}
+		d, err := time.ParseDuration(handedTimeout(*argv))
+		if err != nil {
+			t.Fatalf("the %s run is handed no --timeout: %q", run, *argv)
+		}
+		return d
+	}
+	if d := handed("token"); d <= defaultSourceTimeout-gcpAssetRunMargin-2*time.Second || d > defaultSourceTimeout-gcpAssetRunMargin {
+		t.Fatalf("the start's token run is handed %v of the %v source timeout", d, defaultSourceTimeout)
+	}
+
+	// The token run reports a check it could not complete: status 1.
+	spec := service.sources["inventory/live"]
+	spec.env = gcpStandIn(dir, gcpStandInOp, ``, 1, `{}`, 0).env
+	service.sources["inventory/live"] = spec
+	got := postRaw(t, server.URL, "/acquire", gcpStandInRequest)
+	if got.code == http.StatusOK || strings.Contains(got.body, "is closed") || strings.Contains(got.body, refusalCredentialCanWrite) {
+		t.Fatalf("a refresh whose check did not complete: %d %s", got.code, got.body)
+	}
+	if runs := gcpStandInRuns(dir); !reflect.DeepEqual(runs, []string{"TOKEN:false", "TOKEN:false"}) {
+		t.Fatalf("the page ran on a token that was not obtained: %v", runs)
+	}
+	if p := readOnlySourcePostures(service.sources, nil); p[0].state != "serving" || p[0].refusal != nil {
+		t.Fatalf("a check that did not complete closed the source: %+v", p)
+	}
+
+	// The next acquisition asks for a token again, and its page runs.
+	spec.env = gcpStandIn(dir, gcpStandInOp, gcpStandInToken, 0, `{}`, 0).env
+	service.sources["inventory/live"] = spec
+	postRaw(t, server.URL, "/acquire", gcpStandInRequest)
+	if runs := gcpStandInRuns(dir); !reflect.DeepEqual(runs, []string{"TOKEN:false", "TOKEN:false", "TOKEN:false", "PAGE:true"}) {
+		t.Fatalf("the source served nothing after a check that did not complete: %v", runs)
+	}
+	if d := handed("page"); d <= 0 || d > defaultSourceTimeout-gcpAssetRunMargin {
+		t.Fatalf("the page run is handed %v", d)
+	}
+}
+
+// gcpAssetTimed hands the adapter what is left of the acquisition's time,
+// less the margin, or half of what is left where that is less.
+func TestGCPAssetTimed(t *testing.T) {
+	spec := sourceSpec{argv: []string{"adapter-gcp-asset", "--parents=projects/example-project-1"}}
+	timed := gcpAssetTimed(context.Background(), 30*time.Second, spec)
+	if !reflect.DeepEqual(timed.argv, []string{"adapter-gcp-asset", "--parents=projects/example-project-1", "--timeout=25s"}) || len(spec.argv) != 2 {
+		t.Fatalf("no deadline: %q, the spec's own: %q", timed.argv, spec.argv)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	d, err := time.ParseDuration(handedTimeout(gcpAssetTimed(ctx, 30*time.Second, spec).argv))
+	if err != nil || d > 2*time.Second || d < time.Second {
+		t.Fatalf("four seconds left: %v %v", d, err)
+	}
+}
+
+// The posture line's count of closed sources is of the sources the
+// caller reaches; its state is judged over every source, as every line's
+// is; and what "checked" covers is said with it.
+func TestReadOnlyCredentialsCountsTheClosedTheCallerReaches(t *testing.T) {
+	closed := newGCPAssetSource(gcpStandInOp, gcpAssetTokenMetadata, false)
+	closed.closed = &readOnlyRefusal{reason: refusalCredentialCanWrite, on: "refresh"}
+	sources := map[string]sourceSpec{
+		"a/live": {shape: "http", scope: "scope-a", gcpAsset: closed},
+		"b/live": {shape: "http", scope: "scope-b", gcpAsset: newGCPAssetSource(gcpStandInOp, gcpAssetTokenMetadata, false)},
+	}
+	for _, c := range []struct {
+		name  string
+		reach *scopeReach
+		want  string
+	}{
+		{"every source", nil, "of those this caller reaches, 1 closed"},
+		{"scope A's caller", &scopeReach{ids: map[string]bool{"scope-a": true}}, "of those this caller reaches, 1 closed"},
+		{"scope B's caller", &scopeReach{ids: map[string]bool{"scope-b": true}}, "of those this caller reaches, 0 closed"},
+	} {
+		lines := readOnlyCredentialsLines(sources, c.reach)
+		if len(lines) != 1 || lines[0].state != posturePartial || !strings.Contains(lines[0].reason, "0 of the 2 read-only sources") ||
+			!strings.Contains(lines[0].reason, c.want) || !strings.Contains(lines[0].reason, "not a grant through a group") {
+			t.Errorf("%s: %+v", c.name, lines)
+		}
+	}
+	if s := (readOnlyRefusal{reason: refusalCredentialBoundAtRsrc, subject: "//storage.googleapis.com/b"}).sentence(); !strings.Contains(s, "or allUsers or allAuthenticatedUsers") {
+		t.Fatalf("the refusal's sentence: %s", s)
 	}
 }

@@ -20,7 +20,10 @@ package main
 // on a page that binds the source's own principal at a resource -- closes
 // the source for every request after it, and the start, the engine's
 // stderr and /posture say so; a closed source serves nothing until the
-// engine restarts.
+// engine restarts. A check the adapter's own time ended before it completed
+// is no refusal: it fails that start or refresh, and closes nothing. The
+// adapter is handed that time as --timeout: what is left of the
+// acquisition's, less a margin for its start and its report.
 
 import (
 	"cmp"
@@ -61,6 +64,10 @@ const (
 	// The adapter's request bounds (adapters/gcpasset, ParseRequest).
 	maxGCPAssetPageToken = 8192
 	maxGCPAssetPageSize  = 1000
+	// gcpAssetRunMargin is what of the acquisition's time the adapter is
+	// not handed, at most: the margin for its start and its report, so it
+	// ends its own run before the signer would kill it.
+	gcpAssetRunMargin = 5 * time.Second
 )
 
 // The token sources a platform's credentials.live.tokenSource names
@@ -298,9 +305,9 @@ func (r readOnlyRefusal) sentence() string {
 	case r.reason == refusalCredentialScope:
 		return refusalCredentialScope + ": the scopes a token was granted could not be shown to be the one requested alone"
 	case r.reason == refusalCredentialBoundAtRsrc && r.subject != "":
-		return refusalCredentialBoundAtRsrc + ": " + subject + " binds the source's own principal to a role outside the read-only list"
+		return refusalCredentialBoundAtRsrc + ": " + subject + " binds the source's own principal, or allUsers or allAuthenticatedUsers, to a role outside the read-only list"
 	case r.reason == refusalCredentialBoundAtRsrc:
-		return refusalCredentialBoundAtRsrc + ": a page bound the source's own principal to a role outside the read-only list"
+		return refusalCredentialBoundAtRsrc + ": a page bound the source's own principal, or allUsers or allAuthenticatedUsers, to a role outside the read-only list"
 	}
 	return "the adapter refused the credential as not read-only, and its report of why was out of its form"
 }
@@ -403,9 +410,10 @@ func (g *gatewayService) closeGCPAsset(source string, s *gcpAssetSource, r readO
 // --token-only, which answers one only once both tokens are held to their
 // scopes and the write check found no write permission on any configured
 // project: the check, met on the start or on a refresh. A refusal closes
-// the source; a check that passed is counted.
+// the source; a check that passed is counted; a check the adapter's time
+// ended, or any other failure, fails this token alone.
 func (g *gatewayService) gcpAssetToken(ctx context.Context, timeout time.Duration, source string, spec sourceSpec, on string) (string, int, error) {
-	sealed, expiresIn, err := g.obtainToken(ctx, timeout, source, spec)
+	sealed, expiresIn, err := g.obtainToken(ctx, timeout, source, gcpAssetTimed(ctx, timeout, spec))
 	var refused *gcpAssetRefusedRun
 	if errors.As(err, &refused) {
 		return "", 0, g.closeGCPAsset(source, spec.gcpAsset, refused.refusal, on)
@@ -416,6 +424,24 @@ func (g *gatewayService) gcpAssetToken(ctx context.Context, timeout time.Duratio
 		spec.gcpAsset.mu.Unlock()
 	}
 	return sealed, expiresIn, err
+}
+
+// gcpAssetTimed is spec with --timeout appended to its command line: the
+// time left on ctx -- the source's timeout where ctx has no deadline --
+// less gcpAssetRunMargin, or less half the time left where half is the
+// smaller. The adapter
+// then ends a check it cannot complete itself, and says so (status 1),
+// rather than being killed before it can; its own default is shorter than
+// the signer's timeout, and too short for the most projects it is given.
+func gcpAssetTimed(ctx context.Context, timeout time.Duration, spec sourceSpec) sourceSpec {
+	left := timeout
+	if deadline, ok := ctx.Deadline(); ok {
+		left = time.Until(deadline)
+	}
+	run := max((left - min(gcpAssetRunMargin, left/2)).Truncate(time.Millisecond), time.Millisecond)
+	timed := spec
+	timed.argv = append(append([]string(nil), spec.argv...), "--timeout="+run.String())
+	return timed
 }
 
 // The refusals of a request before any token is obtained for it, each one
@@ -532,7 +558,7 @@ func (g *gatewayService) runGCPAssetSource(source string, spec sourceSpec, stdin
 		if err := s.refusedIfClosed(source); err != nil {
 			return nil, "", "", err
 		}
-		run := spec
+		run := gcpAssetTimed(ctx, timeout, spec)
 		run.env = append(append([]string(nil), spec.env...), gcpAssetSealedTokenVariable+"="+sealed)
 		result, digest, observedAt, err := g.runOnce(ctx, timeout, source, run, stdin)
 		var refused *gcpAssetRefusedRun
@@ -618,7 +644,7 @@ func gcpAssetStartLines(name string, spec sourceSpec) []string {
 	if s.retained {
 		artifact = fmt.Sprintf("artifact %q, set by the operator: its payloads are kept in the store, which this shape does not do by default", artifactRetained)
 	}
-	bindings := "resource-bindings: checked on every IAM_POLICY page a caller reads; a role granted the source's own principal at a resource outside the read-only list closes the source"
+	bindings := "resource-bindings: checked on every IAM_POLICY page a caller reads; a role outside the read-only list granted at a resource to the source's own principal, or to allUsers or allAuthenticatedUsers, closes the source; a grant through a group, or on an asset type the source does not serve, is not seen"
 	if !s.op.serves(gcpAssetContentIAMPolicy) {
 		bindings = "resource-bindings: unchecked: the platform serves no IAM_POLICY, so a role granted the source's own principal on one resource below a project is not seen"
 	}
@@ -671,7 +697,12 @@ const protectionReadOnlyCredentials = "read-only-credentials"
 // resource are checked on every IAM_POLICY page read; partial where some
 // serve none, whose resource bindings are unchecked. Every one is checked
 // at the start and with every token after it, and closed on a refusal.
-func readOnlyCredentialsLines(sources map[string]sourceSpec) []postureLine {
+// What "checked" covers is said with it: a grant to the principal itself
+// or to allUsers or allAuthenticatedUsers, not one through a group, whose
+// membership no read-only call resolves. The count closed is of the
+// sources the reach takes, every one where it is nil: whether a source the
+// caller cannot reach was refused is not the caller's to learn.
+func readOnlyCredentialsLines(sources map[string]sourceSpec, reach *scopeReach) []postureLine {
 	names := gcpAssetSourceNames(sources)
 	if len(names) == 0 {
 		return nil
@@ -681,6 +712,9 @@ func readOnlyCredentialsLines(sources map[string]sourceSpec) []postureLine {
 		s := sources[name].gcpAsset
 		if s.op.serves(gcpAssetContentIAMPolicy) {
 			checked++
+		}
+		if reach != nil && !reach.holds(sources[name].scope) {
+			continue
 		}
 		s.mu.Lock()
 		if s.closed != nil {
@@ -693,7 +727,7 @@ func readOnlyCredentialsLines(sources map[string]sourceSpec) []postureLine {
 		state = posturePartial
 	}
 	return []postureLine{{protectionReadOnlyCredentials, state, fmt.Sprintf(
-		"%d of the %d read-only sources serve IAM_POLICY and check the roles of their own principal at a resource on each IAM_POLICY page read; every one is checked for a write permission at the start and with every token after it, and closed on a refusal; %d closed",
+		"%d of the %d read-only sources serve IAM_POLICY and check, on each IAM_POLICY page read, the roles granted at a resource to their own principal or to allUsers or allAuthenticatedUsers, not a grant through a group; every one is checked for a write permission at the start and with every token after it, and closed on a refusal; of those this caller reaches, %d closed",
 		checked, len(names), closed)}}
 }
 

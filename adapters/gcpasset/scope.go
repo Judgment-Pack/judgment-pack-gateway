@@ -84,7 +84,10 @@ func printable(s string) bool {
 	return true
 }
 
-// holdScope holds a token to the one scope it was requested with.
+// holdScope holds a token to the one scope it was requested with. A
+// token-information read the run's time or a cancellation ended is an
+// incomplete check (errCheckIncomplete), as in the write check: not a
+// refusal and not a pass.
 func (s *source) holdScope(ctx context.Context, tok obtained, requested string) error {
 	unknown := &Refused{Reason: ReasonScopeUnknown}
 	if tok.scopeUnreadable {
@@ -96,6 +99,9 @@ func (s *source) holdScope(ctx context.Context, tok obtained, requested string) 
 	} else {
 		var ok bool
 		if granted, ok = s.tokenInfoScope(ctx, tok.value); !ok {
+			if ctx.Err() != nil {
+				return errCheckIncomplete
+			}
 			return unknown
 		}
 	}
