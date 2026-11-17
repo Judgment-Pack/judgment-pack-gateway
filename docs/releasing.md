@@ -245,8 +245,11 @@ the evidence only when all of this holds, and refuses otherwise:
   commit, and refuses if it failed there;
 - it completed and succeeded, and started at most 48 hours before the gate reads it;
 - every job and leg succeeded on a GitHub-hosted runner with its labels: `check`,
-  `ubuntu-latest · Go 1.26`, `macos-latest · Go 1.26` and `windows-latest · Go 1.26`, the three
-  operating systems each by its own leg; none was skipped, and `check` passed every setup step and
+  `ubuntu-latest · Go 1.26`, `macos-latest · Go 1.26`, `windows-latest · Go 1.26 · shard 1 of 2`
+  and `windows-latest · Go 1.26 · shard 2 of 2`, the three operating systems each by legs of its
+  own (Windows runs the core's tests in two shards, each top-level test in exactly one; the script
+  that splits them, `.github/go_test_shard.py`, refuses unless Go selects exactly that); none was
+  skipped, and `check` passed every setup step and
   every check, with no skip;
 - each job's evidence names the commit and the inputs the release's checkout holds; the Go of each
   leg and of `check` is the one `release.yml` names (`1.26.5`); the Linux runner image and its
@@ -259,7 +262,7 @@ What it reuses and what it still does at the release:
 
 | | On a push to `main` | At the release, before | At the release, now |
 | --- | --- | --- | --- |
-| `ubuntu-latest · Go 1.26`, `macos-latest · Go 1.26`, `windows-latest · Go 1.26`: the core's Go steps, natively | run, evidence recorded | run again | taken from each leg's evidence, never one leg for another |
+| `ubuntu-latest · Go 1.26`, `macos-latest · Go 1.26`, the two `windows-latest · Go 1.26 · shard N of 2` legs: the core's Go steps, natively | run, evidence recorded | run again | taken from each leg's evidence, never one leg for another |
 | `check`: the setup steps and every check of `dev.json`, the adapters, the release contents, the plugins, the second implementation, the image, the witness scenario, the agreement of the two paths | run, evidence recorded | run again | taken from its evidence |
 | The tag, `main`, the notes, the `production` reviewer rule; the notices with the release's toolchain, the packing, the checksums and the six archives read; the engine image built, its index held and each architecture's filesystem judged; the archives run on four platforms; the tag again and no release under it; the attestations; the draft; the approval; the draft held to the run's files; the image pushed and read back; the draft held again and the published release held to the run's files | not run | run | run, unchanged and in the same order |
 

@@ -14,7 +14,9 @@ describes, so that the three cannot drift apart unnoticed until a release refuse
   the check job's toolchains set up by the same actions, and keeps its decision record;
 - scripts/dev/release_evidence.py is the development kit's lib/release_evidence.py of the kit
   release its line 2 names, byte for byte after that line, and that release is the one the other
-  vendored scripts name.
+  vendored scripts name;
+- the matrix legs each event runs, and the Windows leg's shards: each top-level test of the core
+  in exactly one (.github/go_test_shard.py, held here too).
 
 Standard library only; the workflows are read by the YAML subset below, which refuses anything
 it does not know. Run from the repository root: python3 .github/test_ci_evidence.py"""
@@ -370,6 +372,25 @@ def legs(job, event='push'):
     return [{key: leg.get(key, '') for key in sorted(keys)} for leg in result]
 
 
+LEG_TEST = re.compile(r"matrix\.([A-Za-z0-9_-]+) (==|!=) '([^']*)'")
+
+
+def runs_on_leg(condition, values):
+    """Whether a step's `if` lets it run on a leg: no condition, or matrix tests joined by || or by
+    && (not both); a condition on anything but the matrix is refused here."""
+    if condition is None:
+        return True
+    for joiner, combine in ((' || ', any), (' && ', all)):
+        if joiner in condition:
+            if (' && ' if joiner == ' || ' else ' || ') in condition:
+                raise ValueError('a condition mixing || and &&: %r' % condition)
+            return combine(runs_on_leg(part, values) for part in condition.split(joiner))
+    found = LEG_TEST.fullmatch(condition.strip())
+    if not found or found.group(1) not in values:
+        raise ValueError('a leg condition this reader does not know: %r' % condition)
+    return (values[found.group(1)] == found.group(3)) == (found.group(2) == '==')
+
+
 def option(command, name):
     found = re.findall(r'(?:^|\s)%s\s+("[^"]*"|\S+)' % re.escape(name), command)
     return [value.strip('"') for value in found]
@@ -500,9 +521,35 @@ class ConfigurationTest(unittest.TestCase):
         required = {job['name'] for job in self.spec['jobs'].values()}
         self.assertEqual(set(names), required | set(self.spec.get('skipped_jobs', [])))
         self.assertEqual(self.spec.get('skipped_jobs', []), [])
-        # The go matrix is three native legs, never one.
+        # The go matrix is three native operating systems, never one, Windows in shards.
         self.assertEqual(sorted(values['os'] for values in legs(self.ci['jobs']['go'])),
-                         ['macos-latest', 'ubuntu-latest', 'windows-latest'])
+                         ['macos-latest', 'ubuntu-latest', 'windows-latest', 'windows-latest'])
+
+    def test_the_windows_shards_test_the_core_once_and_the_other_legs_whole(self):
+        """Each leg runs the core's tests by one step: `go test ./...`, or on Windows one shard of
+        the script's split, the shards being 1 to N of its --of N. The sandbox boundary tests run
+        once on each operating system."""
+        go = self.ci['jobs']['go']
+        steps = {step['name']: step for step in go['steps']}
+        whole, shard = steps['Tests'], steps['Tests, one shard of two']
+        self.assertEqual(whole['run'], 'go test ./...')
+        command = shard['run']
+        self.assertEqual(option(command, '--dir'), ['go'])
+        self.assertEqual(option(command, '--shard'), ['${SHARD}'])
+        self.assertEqual(shard['env'], {'SHARD': '${{ matrix.shard }}'})
+        self.assertEqual(shard.get('working-directory'), '.')
+        self.assertTrue(command.startswith('python .github/go_test_shard.py '))
+        count = int(option(command, '--of')[0])
+        windows = [values for values in legs(go) if values['os'] == 'windows-latest']
+        self.assertEqual(sorted(values['shard'] for values in windows), [str(k) for k in range(1, count + 1)])
+        sandbox = {}
+        for values in legs(go):
+            with self.subTest(leg=expand(go['name'], values)):
+                ran = [step['name'] for step in (whole, shard) if runs_on_leg(step.get('if'), values)]
+                self.assertEqual(ran, ['Tests, one shard of two' if values['os'] == 'windows-latest' else 'Tests'])
+                if runs_on_leg(steps['Native sandbox boundary tests'].get('if'), values):
+                    sandbox[values['os']] = sandbox.get(values['os'], 0) + 1
+        self.assertEqual(sandbox, {'ubuntu-latest': 1, 'macos-latest': 1, 'windows-latest': 1})
 
     def test_the_macos_leg_runs_on_main_and_nightly_and_no_leg_else_drops_out(self):
         """A pull request and a merge group run without the macOS leg; a push to main, whose run
@@ -664,6 +711,80 @@ class ConfigurationTest(unittest.TestCase):
         gate_at = [index for index, text in enumerate(order) if 'release_evidence.py verify' in text][0]
         for action in ours:
             self.assertLess(order.index(action), gate_at)
+
+
+class GoTestShardTest(unittest.TestCase):
+    """.github/go_test_shard.py: the rule, its expression, the listing it reads and the refusals."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.shard = vendored('go_test_shard', '.github/go_test_shard.py')
+
+    LISTING = ('TestA\nTestBb\r\nExampleCcc\nBenchmarkDd\nok  \tgateway\t0.009s\n'
+               '?   \tgateway/cmd\t[no test files]\nFuzzEe\nTestFff\nok  \tgateway/x\t(cached)\n')
+
+    def fake(self, listing, selected):
+        def run(arguments, directory):
+            self.assertEqual(directory, 'go')
+            self.assertEqual(arguments[:2], ['test', '-list'])
+            self.assertEqual(arguments[3:], ['./...'])
+            return listing if arguments[2] == '.' else selected
+        return run
+
+    def test_the_expression_selects_the_rules_names(self):
+        for count in (2, 3, 4):
+            for k in range(1, count + 1):
+                pattern = re.compile(self.shard.expression(k, count))
+                for length in range(1, 60):
+                    name = 'T' * length
+                    with self.subTest(count=count, shard=k, length=length):
+                        self.assertEqual(bool(pattern.fullmatch(name)), self.shard.shard_of(name, count) == k)
+        self.assertEqual(self.shard.expression(1, 2), '^(?:.{2})*$')
+        self.assertEqual(self.shard.expression(2, 2), '^(?:.{2})*.{1}$')
+        for k in (0, 3):
+            with self.assertRaises(self.shard.Refusal):
+                self.shard.expression(k, 2)
+
+    def test_reads_a_listing_package_by_package(self):
+        self.assertEqual(self.shard.parse_listing(self.LISTING), {
+            'gateway': ['TestA', 'TestBb', 'ExampleCcc', 'BenchmarkDd'], 'gateway/cmd': [],
+            'gateway/x': ['FuzzEe', 'TestFff']})
+        for text in ('TestA\nsomething printed\nok  \tp\t0.1s\n', 'TestA\n', 'TestA\n?   \tp\t[no test files]\n',
+                     'ok  \tp\t0.1s\nok  \tp\t0.1s\n', 'TestA\nTestA\nok  \tp\t0.1s\n',
+                     'FAIL\tp [build failed]\n'):
+            with self.subTest(text=text), self.assertRaises(self.shard.Refusal):
+                self.shard.parse_listing(text)
+
+    def test_runs_when_go_selects_exactly_the_shard(self):
+        # Shard 1 of 2 holds the even lengths: TestBb (6), ExampleCcc (10) and FuzzEe (6); shard 2
+        # TestA (5), BenchmarkDd (11) and TestFff (7).
+        own = 'TestBb\nExampleCcc\nok  \tgateway\t0.1s\n?   \tgateway/cmd\t[no test files]\nFuzzEe\nok  \tgateway/x\t0.1s\n'
+        self.assertEqual(self.shard.main(['--dir', 'go', '--shard', '1', '--of', '2', '--dry-run'],
+                                         run=self.fake(self.LISTING, own)), 0)
+        other = ('TestA\nBenchmarkDd\nok  \tgateway\t0.1s\n?   \tgateway/cmd\t[no test files]\n'
+                 'TestFff\nok  \tgateway/x\t0.1s\n')
+        self.assertEqual(self.shard.main(['--dir', 'go', '--shard', '2', '--of', '2', '--dry-run'],
+                                         run=self.fake(self.LISTING, other)), 0)
+
+    def test_refuses_a_selection_that_is_not_the_shard(self):
+        wrong = {
+            'a name missing': 'TestBb\nok  \tgateway\t0.1s\n?   \tgateway/cmd\t[no test files]\nFuzzEe\nok  \tgateway/x\t0.1s\n',
+            'a name more': 'TestA\nTestBb\nExampleCcc\nok  \tgateway\t0.1s\n?   \tgateway/cmd\t[no test files]\n'
+                           'FuzzEe\nok  \tgateway/x\t0.1s\n',
+            'a package missing': 'TestBb\nExampleCcc\nok  \tgateway\t0.1s\nFuzzEe\nok  \tgateway/x\t0.1s\n',
+            'everything': self.LISTING,
+        }
+        for why, selected in wrong.items():
+            with self.subTest(why=why):
+                self.assertEqual(self.shard.main(['--dir', 'go', '--shard', '1', '--of', '2', '--dry-run'],
+                                                 run=self.fake(self.LISTING, selected)), 1)
+
+    def test_refuses_an_empty_shard_and_a_split_of_one(self):
+        listing = 'TestAb\nok  \tgateway\t0.1s\n'
+        self.assertEqual(self.shard.main(['--dir', 'go', '--shard', '2', '--of', '2', '--dry-run'],
+                                         run=self.fake(listing, 'ok  \tgateway\t0.1s\n')), 1)
+        self.assertEqual(self.shard.main(['--dir', 'go', '--shard', '1', '--of', '1', '--dry-run'],
+                                         run=self.fake(listing, listing)), 1)
 
 
 class VendoredGateTest(unittest.TestCase):

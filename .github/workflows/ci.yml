@@ -48,17 +48,35 @@ permissions:
 
 jobs:
   go:
-    name: ${{ matrix.os }} · Go ${{ matrix.go }}
+    name: ${{ matrix.os }} · Go ${{ matrix.go }}${{ matrix.part }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         go: ["1.26"]
-        # macOS runners are the slowest to start: a pull request and a merge group run without that
-        # leg; a push to main and the nightly run have it. An exclude that matches nothing removes
-        # nothing.
+        # Windows, the slowest to run the core's tests, runs them in two shards side by side; Linux
+        # and macOS in one leg each.
+        shard: ["1", "2"]
         exclude:
+          - os: ubuntu-latest
+            shard: "2"
+          - os: macos-latest
+            shard: "2"
+          # macOS runners are the slowest to start: a pull request and a merge group run without
+          # that leg; a push to main and the nightly run have it. An exclude that matches nothing
+          # removes nothing. No include names macOS: an include applied after this exclude would
+          # make the leg again.
           - os: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'macos-latest' || 'none' }}
+        # The Windows shards' name and evidence key; the other legs have neither.
+        include:
+          - os: windows-latest
+            shard: "1"
+            part: " · shard 1 of 2"
+            key: "-1"
+          - os: windows-latest
+            shard: "2"
+            part: " · shard 2 of 2"
+            key: "-2"
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -80,8 +98,20 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Tests
+        if: matrix.os != 'windows-latest'
         run: go test ./...
+      # Each top-level test of the core in exactly one shard, by the length of its name; the script
+      # refuses unless Go's selection of this shard is that, and the two shards together are the
+      # whole listing `go test -list` gives (.github/go_test_shard.py).
+      - name: Tests, one shard of two
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        working-directory: .
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: python .github/go_test_shard.py --dir go --shard "${SHARD}" --of 2
       - name: Native sandbox boundary tests
+        if: matrix.os != 'windows-latest' || matrix.shard == '1'
         shell: bash
         working-directory: adapters
         env:
@@ -138,14 +168,14 @@ jobs:
         working-directory: .
         env:
           PYTHON: ${{ runner.os == 'Windows' && 'python' || 'python3' }}
-          JOB_KEY: go-${{ matrix.os }}
+          JOB_KEY: go-${{ matrix.os }}${{ matrix.key }}
         run: |
           "${PYTHON}" scripts/dev/release_evidence.py capture --workflow ci --job "${JOB_KEY}" --output "${RUNNER_TEMP}/evidence.json"
       - name: Upload immutable CI evidence
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ci-evidence-ci-go-${{ matrix.os }}-${{ github.run_attempt }}
+          name: ci-evidence-ci-go-${{ matrix.os }}${{ matrix.key }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/evidence.json
           if-no-files-found: error
           retention-days: 7
