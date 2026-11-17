@@ -4,11 +4,13 @@ name: CI
 # Three jobs. `go` is the operating system matrix: its legs run the core's Go steps natively on each
 # platform. The Linux and Windows legs' names are required by branch protection; the macOS leg runs
 # on a push to main and on the nightly schedule, not on a pull request or a merge group, and is not
-# required (a release takes main's run, macOS leg included). `check` sets the toolchains up
-# from the manifest and runs every step of it: the core, the adapters, the release contents, the
-# plugins, the second implementation, the engine image, the witness scenario and the agreement of
-# the two paths. On a pull request it runs the steps jpdev.json maps the changed paths to
-# (`check.sh --changed`); on a push to main, the whole list. Each of the steps that were jobs of
+# required (a release takes main's run, macOS leg included). `check` is the one required name for
+# dev.json's checks: two lanes, `check · go-tests` and `check · rest`, set the toolchains up from
+# the manifest and run every step of it between them, each step in one lane: the core, the
+# adapters, the release contents, the plugins, the second implementation, the engine image, the
+# witness scenario and the agreement of the two paths; `check` fails unless both succeeded. On a
+# pull request each lane runs its steps jpdev.json maps the changed paths to (`check.sh
+# --changed`); on a push to main, all of its steps. Each of the steps that were jobs of
 # their own is a step of dev.json, and the longer ones are scripts under scripts/checks/ with the
 # comments they had here. `postgresql` runs the PostgreSQL storage kind's tests against a server in
 # a service container pinned by digest (docs/postgresql-store.md), in two legs side by side, each
@@ -19,7 +21,7 @@ name: CI
 # A push to main also records, in every job and every leg, the evidence a release takes instead
 # of running this workflow again (scripts/dev/release_evidence.py capture, configured by
 # .github/ci-evidence.json; docs/releasing.md): the commit, its input identities, the runner and
-# toolchain, and for `check` every step's result. A pull request, a merge group and the nightly
+# toolchain, for each check lane its setup steps' results, and for `check` every check's result. A pull request, a merge group and the nightly
 # run record none.
 
 on:
@@ -182,10 +184,21 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  check:
-    name: check
-    # The nightly run is for the go matrix's macOS leg; main's pushes run the whole list.
+  # dev.json's checks in two lanes side by side (.github/check_lanes.py): `go-tests` holds the checks
+  # that build and run the core's and the adapters' Go tests, which share one build of each module's
+  # test binaries; `rest` holds every other check, a check added to dev.json later included. Each
+  # lane skips the other's checks, so every check runs in exactly one lane. Each lane sets the
+  # toolchains up and runs every setup step, and records its evidence (the toolchains and the setup
+  # steps) on a push to main; `check` records the checks' results.
+  check-lanes:
+    name: check · ${{ matrix.lane }}
     if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: go-tests
+          - lane: rest
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -231,28 +244,131 @@ jobs:
         run: |
           set -o pipefail
           scripts/dev/check.sh --setup | tee "${RUNNER_TEMP}/setup.log"
-      # A pull request runs the checks jpdev.json maps its changed paths to, and the whole list
-      # when a path is unmapped or the mapping, dev.json or the runner changed. A push to main runs
-      # the whole list, and only that run is what a release is held to.
+      # The other lane's checks, from dev.json as the commit holds it; a name the lane list holds
+      # and dev.json does not fails here.
+      - name: The lane's checks
+        id: lane
+        env:
+          LANE: ${{ matrix.lane }}
+        run: python3 .github/check_lanes.py --lane "${LANE}" >> "$GITHUB_OUTPUT"
+      # A pull request runs the checks of the lane jpdev.json maps its changed paths to, and the
+      # whole lane when a path is unmapped or the mapping, dev.json or the runner changed. A push to
+      # main runs the whole lane, and only that run is what a release is held to.
       - name: Checks
         env:
           EVENT: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          SKIP: ${{ steps.lane.outputs.skip }}
         run: |
           set -o pipefail
           if [ "$EVENT" = pull_request ]; then
-            scripts/dev/check.sh --all --changed "origin/$BASE_REF" | tee "${RUNNER_TEMP}/checks.log"
+            scripts/dev/check.sh --all --skip "$SKIP" --changed "origin/$BASE_REF" | tee "${RUNNER_TEMP}/checks.log"
           elif [ "$EVENT" = merge_group ]; then
-            scripts/dev/check.sh --all --changed "$GROUP_BASE" | tee "${RUNNER_TEMP}/checks.log"
+            scripts/dev/check.sh --all --skip "$SKIP" --changed "$GROUP_BASE" | tee "${RUNNER_TEMP}/checks.log"
           else
-            scripts/dev/check.sh --all | tee "${RUNNER_TEMP}/checks.log"
+            scripts/dev/check.sh --all --skip "$SKIP" | tee "${RUNNER_TEMP}/checks.log"
           fi
-      # The job's evidence, on a push to main only: every setup step and check passed, read from
-      # the two summaries, with the commit's inputs, the runner and the toolchains.
+      # The lane's evidence, on a push to main only: every setup step passed, read from its
+      # summary, with the commit's inputs, the runner and the toolchains.
       - name: Record exact CI inputs and coverage
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: python3 scripts/dev/release_evidence.py capture --workflow ci --job check --setup-log "${RUNNER_TEMP}/setup.log" --check-log "${RUNNER_TEMP}/checks.log" --output "${RUNNER_TEMP}/evidence.json"
+        env:
+          JOB_KEY: check-${{ matrix.lane }}
+        run: python3 scripts/dev/release_evidence.py capture --workflow ci --job "${JOB_KEY}" --setup-log "${RUNNER_TEMP}/setup.log" --output "${RUNNER_TEMP}/evidence.json"
+      - name: Upload immutable CI evidence
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-evidence-ci-check-${{ matrix.lane }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence.json
+          if-no-files-found: error
+          retention-days: 7
+      # The lane's check summary, which the check job's evidence reads.
+      - name: Keep the check summary for the check job
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-check-summary-${{ matrix.lane }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/checks.log
+          if-no-files-found: error
+          retention-days: 1
+
+  # The one required name for dev.json's checks: it fails unless both lanes succeeded. It runs when
+  # a lane failed too, so that it fails rather than being skipped, which a required check would
+  # count as passed. On a push to main it records the evidence of the whole list: every check's
+  # result, read from the two lanes' summaries of this attempt (each check in exactly one), with the
+  # commit's inputs and the toolchains, set up here as the lanes set them up.
+  check:
+    name: check
+    needs: check-lanes
+    if: ${{ !cancelled() && github.event_name != 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Both lanes passed
+        env:
+          LANES: ${{ needs.check-lanes.result }}
+        run: |
+          if [ "${LANES}" != success ]; then
+            echo "the check lanes ended ${LANES}, not success"
+            exit 1
+          fi
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the toolchains from dev.json and release.yml
+        id: dev
+        run: |
+          set -eu
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+          m = json.load(open("dev.json", encoding="utf-8"))
+          tc = m.get("toolchains", {})
+          print("node=" + tc.get("node", {}).get("version", ""))
+          print("python=" + tc.get("python", {}).get("version", "3.12"))
+          PY
+          # The toolchain the release workflow names, exactly: the third-party notices carry the
+          # toolchain's own licence, so they are held with the toolchain that links a release
+          # (scripts/checks/release-toolchain.sh checks that this is it).
+          named="$(sed -n "s/^ *go-version: *['\"]\{0,1\}\([0-9][0-9.]*\)['\"]\{0,1\} *\$/\1/p" .github/workflows/release.yml)"
+          [ -n "${named}" ] || { echo 'release.yml names no Go version' >&2; exit 1; }
+          echo "go=${named}" >> "$GITHUB_OUTPUT"
+      - name: Set up Go
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ steps.dev.outputs.go }}
+          # Resolving the toolchain is all this job asks of it: no module cache.
+          cache: false
+      - name: Set up Node
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ steps.dev.outputs.node }}
+      - name: Set up Python
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ steps.dev.outputs.python }}
+      - name: The go-tests lane's check summary
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-check-summary-go-tests-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-tests
+      - name: The rest lane's check summary
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-check-summary-rest-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rest
+      # The job's evidence, on a push to main only: every check passed, read from the lanes' two
+      # summaries, with the commit's inputs, the runner and the toolchains.
+      - name: Record exact CI inputs and coverage
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: python3 scripts/dev/release_evidence.py capture --workflow ci --job check --check-log "${RUNNER_TEMP}/go-tests/checks.log" --check-log "${RUNNER_TEMP}/rest/checks.log" --output "${RUNNER_TEMP}/evidence.json"
       - name: Upload immutable CI evidence
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

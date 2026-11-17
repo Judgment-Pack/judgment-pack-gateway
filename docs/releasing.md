@@ -81,7 +81,7 @@ been shown to connect.
 A pull request reaches main through the merge queue (squash). The queue makes a group of the
 pull request on top of main and of the groups ahead of it, and runs CI and `DCO` on that group
 (`merge_group`) before main moves, so a pull request is no longer brought up to date with main
-by hand or by a workflow. The `check` job on a merge group runs the steps its changes map to, as
+by hand or by a workflow. The two check lanes on a merge group run the steps its changes map to, as
 on a pull request; the push to main that follows runs the whole list, and that run is the
 evidence a release takes. A pull request and a merge group run the `go` matrix without its macOS
 leg, which branch protection does not require; the push to main that follows runs it, and so does
@@ -229,7 +229,9 @@ archives gone, and the job fails: release a new version.
 
 `ci.yml` runs on every push to `main`, and there each job and each leg of the `go` matrix records
 its evidence as an artifact of the run: the commit, the identity of its inputs, the runner and the
-toolchain it ran with, and for `check` the result of every setup step and check of `dev.json`.
+toolchain it ran with, and for `check` the result of every check of `dev.json`, read from the
+summaries of its two lanes, `check · go-tests` and `check · rest`, each of which records its own
+setup steps.
 The `CI at the tag` job reads it with the development kit's release evidence gate
 ([`scripts/dev/release_evidence.py`](../scripts/dev/release_evidence.py), vendored from the kit
 whose `docs/ci-evidence.md` is its contract), configured by
@@ -244,17 +246,17 @@ the evidence only when all of this holds, and refuses otherwise:
   The nightly run of `main`'s tip is such a run: a release waits while it runs at the tagged
   commit, and refuses if it failed there;
 - it completed and succeeded, and started at most 48 hours before the gate reads it;
-- every job and leg succeeded on a GitHub-hosted runner with its labels: `check`,
-  `ubuntu-latest · Go 1.26`, `macos-latest · Go 1.26`, `windows-latest · Go 1.26 · shard 1 of 2`
+- every job and leg succeeded on a GitHub-hosted runner with its labels: `check`, `check ·
+  go-tests` and `check · rest`, `ubuntu-latest · Go 1.26`, `macos-latest · Go 1.26`, `windows-latest · Go 1.26 · shard 1 of 2`
   and `windows-latest · Go 1.26 · shard 2 of 2`, the three operating systems each by legs of its
   own (Windows runs the core's tests in two shards, each top-level test in exactly one; the script
   that splits them, `.github/go_test_shard.py`, refuses unless Go selects exactly that), and
   `postgresql · superuser` and `postgresql · non-superuser`, the PostgreSQL kind's two passes; none
-  was skipped, and `check` passed every setup step and
-  every check, with no skip;
+  was skipped; each lane passed every setup step, and `check` holds every check exactly once
+  across the two lanes, each passed, with none left out and none run twice;
 - each job's evidence names the commit and the inputs the release's checkout holds; the Go of each
-  leg and of `check` is the one `release.yml` names (`1.26.5`); the Linux runner image and its
-  operating system release, and the Go, Node, Python and Docker of `check` and the Linux leg, are
+  leg and of the check jobs is the one `release.yml` names (`1.26.5`); the Linux runner image and its
+  operating system release, and the Go, Node, Python and Docker of the check jobs and the Linux leg, are
   what the release's own runner resolves now, setting the toolchains up as `ci.yml` does; the
   macOS leg ran on macOS `ARM64` and the Windows leg on Windows `X64`;
 - the tag is an annotated tag that names the commit, before and after the evidence is read.
@@ -264,7 +266,7 @@ What it reuses and what it still does at the release:
 | | On a push to `main` | At the release, before | At the release, now |
 | --- | --- | --- | --- |
 | `ubuntu-latest · Go 1.26`, `macos-latest · Go 1.26`, the two `windows-latest · Go 1.26 · shard N of 2` legs: the core's Go steps, natively | run, evidence recorded | run again | taken from each leg's evidence, never one leg for another |
-| `check`: the setup steps and every check of `dev.json`, the adapters, the release contents, the plugins, the second implementation, the image, the witness scenario, the agreement of the two paths | run, evidence recorded | run again | taken from its evidence |
+| `check · go-tests` and `check · rest`, joined by `check`: the setup steps and every check of `dev.json`, the adapters, the release contents, the plugins, the second implementation, the image, the witness scenario, the agreement of the two paths | run, evidence recorded | run again | taken from its evidence |
 | The tag, `main`, the notes, the `production` reviewer rule; the notices with the release's toolchain, the packing, the checksums and the six archives read; the engine image built, its index held and each architecture's filesystem judged; the archives run on four platforms; the tag again and no release under it; the attestations; the draft; the approval; the draft held to the run's files; the image pushed and read back; the draft held again and the published release held to the run's files | not run | run | run, unchanged and in the same order |
 
 No check of `ci.yml` depends on the tag, so nothing the gate takes is tag-sensitive. What a run

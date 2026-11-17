@@ -16,7 +16,10 @@ describes, so that the three cannot drift apart unnoticed until a release refuse
   release its line 2 names, byte for byte after that line, and that release is the one the other
   vendored scripts name;
 - the matrix legs each event runs, and the Windows leg's shards: each top-level test of the core
-  in exactly one (.github/go_test_shard.py, held here too).
+  in exactly one (.github/go_test_shard.py, held here too);
+- the check lanes: every check of dev.json in exactly one (.github/check_lanes.py, held here too),
+  and the check job, which fails unless both lanes succeeded and records every check's result from
+  their summaries.
 
 Standard library only; the workflows are read by the YAML subset below, which refuses anything
 it does not know. Run from the repository root: python3 .github/test_ci_evidence.py"""
@@ -26,6 +29,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -69,6 +73,7 @@ NOT_PULLED = {
     'testdata/tool-taxonomy/v4.json': 'a customer command taxonomy fixture, read as data',
 }
 UPLOAD = 'actions/upload-artifact@'
+DOWNLOAD = 'actions/download-artifact@'
 LABEL_OS = {'ubuntu': 'Linux', 'macos': 'macOS', 'windows': 'Windows'}
 GOOS = {'Linux': 'linux', 'macOS': 'darwin', 'Windows': 'windows'}
 GOARCH = {'X64': 'amd64', 'ARM64': 'arm64'}
@@ -573,6 +578,39 @@ class ConfigurationTest(unittest.TestCase):
                 else:
                     self.assertIn("github.event_name != 'schedule'", job['if'])
 
+    def test_the_check_job_passes_only_when_both_lanes_did_and_reads_both(self):
+        """`check` needs the lanes, runs when one failed, and fails unless both succeeded; on a push
+        to main its evidence reads the summary of every lane. Each lane runs check.sh skipping
+        what .github/check_lanes.py says, on every event."""
+        lanes_job, check = self.ci['jobs']['check-lanes'], self.ci['jobs']['check']
+        lanes = [values['lane'] for values in legs(lanes_job)]
+        self.assertEqual(tuple(lanes), vendored('check_lanes', '.github/check_lanes.py').LANES)
+        self.assertEqual(check['needs'], 'check-lanes')
+        self.assertIn('!cancelled()', check['if'])
+        self.assertNotIn('always()', check['if'])
+        gate = check['steps'][0]
+        self.assertEqual(gate['env'], {'LANES': '${{ needs.check-lanes.result }}'})
+        self.assertIn('if [ "${LANES}" != success ]; then', gate['run'])
+        self.assertIn('exit 1', gate['run'])
+        self.assertNotIn('if', gate)
+        capture = [step for step in check['steps'] if 'release_evidence.py capture' in (step.get('run') or '')][0]
+        self.assertEqual(sorted(option(capture['run'], '--check-log')),
+                         sorted('${RUNNER_TEMP}/%s/checks.log' % lane for lane in lanes))
+        self.assertEqual(option(capture['run'], '--setup-log'), [])
+        steps = {step['name']: step for step in lanes_job['steps']}
+        choose = steps["The lane's checks"]
+        self.assertEqual(choose['id'], 'lane')
+        self.assertEqual(choose['env'], {'LANE': '${{ matrix.lane }}'})
+        self.assertEqual(choose['run'], 'python3 .github/check_lanes.py --lane "${LANE}" >> "$GITHUB_OUTPUT"')
+        run = steps['Checks']
+        self.assertEqual(run['env']['SKIP'], '${{ steps.lane.outputs.skip }}')
+        calls = re.findall(r'scripts/dev/check\.sh [^|]*', run['run'])
+        self.assertEqual(len(calls), 3)
+        for call in calls:
+            with self.subTest(call=call):
+                self.assertEqual(option(call, '--skip'), ['$SKIP'])
+                self.assertNotIn('--only', call)
+
     def test_the_postgresql_passes_run_once_each_in_legs_of_their_own(self):
         """The superuser pass and the pass as an administrator that is no superuser each run in
         one leg, against the leg's own server, over the same tests; the storage scenario once."""
@@ -626,13 +664,44 @@ class ConfigurationTest(unittest.TestCase):
                                  'ci-evidence-%s-%s-${{ github.run_attempt }}' % (self.workflow_key, key))
                 self.assertEqual(upload['with']['path'], '${{ runner.temp }}/evidence.json')
                 self.assertEqual(upload['with']['if-no-files-found'], 'error')
-                # The summaries capture reads are the ones the job's steps write, the job failing
-                # with a failed step (pipefail), so a summary is never of a step that failed.
+                # The summaries capture reads are the ones the job's steps write, or a job it needs
+                # wrote and uploaded in this attempt, the job failing with a failed step
+                # (pipefail), so a summary is never of a step that failed.
                 for log in option(command, '--setup-log') + option(command, '--check-log'):
-                    writers = [step for step in steps[:captures[0]]
-                               if '| tee "%s"' % log in (step.get('run') or '')]
-                    self.assertEqual(len(writers), 1, log)
-                    self.assertIn('set -o pipefail', writers[0]['run'])
+                    writer = self.summary_writer(job, steps[:captures[0]], log)
+                    self.assertIn('set -o pipefail', writer['run'])
+
+    def summary_writer(self, job, before, log):
+        """The step that wrote log: one of the job's steps before the capture, or, for a summary
+        the job downloads, the step of the job it needs that wrote the file that job uploads under
+        that name on a push to main, in the same attempt."""
+        writers = [step for step in before if '| tee "%s"' % log in (step.get('run') or '')]
+        downloads = [step for step in before if step.get('uses', '').startswith(DOWNLOAD)
+                     and log == step['with']['path'].replace('${{ runner.temp }}', '${RUNNER_TEMP}') +
+                     '/' + log.rsplit('/', 1)[1]]
+        self.assertEqual(len(writers) + len(downloads), 1, log)
+        if writers:
+            return writers[0]
+        download = downloads[0]
+        self.assertEqual(download.get('if'), CAPTURE_GUARD)
+        name = download['with']['name']
+        self.assertTrue(name.endswith('-${{ github.run_attempt }}'), name)
+        found = []
+        for upstream in [job['needs']] if isinstance(job.get('needs'), str) else job.get('needs', []):
+            for values in legs(self.ci['jobs'][upstream]):
+                steps = self.ci['jobs'][upstream]['steps']
+                for index, step in enumerate(steps):
+                    if step.get('uses', '').startswith(UPLOAD) and expand(step['with']['name'], values) == name:
+                        self.assertEqual(step.get('if'), CAPTURE_GUARD)
+                        self.assertEqual(step['with']['if-no-files-found'], 'error')
+                        path = step['with']['path'].replace('${{ runner.temp }}', '${RUNNER_TEMP}')
+                        self.assertEqual(path.rsplit('/', 1)[1], log.rsplit('/', 1)[1])
+                        wrote = [earlier for earlier in steps[:index]
+                                 if '| tee "%s"' % path in (earlier.get('run') or '')]
+                        self.assertEqual(len(wrote), 1, path)
+                        found.append(wrote[0])
+        self.assertEqual(len(found), 1, '%s is uploaded by %d legs of the jobs this one needs' % (name, len(found)))
+        return found[0]
 
     def test_every_leg_runs_the_go_release_yml_names_and_its_profile_pins_it(self):
         version = release_go()
@@ -707,26 +776,95 @@ class ConfigurationTest(unittest.TestCase):
             return {step['uses'].split('@')[0]: step for step in steps
                     if step.get('uses', '').startswith(('actions/setup-go@', 'actions/setup-node@',
                                                         'actions/setup-python@'))}
-        check = self.ci['jobs']['check']['steps']
+        def toolchain(step):
+            # The module cache is the one difference: it does not touch the toolchain.
+            return {key: value for key, value in step['with'].items()
+                    if key not in ('cache', 'cache-dependency-path')}
         verify = self.release['jobs']['verify']['steps']
-        ours, theirs = setups(verify), setups(check)
+        ours = setups(verify)
         self.assertEqual(sorted(ours), ['actions/setup-go', 'actions/setup-node', 'actions/setup-python'])
-        for action in ours:
-            with self.subTest(action=action):
-                self.assertEqual(ours[action]['uses'], theirs[action]['uses'])
-                ours_with, theirs_with = dict(ours[action]['with']), dict(theirs[action]['with'])
-                # The module cache is the one difference: it does not touch the toolchain.
-                ours_with.pop('cache', None)
-                theirs_with.pop('cache-dependency-path', None)
-                self.assertEqual(ours_with, theirs_with)
         named = [step for step in verify if step.get('id') == 'dev']
         self.assertEqual(len(named), 1)
-        self.assertEqual(named[0], [step for step in check if step.get('id') == 'dev'][0])
+        # Every job whose evidence is held to the check profile: the check job and its lanes.
+        held = sorted({spec['job_id'] for spec in self.spec['jobs'].values() if spec['profile'] == 'check'})
+        self.assertEqual(held, ['check', 'check-lanes'])
+        for job_id in held:
+            check = self.ci['jobs'][job_id]['steps']
+            theirs = setups(check)
+            self.assertEqual(sorted(theirs), sorted(ours))
+            for action in ours:
+                with self.subTest(job=job_id, action=action):
+                    self.assertEqual(ours[action]['uses'], theirs[action]['uses'])
+                    self.assertEqual(toolchain(ours[action]), toolchain(theirs[action]))
+            with self.subTest(job=job_id):
+                self.assertEqual(named[0], [step for step in check if step.get('id') == 'dev'][0])
+        self.assertEqual(setups(self.ci['jobs']['check']['steps'])['actions/setup-go']['with'],
+                         ours['actions/setup-go']['with'])
         # The gate runs after the toolchains are set up, so it resolves them.
         order = [step.get('uses', '').split('@')[0] or step.get('run', '') for step in verify]
         gate_at = [index for index, text in enumerate(order) if 'release_evidence.py verify' in text][0]
         for action in ours:
             self.assertLess(order.index(action), gate_at)
+
+
+class CheckLanesTest(unittest.TestCase):
+    """.github/check_lanes.py: every check of dev.json in exactly one lane, a new one in rest, and
+    a stale name refused."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lanes = vendored('check_lanes', '.github/check_lanes.py')
+        cls.names = cls.lanes.checks(json.loads(read('dev.json')))
+
+    def runs(self, lane, names):
+        skipped = self.lanes.skipped(lane, names)
+        self.assertEqual(len(skipped), len(set(skipped)))
+        return [name for name in names if name not in skipped]
+
+    def test_every_check_runs_in_exactly_one_lane(self):
+        self.assertEqual(sorted(set(self.lanes.GO_TESTS) - set(self.names)), [])
+        ran = [name for lane in self.lanes.LANES for name in self.runs(lane, self.names)]
+        self.assertEqual(sorted(ran), sorted(self.names))
+        self.assertEqual(self.runs('go-tests', self.names),
+                         [name for name in self.names if name in self.lanes.GO_TESTS])
+        for heavy in ('go-test', 'adapters-test'):
+            self.assertIn(heavy, self.lanes.GO_TESTS)
+        for light in ('image-build', 'image-platforms', 'release-archives'):
+            self.assertIn(light, self.runs('rest', self.names))
+
+    def test_a_check_added_to_dev_json_runs_in_rest(self):
+        names = self.names + ['a-new-check']
+        self.assertIn('a-new-check', self.runs('rest', names))
+        self.assertNotIn('a-new-check', self.runs('go-tests', names))
+
+    def test_refuses_a_stale_name_an_unknown_lane_and_a_lane_of_everything(self):
+        gone = [name for name in self.names if name != 'adapters-test']
+        for lane in self.lanes.LANES:
+            with self.subTest(lane=lane), self.assertRaises(self.lanes.Refusal):
+                self.lanes.skipped(lane, gone)
+        with self.assertRaises(self.lanes.Refusal):
+            self.lanes.skipped('images', self.names)
+        for go_tests in ((), tuple(self.names), ('go-test', 'go-test')):
+            with self.subTest(go_tests=len(go_tests)), self.assertRaises(self.lanes.Refusal):
+                self.lanes.skipped('go-tests', self.names, go_tests)
+
+    def test_the_script_prints_the_skip_list_or_refuses(self):
+        for lane in self.lanes.LANES:
+            with self.subTest(lane=lane):
+                done = subprocess.run(['python3', '-I', '.github/check_lanes.py', '--lane', lane], cwd=ROOT,
+                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                self.assertEqual(done.returncode, 0)
+                self.assertEqual(done.stdout, 'skip=%s\n' % ','.join(self.lanes.skipped(lane, self.names)))
+        manifest = json.loads(read('dev.json'))
+        manifest['checks'] = [check for check in manifest['checks'] if check['name'] != 'go-test']
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'dev.json')
+            with open(path, 'w', encoding='utf-8') as handle:
+                json.dump(manifest, handle)
+            done = subprocess.run(['python3', '-I', '.github/check_lanes.py', '--lane', 'rest', '--manifest', path],
+                                  cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual((done.returncode, done.stdout), (1, ''))
+        self.assertIn('go-test', done.stderr)
 
 
 class GoTestShardTest(unittest.TestCase):
