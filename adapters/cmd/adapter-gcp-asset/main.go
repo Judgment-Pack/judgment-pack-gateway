@@ -9,6 +9,11 @@
 // step does, 8 with {"referenceExpired":{"status":410}} on stdout for an
 // expired page token, and 9 with {"refused":{"reason":R,"subject":S}} on
 // stdout for a read-only refusal, on which the gateway closes the source.
+// A check that could not finish -- a call brought back no answer, because
+// its --timeout or a request's own time ended or the connection failed --
+// is no refusal: it exits 1, and the gateway, which passes the time left
+// on the acquisition less a margin as --timeout, fails that start or
+// refresh without closing the source.
 package main
 
 import (
@@ -58,7 +63,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	credentials := fs.String("credentials", "", "path of the platform's live credentials file: the service account's key for --token-source=key, an object holding sealKey for --token-source=metadata (required)")
 	maxOutput := fs.Int64("max-output", 1<<20, "bound on the envelope in bytes; keep it at or below the gateway's source output bound")
 	maxAnswer := fs.Int64("max-answer", gcpasset.DefaultMaxAnswer, "bound on the list call's answer in bytes, as read and before it is projected")
-	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the run; keep it under the gateway's source timeout, with margin for the report")
+	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the run; the gateway passes the time left on the acquisition, less a margin for the start and the report. A read-only check this, a request's time or a failed connection leaves without an answer exits 1, not 9")
 	check := fs.Bool("check", false, "obtain both tokens, hold their scopes and run the write check on every configured project, then report on stdout instead of reading a request")
 	tokenOnly := fs.Bool("token-only", false, "obtain both tokens, hold their scopes, run the write check, and write the list token on stdout sealed, instead of reading a request; an acquisition is then handed it in "+gcpasset.SealedTokenVariable)
 	if err := fs.Parse(args); err != nil {

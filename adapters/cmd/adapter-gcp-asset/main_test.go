@@ -9,9 +9,11 @@ import (
 )
 
 // The command's statuses that need no platform: usage, a request refused
-// before any credential is used, and no credential. The statuses a platform
-// answers (8, 9 and the token step's) are held end to end by the gateway's
-// test of this adapter, which builds it with the test endpoints.
+// before any credential is used, and no credential. What a platform answers
+// (an expired page token, a read-only refusal, a check the run's time
+// ended, the token step's failures) is held by the package's tests against
+// an in-process stand-in (adapters/gcpasset), and the gateway's reading of
+// the statuses by its own stand-in (go/gcp_asset_binding_test.go).
 func TestStatusesBeforeThePlatform(t *testing.T) {
 	dir := t.TempDir()
 	seal := filepath.Join(dir, "seal.json")

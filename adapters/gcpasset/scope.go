@@ -11,6 +11,7 @@ package gcpasset
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"mime"
 	"net/http"
 	"net/url"
@@ -34,6 +35,10 @@ var identityScopes = map[string]bool{
 	"email": true,
 }
 
+// errScopeUnread is a token-information answer the scope check cannot
+// read: it refuses as credential-scope-unknown.
+var errScopeUnread = errors.New("the token-information answer could not be read")
+
 // maxSubject bounds a refusal's subject.
 const maxSubject = 1024
 
@@ -50,7 +55,7 @@ type Refused struct {
 func (r *Refused) Error() string {
 	switch {
 	case r.Subject == nil && r.Reason == ReasonCanWrite:
-		return r.Reason + ": the write check did not complete, and a credential not shown to be read-only is refused"
+		return r.Reason + ": the platform answered the write check with neither a grant nor none, and a credential not shown to be read-only is refused"
 	case r.Subject == nil && r.Reason == ReasonScopeUnknown:
 		return r.Reason + ": the scopes the token was granted could not be shown to be the one requested alone"
 	case r.Subject == nil:
@@ -84,7 +89,11 @@ func printable(s string) bool {
 	return true
 }
 
-// holdScope holds a token to the one scope it was requested with.
+// holdScope holds a token to the one scope it was requested with. A
+// token-information read that brought back no answer -- the run's time or
+// the request's ended, or the connection failed -- is an incomplete check
+// (errCheckIncomplete), as in the write check: not a refusal and not a
+// pass. Any answer it cannot read refuses.
 func (s *source) holdScope(ctx context.Context, tok obtained, requested string) error {
 	unknown := &Refused{Reason: ReasonScopeUnknown}
 	if tok.scopeUnreadable {
@@ -94,8 +103,12 @@ func (s *source) holdScope(ctx context.Context, tok obtained, requested string) 
 	if tok.scope != nil {
 		granted = *tok.scope
 	} else {
-		var ok bool
-		if granted, ok = s.tokenInfoScope(ctx, tok.value); !ok {
+		var err error
+		granted, err = s.tokenInfoScope(ctx, tok.value)
+		switch {
+		case errors.Is(err, errCheckIncomplete):
+			return errCheckIncomplete
+		case err != nil:
 			return unknown
 		}
 	}
@@ -128,25 +141,29 @@ func scopesHeld(granted, requested string) bool {
 // tokenInfoScope asks the token-information endpoint what the token was
 // granted, sending the token in a form body rather than a URL: the answer
 // must be 200, JSON in the canonical domain within 64 KiB, with a scope
-// member that is a string. Anything else is false.
-func (s *source) tokenInfoScope(ctx context.Context, token string) (string, bool) {
+// member that is a string. A read that brought back no answer is
+// errCheckIncomplete; any other answer is errScopeUnread.
+func (s *source) tokenInfoScope(ctx context.Context, token string) (string, error) {
 	raw, contentType, status, err := s.post(ctx, endpoints.TokenInfo, url.Values{"access_token": {token}})
+	if unanswered(err) {
+		return "", errCheckIncomplete
+	}
 	if err != nil || status != http.StatusOK {
-		return "", false
+		return "", errScopeUnread
 	}
 	if mediaType, _, _ := mime.ParseMediaType(contentType); mediaType != "application/json" {
-		return "", false
+		return "", errScopeUnread
 	}
 	if _, err := canon.Canonicalize(raw, canon.CarryNumbersAsText); err != nil {
-		return "", false
+		return "", errScopeUnread
 	}
 	var members map[string]json.RawMessage
 	if json.Unmarshal(raw, &members) != nil {
-		return "", false
+		return "", errScopeUnread
 	}
 	var scope string
 	if !stringMember(members["scope"], &scope) {
-		return "", false
+		return "", errScopeUnread
 	}
-	return scope, true
+	return scope, nil
 }

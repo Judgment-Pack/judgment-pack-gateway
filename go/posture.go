@@ -106,7 +106,11 @@ type postureInput struct {
 	// served to (ADR-0037): programs lists only the sources it takes, so
 	// the names of other scopes' sources are not learned from the report,
 	// as /acquire does not tell them from unknown ones. Every line is
-	// still judged over every source. nil lists every source.
+	// still judged over every source; the counts that are the reach's are
+	// read-only-credentials' (its sources, those serving IAM_POLICY and
+	// those closed), so how many read-only sources another scope holds,
+	// and whether one was refused, is not learned either. nil lists and
+	// counts every source.
 	reach *scopeReach
 }
 
@@ -270,7 +274,7 @@ func hostPosture(in postureInput) postureReport {
 		seedPosture(in),
 		programConfinementPosture(programs),
 		listenerPosture(in),
-	}, append(append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources)...), readOnlyCredentialsLines(in.sources)...)...),
+	}, append(append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources)...), readOnlyCredentialsLines(in.sources, in.reach)...)...),
 		readOnly: readOnlySourcePostures(in.sources, in.reach)}
 	if in.reach != nil {
 		var listed []postureProgram

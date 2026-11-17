@@ -334,6 +334,32 @@ before a token is requested for it. The token step does not establish which iden
 that the token endpoint is the one the source trusts; it changes how the credential is obtained,
 not what the receipt says.
 
+**A read-only asset inventory source is one more program that holds a credential, with the
+platform's user; the signer holds its list token sealed** (engine configuration version 29;
+[ADR-0039](docs/adr/0039-a-read-only-asset-inventory-connection-for-configuration-drift.md) and
+its Amendment). For a platform whose binding's `live` operation is of the `gcp-asset` shape,
+`adapter-gcp-asset`, a program of the adapters module the signer is never linked with, is started
+for each token request and each acquisition as every engine source is: as the platform's OS user,
+under the source sandbox. It reads the platform's live credentials file, held as every
+credentials file is: a service account's key, or, where the token comes from the metadata
+server of the platform's own compute, only the key its token is sealed under. It obtains two
+tokens, each requested for one scope alone and held to the scopes it was granted, and runs the
+write check before either is used. The signer reads neither the credential nor a token in the
+clear: the adapter answers the list token sealed with AES-256-GCM under a key HKDF derives from
+that credential, bound to the source's configuration, and the signer holds the ciphertext in
+memory and hands it to the next acquisition in the environment variable
+`ADAPTER_GCP_ASSET_SEALED_TOKEN`, which a platform's configured environment may not set. The seal
+has the token step's limits (above): it is not a boundary against a compromised signer, and the
+variable is in the environment of the one process started as the platform's user, readable as
+any process's environment is by that user and by root. The read-only guarantee rests on the
+check, not on the scopes: a fixed list of write permissions asked of `testIamPermissions` on
+each configured project, at the start and with every token after it, and the bindings at a
+resource read from the `IAM_POLICY` pages callers request. The list is fixed, not complete; a
+grant through a group, or on an asset type the source does not serve, is not seen; a refusal
+closes the source until the engine restarts, and a check that could not finish (its time ended,
+or the connection failed, before the platform answered) fails that token without closing it.
+Grant the source's account `roles/cloudasset.viewer` alone.
+
 **A write-back platform writes as the credential its operator configured, under a decision
 policy, and its receipt names the URL it wrote to** (issue #248;
 [executor.md](docs/design/executor.md), "The write-back platforms"). The `azure-devops` and

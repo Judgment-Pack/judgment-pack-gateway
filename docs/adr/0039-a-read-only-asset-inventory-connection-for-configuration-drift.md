@@ -342,6 +342,44 @@ Until then, both are held by hand-written fixtures.
 - Bad: more core surface than a custody connection: a new shape, a new engine version and a
   new adapter.
 
+## Amendment (release review): only an answer of the platform refuses
+
+The release review found that decision 3's rule for a failed write-check call also refused a
+call the platform never answered. A slow platform or a dropped connection then closed the source
+until the engine restarted. The points below replace that rule ("If any call fails, the start (or
+the refresh) is refused, just as for a grant") and the fail-closed sentences of decision 3's
+**Scope** and of A3 where the token-information endpoint gives no answer. Everything else stands.
+
+- **An answer refuses.** A `testIamPermissions` call the platform answers with anything but a
+  grant or none refuses `credential-can-write`, naming no permission, as a grant does: a status
+  other than 200 (a disabled API's 403 among them), a redirect, or an answer out of form. A
+  token-information answer the check cannot read refuses `credential-scope-unknown`. On a
+  refresh, either closes the source.
+- **No answer is a check that could not finish.** A call can bring back no answer: the run's
+  time ends, the request's own time ends, or the connection fails (refused, reset, a name that
+  did not resolve, a TLS failure) before the platform answers or while its `200` is read. That
+  check is neither a refusal nor a pass. No token is sealed or used. The adapter exits 1, never
+  9, and says why on its standard error. The gateway refuses the start, or fails that refresh as
+  a failed source (as a timeout, where its own deadline ended the run first). It never closes
+  the source, and the next acquisition obtains a token and checks again. A grant another call
+  answered still refuses.
+- **The gateway passes the time.** The gateway hands the adapter `--timeout`: the time its own
+  deadline for the run leaves, less a margin of five seconds, or of half that time where half is
+  less. The adapter then ends a check it cannot finish, and says so, before the gateway's
+  deadline ends the run. The adapter asks the configured projects at most eight at a time.
+- **Public members.** A binding at a served resource that grants a role outside the read-only
+  list to `allUsers` or `allAuthenticatedUsers` refuses `credential-bound-at-resource`, as one
+  to the source's own principal does. A grant through a group, a domain or a principal set is
+  not resolved and not seen, and neither is a binding on an asset type the source does not
+  serve. The adapter's README and `/posture` say so.
+
+Consequences:
+
+- Good: a transient fault no longer takes a source down until a restart, and a refusal still
+  rests on what the platform answered.
+- Bad: a platform that never answers fails every acquisition, each one reported, rather than
+  closing the source once. Nothing is served meanwhile.
+
 ## More information
 
 - Specification: RFC 0033 (paged operation source), RFC 0034 (registry profile), RFC 0035

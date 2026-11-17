@@ -51,9 +51,8 @@ import (
 
 // endpoints are the platform's endpoints. They are fixed: a key file's own
 // token_uri is not read, so a key cannot carry its assertion elsewhere. A
-// test of this package sets them; the binary built with the
-// gcpasset_testendpoints tag reads them from its environment
-// (endpoints_testtag.go), and no other build can change them.
+// test of this package sets them, and no build of the command can change
+// them.
 var endpoints = struct {
 	Asset, ResourceManager, Metadata, OAuthToken, TokenInfo string
 }{
@@ -112,6 +111,19 @@ func tokenFailure(kind int, format string, args ...any) error {
 // errRedirect is a redirect, which is never followed: it would carry a
 // token or an assertion elsewhere.
 var errRedirect = errors.New("an endpoint answered with a redirect, which is not followed")
+
+// noAnswer is a request that brought back no answer to read: no status,
+// because the run's time or the request's ended or the connection failed,
+// or a 200 whose body one of those ended. A status, a redirect among them,
+// is an answer.
+type noAnswer struct{ text string }
+
+func (e *noAnswer) Error() string { return e.text }
+
+func unanswered(err error) bool {
+	var n *noAnswer
+	return errors.As(err, &n)
+}
 
 // source is a configuration with its credential read.
 type source struct {
@@ -223,6 +235,9 @@ func (s *source) redacted(err error) error {
 	if errors.As(err, &notConfigured) {
 		return notConfigured
 	}
+	if errors.Is(err, errCheckIncomplete) {
+		return errCheckIncomplete
+	}
 	return errors.New(redact.Diagnostic(err.Error(), false, s.secrets))
 }
 
@@ -324,7 +339,10 @@ func (s *source) keyToken(ctx context.Context, scope string) (obtained, error) {
 	return parseTokenAnswer(raw)
 }
 
-// post sends one form-encoded POST and reads the answer within 64 KiB.
+// post sends one form-encoded POST and reads the answer within 64 KiB. A
+// request that brought back no answer is a noAnswer; a status other than
+// 200 is returned whether or not its body could be read, since no caller
+// reads that body.
 func (s *source) post(ctx context.Context, target string, form url.Values) ([]byte, string, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -338,11 +356,16 @@ func (s *source) post(ctx context.Context, target string, form url.Values) ([]by
 		if errors.Is(err, errRedirect) {
 			return nil, "", 0, errRedirect
 		}
-		return nil, "", 0, errors.New("the endpoint could not be reached in time")
+		return nil, "", 0, &noAnswer{"the endpoint could not be reached in time"}
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenAnswer+1))
-	if err != nil || len(raw) > maxTokenAnswer {
+	switch {
+	case err != nil && resp.StatusCode != http.StatusOK:
+		return nil, resp.Header.Get("Content-Type"), resp.StatusCode, nil
+	case err != nil:
+		return nil, "", 0, &noAnswer{"the endpoint's answer could not be read whole in time"}
+	case len(raw) > maxTokenAnswer:
 		return nil, "", 0, errors.New("the endpoint's answer could not be read whole within 64 KiB")
 	}
 	return raw, resp.Header.Get("Content-Type"), resp.StatusCode, nil

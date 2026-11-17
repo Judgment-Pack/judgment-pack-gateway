@@ -2421,7 +2421,12 @@ source declared with another shape, is refused like any other departure.
 (`docs/design/engine-config.md`) rather than from `--source-shape`: `<platform>/history`
 of shape `airbyte`; `<platform>/live` of shape `mcp`, or of shape `http` for a binding whose
 one operation is `live` of that shape, run by the program the plain form runs for it,
-`adapter-http` (`docs/adr/0024-an-http-source-in-the-engine.md`); and `<platform>/write` of
+`adapter-http` (`docs/adr/0024-an-http-source-in-the-engine.md`), or of shape `http` for a
+binding whose live operation is of shape `gcp-asset` (engine configuration version 29), run by
+`adapter-gcp-asset`
+(`docs/adr/0039-a-read-only-asset-inventory-connection-for-configuration-drift.md`), whose
+envelope and receipt are the `http` shape's and which alone may report a read-only refusal
+(below); and `<platform>/write` of
 shape `mcp`, the executor's alone and never named by `/acquire`. A source is held to this
 contract whichever form declared it: the envelope of an `http` source in the engine is the
 plain form's and is refused as any other departs, and the receipt minted from it is the
@@ -2495,6 +2500,45 @@ beside any other status are a failed source, answered `400` with the stderr text
 the report existed. `adapter-http` reports a `410` from the source's endpoint so, and a `410`
 from its token endpoint as a refused token request (status 4), as before; its stderr for the
 answer is the diagnostic it wrote for any refusing answer, unchanged.
+
+**A read-only refusal, shape `gcp-asset`.** The engine's source of a `gcp-asset` binding (above)
+refuses a credential it cannot show to be read-only by exiting with status **9** and writing on
+stdout exactly
+
+```json
+{"refused": {"reason": "credential-can-write", "subject": "run.services.update"}}
+```
+
+— one member, `refused`, an object of exactly `reason` and `subject`: `reason` is
+`credential-scope-unknown` (the scopes a token was granted could not be shown to be the one
+requested alone), `credential-can-write` (the write check found a write permission granted on a
+configured project, or the platform answered one of its calls with neither a grant nor none) or
+`credential-bound-at-resource` (an
+`IAM_POLICY` page bound the source's own principal, or `allUsers` or `allAuthenticatedUsers`, to
+a role outside the adapter's read-only list); `subject` is the permission found or the asset
+named, a string of 1 to 1024 printable ASCII characters, or `null`; each member once, the whole
+one JSON value in the canonical domain (§1.1) of at most 4096 bytes, and nothing before or after
+it, whitespace included. No report carries a token, a digest of one or any part of one. The
+gateway reads stdout beside status 9 from such a source and from no other, on its token request
+(`--token-only`) as on its acquisition. Unlike statuses 7 and 8, a report out of this form is
+not a failed source: status 9 is the adapter refusing the credential, and a report that does not
+say why does not make the credential read-only, so the gateway reads it as a refusal of no
+stated reason. Status 9 from a source of another shape, or from a bare command, is a failed
+source, as before the report existed.
+
+A refusal closes the source. At the start it refuses the start, before anything is served.
+After it, the acquisition is answered `400` with the refusal's sentence, and so is every
+acquisition of that source after it, with nothing run, minted or retained, until the engine
+restarts; the engine's stderr says the closure once, with where it was met (a refresh or a
+page), and `/posture` reports the source `closed`, with the reason and where it was met and
+never the subject. Only an answer of the platform refuses. A check that could not finish,
+because a call of it brought back no answer (the adapter's own time ended, or the request's, or
+the connection failed before the platform answered), is not a refusal, since nothing the
+platform answered shows the credential can write, and is never status 9: the adapter exits 1
+and obtains no token, the start is refused or that acquisition fails as a failed source, and the
+source is not closed. A status other than 200, a redirect among them, is an answer and refuses.
+The gateway hands the adapter, as `--timeout`, the time left on the acquisition less a margin
+for its start and its report, so the adapter ends such a check itself rather than being killed.
 
 ### Witness endpoints
 

@@ -3,17 +3,29 @@ package gcpasset
 // The write check (decision 3, Amendment A2): for each configured project,
 // projects.testIamPermissions with a fixed list of write permissions, in
 // calls of at most 100, with the check token alone. A grant of any refuses,
-// naming the first granted in the list's order; a call that fails refuses
-// as a grant does. It runs whenever a token is obtained: at the gateway's
-// start and at every refresh, before the new token is used.
+// naming the first granted in the list's order; a call the platform
+// answers with anything but a grant or none -- a status other than 200, a
+// redirect, an answer out of form -- refuses as a grant does. It runs
+// whenever a token is obtained: at the gateway's start and at every
+// refresh, before the new token is used.
+//
+// The projects are asked at most maxConcurrentChecks at a time, so a
+// configuration of many projects is checked in a few round trips rather
+// than one per project. A call that brought back no answer -- the run's
+// time or the request's ended, or the connection failed -- leaves the
+// check incomplete: neither a refusal, since nothing the platform answered
+// shows the credential can write, nor a pass, since no token is sealed or
+// used on it (errCheckIncomplete). Only an answer refuses.
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
+	"sync"
 
 	"adapters/internal/canon"
 )
@@ -26,6 +38,26 @@ const WriteListVersion = "gcp-asset-write-list/2"
 // maxPermissionsPerCall is the platform's bound on one testIamPermissions
 // call.
 const maxPermissionsPerCall = 100
+
+// maxConcurrentChecks bounds how many projects the write check asks at
+// once: maxParents projects take maxParents/maxConcurrentChecks round trips.
+const maxConcurrentChecks = 8
+
+// errCheckIncomplete is a read-only check that could not finish: a call of
+// it brought back no answer, because the run's time or the request's
+// (requestTimeout) ended, or the connection failed (refused, reset, a name
+// that did not resolve, a TLS failure) before the platform answered. It is
+// not a refusal, since nothing the platform answered shows the credential
+// can write, and not a pass, since no token is sealed or used on it: the
+// command exits 1, and the gateway fails that start or that refresh
+// without closing the source, which checks again with the next token it
+// asks for.
+var errCheckIncomplete = errors.New("the read-only check could not finish: the run's time or a request's ended, or the connection failed, before the platform answered; no token was sealed or used, and the check runs again with the next token")
+
+// errCallRefused is a write-check call the platform answered with anything
+// but a grant or none, or one that could not be formed: it refuses as a
+// grant does.
+var errCallRefused = errors.New("the write check's call was answered with neither a grant nor none")
 
 // writeList is every write permission the check asks about, in the order a
 // refusal names the first one granted. The adapter's README lists it. It is
@@ -131,42 +163,88 @@ func batches(list []string, size int) [][]string {
 }
 
 // writeCheck asks about list on every configured project, in calls of at
-// most maxPermissionsPerCall, and refuses on the first project that grants
-// any, naming the first granted in list's order, or on any call that
-// fails.
+// most maxPermissionsPerCall, at most maxConcurrentChecks projects at once.
+// Read in the configured order, the first project that grants any refuses,
+// naming the first granted in list's order, and so does the first whose
+// call the platform answered with neither a grant nor none; failing
+// either, a project a call of which brought back no answer makes the check
+// incomplete (errCheckIncomplete), never a pass.
 func (s *source) writeCheck(ctx context.Context, token string, list []string) error {
-	for _, parent := range s.cfg.Parents {
-		granted := map[string]bool{}
-		for _, batch := range batches(list, maxPermissionsPerCall) {
-			answer, ok := s.testPermissions(ctx, token, parent, batch)
-			if !ok {
-				return &Refused{Reason: ReasonCanWrite}
-			}
-			for _, p := range answer {
-				granted[p] = true
-			}
+	outcomes := make([]error, len(s.cfg.Parents))
+	slots := make(chan struct{}, maxConcurrentChecks)
+	var wg sync.WaitGroup
+	for i, parent := range s.cfg.Parents {
+		slots <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() { <-slots; wg.Done() }()
+			outcomes[i] = s.checkProject(ctx, token, parent, list)
+		}()
+	}
+	wg.Wait()
+	incomplete := false
+	for _, err := range outcomes {
+		switch {
+		case errors.Is(err, errCheckIncomplete):
+			incomplete = true
+		case err != nil:
+			return err
 		}
-		for _, p := range list {
-			if granted[p] {
-				return refused(ReasonCanWrite, p)
-			}
+	}
+	if incomplete {
+		return errCheckIncomplete
+	}
+	return nil
+}
+
+// checkProject is the write check on one project: nil where none of list is
+// granted; a refusal naming the first granted in list's order, or naming
+// none for a call answered with neither a grant nor none; and, where
+// neither, errCheckIncomplete for a call that brought back no answer. A
+// call without an answer does not end the project's check, so a grant
+// another call answered still refuses.
+func (s *source) checkProject(ctx context.Context, token, parent string, list []string) error {
+	granted := map[string]bool{}
+	incomplete := false
+	for _, batch := range batches(list, maxPermissionsPerCall) {
+		answer, err := s.testPermissions(ctx, token, parent, batch)
+		switch {
+		case errors.Is(err, errCheckIncomplete):
+			incomplete = true
+			continue
+		case err != nil:
+			return &Refused{Reason: ReasonCanWrite}
 		}
+		for _, p := range answer {
+			granted[p] = true
+		}
+	}
+	for _, p := range list {
+		if granted[p] {
+			return refused(ReasonCanWrite, p)
+		}
+	}
+	if incomplete {
+		return errCheckIncomplete
 	}
 	return nil
 }
 
 // testPermissions is one testIamPermissions call: 200, JSON in the
 // canonical domain within 64 KiB, its permissions (absent when none is
-// granted) an array of strings each among those asked. Anything else is a
-// failed call.
-func (s *source) testPermissions(ctx context.Context, token, parent string, asked []string) ([]string, bool) {
+// granted) an array of strings each among those asked. A call that brought
+// back no answer -- no status, or a 200 whose body the run's time, the
+// request's or the connection ended -- is errCheckIncomplete; any other
+// answer, a status other than 200 or a redirect among them, is
+// errCallRefused.
+func (s *source) testPermissions(ctx context.Context, token, parent string, asked []string) ([]string, error) {
 	body, err := json.Marshal(map[string][]string{"permissions": asked})
 	if err != nil {
-		return nil, false
+		return nil, errCallRefused
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoints.ResourceManager+"/v3/"+parent+":testIamPermissions", bytes.NewReader(body))
 	if err != nil {
-		return nil, false
+		return nil, errCallRefused
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
@@ -174,42 +252,51 @@ func (s *source) testPermissions(ctx context.Context, token, parent string, aske
 	req.Header.Set("User-Agent", "judgment-pack-"+adapterName+"/"+Version)
 	resp, err := s.api.Do(req)
 	if err != nil {
-		return nil, false
+		if errors.Is(err, errRedirect) {
+			return nil, errCallRefused
+		}
+		return nil, errCheckIncomplete
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, errCallRefused
+	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenAnswer+1))
-	if err != nil || len(raw) > maxTokenAnswer || resp.StatusCode != http.StatusOK {
-		return nil, false
+	if err != nil {
+		return nil, errCheckIncomplete
+	}
+	if len(raw) > maxTokenAnswer {
+		return nil, errCallRefused
 	}
 	if mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); mediaType != "application/json" {
-		return nil, false
+		return nil, errCallRefused
 	}
 	if _, err := canon.Canonicalize(raw, canon.CarryNumbersAsText); err != nil {
-		return nil, false
+		return nil, errCallRefused
 	}
 	answer, ok := object(raw)
 	if !ok {
-		return nil, false
+		return nil, errCallRefused
 	}
 	if _, present := answer["permissions"]; !present {
 		// The platform answers {} when it grants none; any other shape
 		// without the member is not an answer the check can read.
 		if len(answer) != 0 {
-			return nil, false
+			return nil, errCallRefused
 		}
-		return nil, true
+		return nil, nil
 	}
 	list, ok := array(answer["permissions"])
 	if !ok {
-		return nil, false
+		return nil, errCallRefused
 	}
 	granted := make([]string, 0, len(list))
 	for _, item := range list {
 		var p string
 		if !stringMember(item, &p) || !contains(asked, p) {
-			return nil, false
+			return nil, errCallRefused
 		}
 		granted = append(granted, p)
 	}
-	return granted, true
+	return granted, nil
 }
