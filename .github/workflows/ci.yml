@@ -1,8 +1,10 @@
 name: CI
 
 # The check list is dev.json, run by scripts/dev/check.sh (the development kit's vendored runner).
-# Three jobs. `go` is the operating system matrix: its job names are required by branch protection,
-# and its legs run the core's Go steps natively on each platform. `check` sets the toolchains up
+# Three jobs. `go` is the operating system matrix: its legs run the core's Go steps natively on each
+# platform. The Linux and Windows legs' names are required by branch protection; the macOS leg runs
+# on a push to main and on the nightly schedule, not on a pull request or a merge group, and is not
+# required (a release takes main's run, macOS leg included). `check` sets the toolchains up
 # from the manifest and runs every step of it: the core, the adapters, the release contents, the
 # plugins, the second implementation, the engine image, the witness scenario and the agreement of
 # the two paths. On a pull request it runs the steps jpdev.json maps the changed paths to
@@ -10,12 +12,13 @@ name: CI
 # their own is a step of dev.json, and the longer ones are scripts under scripts/checks/ with the
 # comments they had here. `postgresql` runs the PostgreSQL storage kind's tests against a server in
 # a service container pinned by digest (docs/postgresql-store.md); without a server they skip, so
-# here a skip fails the job.
+# here a skip fails the job. The nightly run is the `go` matrix alone.
 #
 # A push to main also records, in every job and every leg, the evidence a release takes instead
 # of running this workflow again (scripts/dev/release_evidence.py capture, configured by
 # .github/ci-evidence.json; docs/releasing.md): the commit, its input identities, the runner and
-# toolchain, and for `check` every step's result. A pull request records none.
+# toolchain, and for `check` every step's result. A pull request, a merge group and the nightly
+# run record none.
 
 on:
   pull_request:
@@ -24,15 +27,20 @@ on:
   merge_group:
   push:
     branches: [main]
+  # The macOS leg, which a pull request and a merge group run without, on main's tip each night.
+  # Not evidence: the release gate takes a push to main, and refuses while a run of main at the
+  # tagged commit, this one included, is unfinished or newer and failed (docs/releasing.md).
+  schedule:
+    - cron: "23 5 * * *"
   # Kept, but nothing calls it: the release takes the evidence a push to main
   # recorded at the tagged commit, or refuses (release.yml, docs/releasing.md).
   workflow_call:
 
-# A new push to a pull request cancels that pull request's run in progress. A push to main and a
-# merge group each have a group of their own commit, so no run of main, which a release takes as
-# its evidence, is ever cancelled or dropped as a pending duplicate.
+# A new push to a pull request cancels that pull request's run in progress. A push to main, a
+# merge group and a nightly run each have a group of their own event and commit, so no run of main,
+# which a release takes as its evidence, is ever cancelled or dropped as a pending duplicate.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -44,13 +52,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            go: "1.26"
-          - os: macos-latest
-            go: "1.26"
-          - os: windows-latest
-            go: "1.26"
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        go: ["1.26"]
+        # macOS runners are the slowest to start: a pull request and a merge group run without that
+        # leg; a push to main and the nightly run have it. An exclude that matches nothing removes
+        # nothing.
+        exclude:
+          - os: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'macos-latest' || 'none' }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -144,6 +152,8 @@ jobs:
 
   check:
     name: check
+    # The nightly run is for the go matrix's macOS leg; main's pushes run the whole list.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -229,6 +239,7 @@ jobs:
   # missing or malformed one fails them, and any skip left fails the job.
   postgresql:
     name: postgresql
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:

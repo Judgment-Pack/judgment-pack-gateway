@@ -63,9 +63,10 @@ summary block, and anything you stopped on or chose not to do.
 ## This repository
 
 - The checks are `dev.json`, run by `scripts/dev/check.sh`; the `check` job in CI runs the same
-  list. The `go` job is a matrix (Linux, macOS, Windows) whose leg names branch protection
-  requires; its legs run the core's Go steps natively and are the one place the list is repeated in
-  the workflow. A core step added to `dev.json` is added to the matrix as well. The longer steps
+  list. The `go` job is a matrix (Linux, macOS, Windows) whose Linux and Windows leg names branch
+  protection requires; its legs run the core's Go steps natively and are the one place the list is
+  repeated in the workflow. The macOS leg runs on a push to `main` and nightly, not on a pull
+  request or a merge group, and is not required. A core step added to `dev.json` is added to the matrix as well. The longer steps
   are scripts under `scripts/checks/`.
 - A pull request's `check` job runs `scripts/dev/check.sh --all --changed origin/<base>`: only the
   steps that `jpdev.json` maps its changed paths to, and the whole list when a changed path matches

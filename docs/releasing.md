@@ -83,7 +83,9 @@ pull request on top of main and of the groups ahead of it, and runs CI and `DCO`
 (`merge_group`) before main moves, so a pull request is no longer brought up to date with main
 by hand or by a workflow. The `check` job on a merge group runs the steps its changes map to, as
 on a pull request; the push to main that follows runs the whole list, and that run is the
-evidence a release takes. A new push to a pull request cancels that pull request's CI run in
+evidence a release takes. A pull request and a merge group run the `go` matrix without its macOS
+leg, which branch protection does not require; the push to main that follows runs it, and so does
+a nightly run of main's tip. A new push to a pull request cancels that pull request's CI run in
 progress; a run of main or of a merge group is never cancelled.
 
 `DCO` is a workflow of this repository (`.github/workflows/dco.yml`): every commit of the pull
@@ -238,7 +240,9 @@ the evidence only when all of this holds, and refuses otherwise:
   started by a push to `main`; a pull request's run, a merge commit GitHub made for one, another
   branch, another workflow, a commit status or a commit with the same tree is not it;
 - it is the newest run at the commit: no newer attempt of a run on `main` at the commit failed,
-  was cancelled or is still running, and the gate never looks past one for an older green run;
+  was cancelled or is still running, and the gate never looks past one for an older green run.
+  The nightly run of `main`'s tip is such a run: a release waits while it runs at the tagged
+  commit, and refuses if it failed there;
 - it completed and succeeded, and started at most 48 hours before the gate reads it;
 - every job and leg succeeded on a GitHub-hosted runner with its labels: `check`,
   `ubuntu-latest · Go 1.26`, `macos-latest · Go 1.26` and `windows-latest · Go 1.26`, the three

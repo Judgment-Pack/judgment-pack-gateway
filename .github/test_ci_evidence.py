@@ -301,15 +301,73 @@ def expand(text, values):
     return re.sub(r'\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}', one, text)
 
 
-def legs(job):
-    """One dict of matrix values per leg of a job (one empty dict for a job without a matrix)."""
+# The one expression a matrix value may be: a value for runs of the events named, 'none' (which
+# matches no leg) for every other event.
+EVENT_VALUE = re.compile(r"\$\{\{\s*(\(\s*(?P<several>[^()]*)\s*\)|(?P<one>[^()&|]*?))\s*&&\s*"
+                         r"'(?P<value>[A-Za-z0-9_.-]+)'\s*\|\|\s*'none'\s*\}\}")
+EVENT_TEST = re.compile(r"github\.event_name == '([a-z_]+)'")
+
+
+def matrix_value(value, event):
+    """A matrix value as GitHub evaluates it for a run of event: a literal, or
+    `${{ (github.event_name == 'a' || github.event_name == 'b') && 'value' || 'none' }}`; any other
+    expression is refused."""
+    if '${{' not in value:
+        return value
+    found = EVENT_VALUE.fullmatch(value.strip())
+    if not found:
+        raise ValueError('a matrix expression this reader does not know: %r' % value)
+    tests = [part.strip() for part in (found.group('several') or found.group('one')).split('||')]
+    events = []
+    for test in tests:
+        one = EVENT_TEST.fullmatch(test)
+        if not one:
+            raise ValueError('a matrix condition this reader does not know: %r' % test)
+        events.append(one.group(1))
+    return found.group('value') if event in events else 'none'
+
+
+def legs(job, event='push'):
+    """One dict of matrix values per leg of a job for a run of event (one empty dict for a job
+    without a matrix), as GitHub expands a matrix: the product of the base values, without the
+    combinations an exclude entry matches, then each include entry added to every original
+    combination it overwrites no base value of, or made a leg of its own where there is none. A
+    key some leg has and another does not is '' in the other, as the expression reads it there."""
     strategy = job.get('strategy') or {}
     matrix = strategy.get('matrix')
     if matrix is None:
         return [{}]
-    if set(matrix) != {'include'}:
-        raise ValueError('only a matrix of include entries is read here')
-    return [dict(entry) for entry in matrix['include']]
+    unknown = set(matrix) - {'include', 'exclude'} - {key for key, values in matrix.items()
+                                                     if isinstance(values, list)}
+    if unknown:
+        raise ValueError('matrix keys this reader does not know: %s' % sorted(unknown))
+    base = {key: values for key, values in matrix.items() if key not in ('include', 'exclude')}
+    for key, values in base.items():
+        if not values or not all(isinstance(value, str) for value in values):
+            raise ValueError('matrix.%s: a list of scalars is required' % key)
+    originals = [{}] if base else []
+    for key, values in base.items():
+        originals = [dict(leg, **{key: value}) for leg in originals for value in values]
+    for entry in matrix.get('exclude') or []:
+        if not isinstance(entry, dict) or not entry or not set(entry) <= set(base):
+            raise ValueError('an exclude entry names a key of no base: %r' % entry)
+        values = {key: matrix_value(value, event) for key, value in entry.items()}
+        originals = [leg for leg in originals if any(leg[key] != value for key, value in values.items())]
+    added = []
+    for entry in matrix.get('include') or []:
+        if not isinstance(entry, dict) or not entry:
+            raise ValueError('an include entry is not a mapping: %r' % entry)
+        if any('${{' in value for value in entry.values()):
+            raise ValueError('an include entry holds an expression: %r' % entry)
+        matched = [leg for leg in originals if all(leg[key] == value for key, value in entry.items()
+                                                   if key in base)]
+        for leg in matched:
+            leg.update(entry)
+        if not matched:
+            added.append(dict(entry))
+    result = originals + added
+    keys = {key for leg in result for key in leg}
+    return [{key: leg.get(key, '') for key in sorted(keys)} for leg in result]
 
 
 def option(command, name):
@@ -368,6 +426,45 @@ class YamlSubsetTest(unittest.TestCase):
                 self.assertIn('jobs', load_yaml(read(path)))
 
 
+class MatrixTest(unittest.TestCase):
+    """The matrix reader expands a matrix as GitHub does, per event, and refuses what it does not
+    know."""
+
+    QUEUE = "${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'b' || 'none' }}"
+
+    def test_base_exclude_and_include(self):
+        job = {'strategy': {'matrix': {
+            'os': ['a', 'b', 'c'], 'n': ['1', '2'],
+            'exclude': [{'os': 'a', 'n': '2'}, {'os': 'b', 'n': '2'}, {'os': self.QUEUE}],
+            'include': [{'os': 'c', 'n': '1', 'part': 'x'}, {'os': 'c', 'n': '2', 'part': 'y'}]}}}
+        self.assertEqual(legs(job, 'push'), [
+            {'n': '1', 'os': 'a', 'part': ''}, {'n': '1', 'os': 'b', 'part': ''},
+            {'n': '1', 'os': 'c', 'part': 'x'}, {'n': '2', 'os': 'c', 'part': 'y'}])
+        for event in ('pull_request', 'merge_group'):
+            with self.subTest(event=event):
+                self.assertEqual([leg['os'] for leg in legs(job, event)], ['a', 'c', 'c'])
+
+    def test_an_include_that_matches_nothing_is_a_leg_of_its_own(self):
+        # Includes are applied after excludes: an include for an excluded leg would bring it back.
+        job = {'strategy': {'matrix': {'os': ['a', 'b'], 'exclude': [{'os': self.QUEUE}],
+                                       'include': [{'os': 'b', 'k': 'v'}]}}}
+        self.assertEqual(legs(job, 'pull_request'), [{'k': '', 'os': 'a'}, {'k': 'v', 'os': 'b'}])
+        self.assertEqual(legs({'strategy': {'matrix': {'include': [{'os': 'a'}, {'os': 'b'}]}}}),
+                         [{'os': 'a'}, {'os': 'b'}])
+
+    def test_refuses_expressions_it_does_not_know(self):
+        for value in ("${{ github.ref == 'refs/heads/main' && 'b' || 'none' }}",
+                      "${{ github.event_name != 'push' && 'b' || 'none' }}",
+                      "${{ github.event_name == 'push' && 'b' || 'a' }}",
+                      "${{ matrix.os }}"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                legs({'strategy': {'matrix': {'os': ['a', 'b'], 'exclude': [{'os': value}]}}})
+        for matrix in ({'os': 'a'}, {'os': ['a'], 'exclude': [{'go': 'x'}]},
+                       {'os': ['a'], 'include': [{'os': '${{ matrix.os }}'}]}):
+            with self.subTest(matrix=matrix), self.assertRaises(ValueError):
+                legs({'strategy': {'matrix': matrix}})
+
+
 class ConfigurationTest(unittest.TestCase):
     """.github/ci-evidence.json against ci.yml, release.yml, jpdev.json and the tree."""
 
@@ -406,6 +503,28 @@ class ConfigurationTest(unittest.TestCase):
         # The go matrix is three native legs, never one.
         self.assertEqual(sorted(values['os'] for values in legs(self.ci['jobs']['go'])),
                          ['macos-latest', 'ubuntu-latest', 'windows-latest'])
+
+    def test_the_macos_leg_runs_on_main_and_nightly_and_no_leg_else_drops_out(self):
+        """A pull request and a merge group run without the macOS leg; a push to main, whose run
+        the release takes, and the nightly run have it. Every other leg runs on every event, and
+        on the nightly run only the go matrix runs."""
+        go = self.ci['jobs']['go']
+        on_push = sorted(expand(go['name'], values) for values in legs(go, 'push'))
+        macos = [name for name in on_push if name.startswith('macos-latest')]
+        self.assertEqual(len(macos), 1)
+        for event, has_macos in (('push', True), ('schedule', True), ('pull_request', False),
+                                 ('merge_group', False)):
+            with self.subTest(event=event):
+                names = sorted(expand(go['name'], values) for values in legs(go, event))
+                self.assertEqual(names, on_push if has_macos else sorted(set(on_push) - set(macos)))
+        self.assertEqual(set(self.ci['on']), {'pull_request', 'merge_group', 'push', 'schedule',
+                                              'workflow_call'})
+        for key, job in self.ci['jobs'].items():
+            with self.subTest(job=key):
+                if key == 'go':
+                    self.assertNotIn('if', job)
+                else:
+                    self.assertIn("github.event_name != 'schedule'", job['if'])
 
     def test_each_leg_has_its_job_id_labels_and_platform(self):
         by_name = {job['name']: (key, job) for key, job in self.spec['jobs'].items()}
