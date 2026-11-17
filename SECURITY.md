@@ -356,8 +356,9 @@ check, not on the scopes: a fixed list of write permissions asked of `testIamPer
 each configured project, at the start and with every token after it, and the bindings at a
 resource read from the `IAM_POLICY` pages callers request. The list is fixed, not complete; a
 grant through a group, or on an asset type the source does not serve, is not seen; a refusal
-closes the source until the engine restarts, and a check the adapter's own time ended fails that
-token without closing it. Grant the source's account `roles/cloudasset.viewer` alone.
+closes the source until the engine restarts, and a check that could not finish (its time ended,
+or the connection failed, before the platform answered) fails that token without closing it.
+Grant the source's account `roles/cloudasset.viewer` alone.
 
 **A write-back platform writes as the credential its operator configured, under a decision
 policy, and its receipt names the URL it wrote to** (issue #248;

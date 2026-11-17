@@ -2530,12 +2530,14 @@ After it, the acquisition is answered `400` with the refusal's sentence, and so 
 acquisition of that source after it, with nothing run, minted or retained, until the engine
 restarts; the engine's stderr says the closure once, with where it was met (a refresh or a
 page), and `/posture` reports the source `closed`, with the reason and where it was met and
-never the subject. A check the adapter's own time ended before it completed is not a refusal,
-since nothing the platform answered shows the credential can write, and is never status 9: the
-adapter exits 1 and obtains no token, the start is refused or that acquisition fails as a
-failed source, and the source is not closed. The gateway hands the adapter, as `--timeout`, the
-time left on the acquisition less a margin for its start and its report, so the adapter ends
-such a check itself rather than being killed.
+never the subject. Only an answer of the platform refuses. A check that could not finish,
+because a call of it brought back no answer (the adapter's own time ended, or the request's, or
+the connection failed before the platform answered), is not a refusal, since nothing the
+platform answered shows the credential can write, and is never status 9: the adapter exits 1
+and obtains no token, the start is refused or that acquisition fails as a failed source, and the
+source is not closed. A status other than 200, a redirect among them, is an answer and refuses.
+The gateway hands the adapter, as `--timeout`, the time left on the acquisition less a margin
+for its start and its report, so the adapter ends such a check itself rather than being killed.
 
 ### Witness endpoints
 

@@ -2251,10 +2251,11 @@ check passed; the start says each source's token source, the check, its artifact
 refuses the start. **After it**, every token obtained runs the check again before it is used. A
 read-only refusal there, or on a page, closes the source: `serve: source <name> closed on a
 refresh|page: <refusal>` on stderr, once, and every acquisition after it is refused until the
-engine restarts. A check the adapter's own time ended before it completed is no refusal: the
-adapter, handed as `--timeout` what is left of the acquisition's time less a margin, exits 1,
-and the start is refused or that acquisition fails, with the source left serving (SPEC.md §6,
-"A read-only refusal"). A request naming a parent outside the configuration is refused
+engine restarts. A check that could not finish is no refusal: where a call brought back no
+answer (the adapter's own time ended, handed to it as `--timeout`, what is left of the
+acquisition's time less a margin; or the request's time ended, or the connection failed), the
+adapter exits 1, and the start is refused or that acquisition fails, with the source left
+serving (SPEC.md §6, "A read-only refusal"). An answer other than a grant or none refuses. A request naming a parent outside the configuration is refused
 `parent-not-configured` before any token is obtained.
 
 **`/posture`** adds the line `read-only-credentials` (enforced where every gcp-asset source

@@ -196,7 +196,8 @@ func TestScopeUnknownFailsClosed(t *testing.T) {
 
 // credential-can-write: a grant of any write permission on any configured
 // project refuses, naming the first granted in the list's order, before
-// anything is listed; a call that fails refuses as a grant does.
+// anything is listed; a call the platform answers with anything but a
+// grant or none refuses as a grant does.
 func TestWriteCheckRefuses(t *testing.T) {
 	f := newFake(t)
 	f.granted[otherProject] = []string{"storage.buckets.delete", "run.services.update"}
@@ -235,7 +236,7 @@ func TestWriteCheckRefuses(t *testing.T) {
 			}
 			_, err := Acquire(ctx, f.config(t), resourceRequest())
 			r := refusal(t, err, ReasonCanWrite)
-			if r.Subject != nil || !strings.Contains(err.Error(), "did not complete") || len(f.callsTo("/asset/")) != 0 {
+			if r.Subject != nil || !strings.Contains(err.Error(), "neither a grant nor none") || len(f.callsTo("/asset/")) != 0 {
 				t.Fatalf("a failed call refuses, naming nothing: %v", err)
 			}
 		})
@@ -386,6 +387,95 @@ func TestACheckTheRunsTimeEndedIsNoRefusal(t *testing.T) {
 		cfg.TokenSource, cfg.Credentials = TokenSourceMetadata, sealKeyFile(t)
 		if _, err := ObtainSealed(within(t, time.Second), cfg); errors.As(err, &r) || !errors.Is(err, errCheckIncomplete) {
 			t.Fatalf("a token-information read the run's time ended: %v", err)
+		}
+	})
+}
+
+// A call that brought back no answer -- the request's own time ended, or
+// the connection was dropped -- leaves the check incomplete, as the run's
+// time ending does: no refusal, so nothing closes the source, and no token
+// is sealed. Only an answer refuses: a status other than 200 still does,
+// and a grant one call answered still refuses beside a call that had none.
+func TestACheckThePlatformDidNotAnswerIsNoRefusal(t *testing.T) {
+	saved := requestTimeout
+	requestTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { requestTimeout = saved })
+	var r *Refused
+	incomplete := func(t *testing.T, err error) {
+		t.Helper()
+		if errors.As(err, &r) || !errors.Is(err, errCheckIncomplete) {
+			t.Fatalf("an incomplete check, and no refusal: %v", err)
+		}
+	}
+	drop := func([]string) (int, string) { panic(http.ErrAbortHandler) }
+	t.Run("the request's time ended", func(t *testing.T) {
+		f := newFake(t)
+		f.beforePermissions = func(r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(5 * time.Second):
+			}
+		}
+		began := time.Now()
+		out, err := ObtainSealed(ctx, f.config(t))
+		if out != nil {
+			t.Fatalf("nothing sealed: %s", out)
+		}
+		incomplete(t, err)
+		if waited := time.Since(began); waited > 3*time.Second {
+			t.Fatalf("ended by the request's time, not by the platform: %v", waited)
+		}
+	})
+	t.Run("the connection was dropped", func(t *testing.T) {
+		f := newFake(t)
+		f.permissionsAnswer = drop
+		_, err := Acquire(ctx, f.config(t), resourceRequest())
+		incomplete(t, err)
+		if len(f.callsTo("/asset/")) != 0 {
+			t.Fatalf("nothing listed: %+v", f.calls)
+		}
+	})
+	t.Run("the token-information read's time ended", func(t *testing.T) {
+		f := newFake(t)
+		f.tokenInfo = func(string) (int, string) { time.Sleep(time.Second); return 200, `{}` }
+		cfg := f.config(t)
+		cfg.TokenSource, cfg.Credentials = TokenSourceMetadata, sealKeyFile(t)
+		_, err := ObtainSealed(ctx, cfg)
+		incomplete(t, err)
+	})
+	t.Run("a status is an answer", func(t *testing.T) {
+		f := newFake(t)
+		f.permissionsAnswer = func([]string) (int, string) { return 503, `{"error":{"status":"UNAVAILABLE"}}` }
+		if _, err := ObtainSealed(ctx, f.config(t)); refusal(t, err, ReasonCanWrite).Subject != nil {
+			t.Fatalf("a 503 refuses, naming nothing: %v", err)
+		}
+	})
+	t.Run("a grant beside a call with no answer", func(t *testing.T) {
+		f := newFake(t)
+		s, err := newSource(f.config(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		check, err := s.checked(ctx, CheckScope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		long := make([]string, 250)
+		for i := range long {
+			long[i] = fmt.Sprintf("example.things.write%03d", i)
+		}
+		f.permissionsAnswer = func(asked []string) (int, string) {
+			switch {
+			case asked[0] == long[0]:
+				return drop(asked)
+			case contains(asked, long[150]):
+				return 200, `{"permissions":["` + long[150] + `"]}`
+			}
+			return 200, `{}`
+		}
+		err = s.writeCheck(ctx, check.value, long)
+		if r := refusal(t, err, ReasonCanWrite); r.Subject == nil || *r.Subject != long[150] {
+			t.Fatalf("the grant answered refuses: %v", err)
 		}
 	})
 }

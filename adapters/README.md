@@ -971,21 +971,26 @@ cannot be read, is `credential-scope-unknown`. The token sources
 and nothing more: it lists both content types, and `testIamPermissions` asks for no permission
 of its own. The adapter calls two APIs, the Cloud Asset API (the list call) and the Cloud
 Resource Manager API (the write check), and both must be enabled for the credential. A disabled
-API answers 403: on the write check that is a call that fails, refused `credential-can-write`
-with no permission named, at the start or on a refresh as any refusal is; on the list call it is
-an upstream error.
+API answers 403: on the write check that is an answer other than a grant or none, refused
+`credential-can-write` with no permission named, at the start or on a refresh as any refusal is;
+on the list call it is an upstream error.
 
 **The write check** (`gcp-asset-write-list/2`): `testIamPermissions` on every configured project, by the read-only
 token, over the list below in calls of at most 100. A permission granted refuses
-`credential-can-write: <the first granted, in the list's order>`; a call that fails refuses as
-well, and so does an answer that is neither `{}` nor an object with `permissions`. It runs whenever a token is obtained: at the start, where a refusal refuses the start, and
-with every token after it, where a refusal closes the source until the engine restarts. The
-projects are asked at most eight at a time. A check that the adapter's own time (`--timeout`;
-the signer hands it what is left of the acquisition's time, less a margin) ends before it
-completes is not a refusal, since nothing the platform answered shows the credential can write,
-and not a pass: the adapter exits 1 and seals no token, the start is refused or that acquisition
-fails, and the source is not closed, so the next acquisition obtains a token and checks again.
-A token-information read that time ends is the same.
+`credential-can-write: <the first granted, in the list's order>`. Any other answer refuses as
+well, naming no permission: a status other than 200 (a 403 or a 503 among them), a redirect, or
+an answer that is neither `{}` nor an object with `permissions`. It runs whenever a token is
+obtained: at the start, where a refusal refuses the start, and with every token after it, where
+a refusal closes the source until the engine restarts. The projects are asked at most eight at
+a time. A check that could not finish is not a refusal, since nothing the platform answered
+shows the credential can write, and not a pass: a call brought back no answer because the
+adapter's own time ended (`--timeout`; the signer hands it what is left of the acquisition's
+time, less a margin), or the request's own 15 seconds did, or the connection failed (refused,
+reset, a name that did not resolve, a TLS failure). The adapter then exits 1 and seals no token,
+the start is refused or that acquisition fails, and the source is not closed, so the next
+acquisition obtains a token and checks again. A grant another call answered still refuses. A
+token-information read with no answer is the same; one with an answer it cannot read refuses
+`credential-scope-unknown`.
 
 - `resourcemanager.projects.setIamPolicy`
 - `resourcemanager.projects.update`
@@ -1100,8 +1105,8 @@ formed, so the digest is of the projected page; a member not listed is dropped.
 (no credential, refused, rejected, seal unusable); 8 with `{"referenceExpired":{"status":410}}`
 for an expired page token, only on a request that sent one; 9 with
 `{"refused":{"reason":R,"subject":S}}` for a read-only refusal, on which the signer closes the
-source. A report beside 9 out of its form is a refusal all the same. A check its time ended is
-1, never 9. No output names a token.
+source. A report beside 9 out of its form is a refusal all the same. A check that could not
+finish, for want of an answer, is 1, never 9. No output names a token.
 
 **Not confirmed against the platform.** The form of an expired page token's answer (read as 410
 on a request that sent one); the scopes the metadata server and a key's grant report for each

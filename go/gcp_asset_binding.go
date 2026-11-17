@@ -20,10 +20,12 @@ package main
 // on a page that binds the source's own principal at a resource -- closes
 // the source for every request after it, and the start, the engine's
 // stderr and /posture say so; a closed source serves nothing until the
-// engine restarts. A check the adapter's own time ended before it completed
-// is no refusal: it fails that start or refresh, and closes nothing. The
-// adapter is handed that time as --timeout: what is left of the
-// acquisition's, less a margin for its start and its report.
+// engine restarts. A check that could not finish -- a call of it brought
+// back no answer, because the adapter's own time or the request's ended or
+// the connection failed -- is no refusal: the adapter exits 1, which fails
+// that start or refresh and closes nothing. The adapter is handed its time
+// as --timeout: what is left of the acquisition's, less a margin for its
+// start and its report.
 
 import (
 	"cmp"
@@ -301,7 +303,7 @@ func (r readOnlyRefusal) sentence() string {
 	case r.reason == refusalCredentialCanWrite && r.subject != "":
 		return refusalCredentialCanWrite + ": the credential holds " + subject + ", a write permission, on a configured project"
 	case r.reason == refusalCredentialCanWrite:
-		return refusalCredentialCanWrite + ": the write check did not complete, and a credential not shown to be read-only is refused"
+		return refusalCredentialCanWrite + ": the platform answered the write check with neither a grant nor none, and a credential not shown to be read-only is refused"
 	case r.reason == refusalCredentialScope:
 		return refusalCredentialScope + ": the scopes a token was granted could not be shown to be the one requested alone"
 	case r.reason == refusalCredentialBoundAtRsrc && r.subject != "":
@@ -410,8 +412,8 @@ func (g *gatewayService) closeGCPAsset(source string, s *gcpAssetSource, r readO
 // --token-only, which answers one only once both tokens are held to their
 // scopes and the write check found no write permission on any configured
 // project: the check, met on the start or on a refresh. A refusal closes
-// the source; a check that passed is counted; a check the adapter's time
-// ended, or any other failure, fails this token alone.
+// the source; a check that passed is counted; a check that could not
+// finish (status 1), or any other failure, fails this token alone.
 func (g *gatewayService) gcpAssetToken(ctx context.Context, timeout time.Duration, source string, spec sourceSpec, on string) (string, int, error) {
 	sealed, expiresIn, err := g.obtainToken(ctx, timeout, source, gcpAssetTimed(ctx, timeout, spec))
 	var refused *gcpAssetRefusedRun

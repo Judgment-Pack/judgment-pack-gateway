@@ -12,9 +12,11 @@
 //   - each time it obtains a token -- at the gateway's start and at every
 //     refresh -- it asks testIamPermissions on every configured project
 //     whether the credential holds any of a fixed list of write
-//     permissions, and refuses if it does or if a call fails; a check the
-//     run's time ended before it completed seals and uses no token, and is
-//     no refusal (writecheck.go);
+//     permissions, and refuses if it does or if the platform answers a
+//     call with anything else; a check that could not finish -- the run's
+//     time ended, a request timed out or the connection failed before the
+//     platform answered -- seals and uses no token, and is no refusal
+//     (writecheck.go);
 //   - on every IAM_POLICY page it serves, it refuses a binding of its own
 //     principal, or of allUsers or allAuthenticatedUsers, to a role outside
 //     a fixed list of read-only predefined roles (project.go).
@@ -96,10 +98,14 @@ const (
 	// errorBodyBytes is how much of a refusing answer's body is read to
 	// classify it.
 	errorBodyBytes = 64 << 10
-	// requestTimeout bounds each upstream request inside the run's own time.
-	requestTimeout = 15 * time.Second
 	maxHeaderBytes = 64 << 10
 )
+
+// requestTimeout bounds each upstream request inside the run's own time. A
+// request it ends brings back no answer, so a read-only check it was part
+// of is incomplete, not refused (errCheckIncomplete). A test of this
+// package shortens it, and no build of the command can change it.
+var requestTimeout = 15 * time.Second
 
 // Exit statuses, beside 1 (a failure of any other kind) and 2 (usage). The
 // token statuses are the token step's (adapters/httpsource), read by the
