@@ -36,7 +36,8 @@ go test ./...
 go build -trimpath -o gateway . && ./gateway conform   # the frozen corpus is the arbiter
 ```
 
-CI runs the same four on Linux, macOS and Windows against Go 1.26. `gateway conform`
+CI runs the same four on Linux, macOS and Windows against Go 1.26 (macOS on a push to `main`
+and nightly, not on a pull request). `gateway conform`
 matters most: `corpus/` is frozen, and a change that makes it pass differently has
 changed the format, whatever the diff looks like.
 

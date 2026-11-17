@@ -62,13 +62,20 @@ summary block, and anything you stopped on or chose not to do.
 
 ## This repository
 
-- The checks are `dev.json`, run by `scripts/dev/check.sh`; the `check` job in CI runs the same
-  list. The `go` job is a matrix (Linux, macOS, Windows) whose leg names branch protection
-  requires; its legs run the core's Go steps natively and are the one place the list is repeated in
-  the workflow. A core step added to `dev.json` is added to the matrix as well. The longer steps
-  are scripts under `scripts/checks/`.
-- A pull request's `check` job runs `scripts/dev/check.sh --all --changed origin/<base>`: only the
-  steps that `jpdev.json` maps its changed paths to, and the whole list when a changed path matches
+- The checks are `dev.json`, run by `scripts/dev/check.sh`. CI runs the same list in two lanes
+  side by side, `check · go-tests` (the Go builds and tests of the core and the adapters, named in
+  `.github/check_lanes.py`) and `check · rest` (every other check, a new one included), each
+  skipping the other's checks; the required `check` job passes only when both lanes did. The `go`
+  job is a matrix (Linux, macOS, Windows) whose Linux and Windows leg names branch
+  protection requires; its legs run the core's Go steps natively and are the one place the list is
+  repeated in the workflow. The macOS leg runs on a push to `main` and nightly, not on a pull
+  request or a merge group, and is not required. Windows runs the core's tests in two shards, two
+  legs (`.github/go_test_shard.py`: each top-level test in exactly one, by the length of its
+  name). A core step added to `dev.json` is added to the matrix as well. The longer steps are
+  scripts under `scripts/checks/`.
+- On a pull request each lane runs `scripts/dev/check.sh --all --changed origin/<base> --skip
+  <the other lane's checks>`: only the steps that `jpdev.json` maps its changed paths to, and the
+  whole list when a changed path matches
   no rule (the workflows, `.gitattributes`, `.gitignore`) or when `jpdev.json`, `dev.json` or the
   runner changed. A push to `main` runs the whole list, and only that run is what a release is
   held to. Run the same selection locally with

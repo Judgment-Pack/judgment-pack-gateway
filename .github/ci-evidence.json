@@ -11,6 +11,8 @@
   "max_age_hours": 48,
   "inputs": [
     ".dockerignore",
+    ".github/check_lanes.py",
+    ".github/go_test_shard.py",
     ".github/workflows/release.yml",
     ".goreleaser.yml",
     "Dockerfile",
@@ -149,9 +151,9 @@
     "ci": {
       "$comment": [
         "Only a push to main is evidence: ci.yml has no dispatch, so the fresh route is a re-run of all jobs of main's run.",
-        "Every job and every matrix leg is required; none is skipped on main. The go legs include native adapter sandbox boundary tests and run the workflow's own steps,",
+        "Every job and every matrix leg is required; none is skipped on main. The go legs include native adapter sandbox boundary tests (on Windows in the first shard) and run the workflow's own steps; the Windows leg runs the core's tests in two shards, each a leg of its own,",
         "not dev.json's, so their checks are none: the job's success is the API's, and the evidence adds the leg's",
-        "platform and toolchain. The check job runs every dev.json check and setup step."
+        "platform and toolchain. The two check lanes run every dev.json check between them, each check in one lane, and each lane every setup step: a lane's evidence is its setup steps, the check job's every check's result, read from the lanes' summaries."
       ],
       "path": ".github/workflows/ci.yml",
       "name": "CI",
@@ -168,6 +170,26 @@
           "profile": "check",
           "checks": "all",
           "optional_skips": [],
+          "setup": false
+        },
+        "check-go-tests": {
+          "name": "check \u00b7 go-tests",
+          "job_id": "check-lanes",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "profile": "check",
+          "checks": [],
+          "setup": true
+        },
+        "check-rest": {
+          "name": "check \u00b7 rest",
+          "job_id": "check-lanes",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "profile": "check",
+          "checks": [],
           "setup": true
         },
         "go-ubuntu-latest": {
@@ -188,8 +210,8 @@
           "profile": "go-macos",
           "checks": []
         },
-        "go-windows-latest": {
-          "name": "windows-latest \u00b7 Go 1.26",
+        "go-windows-latest-1": {
+          "name": "windows-latest \u00b7 Go 1.26 \u00b7 shard 1 of 2",
           "job_id": "go",
           "labels": [
             "windows-latest"
@@ -197,8 +219,26 @@
           "profile": "go-windows",
           "checks": []
         },
-        "postgresql": {
-          "name": "postgresql",
+        "go-windows-latest-2": {
+          "name": "windows-latest \u00b7 Go 1.26 \u00b7 shard 2 of 2",
+          "job_id": "go",
+          "labels": [
+            "windows-latest"
+          ],
+          "profile": "go-windows",
+          "checks": []
+        },
+        "postgresql-superuser": {
+          "name": "postgresql \u00b7 superuser",
+          "job_id": "postgresql",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "profile": "go-linux",
+          "checks": []
+        },
+        "postgresql-non-superuser": {
+          "name": "postgresql \u00b7 non-superuser",
           "job_id": "postgresql",
           "labels": [
             "ubuntu-latest"
