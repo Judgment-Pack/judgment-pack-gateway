@@ -579,15 +579,17 @@ class ConfigurationTest(unittest.TestCase):
                     self.assertIn("github.event_name != 'schedule'", job['if'])
 
     def test_the_check_job_passes_only_when_both_lanes_did_and_reads_both(self):
-        """`check` needs the lanes, runs when one failed, and fails unless both succeeded; on a push
+        """`check` needs the lanes, runs when one failed or the run was cancelled, and fails unless both succeeded; on a push
         to main its evidence reads the summary of every lane. Each lane runs check.sh skipping
         what .github/check_lanes.py says, on every event."""
         lanes_job, check = self.ci['jobs']['check-lanes'], self.ci['jobs']['check']
         lanes = [values['lane'] for values in legs(lanes_job)]
         self.assertEqual(tuple(lanes), vendored('check_lanes', '.github/check_lanes.py').LANES)
         self.assertEqual(check['needs'], 'check-lanes')
-        self.assertIn('!cancelled()', check['if'])
-        self.assertNotIn('always()', check['if'])
+        # always(), not !cancelled(): a run cancelled while the lanes ran must leave `check` failed,
+        # not skipped, since a skipped required check counts as passed.
+        self.assertEqual(check['if'], "${{ always() && github.event_name != 'schedule' }}")
+        self.assertNotIn('cancelled()', check['if'])
         gate = check['steps'][0]
         self.assertEqual(gate['env'], {'LANES': '${{ needs.check-lanes.result }}'})
         self.assertIn('if [ "${LANES}" != success ]; then', gate['run'])

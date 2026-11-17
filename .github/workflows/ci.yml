@@ -295,14 +295,14 @@ jobs:
           retention-days: 1
 
   # The one required name for dev.json's checks: it fails unless both lanes succeeded. It runs when
-  # a lane failed too, so that it fails rather than being skipped, which a required check would
-  # count as passed. On a push to main it records the evidence of the whole list: every check's
+  # a lane failed or the run was cancelled too (always()), so that it fails rather than being
+  # skipped, which a required check would count as passed. On a push to main it records the evidence of the whole list: every check's
   # result, read from the two lanes' summaries of this attempt (each check in exactly one), with the
   # commit's inputs and the toolchains, set up here as the lanes set them up.
   check:
     name: check
     needs: check-lanes
-    if: ${{ !cancelled() && github.event_name != 'schedule' }}
+    if: ${{ always() && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
