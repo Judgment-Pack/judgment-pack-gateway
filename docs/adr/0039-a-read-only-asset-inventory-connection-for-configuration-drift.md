@@ -380,6 +380,171 @@ Consequences:
 - Bad: a platform that never answers fails every acquisition, each one reported, rather than
   closing the source once. Nothing is served meanwhile.
 
+## Amendment (gateway #496): grants through groups, opt-in and bounded
+
+*Design only; nothing here is built until it is reviewed.* The resource-binding check (decision 3,
+**Bound at a resource**, and the release review's **Public members**) matches a binding only when a
+member names the source's own principal, `allUsers` or `allAuthenticatedUsers`. A role granted to
+a group the principal belongs to is not seen. Many deployments grant mainly through groups, so for
+them the check cannot show the case that matters most. The points below add an opt-in resolution of
+groups. Everything else stands, and a source that does not opt in behaves exactly as it does today.
+
+### G1. Considered calls
+
+The question for each binding is "is the source's principal in this group?", and the check may say
+"no" only on an answer that shows it. Four ways to ask were weighed:
+
+1. **List the group's members, and its nested groups' members, down to a depth** (the Cloud Identity
+   Groups API's `groups.memberships.list`, in its basic view). Chosen. A group the credential cannot
+   read is a refusal from the platform, not a silent omission, so "not found" after a complete
+   read is an answer the check can rest on.
+2. **Ask for the transitive membership directly** (`groups.memberships.checkTransitiveMembership`).
+   Rejected as the check: it is offered only to some editions of the directory and refuses the
+   others, and it counts only paths the caller can view, so its "no" does not show the principal is
+   not a member.
+3. **Walk upward from the principal** (`groups.memberships.searchDirectGroups` or the transitive
+   search). Rejected: groups whose memberships the caller cannot view are left out of the answer
+   without a sign, so a group that grants a write role could be missed and reported as checked.
+4. **The directory administration API's member check.** Rejected: it needs an administrative scope
+   and an administrator's role, which is far more than a read of group membership.
+
+The builder confirms each call's form, its page bound and its refusal for a group it cannot read
+against the platform's documentation, and a hand-written fixture holds each one.
+
+### G2. The opt-in and the identity read
+
+- A binding of the `gcp-asset` shape may set `groups`, an object:
+  `{"resolve": true, "depth": 2, "members": 5000}`. Absent, or `resolve` false, nothing changes.
+  It needs the next engine configuration version; earlier versions refuse the member.
+- `depth` is the number of nested group levels read below a group a binding names, from 0 (that
+  group's own members only) to 4; the default is 2. `members` is the number of memberships read for
+  one acquisition, from 1 to 50 000; the default is 5 000.
+- The membership read uses a **third token**, beside the two of A2, of scope
+  `https://www.googleapis.com/auth/cloud-identity.groups.readonly`, for `groups.memberships.list`
+  and nothing else. It is minted by the source's own token source (A3), for the same principal,
+  so no new credential is held. A key-file token never names a subject: no domain-wide delegation,
+  and a configuration that would supply one is refused at start.
+- **Read-only by check, for this token too.** Its granted scopes are read and held to the one
+  requested, with A2's closed list of identity scopes, and anything else is refused
+  `credential-scope-unknown`, at start and on every refresh. Directory groups are not resources
+  the platform's `testIamPermissions` covers, so this token has no write check of its own. Its
+  read-only property rests on the granted scope, whose API refuses every write. The principal's
+  write permissions on the configured projects are checked as before. The start report and
+  `/posture` say this, and say that the operator must let the principal view the memberships of
+  the groups that matter (a group setting or a directory role). Neither the gateway nor the
+  adapter grants it.
+
+### G3. What the check does with a group
+
+On an `IAM_POLICY` page, for each binding whose role is outside the read-only list (a binding of a
+read-only role is never resolved), each `group:` member is resolved:
+
+- its memberships are read, page by page, and each nested group's in turn, breadth first, to
+  `depth`. A member is compared with the source's principal as `ownPrincipals` compares it, without
+  regard to case;
+- **found**: the page is refused `credential-bound-at-resource: <asset name>`, and the source
+  closes, as for a direct binding. The refusal names the asset and never the group or a member;
+- **not found, with every membership to `depth` read and no nested group left beyond it**: the
+  group is resolved, and the binding grants the principal nothing through it;
+- **anything else** leaves the group **unresolved** (G5). An unresolved group never counts as
+  "not found".
+
+Members read are compared and dropped. They are never put in a result, a receipt, a log line, an
+event or `/posture`, and no count of a group's members is reported. A resolved group's answer is
+kept, in memory, until the next token is obtained, then dropped, so a membership change is seen at
+the next refresh at the latest. The `IAM_POLICY` page itself, and what the projection carries from
+it, are unchanged: resolution decides only whether the page refuses.
+
+### G4. Bounds
+
+| Bound | Default | Outcome when it is reached |
+| --- | --- | --- |
+| Depth | 2 nested levels | a nested group found at the last level whose members would need reading: the group is unresolved (`depth`) |
+| Memberships read | 5 000 per acquisition | the read stops; every group not finished is unresolved (`members`) |
+| Groups read | 64 per acquisition | as for memberships (`groups`) |
+| Time | half of what the acquisition's `--timeout` leaves (the release review's amendment), at most 10 s | the read stops; every group not finished is unresolved (`time`) |
+
+A bound reached is never a refusal and never closes the source. The page is served and the check
+is reported as unchecked for it.
+
+### G5. Failure modes: unchecked, never read-only
+
+Each of these leaves the group unresolved, with a reason, and the page served:
+
+- the platform refuses the read (a `403` for a group the principal cannot view, a group in another
+  organization, a disabled API): `unreadable`;
+- the read is throttled (`429`) or the platform is unavailable (`5xx`), or the connection fails
+  before an answer: `unavailable`. Nothing is retried inside the acquisition;
+- an answer out of form, a page whose next token repeats, or a page missing a member's key:
+  `malformed`;
+- a bound of G4: `depth`, `members`, `groups` or `time`;
+- a token for the read that could not be obtained, or whose scope check refused: every group is
+  unresolved, `no-token`. A scope refusal of this token also refuses the start or the refresh, as
+  A2's checks do.
+
+A partial read is treated as no read: a group with any page unread is unresolved, even if the
+pages read did not hold the principal. The only outcome that asserts something about the
+principal is "found", and it refuses.
+
+### G6. What `/posture` reports
+
+- Each gcp-asset source's entry gains `groupBindings`: `"off"` when the binding does not opt in;
+  `"checked"` when it does and every group met on a non-read-only binding since the start was
+  resolved; `"unchecked"` once any was not, with the count of groups unresolved and the reason of
+  the last one (one of G5's), never the group's name. It stays `"unchecked"` until the source
+  restarts, because an earlier page that was not checked is not checked later.
+- It is `"unchecked"` too where `resourceBindings` is `"unchecked"` (no `IAM_POLICY` served).
+- The `read-only-credentials` line keeps its state rule. Its text adds how many of the sources the
+  caller reaches resolve groups, and how many of those report `unchecked`, counted over the
+  reached sources only, so that no count about another scope is added (gateway #494 owns the
+  state's own rule).
+- The start report says, per source, whether groups are resolved, with its bounds, and what stays
+  outside (G7).
+
+### G7. What stays outside
+
+Reported as outside in the README, the start report and `/posture`, and never as checked:
+
+- nesting beyond `depth` (unresolved, G4);
+- `domain:` members: no read of the directory lists every account of a domain, so a domain grant
+  is not resolved. The builder confirms against the platform's documentation whether a service
+  account is counted in one, and the README states it;
+- principal sets and pools (`principalSet://`, `principal://` forms other than the source's own),
+  whose membership is the identity federation's and not the directory's;
+- groups and identities the credential cannot read (unresolved, `unreadable`);
+- deny policies and conditions on a binding: a conditional binding is resolved as if its condition
+  held, so a condition never hides a grant;
+- bindings on asset types the source does not serve, as before.
+
+### G8. Tests
+
+In-process servers and hand-written synthetic fixtures only, as the decision drivers say: no real
+directory, tenant, group or credential, and no fixture recorded from a run. Fixtures cover a
+principal found directly and at each depth, not found after a complete read, every reason of G5,
+each bound of G4, a cycle between groups, a repeated next token, a member's key in other case, and
+a scope refusal of the third token. Each refusal and each unresolved reason has a test that breaks
+when its rule is removed.
+
+### G9. Out of scope
+
+Federation scopes, throttling of the list call and refresh failures stay with gateway #492. A first
+live run (A4) adds: the refusal form for a group the principal cannot view, the memberships page
+bound, and the scopes the token sources report for the third token.
+
+### Consequences of the amendment
+
+- Good: a deployment that grants through groups can see a write role reachable by one, and is
+  refused on it as for a direct grant.
+- Good: every gap is stated. An unread group is reported unchecked with its reason, never passed
+  as "not a member".
+- Bad: the check needs the operator to let the principal view group memberships, which is a grant
+  outside the platform's project IAM and outside what the gateway can verify.
+- Bad: memberships are read with each acquisition's time budget, so a page with many groups is
+  slower, and may be served unchecked.
+- Bad: one more token and one more API. The token is narrow, and its read-only property rests on
+  its scope, not on a write check.
+- Neutral: a membership change is seen at the next token at the latest (the cache, G3).
+
 ## More information
 
 - Specification: RFC 0033 (paged operation source), RFC 0034 (registry profile), RFC 0035
