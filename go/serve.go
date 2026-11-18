@@ -1696,6 +1696,15 @@ func (g *gatewayService) runSourceUnder(ctx context.Context, cancel context.Canc
 			// reason, never a failure the source serves on after.
 			return nil, "", "", &gcpAssetRefusedRun{refusal: readOnlyRefusalReport(stdout.buf.Bytes()), failed: failed}
 		}
+		if code == 1 && spec.gcpAsset != nil && spec.gcpAsset.op.groups != nil && spec.gcpAsset.op.groups.unresolved == gcpAssetUnresolvedRefuse {
+			// adapter-gcp-asset's page refused for a group unresolved,
+			// read from the report it wrote beside the status
+			// (gcp_asset_groups.go); a report out of its form is a
+			// failure as any other. Neither closes the source.
+			if reason, groups, ok := groupUnresolvedReport(stdout.buf.Bytes()); ok {
+				return nil, "", "", &gcpAssetGroupRefused{reason: reason, groups: groups, failed: failed}
+			}
+		}
 		return nil, "", "", failed
 	}
 	observedAt = nowStamp()

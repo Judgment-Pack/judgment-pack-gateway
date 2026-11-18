@@ -1335,8 +1335,9 @@ With `identity.callerScopes` checked, the `/posture` endpoint lists in `programs
 only the sources the caller reaches (ADR-0037), and omits `programs` when it reaches
 none; the installation's caller, `"unchecked"` and a gateway without `identity`
 list every source. Every protection line is judged over every source, whoever asks; the counts
-that are the caller's are `read-only-credentials`' (its sources, those serving `IAM_POLICY` and
-those closed), of the sources the caller reaches.
+that are the caller's are `read-only-credentials`' (its sources, those serving `IAM_POLICY`,
+those resolving groups and of those the ones unchecked, and those closed), of the sources the
+caller reaches.
 Container-helper entries concern the local runtime client, and are partial even
 when its backend enforces all filesystem writes: the external daemon is not
 confined by that client boundary. Such a source's probe and launch keep
@@ -2275,6 +2276,61 @@ platform's entry by hand.
 **Upgrading.** A file of version 28 or earlier loads as before, and nothing about the other
 shapes changes. To configure the shape, raise `engineVersion` to `"29"`. A gateway older than
 this one refuses a version-29 file by its version.
+
+## Grants through groups on a gcp-asset source (engine version 30)
+
+A gcp-asset live operation may set `groups` ([ADR-0039](../adr/0039-a-read-only-asset-inventory-connection-for-configuration-drift.md),
+Amendment (gateway #496); adapters/README.md, "Grants through groups"): each `group:` member of
+a binding whose role is outside the read-only list, on an `IAM_POLICY` page, is resolved with a
+third token of scope `cloud-identity.groups.readonly`, and the principal found in one refuses
+`credential-bound-at-resource` and closes the source, as a direct binding does.
+
+```json
+"live": {"shape": "gcp-asset", "licence": "Apache-2.0", "parents": ["projects/example-project-1"],
+  "assetTypes": ["run.googleapis.com/Service"], "contentTypes": ["RESOURCE", "IAM_POLICY"],
+  "groups": {"resolve": true, "depth": 2, "members": 5000, "unresolved": "serve"}}
+```
+
+- `resolve`, required: `true` resolves; `false` is as the member absent.
+- `depth`, 0 to 4 (default 2): the nested levels read below a group a binding names.
+- `members`, 1 to 50 000 (default 5 000): the memberships read for one acquisition; at most 64
+  groups are read, and the read takes at most half of the adapter's `--timeout`, and 10 s.
+- `unresolved`: `"serve"` (the default) serves a page with a group unresolved and reports it;
+  `"refuse"` refuses it `group-unresolved: <reason>`, which fails that acquisition as a failed
+  source and does not close the source.
+
+Refused by name, quoting nothing of the value: the member in a file of version 29 or earlier
+(`names groups, a version-30 member`), `resolve` false among them; a member other than these
+four; `resolve` not a boolean; a setting out of its range or form, whether `resolve` is true or
+false.
+
+**At the start**, a source that resolves groups says so beside its other lines: the third token
+and that its read-only property rests on its scope, since no write check covers the directory;
+the bounds; the `unresolved` setting; that the principal reads only the memberships the
+operator lets it view, which the gateway neither grants nor verifies; and what stays outside
+(nesting past the depth, `domain:` members, principal sets and pools, groups it cannot read,
+deny policies, a membership removed in the directory while IAM still holds its grant). A source
+that does not opt in says what it said before. A grant of the third token beyond its scope
+refuses the start or the refresh `credential-scope-unknown`, as the others' do.
+
+**`/posture`**: each `readOnlySources` entry gains `groupBindings`, `"off"` where the binding
+does not opt in, `"checked"` where it does and every group met since the start was resolved,
+`"unchecked"` once one was not, or where the platform serves no `IAM_POLICY`; with
+`groupsUnresolved`, the groups left unresolved since the start, and `groupReason`, the last
+one's reason (`unreadable`, `unavailable`, `malformed`, `member-type`, `depth`, `members`,
+`groups`, `time`, `no-token`), or `null`. It stays `"unchecked"` until the engine restarts. A
+page refused under `"refuse"` counts as a group unresolved. No group's name, email or member is
+reported. The `read-only-credentials` line is `partial` while any source it is judged over has
+`groupBindings` `"unchecked"`; `"off"` changes nothing, and which sources the state is judged
+over is as before. Where the caller reaches a source that resolves groups, its text adds how
+many it reaches resolve them and how many of those are unchecked.
+
+**Upgrading.** A file of version 29 or earlier loads as before, and a source without `groups`
+is started with the command line, says the lines and reports the posture it did, but for
+`groupBindings: "off"`, `groupsUnresolved: 0` and `groupReason: null` on its entry. To resolve
+groups, raise `engineVersion` to `"30"`, add the member, and let the source's principal view the
+memberships of the groups that matter. A gateway older than this one refuses a version-30 file
+by its version.
 
 ## Keyed actions (engine version 14 and later)
 
