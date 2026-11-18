@@ -930,7 +930,7 @@ loopback stand-in) and verify the store that results.
 ## adapter-gcp-asset
 
 The read-only Cloud Asset Inventory source ([ADR-0039](../docs/adr/0039-a-read-only-asset-inventory-connection-for-configuration-drift.md)
-and its Amendment; engine configuration version 29, docs/design/engine-config.md). `gateway serve
+and its Amendments; engine configuration version 29, and 30 for `groups`, docs/design/engine-config.md). `gateway serve
 --config` starts it for a platform whose binding's live operation is of the `gcp-asset` shape, as
 the platform's user with its live credentials file, under the source sandbox; its envelope and
 receipt are those of the http shape. Each acquisition makes one `assets.list` call: one configured
@@ -948,6 +948,12 @@ time. The next page token is returned as the platform wrote it, or null, and nev
 - `contentTypes`: `RESOURCE`, `IAM_POLICY` or both.
 - `members`: `"count-users"` carries, on an `IAM_POLICY` page, the count of each binding's `user:`
   members in place of them; absent (the default), members are carried as written.
+- `groups` (version 30): `{"resolve": true, "depth": 2, "members": 5000, "unresolved": "serve"}`
+  resolves the grants a page makes through a group ("Grants through groups" below). Absent, or
+  `resolve` false, nothing changes. `depth` is 0 to 4, `members` 1 to 50 000, `unresolved`
+  `"serve"` or `"refuse"`; a value out of range is refused at load. The adapter takes them as
+  `--groups-resolve`, `--groups-depth`, `--groups-members` and `--groups-unresolved`; a setting
+  without `--groups-resolve` is a usage error.
 
 A request (stdin) is `{"parent", "contentType", "assetTypes", "pageToken"?, "pageSize"?,
 "readTime"?}`. The signer holds it to this form and the configuration, the parent first
@@ -955,7 +961,10 @@ A request (stdin) is `{"parent", "contentType", "assetTypes", "pageToken"?, "pag
 before any token is obtained.
 
 **Tokens.** Two, each requested for one scope alone: `https://www.googleapis.com/auth/cloudasset` for the list call, and `https://www.googleapis.com/auth/cloud-platform.read-only`
-for `testIamPermissions`. `https://www.googleapis.com/auth/cloud-platform` is never requested.
+for `testIamPermissions`; and a third where groups are resolved on a platform serving
+`IAM_POLICY`, `https://www.googleapis.com/auth/cloud-identity.groups.readonly`, minted after the
+write check by the same token source for the same principal, and sealed beside the list token.
+`https://www.googleapis.com/auth/cloud-platform` is never requested.
 The scopes each token was granted are read (the token answer's `scope`, or the
 token-information endpoint where the answer has none) and must be the scope requested and
 nothing beyond it but an identity scope, a closed list: `openid`, `https://www.googleapis.com/auth/userinfo.email`, `email`. Anything else, or a grant that
@@ -1083,11 +1092,51 @@ never on the list, whatever its name. The read-only roles: `roles/viewer`, `role
 `/posture` say `resource-bindings: unchecked`. Where it does, `checked` (and `enforced` on
 `/posture`'s `read-only-credentials` line) covers those grants alone. The check does not see:
 
-- a grant through a group the principal belongs to, or through any other member that stands
-  for a set of principals (a domain, a principal set): membership cannot be resolved with the
-  read-only calls this adapter makes;
+- a grant through a group the principal belongs to, unless the platform resolves groups (below),
+  or through any other member that stands for a set of principals (a domain, a principal set):
+  membership cannot be resolved with the calls the list and the check make;
 - a binding on a resource of an asset type the source does not serve, or on a page no caller
   reads: the check reads the pages callers request and makes no call of its own.
+
+**Grants through groups** (`groups`, ADR-0039, Amendment (gateway #496)). On an `IAM_POLICY` page,
+each `group:` member of a binding whose role is outside the read-only list is resolved by the
+third token: `groups.lookup` of its email, then `groups.memberships.list` in the `FULL` view, which
+carries each member's type, page by page (500 a page), and each nested group in turn, breadth
+first, to `depth`. A binding of a read-only role is never resolved, and a condition on a binding
+is read as holding. A member's `preferredMemberKey.id`, lower-cased, is compared with the
+principal's bare email, lower-cased; `USER` and `SERVICE_ACCOUNT` members are leaves, `GROUP`
+members are read, and any other type, or none, is looked up as a group and read as one if it is
+one. A group already read in the acquisition is skipped. The principal found in one refuses
+`credential-bound-at-resource: <asset name>` and closes the source, as a direct binding does. A
+group is resolved only when every page of it and of each nested group to the depth was read and
+none is left beyond it; anything else leaves it unresolved, by one reason:
+
+- `unreadable`: a `403`, a lookup's `404`, a `deleted:group:` member, any other `4xx`;
+- `unavailable`: a `429`, a `5xx`, or no answer; nothing is retried;
+- `malformed`: an answer out of form, a next token repeated, a member with no key, a key with a
+  namespace;
+- `member-type`: a member that is neither a user, a service account nor a group;
+- `depth`, `members`, `groups`, `time`: a bound reached — a group past the depth; 5 000
+  memberships an acquisition by default; 64 groups; half of what `--timeout` leaves, at most
+  10 s;
+- `no-token`: the third token could not be obtained. A grant of that token beyond its scope is
+  `credential-scope-unknown`, which refuses the start or the refresh as the other tokens' do.
+
+A page with a group unresolved is served under `unresolved: "serve"`, and the signer reports
+the source's `groupBindings` `unchecked` on `/posture` until it restarts; under `"refuse"` it is
+refused `group-unresolved` (`group-unresolved: <reason>` on standard error), exit 1, never 9, and the source is not closed. A partial
+read is no read. What is read is compared and dropped, held in the process's memory for the one
+acquisition: no member, group name, email or platform error text is in a result, a report or
+the adapter's standard error, which carry the reason alone. The token's read-only property rests
+on its scope, whose API refuses every write; no write check covers the directory. The principal
+reads only the memberships the operator lets it view (a group setting or a directory role),
+which neither the gateway nor the adapter grants. Outside, reported as such and never as
+checked: nesting past the depth; `domain:` members, which no directory read lists — the
+platform's principals overview states that a domain can contain both human users and service
+accounts, so a domain grant may reach the principal; principal sets and pools; groups the
+principal cannot read; deny policies; bindings on asset types not served; and a membership
+removed in the directory while IAM still holds its grant, for which the check reads "not found"
+for a while.
 
 **Projections.** `resource.data` is cut to an allow-list per asset type before the envelope is
 formed, so the digest is of the projected page; a member not listed is dropped.
@@ -1101,7 +1150,10 @@ formed, so the digest is of the projected page; a member not listed is dropped.
 | `storage.googleapis.com/Bucket` | `name`, `location`, `storageClass`, `labels`, `versioning`, `iamConfiguration`, `retentionPolicy` |
 | `cloudresourcemanager.googleapis.com/Project` | `projectId`, `projectNumber`, `lifecycleState`, `labels`, `parent` |
 
-**Exit statuses.** 0 with the envelope; 1 any other failure; 2 usage; 3 to 6 as a token step's
+**Exit statuses.** 0 with the envelope, or, where groups are resolved,
+`{"envelope": E, "groupBindings": {"unresolved": N, "reason": R}}`, R null where N is 0; 1 any
+other failure, and under `unresolved: "refuse"` with `{"groupUnresolved":{"reason":R,"groups":N}}`
+for a page with a group unresolved; 2 usage; 3 to 6 as a token step's
 (no credential, refused, rejected, seal unusable); 8 with `{"referenceExpired":{"status":410}}`
 for an expired page token, only on a request that sent one; 9 with
 `{"refused":{"reason":R,"subject":S}}` for a read-only refusal, on which the signer closes the
@@ -1114,7 +1166,12 @@ scope requested; the Cloud Run resource form (both are projected); whether every
 the write list is reported at project level. Federation (workload identity with
 impersonation) is withheld: the impersonation call grants no scope narrower than
 `cloud-platform`, which this adapter never requests. `count-users` counts a `deleted:user:`
-member as a user. `gateway connect` does not write a platform of this shape; write its entry by
+member as a user. For groups: that `groups.memberships.list` refuses with a `403` rather than
+answering a filtered subset, under a group's member-visibility settings, for a group with
+external members and for a dynamic group; the `FULL` view's page bound; `groups.lookup`'s `404`
+and `403` forms; whether the basic view omits a member's type (`FULL` is requested either way);
+and that the metadata server and a key grant the third token's scope, and what each reports for
+it. `gateway connect` does not write a platform of this shape; write its entry by
 hand.
 
 ## adapter-document

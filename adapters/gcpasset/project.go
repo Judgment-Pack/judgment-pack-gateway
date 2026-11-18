@@ -7,7 +7,9 @@ package gcpasset
 // their count. All of it is done here, before the envelope is written, so
 // the gateway's resultDigest is of the projected page and the same for
 // every caller of the source. The resource-binding check reads each
-// IAM_POLICY page before it is projected.
+// IAM_POLICY page before it is projected, and keeps, where groups are
+// resolved (groups.go), the groups each binding outside the read-only list
+// names; they are resolved once the whole page is read.
 //
 // The answer is bounded before it is decoded: its size by MaxAnswer, its
 // depth by maxNesting in one pass over the bytes, a member named twice by
@@ -127,11 +129,13 @@ func ReadOnlyRoles() []string {
 }
 
 // projectedPage is the result: the page's assets, projected, its readTime,
-// and its nextPageToken as written, or null on the last page.
+// and its nextPageToken as written, or null on the last page. groups, never
+// part of the result, are the groups to resolve, in the page's order.
 type projectedPage struct {
 	ReadTime      *string           `json:"readTime"`
 	Assets        []json.RawMessage `json:"assets"`
 	NextPageToken *string           `json:"nextPageToken"`
+	groups        []groupRef
 }
 
 // within reports whether raw nests no deeper than limit containers, read
@@ -235,7 +239,7 @@ func (s *source) projectPage(body []byte, req Request, principal string) (*proje
 	}
 	own := ownPrincipals(principal)
 	for i, raw := range assets {
-		projected, err := s.projectAsset(raw, req, own)
+		projected, groups, err := s.projectAsset(raw, req, own)
 		if err != nil {
 			var r *Refused
 			if errors.As(err, &r) {
@@ -244,6 +248,7 @@ func (s *source) projectPage(body []byte, req Request, principal string) (*proje
 			return nil, fmt.Errorf("assets[%d] %v", i, err)
 		}
 		page.Assets = append(page.Assets, projected)
+		page.groups = append(page.groups, groups...)
 	}
 	return page, nil
 }
@@ -299,17 +304,18 @@ func policyOf(raw json.RawMessage) (version json.RawMessage, bindings []binding,
 // projectAsset is one asset, projected: its name, type and update time; for
 // a RESOURCE page its resource's data by the type's projection, location
 // and parent; for an IAM_POLICY page its policy's bindings, after the
-// resource-binding check.
-func (s *source) projectAsset(raw json.RawMessage, req Request, own []string) (json.RawMessage, error) {
+// resource-binding check, with the groups to resolve its bindings name.
+func (s *source) projectAsset(raw json.RawMessage, req Request, own []string) (json.RawMessage, []groupRef, error) {
 	notAnAsset := errors.New("is not an asset of the form this adapter reads")
 	a, ok := object(raw)
 	var name, assetType string
 	if !ok || !stringMember(a["name"], &name) || !stringMember(a["assetType"], &assetType) {
-		return nil, notAnAsset
+		return nil, nil, notAnAsset
 	}
 	if !contains(req.AssetTypes, assetType) {
-		return nil, errors.New("is of an asset type the request did not name")
+		return nil, nil, errors.New("is of an asset type the request did not name")
 	}
+	var groups []groupRef
 	out := map[string]any{"name": name, "assetType": assetType}
 	if !absent(a["updateTime"]) {
 		out["updateTime"] = a["updateTime"]
@@ -319,7 +325,7 @@ func (s *source) projectAsset(raw json.RawMessage, req Request, own []string) (j
 		if !absent(a["resource"]) {
 			r, ok := object(a["resource"])
 			if !ok {
-				return nil, notAnAsset
+				return nil, nil, notAnAsset
 			}
 			resource := map[string]any{}
 			if data := project(r["data"], &node{obj: resourceProjections[assetType]}); data != nil {
@@ -336,15 +342,16 @@ func (s *source) projectAsset(raw json.RawMessage, req Request, own []string) (j
 		if !absent(a["iamPolicy"]) {
 			version, bindings, err := policyOf(a["iamPolicy"])
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			if err := boundAtResource(name, bindings, own); err != nil {
-				return nil, err
+			if groups, err = boundAtResource(name, bindings, own, s.cfg.resolvesGroups()); err != nil {
+				return nil, nil, err
 			}
 			out["iamPolicy"] = s.projectPolicy(version, bindings)
 		}
 	}
-	return canon.EncodeJSON(out)
+	encoded, err := canon.EncodeJSON(out)
+	return encoded, groups, err
 }
 
 // project carries raw through n: nil when raw is not of the form n reads,
@@ -501,20 +508,27 @@ var publicMembers = []string{"allusers", "allauthenticatedusers"}
 // boundAtResource refuses a binding of the source's own principal, or of
 // allUsers or allAuthenticatedUsers, to a role outside the read-only list,
 // naming the asset. Members are compared without regard to case, so a
-// spelling does not slip a binding past. A member that names a set the
-// principal may belong to -- a group, a domain, a principal set -- is not
-// resolved: membership cannot be read with the read-only calls this
-// adapter makes, and the README says so.
-func boundAtResource(assetName string, bindings []binding, own []string) error {
+// spelling does not slip a binding past. Where groups are resolved, it
+// returns the group members of those bindings, lower-cased, for
+// resolveGroups (groups.go); a binding of a read-only role is never
+// resolved. A domain or a principal set is not resolved at all, and the
+// README says so; a condition on a binding is read as holding, so a
+// condition never hides a grant.
+func boundAtResource(assetName string, bindings []binding, own []string, groups bool) ([]groupRef, error) {
+	var refs []groupRef
 	for _, b := range bindings {
 		if readOnlyRoles[b.Role] {
 			continue
 		}
 		for _, m := range b.Members {
-			if member := strings.ToLower(m); contains(own, member) || contains(publicMembers, member) {
-				return refused(ReasonBoundAtResource, assetName)
+			member := strings.ToLower(m)
+			if contains(own, member) || contains(publicMembers, member) {
+				return nil, refused(ReasonBoundAtResource, assetName)
+			}
+			if groups && groupMember(member) {
+				refs = append(refs, groupRef{asset: assetName, member: member})
 			}
 		}
 	}
-	return nil
+	return refs, nil
 }

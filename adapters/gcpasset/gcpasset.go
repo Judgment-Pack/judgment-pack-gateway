@@ -19,7 +19,15 @@
 //     (writecheck.go);
 //   - on every IAM_POLICY page it serves, it refuses a binding of its own
 //     principal, or of allUsers or allAuthenticatedUsers, to a role outside
-//     a fixed list of read-only predefined roles (project.go).
+//     a fixed list of read-only predefined roles (project.go);
+//   - where the configuration opts in, it resolves the groups such bindings
+//     name, downward and bounded, with a third token of the
+//     cloud-identity.groups.readonly scope alone, and refuses a page whose
+//     groups hold its own principal as it refuses a direct binding; a group
+//     it could not read whole is unresolved, never "not a member", and the
+//     page is served and reported unchecked, or refused group-unresolved
+//     without closing the source (groups.go, the Amendment for gateway
+//     #496).
 //
 // It keeps no cursor: the platform's nextPageToken is returned as written,
 // or null, and never followed. It imports nothing of the core module.
@@ -150,6 +158,9 @@ type Config struct {
 	// SealedToken is the list token an earlier --token-only run obtained,
 	// checked and sealed; empty, an acquisition obtains and checks its own.
 	SealedToken string
+	// Groups is the opt-in to resolve grants through groups (groups.go);
+	// its zero value resolves none, and changes nothing.
+	Groups Groups
 }
 
 // Request is the canonical arguments the gateway hands the adapter on
@@ -241,7 +252,7 @@ func prepareConfig(cfg Config) error {
 	if cfg.MaxAnswer <= 0 || cfg.MaxAnswer > maxAnswerCeiling {
 		return fmt.Errorf("--max-answer must be between 1 and %d bytes", int64(maxAnswerCeiling))
 	}
-	return nil
+	return groupsProblem(cfg.Groups)
 }
 
 var requestMembers = map[string]bool{"parent": true, "contentType": true, "assetTypes": true, "pageToken": false, "pageSize": false, "readTime": false}
@@ -386,10 +397,11 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 }
 
 func (s *source) acquire(ctx context.Context, req Request) ([]byte, error) {
-	token, principal, err := s.listToken(ctx)
+	tokens, err := s.listToken(ctx)
 	if err != nil {
 		return nil, err
 	}
+	token := tokens.list
 	full, endpoint := listURL(req)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, full, nil)
 	if err != nil {
@@ -435,11 +447,40 @@ func (s *source) acquire(ctx context.Context, req Request) ([]byte, error) {
 	if bytes.Contains(body, []byte(token)) {
 		return nil, errors.New("the list call's answer repeats the credential, so nothing of it is carried")
 	}
-	page, err := s.projectPage(body, req, principal)
+	page, err := s.projectPage(body, req, tokens.principal)
 	if err != nil {
 		return nil, err
 	}
-	return s.envelope(req, endpoint, page, peerIdentityOf(resp), observedAt)
+	if !s.cfg.Groups.Resolve {
+		return s.envelope(req, endpoint, page, peerIdentityOf(resp), observedAt)
+	}
+	// The groups the page's bindings name are resolved once the whole page
+	// was read and no direct binding refused it. A principal found refuses
+	// as a direct binding does; a group unresolved is served and reported,
+	// or refuses under "refuse", and never closes the source.
+	outcome := s.resolveGroups(ctx, tokens.groups, tokens.principal, page.groups)
+	if outcome.foundAt != "" {
+		return nil, refused(ReasonBoundAtResource, outcome.foundAt)
+	}
+	if outcome.unresolved > 0 && s.cfg.Groups.Unresolved == UnresolvedRefuse {
+		return nil, &GroupUnresolved{Reason: outcome.reason, Groups: outcome.unresolved}
+	}
+	env, err := s.envelope(req, endpoint, page, peerIdentityOf(resp), observedAt)
+	if err != nil {
+		return nil, err
+	}
+	report := groupReport{Unresolved: outcome.unresolved}
+	if outcome.unresolved > 0 {
+		report.Reason = &outcome.reason
+	}
+	out, err := withGroupReport(env, report)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(out)) > s.cfg.MaxOutput {
+		return nil, fmt.Errorf("the envelope and its group report exceed the output bound of %d bytes", s.cfg.MaxOutput)
+	}
+	return out, nil
 }
 
 // listRefusal is a list call answered with a status other than 200: an
@@ -657,7 +698,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.obtainChecked(ctx); err != nil {
+	if _, _, err := s.obtainChecked(ctx); err != nil {
 		return nil, s.redacted(err)
 	}
 	identity, err := ownIdentity()

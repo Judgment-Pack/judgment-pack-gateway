@@ -14,6 +14,16 @@
 // is no refusal: it exits 1, and the gateway, which passes the time left
 // on the acquisition less a margin as --timeout, fails that start or
 // refresh without closing the source.
+//
+// With --groups-resolve (the Amendment for gateway #496), the groups an
+// IAM_POLICY page's bindings outside the read-only list name are resolved:
+// a principal found exits 9 as a direct binding does; an acquisition
+// writes {"envelope": E, "groupBindings": {"unresolved": N, "reason": R}}
+// on stdout, the count of groups left unresolved and the last one's
+// reason; and under --groups-unresolved=refuse a page with a group
+// unresolved exits 1, never 9, with {"groupUnresolved": {"reason": R,
+// "groups": N}} on stdout and the reason alone on stderr, and the gateway
+// does not close the source.
 package main
 
 import (
@@ -65,22 +75,39 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	maxAnswer := fs.Int64("max-answer", gcpasset.DefaultMaxAnswer, "bound on the list call's answer in bytes, as read and before it is projected")
 	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the run; the gateway passes the time left on the acquisition, less a margin for the start and the report. A read-only check this, a request's time or a failed connection leaves without an answer exits 1, not 9")
 	check := fs.Bool("check", false, "obtain both tokens, hold their scopes and run the write check on every configured project, then report on stdout instead of reading a request")
+	groupsResolve := fs.Bool("groups-resolve", false, "resolve the groups an IAM_POLICY page's bindings outside the read-only list name, with a third token of scope "+gcpasset.GroupsScope)
+	groupsDepth := fs.Int("groups-depth", gcpasset.DefaultGroupDepth, "with --groups-resolve: the nested group levels read below a group a binding names, 0 to 4")
+	groupsMembers := fs.Int("groups-members", gcpasset.DefaultGroupMembers, "with --groups-resolve: the memberships read for one acquisition, 1 to 50000")
+	groupsUnresolved := fs.String("groups-unresolved", gcpasset.UnresolvedServe, `with --groups-resolve: "serve" a page with a group unresolved and report it, or "refuse" it`)
 	tokenOnly := fs.Bool("token-only", false, "obtain both tokens, hold their scopes, run the write check, and write the list token on stdout sealed, instead of reading a request; an acquisition is then handed it in "+gcpasset.SealedTokenVariable)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 0 || *parents == "" || *assetTypes == "" || *contentTypes == "" || *tokenSource == "" || *credentials == "" {
-		fmt.Fprintln(stderr, "usage: adapter-gcp-asset --parents projects/P[,...] --asset-types T[,...] --content-types RESOURCE[,IAM_POLICY] --token-source metadata|key --credentials FILE [--members count-users] [--max-output BYTES] [--max-answer BYTES] [--timeout D] [--check | --token-only]")
+		fmt.Fprintln(stderr, "usage: adapter-gcp-asset --parents projects/P[,...] --asset-types T[,...] --content-types RESOURCE[,IAM_POLICY] --token-source metadata|key --credentials FILE [--members count-users] [--groups-resolve [--groups-depth N] [--groups-members N] [--groups-unresolved serve|refuse]] [--max-output BYTES] [--max-answer BYTES] [--timeout D] [--check | --token-only]")
 		return 2
 	}
 	if *tokenOnly && *check {
 		fmt.Fprintln(stderr, "adapter-gcp-asset: --token-only and --check are two runs")
 		return 2
 	}
+	groupFlag := false
+	fs.Visit(func(f *flag.Flag) {
+		if strings.HasPrefix(f.Name, "groups-") && f.Name != "groups-resolve" {
+			groupFlag = true
+		}
+	})
+	if groupFlag && !*groupsResolve {
+		fmt.Fprintln(stderr, "adapter-gcp-asset: --groups-depth, --groups-members and --groups-unresolved are settings of --groups-resolve")
+		return 2
+	}
 	cfg := gcpasset.Config{
 		Parents: split(*parents), AssetTypes: split(*assetTypes), ContentTypes: split(*contentTypes),
 		Members: *members, TokenSource: *tokenSource, Credentials: *credentials,
 		MaxOutput: *maxOutput, MaxAnswer: *maxAnswer,
+	}
+	if *groupsResolve {
+		cfg.Groups = gcpasset.Groups{Resolve: true, Depth: *groupsDepth, Members: *groupsMembers, Unresolved: *groupsUnresolved}
 	}
 	// A sealed token is for an acquisition; a check and a token-only run
 	// obtain and check their own.
@@ -104,6 +131,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if errors.As(err, &expired) {
 			stdout.Write(expired.Report())
 			return gcpasset.ReferenceExpiredStatus
+		}
+		var unresolved *gcpasset.GroupUnresolved
+		if errors.As(err, &unresolved) {
+			stdout.Write(unresolved.Report())
+			return 1
 		}
 		var failure *gcpasset.TokenFailure
 		if errors.As(err, &failure) {
