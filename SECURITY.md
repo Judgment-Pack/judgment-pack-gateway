@@ -355,7 +355,14 @@ any process's environment is by that user and by root. The read-only guarantee r
 check, not on the scopes: a fixed list of write permissions asked of `testIamPermissions` on
 each configured project, at the start and with every token after it, and the bindings at a
 resource read from the `IAM_POLICY` pages callers request. The list is fixed, not complete; a
-grant through a group, or on an asset type the source does not serve, is not seen; a refusal
+grant on an asset type the source does not serve is not seen, nor is a grant through a group
+unless the binding opts in to `groups` (engine configuration version 30): then a third token, of
+the `cloud-identity.groups.readonly` scope alone and read-only by that scope rather than by a
+write check, reads each group's memberships to a depth and within bounds, the principal found in
+one refuses as a direct grant does, and a group it could not read whole is reported unchecked on
+`/posture` (or refuses the page, with `unresolved: "refuse"`), never passed. That token widens
+what the source can read to the memberships of every group the principal may view; nothing it
+reads leaves the adapter but a reason, and nothing outlives the acquisition. A refusal
 closes the source until the engine restarts, and a check that could not finish (its time ended,
 or the connection failed, before the platform answered) fails that token without closing it.
 Grant the source's account `roles/cloudasset.viewer` alone.

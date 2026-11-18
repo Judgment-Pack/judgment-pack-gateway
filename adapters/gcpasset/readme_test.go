@@ -9,8 +9,9 @@ import (
 
 // The adapters README's section lists, each as code, what the adapter
 // holds to: the write list's version and every permission on it, every
-// read-only role, every identity scope, both scopes requested and every
-// asset type projected.
+// read-only role, every identity scope, the three scopes requested, every
+// asset type projected, and what grants through groups hold to: the
+// opt-in's flags, the refusal and every reason a group is unresolved.
 func TestTheREADMEListsWhatTheAdapterHoldsTo(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "README.md"))
 	if err != nil {
@@ -27,6 +28,7 @@ func TestTheREADMEListsWhatTheAdapterHoldsTo(t *testing.T) {
 	}
 	want := append(append([]string{WriteListVersion, AssetScope, CheckScope}, writeList...), ReadOnlyRoles()...)
 	want = append(want, ServedAssetTypes()...)
+	want = append(append(want, GroupsScope, ReasonGroupUnresolved, "--groups-resolve", "--groups-depth", "--groups-members", "--groups-unresolved"), GroupReasons...)
 	for scope := range identityScopes {
 		want = append(want, scope)
 	}

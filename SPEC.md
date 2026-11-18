@@ -2422,7 +2422,8 @@ source declared with another shape, is refused like any other departure.
 of shape `airbyte`; `<platform>/live` of shape `mcp`, or of shape `http` for a binding whose
 one operation is `live` of that shape, run by the program the plain form runs for it,
 `adapter-http` (`docs/adr/0024-an-http-source-in-the-engine.md`), or of shape `http` for a
-binding whose live operation is of shape `gcp-asset` (engine configuration version 29), run by
+binding whose live operation is of shape `gcp-asset` (engine configuration version 29, and 30
+for its `groups`), run by
 `adapter-gcp-asset`
 (`docs/adr/0039-a-read-only-asset-inventory-connection-for-configuration-drift.md`), whose
 envelope and receipt are the `http` shape's and which alone may report a read-only refusal
@@ -2539,6 +2540,28 @@ and obtains no token, the start is refused or that acquisition fails as a failed
 source is not closed. A status other than 200, a redirect among them, is an answer and refuses.
 The gateway hands the adapter, as `--timeout`, the time left on the acquisition less a margin
 for its start and its report, so the adapter ends such a check itself rather than being killed.
+
+**Grants through groups, shape `gcp-asset`.** A source whose binding sets `groups` with `resolve`
+true (engine configuration version 30) answers every acquisition on stdout, with status 0, as
+exactly
+
+```json
+{"envelope": {"acquisition": {}, "result": {}}, "groupBindings": {"unresolved": 2, "reason": "time"}}
+```
+
+— `envelope` the envelope this section describes, read as any other; `groupBindings` an object of
+exactly `unresolved`, an integer from 0, the groups the page's bindings name that were left
+unresolved, and `reason`, `null` where `unresolved` is 0 and otherwise the last one's reason, one
+of `unreadable`, `unavailable`, `malformed`, `member-type`, `depth`, `members`, `groups`, `time`
+or `no-token`. An answer out of this form is a failed source, and nothing of it is served. A
+principal found in a group is status 9 with `credential-bound-at-resource`, as above. Where the
+binding sets `unresolved: "refuse"`, a page with a group unresolved is status **1** with exactly
+`{"groupUnresolved": {"reason": R, "groups": N}}` on stdout (R one of the reasons above, N from
+1, the whole at most 256 bytes and nothing before or after it): the acquisition fails as a failed
+source, answered with the gateway's sentence naming the reason and the count, and the source is
+not closed. A report out of its form, or beside status 1 from a source that does not refuse, is
+a failure as any other. No report names a group, a member or the platform's text. A source
+whose binding does not set `groups` answers the envelope alone, as before.
 
 ### Witness endpoints
 

@@ -86,12 +86,17 @@ import (
 // Inventory source with a platform's `credentials.live.tokenSource` and its
 // `artifact` "retained" beside it (ADR-0039 and its Amendment;
 // gcp_asset_binding.go): a binding of the shape is refused under an earlier
-// version, and nothing about the other shapes changes. connect raises a file to
+// version, and nothing about the other shapes changes, and version 30 the
+// gcp-asset operation's optional `groups`, by which the grants an
+// IAM_POLICY page makes through a group are resolved with a third,
+// read-only token, opt-in and bounded (ADR-0039, Amendment (gateway #496);
+// gcp_asset_groups.go): a binding with the member is refused under an
+// earlier version, and a source without it serves as before. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "29"
+const engineVersion = "30"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.

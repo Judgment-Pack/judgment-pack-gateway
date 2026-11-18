@@ -9,7 +9,10 @@ package main
 // projected, and the caller's to page. The adapter obtains its own two
 // narrow tokens, holds each to the scopes it was granted, and runs the
 // write check; the signer holds the list token as the adapter sealed it,
-// as for a token step, and reads none of it.
+// as for a token step, and reads none of it. A binding that opts in to
+// `groups` (engineVersion 30, Amendment (gateway #496); gcp_asset_groups.go)
+// has the grants its pages make through a group resolved by a third token,
+// and the signer reads what was left unresolved.
 //
 // What the signer adds is the order and the closure. A request is held to
 // the configured parents, content types and asset types before any token
@@ -115,10 +118,16 @@ type gcpAssetOperation struct {
 	contentTypes []string
 	// countUsers is members: "count-users", off when absent.
 	countUsers bool
+	// groups is the opt-in to resolving grants through groups, nil where
+	// the binding does not opt in or sets resolve false; groupsGiven is
+	// whether the member is present at all, which a version before
+	// gcpAssetGroupsVersion refuses.
+	groups      *gcpAssetGroups
+	groupsGiven bool
 }
 
 var gcpAssetOperationMembers = map[string]bool{
-	"shape": true, "licence": true, "parents": true, "assetTypes": true, "contentTypes": true, "members": false,
+	"shape": true, "licence": true, "parents": true, "assetTypes": true, "contentTypes": true, "members": false, "groups": false,
 }
 
 // parseGCPAssetOperation holds a gcp-asset operation to its shape: exactly
@@ -126,7 +135,8 @@ var gcpAssetOperationMembers = map[string]bool{
 // by name; asset types each of the platform's form; content types among
 // RESOURCE and IAM_POLICY; each list without a repeat, and none with a
 // comma, which the adapter's command line would split; members, when
-// present, "count-users". A binding of the shape names no write, no
+// present, "count-users"; groups, when present, of its own form
+// (parseGCPAssetGroups). A binding of the shape names no write, no
 // endpoint and no tool, so it has none of those members to give. A refusal
 // names the member by its place and repeats no value.
 func parseGCPAssetOperation(op *vObject, name string, o *operation) error {
@@ -175,6 +185,12 @@ func parseGCPAssetOperation(op *vObject, name string, o *operation) error {
 			return fmt.Errorf("operation %s: members, when present, is %q; absent, a binding's members are carried as written", name, gcpAssetCountUsers)
 		}
 		g.countUsers = true
+	}
+	if raw, present := op.get("groups"); present {
+		g.groupsGiven = true
+		if g.groups, err = parseGCPAssetGroups(raw, name); err != nil {
+			return err
+		}
 	}
 	o.gcpAsset = g
 	return nil
@@ -232,6 +248,9 @@ func gcpAssetPlatformMatch(p platformConfig, b binding, version string) error {
 	if !versionAtLeast(version, "29") {
 		return fmt.Errorf("binding %s serves live by the gcp-asset shape, a version-29 shape; engineVersion %s has none", p.binding, version)
 	}
+	if b.live.gcpAsset.groupsGiven && !versionAtLeast(version, gcpAssetGroupsVersion) {
+		return fmt.Errorf("binding %s's live operation names groups, a version-%s member; engineVersion %s has none", p.binding, gcpAssetGroupsVersion, version)
+	}
 	if p.write {
 		return fmt.Errorf("sets write: true, and binding %s serves live by the gcp-asset shape, a read-only source with no write operation; remove write: true", p.binding)
 	}
@@ -252,14 +271,16 @@ func gcpAssetPlatformMatch(p platformConfig, b binding, version string) error {
 
 // gcpAssetSourceArgv is adapter-gcp-asset's command line, each flag and
 // its value one word: the configured parents, asset types and content
-// types, the member reduction where the binding asks for it, the
-// platform's credentials file for live and the token source.
+// types, the member reduction where the binding asks for it, the groups'
+// settings where it opts in, the platform's credentials file for live and
+// the token source.
 func gcpAssetSourceArgv(adapter string, op gcpAssetOperation, credentials, tokenSource string) []string {
 	argv := []string{adapter, "--parents=" + strings.Join(op.parents, ","), "--asset-types=" + strings.Join(op.assetTypes, ","),
 		"--content-types=" + strings.Join(op.contentTypes, ",")}
 	if op.countUsers {
 		argv = append(argv, "--members="+gcpAssetCountUsers)
 	}
+	argv = append(argv, gcpAssetGroupsArgv(op.groups)...)
 	return append(argv, "--credentials="+credentials, "--token-source="+tokenSource)
 }
 
@@ -280,6 +301,11 @@ type gcpAssetSource struct {
 	checks  int
 	// closed is the refusal that closed the source, nil while it serves.
 	closed *readOnlyRefusal
+	// groupsUnresolved counts the groups the acquisitions since the start
+	// left unresolved, served or refused, and groupReason is the last
+	// one's reason (noteGroups); both stay where groups are not resolved.
+	groupsUnresolved int
+	groupReason      string
 }
 
 func newGCPAssetSource(op gcpAssetOperation, tokenSource string, retained bool) *gcpAssetSource {
@@ -536,6 +562,8 @@ func gcpAssetAdmits(source string, op gcpAssetOperation, stdin []byte) error {
 // and run once, as a token step's acquisition is, its token failures read
 // as that step reads them. A read-only refusal, of the token's check or of
 // the page, closes the source, and the acquisition is refused with it.
+// Where the source resolves groups, its answer is unwrapped and its groups
+// left unresolved counted (gcp_asset_groups.go).
 func (g *gatewayService) runGCPAssetSource(source string, spec sourceSpec, stdin []byte) (value, string, string, error) {
 	s := spec.gcpAsset
 	if err := s.refusedIfClosed(source); err != nil {
@@ -563,6 +591,21 @@ func (g *gatewayService) runGCPAssetSource(source string, spec sourceSpec, stdin
 		run := gcpAssetTimed(ctx, timeout, spec)
 		run.env = append(append([]string(nil), spec.env...), gcpAssetSealedTokenVariable+"="+sealed)
 		result, digest, observedAt, err := g.runOnce(ctx, timeout, source, run, stdin)
+		var groupRefused *gcpAssetGroupRefused
+		if errors.As(err, &groupRefused) {
+			// A page refused for a group unresolved: counted, and the
+			// acquisition failed; the token and the source stand.
+			s.noteGroups(groupRefused.groups, groupRefused.reason)
+			return nil, "", "", groupRefused
+		}
+		if err == nil && s.op.groups != nil {
+			envelope, unresolved, reason, err := gcpAssetGroupAnswer(source, result)
+			if err != nil {
+				return nil, "", "", err
+			}
+			s.noteGroups(unresolved, reason)
+			return envelope, digest, observedAt, nil
+		}
 		var refused *gcpAssetRefusedRun
 		if errors.As(err, &refused) {
 			g.tokens.drop(key, sealed)
@@ -635,7 +678,8 @@ func (g *gatewayService) gcpAssetStart(said io.Writer) error {
 
 // gcpAssetStartLines are what the start says of a gcp-asset source whose
 // check passed: its token source, the check, its artifact, and whether the
-// bindings of its own principal at a resource are checked.
+// bindings of its own principal at a resource are checked; and, where it
+// opts in, its groups.
 func gcpAssetStartLines(name string, spec sourceSpec) []string {
 	s := spec.gcpAsset
 	source := "the metadata server of the platform's own compute, with no key on disk"
@@ -647,15 +691,22 @@ func gcpAssetStartLines(name string, spec sourceSpec) []string {
 		artifact = fmt.Sprintf("artifact %q, set by the operator: its payloads are kept in the store, which this shape does not do by default", artifactRetained)
 	}
 	bindings := "resource-bindings: checked on every IAM_POLICY page a caller reads; a role outside the read-only list granted at a resource to the source's own principal, or to allUsers or allAuthenticatedUsers, closes the source; a grant through a group, or on an asset type the source does not serve, is not seen"
+	if s.op.groups != nil {
+		bindings = "resource-bindings: checked on every IAM_POLICY page a caller reads; a role outside the read-only list granted at a resource to the source's own principal, or to allUsers or allAuthenticatedUsers, or to a group in which it is found, closes the source; a grant on an asset type the source does not serve is not seen"
+	}
 	if !s.op.serves(gcpAssetContentIAMPolicy) {
 		bindings = "resource-bindings: unchecked: the platform serves no IAM_POLICY, so a role granted the source's own principal on one resource below a project is not seen"
 	}
-	return []string{
+	lines := []string{
 		fmt.Sprintf("source %s: token source %s: %s", name, s.tokenSource, source),
 		fmt.Sprintf("source %s: write check passed on the %d configured projects, and runs again with every token obtained after this one; a refusal then closes the source", name, len(s.op.parents)),
 		fmt.Sprintf("source %s: %s", name, artifact),
 		fmt.Sprintf("source %s: %s", name, bindings),
 	}
+	if s.op.groups != nil {
+		lines = append(lines, gcpAssetGroupsStartLine(name, s))
+	}
+	return lines
 }
 
 // describeGCPAssetCheck reads adapter-gcp-asset's check report: the token
@@ -702,27 +753,39 @@ const protectionReadOnlyCredentials = "read-only-credentials"
 // token after it, and closed on a refusal. What "checked" covers is said
 // with it: a grant to the principal itself or to allUsers or
 // allAuthenticatedUsers, not one through a group, whose membership no
-// read-only call resolves. Its counts -- the sources, those serving
-// IAM_POLICY, those closed -- are of the sources the reach takes, every
-// one where it is nil: how many sources other scopes hold, and whether one
-// was refused, is not the caller's to learn.
+// read-only call resolves -- unless the source opts in to groups
+// (gcp_asset_groups.go): the state is partial too while any source has
+// groupBindings "unchecked", and "off" changes nothing. Its counts -- the
+// sources, those serving IAM_POLICY, those resolving groups and of those
+// the ones unchecked, those closed -- are of the sources the reach takes,
+// every one where it is nil: how many sources other scopes hold, and
+// whether one was refused, is not the caller's to learn. Where no source
+// it reaches resolves groups its text is as before.
 func readOnlyCredentialsLines(sources map[string]sourceSpec, reach *scopeReach) []postureLine {
 	names := gcpAssetSourceNames(sources)
 	if len(names) == 0 {
 		return nil
 	}
-	servingAll := true
-	reached, checked, closed := 0, 0, 0
+	servingAll, groupsChecked := true, true
+	reached, checked, closed, resolving, unchecked := 0, 0, 0, 0, 0
 	for _, name := range names {
 		s := sources[name].gcpAsset
 		iamPolicy := s.op.serves(gcpAssetContentIAMPolicy)
 		servingAll = servingAll && iamPolicy
+		groups, _, _ := s.groupBindings()
+		groupsChecked = groupsChecked && groups != groupBindingsUnchecked
 		if reach != nil && !reach.holds(sources[name].scope) {
 			continue
 		}
 		reached++
 		if iamPolicy {
 			checked++
+		}
+		if groups != groupBindingsOff {
+			resolving++
+		}
+		if groups == groupBindingsUnchecked {
+			unchecked++
 		}
 		s.mu.Lock()
 		if s.closed != nil {
@@ -731,12 +794,17 @@ func readOnlyCredentialsLines(sources map[string]sourceSpec, reach *scopeReach) 
 		s.mu.Unlock()
 	}
 	state := postureEnforced
-	if !servingAll {
+	if !servingAll || !groupsChecked {
 		state = posturePartial
 	}
+	if resolving == 0 {
+		return []postureLine{{protectionReadOnlyCredentials, state, fmt.Sprintf(
+			"%d of the %d read-only sources this caller reaches serve IAM_POLICY and check, on each IAM_POLICY page read, the roles granted at a resource to their own principal or to allUsers or allAuthenticatedUsers, not a grant through a group; every one is checked for a write permission at the start and with every token after it, and closed on a refusal; %d of them closed",
+			checked, reached, closed)}}
+	}
 	return []postureLine{{protectionReadOnlyCredentials, state, fmt.Sprintf(
-		"%d of the %d read-only sources this caller reaches serve IAM_POLICY and check, on each IAM_POLICY page read, the roles granted at a resource to their own principal or to allUsers or allAuthenticatedUsers, not a grant through a group; every one is checked for a write permission at the start and with every token after it, and closed on a refusal; %d of them closed",
-		checked, reached, closed)}}
+		"%d of the %d read-only sources this caller reaches serve IAM_POLICY and check, on each IAM_POLICY page read, the roles granted at a resource to their own principal or to allUsers or allAuthenticatedUsers; %d of them resolve a grant through a group with a third token held to a read-only scope, over the memberships the operator lets the principal view, and %d of those left a group unresolved since the start, so unchecked; a domain, a principal set and nesting past the depth stay outside; every one is checked for a write permission at the start and with every token after it, and closed on a refusal; %d of them closed",
+		checked, reached, resolving, unchecked, closed)}}
 }
 
 // readOnlySourcePosture is one gcp-asset source in the report: its token
@@ -744,10 +812,14 @@ func readOnlyCredentialsLines(sources map[string]sourceSpec, reach *scopeReach) 
 // not run it (gateway posture, which starts nothing); whether it serves,
 // "serving", "closed", or "not-started"; the refusal that closed it, its
 // reason and where it was met, and nothing of its subject; its artifact;
-// and its resource bindings, "checked" or "unchecked".
+// its resource bindings, "checked" or "unchecked"; and its group bindings,
+// "off", "checked" or "unchecked", with the groups left unresolved since
+// the start and the last one's reason, never a group's name.
 type readOnlySourcePosture struct {
 	source, tokenSource, writeCheck, state, artifact, resourceBindings string
 	refusal                                                            *readOnlyRefusal
+	groupBindings, groupReason                                         string
+	groupsUnresolved                                                   int
 }
 
 // readOnlySourcePostures are the gcp-asset sources the reach takes, every
@@ -768,6 +840,7 @@ func readOnlySourcePostures(sources map[string]sourceSpec, reach *scopeReach) []
 		if s.op.serves(gcpAssetContentIAMPolicy) {
 			p.resourceBindings = "checked"
 		}
+		p.groupBindings, p.groupsUnresolved, p.groupReason = s.groupBindings()
 		s.mu.Lock()
 		if s.checked {
 			p.writeCheck, p.state = "passed", "serving"
@@ -793,6 +866,13 @@ func (p readOnlySourcePosture) value() *vObject {
 	entry.set("state", vString(p.state))
 	entry.set("artifact", vString(p.artifact))
 	entry.set("resourceBindings", vString(p.resourceBindings))
+	entry.set("groupBindings", vString(p.groupBindings))
+	entry.set("groupsUnresolved", vInt(p.groupsUnresolved))
+	var groupReason value = vNull{}
+	if p.groupReason != "" {
+		groupReason = vString(p.groupReason)
+	}
+	entry.set("groupReason", groupReason)
 	var refusal value = vNull{}
 	if p.refusal != nil {
 		r := newObject()
@@ -813,6 +893,10 @@ func (p readOnlySourcePosture) text() string {
 	if p.refusal != nil {
 		refusal = cmp.Or(p.refusal.reason, "unstated") + " on " + p.refusal.on
 	}
-	return fmt.Sprintf("%s read-only token=%s writeCheck=%s state=%s artifact=%s resourceBindings=%s refusal=%s",
-		p.source, p.tokenSource, p.writeCheck, p.state, p.artifact, p.resourceBindings, refusal)
+	groups := p.groupBindings
+	if p.groupsUnresolved > 0 {
+		groups += fmt.Sprintf(" groupsUnresolved=%d groupReason=%s", p.groupsUnresolved, p.groupReason)
+	}
+	return fmt.Sprintf("%s read-only token=%s writeCheck=%s state=%s artifact=%s resourceBindings=%s groupBindings=%s refusal=%s",
+		p.source, p.tokenSource, p.writeCheck, p.state, p.artifact, p.resourceBindings, groups, refusal)
 }

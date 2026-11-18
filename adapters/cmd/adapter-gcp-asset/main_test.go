@@ -44,6 +44,19 @@ func TestStatusesBeforeThePlatform(t *testing.T) {
 	if code, _, _ := run1(missing, ""); code != 3 {
 		t.Fatalf("no credential: %d", code)
 	}
+	// A setting of --groups-resolve without it is a usage error, so a
+	// setting never stands for an opt-in not made; one out of its range
+	// is refused before anything is read.
+	for _, setting := range []string{"--groups-depth=3", "--groups-members=10", "--groups-unresolved=refuse"} {
+		if code, _, stderr := run1(append(append([]string{}, base...), setting, "--token-only"), ""); code != 2 || !strings.Contains(stderr, "settings of --groups-resolve") {
+			t.Fatalf("%s without --groups-resolve: %d %q", setting, code, stderr)
+		}
+	}
+	for _, setting := range []string{"--groups-depth=5", "--groups-members=0", "--groups-unresolved=warn"} {
+		if code, _, stderr := run1(append(append([]string{}, base...), "--groups-resolve", setting, "--token-only"), ""); code != 1 || !strings.Contains(stderr, strings.SplitN(setting, "=", 2)[0]) {
+			t.Fatalf("%s out of range: %d %q", setting, code, stderr)
+		}
+	}
 	folder := append([]string{"--parents=folders/200000000001"}, base[1:]...)
 	if code, _, stderr := run1(append(folder, "--token-only"), ""); code != 1 || !strings.Contains(stderr, "folder") {
 		t.Fatalf("a folder parent: %d %q", code, stderr)

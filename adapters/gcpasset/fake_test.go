@@ -3,7 +3,8 @@ package gcpasset
 // A stand-in for the platform, served in-process: the token endpoint (the
 // jwt-bearer grant, its assertion verified against a key generated here),
 // the token-information endpoint, the metadata server, projects.
-// testIamPermissions and assets.list. Every answer is hand-written or a
+// testIamPermissions, assets.list, and a directory answering groups.lookup
+// and groups.memberships.list. Every answer is hand-written or a
 // fixture of testdata/; no recorder, no live call, no real project,
 // principal or credential. Each token minted is a fresh random value, and
 // the stand-in remembers the scope it was minted for, so a test can show
@@ -25,6 +26,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -86,6 +88,20 @@ type fake struct {
 	// metadataFlavor is the header the metadata server answers with;
 	// listType, when set, the list call's content type.
 	metadataFlavor, listType string
+	// refuseScope are scopes the token endpoint and the metadata server
+	// refuse to mint.
+	refuseScope map[string]bool
+	// groups is the directory: each group's email, lower-cased, and its
+	// memberships, each a JSON object as the platform answers one, paged
+	// by the size each call asks for, or by groupPage where it is set.
+	groups    map[string][]string
+	groupPage int
+	// lastEmpty answers the last memberships page with an explicit empty
+	// nextPageToken instead of leaving the member out.
+	lastEmpty bool
+	// identity, when set, answers a call to the directory first; handled
+	// false leaves it to the directory.
+	identity func(r *http.Request) (status int, body string, handled bool)
 
 	minted map[string]string // token → the scope it was minted for
 	scopes []string          // the scopes requested, in order
@@ -97,13 +113,15 @@ var omitScope = &struct{}{}
 
 func newFake(t *testing.T) *fake {
 	t.Helper()
-	f := &fake{t: t, key: generatedKey(t), granted: map[string][]string{}, minted: map[string]string{}, metadataFlavor: "Google"}
+	f := &fake{t: t, key: generatedKey(t), granted: map[string][]string{}, minted: map[string]string{}, metadataFlavor: "Google",
+		refuseScope: map[string]bool{}, groups: map[string][]string{}}
 	f.page = func(*http.Request) (int, string) { return 200, fixture(t, "resources-page.json") }
 	f.api = httptest.NewTLSServer(http.HandlerFunc(f.serveAPI))
 	f.metadata = httptest.NewServer(http.HandlerFunc(f.serveMetadata))
 	saved, savedRoots := endpoints, testRoots
 	endpoints.Asset = f.api.URL + "/asset"
 	endpoints.ResourceManager = f.api.URL + "/rm"
+	endpoints.Identity = f.api.URL + "/identity"
 	endpoints.OAuthToken = f.api.URL + "/token"
 	endpoints.TokenInfo = f.api.URL + "/tokeninfo"
 	endpoints.Metadata = f.metadata.URL
@@ -194,7 +212,7 @@ func (f *fake) serveAPI(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/token":
 		form, _ := url.ParseQuery(string(body))
 		claims, ok := f.verifyAssertion(form.Get("assertion"))
-		if form.Get("grant_type") != "urn:ietf:params:oauth:grant-type:jwt-bearer" || !ok {
+		if form.Get("grant_type") != "urn:ietf:params:oauth:grant-type:jwt-bearer" || !ok || f.refuseScope[claims.Scope] {
 			writeJSON(w, 400, `{"error":"invalid_grant"}`)
 			return
 		}
@@ -273,9 +291,80 @@ func (f *fake) serveAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, status, answer)
+	case strings.HasPrefix(r.URL.Path, "/identity/v1/"):
+		if !known || scope != GroupsScope {
+			writeJSON(w, 403, `{"error":{"code":403,"status":"PERMISSION_DENIED"}}`)
+			return
+		}
+		if f.identity != nil {
+			if status, answer, handled := f.identity(r); handled {
+				writeJSON(w, status, answer)
+				return
+			}
+		}
+		f.serveDirectory(w, r)
 	default:
 		writeJSON(w, 404, `{}`)
 	}
+}
+
+// groupID is a group's resource name in the stand-in directory.
+func groupID(email string) string {
+	sum := sha256.Sum256([]byte(email))
+	return "groups/" + hex.EncodeToString(sum[:8])
+}
+
+// serveDirectory answers groups.lookup by a group's email, 404 for one
+// it does not hold, and groups.memberships.list of a group's resource
+// name, a page at a time, the page token the offset of the next.
+func (f *fake) serveDirectory(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r.URL.Path == "/identity/v1/groups:lookup" {
+		key := r.URL.Query().Get("groupKey.id")
+		if _, ok := f.groups[key]; !ok {
+			writeJSON(w, 404, `{"error":{"code":404,"message":"Group `+key+` not found","status":"NOT_FOUND"}}`)
+			return
+		}
+		writeJSON(w, 200, mustJSON(map[string]string{"name": groupID(key)}))
+		return
+	}
+	name, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/identity/v1/"), "/memberships")
+	if !ok {
+		writeJSON(w, 404, `{}`)
+		return
+	}
+	for email, members := range f.groups {
+		if groupID(email) != name {
+			continue
+		}
+		size, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+		if f.groupPage > 0 {
+			size = f.groupPage
+		}
+		offset, _ := strconv.Atoi(strings.TrimPrefix(r.URL.Query().Get("pageToken"), "o"))
+		end := min(offset+max(size, 1), len(members))
+		answer := `{"memberships":[` + strings.Join(members[offset:end], ",") + `]`
+		if end < len(members) {
+			answer += `,"nextPageToken":"o` + strconv.Itoa(end) + `"`
+		} else if f.lastEmpty {
+			answer += `,"nextPageToken":""`
+		}
+		writeJSON(w, 200, answer+`}`)
+		return
+	}
+	writeJSON(w, 404, `{"error":{"code":404,"status":"NOT_FOUND"}}`)
+}
+
+// membership is one membership as the FULL view answers it: the member's
+// key and type, "" for none.
+func membership(kind, id string) string {
+	m := map[string]any{"name": "groups/x/memberships/" + hex.EncodeToString([]byte(id))[:8], "preferredMemberKey": map[string]string{"id": id},
+		"roles": []map[string]string{{"name": "MEMBER"}}}
+	if kind != "" {
+		m["type"] = kind
+	}
+	return mustJSON(m)
 }
 
 func (f *fake) serveMetadata(w http.ResponseWriter, r *http.Request) {
@@ -293,6 +382,10 @@ func (f *fake) serveMetadata(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/text")
 		io.WriteString(w, testEmail)
 	case "/computeMetadata/v1/instance/service-accounts/default/token":
+		if f.refuseScope[r.URL.Query().Get("scopes")] {
+			w.WriteHeader(403)
+			return
+		}
 		f.mu.Lock()
 		answer := f.mint(r.URL.Query().Get("scopes"))
 		f.mu.Unlock()
@@ -309,6 +402,7 @@ func (f *fake) serveMetadata(w http.ResponseWriter, r *http.Request) {
 
 type assertionClaims struct {
 	Iss   string `json:"iss"`
+	Sub   string `json:"sub"`
 	Scope string `json:"scope"`
 	Aud   string `json:"aud"`
 	Iat   int64  `json:"iat"`
@@ -316,7 +410,8 @@ type assertionClaims struct {
 }
 
 // verifyAssertion holds the jwt-bearer assertion to the key generated
-// here: RS256, iss the service account, aud the token endpoint.
+// here: RS256, iss the service account, aud the token endpoint, and no
+// subject, which would be a user's by domain-wide delegation.
 func (f *fake) verifyAssertion(assertion string) (assertionClaims, bool) {
 	parts := strings.Split(assertion, ".")
 	if len(parts) != 3 {
@@ -332,7 +427,7 @@ func (f *fake) verifyAssertion(assertion string) (assertionClaims, bool) {
 	}
 	raw, _ := base64.RawURLEncoding.DecodeString(parts[1])
 	var claims assertionClaims
-	if json.Unmarshal(raw, &claims) != nil || claims.Iss != testEmail || claims.Aud != endpoints.OAuthToken || claims.Exp <= claims.Iat {
+	if json.Unmarshal(raw, &claims) != nil || claims.Iss != testEmail || claims.Sub != "" || claims.Aud != endpoints.OAuthToken || claims.Exp <= claims.Iat {
 		return assertionClaims{}, false
 	}
 	return claims, true
