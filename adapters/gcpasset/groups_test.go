@@ -208,6 +208,27 @@ func TestAGroupReadWholeWithoutThePrincipalIsResolved(t *testing.T) {
 	}
 }
 
+// An explicit empty nextPageToken ends the read as a missing one does: the
+// group is read whole and resolved, with no further page asked for.
+func TestAnEmptyNextPageTokenIsTheLastPage(t *testing.T) {
+	f := newFake(t)
+	f.groupPage = 1
+	f.lastEmpty = true
+	f.groups[opsGroup] = []string{membership("USER", someone), membership("USER", "b@example.invalid")}
+	policy := groupPolicy(bind("roles/run.developer", "group:"+opsGroup))
+	f.page = func(*http.Request) (int, string) { return 200, policy }
+	out, err := Acquire(ctx, groupsConfig(t, f, 1, DefaultGroupMembers, UnresolvedServe), iamRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report, _ := groupAnswer(t, out); report.Unresolved != 0 || report.Reason != nil {
+		t.Fatalf("resolved: %+v", report)
+	}
+	if calls := f.callsTo("/identity/"); len(calls) != 1+2 {
+		t.Fatalf("one lookup and two pages: %+v", calls)
+	}
+}
+
 // Every reason of G5, and every bound of G4, leaves the group unresolved:
 // the page is served and the reason reported; a partial read is no read.
 func TestEveryReasonLeavesTheGroupUnresolved(t *testing.T) {

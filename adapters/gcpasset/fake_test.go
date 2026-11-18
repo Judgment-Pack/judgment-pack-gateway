@@ -96,6 +96,9 @@ type fake struct {
 	// by the size each call asks for, or by groupPage where it is set.
 	groups    map[string][]string
 	groupPage int
+	// lastEmpty answers the last memberships page with an explicit empty
+	// nextPageToken instead of leaving the member out.
+	lastEmpty bool
 	// identity, when set, answers a call to the directory first; handled
 	// false leaves it to the directory.
 	identity func(r *http.Request) (status int, body string, handled bool)
@@ -344,6 +347,8 @@ func (f *fake) serveDirectory(w http.ResponseWriter, r *http.Request) {
 		answer := `{"memberships":[` + strings.Join(members[offset:end], ",") + `]`
 		if end < len(members) {
 			answer += `,"nextPageToken":"o` + strconv.Itoa(end) + `"`
+		} else if f.lastEmpty {
+			answer += `,"nextPageToken":""`
 		}
 		writeJSON(w, 200, answer+`}`)
 		return

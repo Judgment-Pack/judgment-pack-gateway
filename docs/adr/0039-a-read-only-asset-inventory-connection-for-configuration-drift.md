@@ -382,7 +382,7 @@ Consequences:
 
 ## Amendment (gateway #496): grants through groups, opt-in and bounded
 
-*Design only; nothing here is built until it is reviewed.* The resource-binding check (decision 3,
+*Built in gateway #496 (v0.33.0).* The resource-binding check (decision 3,
 **Bound at a resource**, and the release review's **Public members**) matches a binding only when a
 member names the source's own principal, `allUsers` or `allAuthenticatedUsers`. A role granted to
 a group the principal belongs to is not seen. Many deployments grant mainly through groups, so for
