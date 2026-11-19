@@ -2599,8 +2599,11 @@ of the seed's key ([ADR-0050](../adr/0050-an-external-signer-in-a-key-service.md
 35 is reserved for the receipt forwarding hook (#505).
 
 ```json
-"signingKeyVersion": "projects/example-project/locations/global/keyRings/receipts/cryptoKeys/gateway/cryptoKeyVersions/1"
+"signingKeyVersion": "projects/example-project/locations/global/keyRings/receipts/cryptoKeys/gateway/cryptoKeyVersions/1",
+"signingPublicKey": "<the key version's Ed25519 public key, 64 lowercase hexadecimal characters>"
 ```
+
+- **The pin.** `signingPublicKey` is required whenever `signingKeyVersion` is set, and given only beside it: `signingKeyVersion` without it is refused by name at configuration load. A key version that answers another public key signs nothing.
 
 - **Form.** The value is a resource name of exactly that form: `projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>/cryptoKeyVersions/<n>`. Under an earlier version the member is refused by name, and out of form it is refused before anything is asked. Beside `storage` or `witness` it is refused: the PostgreSQL kind's start lease and the witness name the seed's key.
 - **The seed.** `seed` stays required. With a key service it keys the arguments commitment and signs nothing.
@@ -2610,7 +2613,7 @@ of the seed's key ([ADR-0050](../adr/0050-an-external-signer-in-a-key-service.md
   - The call is authenticated by the gateway's own access token from the metadata server at its fixed link-local address.
   - One signing is bounded by 5 seconds.
   - A key service that cannot be reached, refuses (a 429 or 503 among the refusals) or answers a signature that does not verify fails the acquisition or the seal with a fixed sentence, and nothing is written.
-- **Not yet built for a key service.** `gateway remove-artifact`, `remove-scope`, `seal-open`, `export` and `connect`'s descriptor capture refuse a configuration naming the member. `gateway rotate-key` refuses through the registry's walk.
+- **The commands under a key service.** `gateway remove-artifact`, `remove-scope`, `seal-open`, `export` and `connect`'s descriptor capture sign through the key version the configuration names, held to `signingPublicKey`. `gateway rotate-key` stays seed-only and refuses through the registry's walk. A key service's key is rotated by SIGHUP on the file kind; on the PostgreSQL kind every instance is stopped first (ADR-0050).
 
 ## Keyed actions (engine version 14 and later)
 

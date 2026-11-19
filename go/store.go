@@ -432,12 +432,12 @@ func newRegistryWriterOnWith(log appendLog, name string, seed []byte, signing *s
 	if err != nil {
 		return nil, fmt.Errorf("registry %s: %w", name, err)
 	}
-	// a key service's key (ADR-0050) is held to the history as well: a
-	// record under a key no rotation leads from to it refuses the start
-	if _, service := signing.key().signer.(*keyServiceSigner); service {
-		if err := heldUnderAnotherKey(existing, walk.keys, own, nil); err != nil {
-			return nil, fmt.Errorf("registry %s: %w", name, err)
-		}
+	// the key (ADR-0050), the seed's or a key service's, is held to the
+	// history as well: a record under a key no rotation leads from to it
+	// refuses the start, so a store a key service signed for does not take
+	// the seed's records, nor the seed's a key service's, without a rotation
+	if err := heldUnderAnotherKey(existing, walk.keys, own, nil); err != nil {
+		return nil, fmt.Errorf("registry %s: %w", name, err)
 	}
 	w := &registryWriter{
 		path: name, log: log, seed: seed, signing: signing,

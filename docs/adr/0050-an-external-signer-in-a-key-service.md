@@ -63,7 +63,7 @@ projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>/cryptoK
 
 Under an earlier version the member is refused by name. Out of form, it is refused before the service is asked.
 
-`signingPublicKey`, also a version-36 member, pins the key version's public key beside its name, as the runtime pins a seed's expected public key: 64 lowercase hexadecimal characters, given only beside `signingKeyVersion`. A key version that answers another public key signs nothing, at the start, at a rotation and in every command, and the refusal names neither key.
+`signingPublicKey`, also a version-36 member, pins the key version's public key beside its name, as the runtime pins a seed's expected public key: 64 lowercase hexadecimal characters. It is required whenever `signingKeyVersion` is set, and given only beside it: `signingKeyVersion` without it is refused by name at configuration load, with a fixed sentence. The pair is new in version 36, so requiring the pin now costs no configuration anything, where requiring it later would break one. A key version that answers another public key signs nothing, at the start, at a rotation and in every command, and the refusal names neither key.
 
 ### At start
 
@@ -74,9 +74,9 @@ The public key is read once (`GET /v1/<version>/publicKey`) and checked:
 - the PEM's CRC32C is the one answered;
 - the PEM holds one SubjectPublicKeyInfo of an Ed25519 key.
 
-Anything else is a fixed sentence, and the gateway does not start. The `keyId` is derived from that key, and held to `signingPublicKey` where it is named. As at the seed's key, the registry's walk must end at it, so a key version the registry rotated from refuses the start.
+Anything else is a fixed sentence, and the gateway does not start. The `keyId` is derived from that key, and held to `signingPublicKey`. As at the seed's key, the registry's walk must end at it, so a key version the registry rotated from refuses the start.
 
-The key is also held to the history (`heldUnderAnotherKey`). A registry record other than a rotation, or the store's first receipt, under a `keyId` the walk did not reach refuses the start. A seed-signed store restarted with `signingKeyVersion`, or a mistyped version naming another key in the ring, therefore does not start; the move is a rotation (below). The start line names the version, the protection level and the `keyId`.
+The key is also held to the history (`heldUnderAnotherKey`), at a key service's start and at a seed's alike. A registry record other than a rotation, or the first receipt of any series in the store (a series holding none is passed over, never the ones after it), under a `keyId` the walk did not reach refuses the start. A seed-signed store restarted with `signingKeyVersion`, a store a key service signed for restarted under the seed, or a mistyped version naming another key in the ring, therefore does not start; the move is a rotation (below). So a history under key B, then a start under seed A, then B again, never leaves a store mixed without a rotation: the start under A is refused. The start line names the version, the protection level and the `keyId`.
 
 ### The calls
 
@@ -123,12 +123,18 @@ The key is also held to the history (`heldUnderAnotherKey`). A registry record o
 - A receipt begun before the switch is wholly under the earlier version, `keyId` and signature both, even when it is written after the record. It verifies, because the walk reaches that key.
 - A receipt begun after the switch is under the next version.
 - A refusal before the append changes nothing.
-- An append that fails after a byte may be written does not switch. The gateway is then to be stopped and the registry settled as `gateway rotate-key --resume` settles a torn append.
+- An append that fails, whether or not a byte of it may be written, does not switch, and the gateway stops (exit 1, the reason on the standard error). It does not serve on: acquisitions under a registry that may hold part of a rotation could never be sealed.
+
+**A rotation whose append failed.** A key-service rotation writes no `<seed>.next` and no kept record, so `gateway rotate-key --resume` does not settle it. The operator reads the registry's end and settles it so:
+
+- **The rotation's two statements are whole** at the registry's end, the walk ending at the next key: start with the new configuration, the one naming the next key version.
+- **Nothing of the record was appended, or a `key-rotation` torn before its end:** the registry reads, under either key, as one with no rotation (SPEC.md §3b, "A rotation that stops"; a torn last line loads nothing, §3). Start with the old configuration, the key rotated from, and send SIGHUP again to rotate.
+- **Any other part of the record**, a `key-rotation` whole with no `key-continuation` after it or a `key-continuation` cut short: the walk refuses the start under either key. Cut that part of the record, from its first byte and nothing more (the one cut of a registry SPEC.md §3b makes, and only of bytes the record names), then start with the old configuration and send SIGHUP again to rotate. No other bytes of the registry are cut.
 - On a log that several instances append to, `rotateTo` refuses.
 
 **Decision 3(a): the trigger.**
 
-- **File kind: a rotation without stopping, at SIGHUP.** The operator writes the next version into `signingKeyVersion` (and `signingPublicKey`, where it is pinned) and sends SIGHUP. The gateway reads the configuration again under its own checks, takes those two members only, reads and checks the next public key as at the start, and calls `rotateTo`. The outcome is one line on the standard error. A refusal changes nothing, and a restart afterwards starts under the next version. The same path moves a gateway from its seed to the key service: the forward statement is signed by the seed and the reverse by the service.
+- **File kind: a rotation without stopping, at SIGHUP.** The operator writes the next version into `signingKeyVersion` and its key into `signingPublicKey`, and sends SIGHUP. The gateway reads the configuration again under its own checks, takes those two members only, reads and checks the next public key as at the start, and calls `rotateTo`. The outcome is one line on the standard error. A refusal before the append changes nothing; an append that failed stops the gateway, settled as above. After a rotation, a restart starts under the next version. A gateway serving as a witness refuses SIGHUP rotation with a fixed sentence, even where the configuration read again no longer names `witness`: its checkpoints are signed by the seed's key. The same path moves a gateway from its seed to the key service: the forward statement is signed by the seed and the reverse by the service.
 - **PostgreSQL kind: stop every instance, rotate, start.** SIGHUP rotation is refused there with a fixed sentence, because instances on one database must sign under one key version, and an instance whose key version differs from the instances serving is refused at start by name; the sentence names the rolling-deploy case. A coordinated live rotation across instances is #537.
 - **What a verifier does across the rotation.** Receipts and seals before the rotation record verify under the old key, and those after it under the new. The record is signed forward by the old key (the key-rotation statement) and in reverse by the new (the key-continuation statement), so a verifier that pinned the first key follows it from the registry alone.
 

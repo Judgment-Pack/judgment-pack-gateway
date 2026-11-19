@@ -23,11 +23,18 @@ import (
 	"syscall"
 )
 
-// rotationMayBeWritten is a rotation whose record may be in the registry,
-// in part or whole and not made durable: the gateway does not switch, and
-// is to be stopped and the registry settled as gateway rotate-key --resume
-// settles a torn append.
+// rotationMayBeWritten is a rotation whose append failed: its record may be
+// in the registry, in part or whole and not made durable, or not at all.
+// The gateway does not switch, and it stops; the operator settles the
+// registry before it starts again, as ADR-0050 ("A rotation whose append
+// failed") says: a key-service rotation leaves no kept record beside a seed,
+// so gateway rotate-key --resume does not settle it.
 type rotationMayBeWritten struct{ error }
+
+// errRotationBesideWitness is SIGHUP on a gateway serving as a witness,
+// whose checkpoints the seed's key signs: the configuration read again
+// without its witness member does not move it to a key service.
+var errRotationBesideWitness = errors.New("this gateway serves as a witness, whose checkpoints the seed's key signs: a rotation while serving to a key service is not made beside it (ADR-0050); nothing was changed")
 
 // rotationRecordSigned is rotationRecord signed through two keys: the
 // key-rotation by from, the key-continuation by to, each signature held to
@@ -91,9 +98,9 @@ func (w *registryWriter) rotateTo(next signer, at string) (*signingKey, error) {
 	}
 	if n, err := w.log.appendRecord(record); err != nil {
 		if n > 0 || committed(err) {
-			return nil, rotationMayBeWritten{fmt.Errorf("the rotation's record may be in the registry %s; the gateway did not switch, and is to be stopped and the registry settled: %w", w.path, err)}
+			return nil, rotationMayBeWritten{fmt.Errorf("the rotation's record may be in the registry %s; the gateway did not switch, and stops: settle the registry before it starts again (ADR-0050): %w", w.path, err)}
 		}
-		return nil, err
+		return nil, rotationMayBeWritten{fmt.Errorf("the rotation's record could not be appended to the registry %s; the gateway did not switch, and stops: settle the registry before it starts again (ADR-0050): %w", w.path, err)}
 	}
 	w.signing.switchTo(to)
 	return to, nil
@@ -106,8 +113,9 @@ func (w *registryWriter) rotateTo(next signer, at string) (*signingKey, error) {
 var errRotationOnKind = errors.New("a rotation while serving is not made on the PostgreSQL kind: stop every instance, rotate, and start them all under the next key version (ADR-0050); nothing was changed")
 
 // installRotationOnHangup rotates the gateway's key at each SIGHUP until ctx
-// ends (rotateOnHangup), saying the outcome on said.
-func installRotationOnHangup(ctx context.Context, g *gatewayService, said io.Writer) {
+// ends (rotateOnHangup), saying the outcome on said; a rotation whose append
+// failed stops the gateway through stop (answerHangup).
+func installRotationOnHangup(ctx context.Context, g *gatewayService, said io.Writer, stop func(error)) {
 	hangups := make(chan os.Signal, 1)
 	signal.Notify(hangups, syscall.SIGHUP)
 	go func() {
@@ -117,15 +125,31 @@ func installRotationOnHangup(ctx context.Context, g *gatewayService, said io.Wri
 			case <-ctx.Done():
 				return
 			case <-hangups:
-				line, err := g.rotateOnHangup(nowStamp)
-				if err != nil {
-					fmt.Fprintln(said, "rotate:", err)
-					continue
+				if g.answerHangup(nowStamp, said, stop) {
+					return
 				}
-				fmt.Fprintln(said, "rotate:", line)
 			}
 		}
 	}()
+}
+
+// answerHangup is one SIGHUP: the rotation's outcome said on said, and,
+// where the rotation's append failed (rotationMayBeWritten), stop called
+// with it, for the gateway does not serve on over a registry that may hold
+// part of a rotation it did not switch to. It answers whether it stopped.
+func (g *gatewayService) answerHangup(stamp func() string, said io.Writer, stop func(error)) bool {
+	line, err := g.rotateOnHangup(stamp)
+	if err == nil {
+		fmt.Fprintln(said, "rotate:", line)
+		return false
+	}
+	fmt.Fprintln(said, "rotate:", err)
+	var written rotationMayBeWritten
+	if !errors.As(err, &written) {
+		return false
+	}
+	stop(err)
+	return true
 }
 
 // rotateOnHangup is the operator's trigger of a rotation while serving
@@ -134,10 +158,15 @@ func installRotationOnHangup(ctx context.Context, g *gatewayService, said io.Wri
 // only; the key version it names read and checked as at the start; and the
 // gateway's key rotated to it (registryWriter.rotateTo), whose walk check
 // refuses a key the registry rotated from. A gateway its seed signs for is
-// moved to the key service the same way. Anything refused changes nothing.
+// moved to the key service the same way. A refusal before the append
+// changes nothing; an append that failed (rotationMayBeWritten) switches
+// nothing, and the gateway stops (answerHangup).
 func (g *gatewayService) rotateOnHangup(stamp func() string) (string, error) {
 	if g.kind != nil {
 		return "", errRotationOnKind
+	}
+	if g.witness != nil {
+		return "", errRotationBesideWitness
 	}
 	if g.rereadConfig == nil || g.registry == nil {
 		return "", errors.New("this gateway was not started from a configuration it can read again; nothing was changed")

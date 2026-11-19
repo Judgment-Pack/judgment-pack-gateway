@@ -401,10 +401,15 @@ func TestSigningKeyVersionIsAVersion36MemberOfItsForm(t *testing.T) {
 	ref := "records@" + digestOf(tokenBinding)
 	adapters := `,"adapters":"` + abs(t, t.TempDir(), "bin") + `"`
 	platform := tokenPlatformJSON(t, "records", ref, "engine-docs", ``, ``)
-	member := func(v string) string { return adapters + `,"signingKeyVersion":"` + v + `"` }
+	pin := `,"signingPublicKey":"` + hex.EncodeToString(ksKey("one").Public().(ed25519.PublicKey)) + `"`
+	member := func(v string) string { return adapters + `,"signingKeyVersion":"` + v + `"` + pin }
 	cfg, _, err := load(t, atVersion(t, keyServiceSignerVersion, catalog, member(ksVersion1), platform))
 	if err != nil || cfg.signingKeyVersion != ksVersion1 {
 		t.Fatalf("version 36: %v %q", err, cfg.signingKeyVersion)
+	}
+	// signingPublicKey is required beside signingKeyVersion, by name
+	if _, _, err := load(t, atVersion(t, keyServiceSignerVersion, catalog, adapters+`,"signingKeyVersion":"`+ksVersion1+`"`, platform)); !errors.Is(err, errSigningPublicKeyRequired) {
+		t.Fatalf("signingKeyVersion without signingPublicKey: %v", err)
 	}
 	if cfg, _, err := load(t, atVersion(t, keyServiceSignerVersion, catalog, adapters, platform)); err != nil || cfg.signingKeyVersion != "" {
 		t.Fatalf("version 36 without the member: %v", err)

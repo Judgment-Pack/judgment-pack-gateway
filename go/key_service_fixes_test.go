@@ -177,12 +177,12 @@ func TestSIGHUPRotatesTheFileKindToTheConfiguredKeyVersion(t *testing.T) {
 	if _, err := g.rotateOnHangup(ksStamper); !errors.Is(err, errKeyServiceNotExpected) || g.ownKeyID() != keyIDFor(ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey)) {
 		t.Fatalf("a key version not signingPublicKey's: %v", err)
 	}
-	reread.signingPublicKey = ""
+	reread.signingPublicKey = hex.EncodeToString(ksKey("one").Public().(ed25519.PublicKey))
 	if line, err := g.rotateOnHangup(ksStamper); err != nil || !strings.Contains(line, ksVersion1) {
 		t.Fatalf("the rotation to the key service: %v", err)
 	}
 	mustAcquire(t, g, "served")
-	reread.signingKeyVersion = ksVersion2
+	reread.signingKeyVersion, reread.signingPublicKey = ksVersion2, hex.EncodeToString(ksKey("two").Public().(ed25519.PublicKey))
 	if _, err := g.rotateOnHangup(func() string { return "2026-11-19T00:00:01Z" }); err != nil {
 		t.Fatalf("the rotation to the next key version: %v", err)
 	}

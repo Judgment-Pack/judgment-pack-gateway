@@ -640,7 +640,16 @@ func serveUntilStopped(service *gatewayService, cfg engineConfig, delegation *de
 	// the signer's admission gate, for the rotation contract: SIGUSR1
 	// closes it, SIGUSR2 reopens it
 	installOperatorControls(service.ctx, service)
-	installRotationOnHangup(service.ctx, service, said0(s.said))
+	// a loss keep reports, or a rotation at SIGHUP whose append failed,
+	// stops the gateway (exit 1); room for both, so neither send waits
+	lost := make(chan error, 2)
+	installRotationOnHangup(service.ctx, service, said0(s.said), func(err error) {
+		select {
+		case lost <- err:
+		default:
+		}
+		service.cancel()
+	})
 	// Every gcp-asset source's read-only check, before anything is served:
 	// a refusal, or a check that did not complete, refuses the start
 	// (gcp_asset_binding.go).
@@ -652,7 +661,6 @@ func serveUntilStopped(service *gatewayService, cfg engineConfig, delegation *de
 		fmt.Fprintln(said, "start:", err)
 		return 1
 	}
-	lost := make(chan error, 1)
 	if keep != nil {
 		// ended, and waited for, before serving returns
 		kept, endKeep := context.WithCancel(context.Background())

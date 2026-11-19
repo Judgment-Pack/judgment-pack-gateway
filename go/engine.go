@@ -876,6 +876,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		}
 		cfg.signingPublicKey = string(named)
 	}
+	if cfg.signingKeyVersion != "" && cfg.signingPublicKey == "" {
+		return engineConfig{}, errSigningPublicKeyRequired
+	}
 	return cfg, nil
 }
 

@@ -84,12 +84,13 @@ const keyVersionFormText = "projects/<project>/locations/<location>/keyRings/<ri
 // The fixed sentences of a signing that did not happen. None repeats a
 // value the service answered.
 var (
-	errKeyServiceUnreachable = errors.New("the key service could not be reached in time; nothing was signed")
-	errKeyServiceRefused     = errors.New("the key service refused to sign; nothing was signed")
-	errKeyServiceAnswer      = errors.New("the key service answered with no signature the gateway takes; nothing was signed")
-	errKeyServiceToken       = errors.New("the gateway's access token could not be had from the metadata server; nothing was signed")
-	errKeyServicePublicKey   = errors.New("the key service answered no Ed25519 public key of the key version configured; the gateway does not start")
-	errKeyServiceNotExpected = errors.New("the key service's key version answers a public key other than the one signingPublicKey names; nothing is signed with it")
+	errKeyServiceUnreachable    = errors.New("the key service could not be reached in time; nothing was signed")
+	errKeyServiceRefused        = errors.New("the key service refused to sign; nothing was signed")
+	errKeyServiceAnswer         = errors.New("the key service answered with no signature the gateway takes; nothing was signed")
+	errKeyServiceToken          = errors.New("the gateway's access token could not be had from the metadata server; nothing was signed")
+	errKeyServicePublicKey      = errors.New("the key service answered no Ed25519 public key of the key version configured; the gateway does not start")
+	errSigningPublicKeyRequired = errors.New("engine configuration: signingKeyVersion is not given without signingPublicKey, the key version's Ed25519 public key that pins it (ADR-0050)")
+	errKeyServiceNotExpected    = errors.New("the key service's key version answers a public key other than the one signingPublicKey names; nothing is signed with it")
 )
 
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
@@ -397,8 +398,9 @@ func commandSigner(version, expected string, seed []byte) (signer, error) {
 
 // heldUnderAnotherKey refuses a registry, and the store beside it, holding
 // history under a key id the registry's walk did not reach (ADR-0050): a
-// record of the registry other than a rotation, or the store's first
-// receipt, under a key no rotation leads from to own. A gateway moved from
+// record of the registry other than a rotation, or the first receipt of
+// any of the store's series, under a key no rotation leads from to own,
+// whether own is a key service's or the seed's. A gateway moved from
 // its seed to a key service, or to another key version, signs once a
 // rotation to its key is recorded, and not before. receipts may be nil.
 func heldUnderAnotherKey(registry []byte, keys []reachedKey, own ed25519.PublicKey, receipts indexedSpace) error {
@@ -430,21 +432,29 @@ func heldUnderAnotherKey(registry []byte, keys []reachedKey, own ed25519.PublicK
 		return nil
 	}
 	series, err := receipts.listSeries()
-	if err != nil || len(series) == 0 {
-		return err
-	}
-	entries, err := receipts.listEntries(series[0])
-	if err != nil || len(entries) == 0 {
-		return err
-	}
-	data, err := receipts.getEntry(series[0], entries[0])
 	if err != nil {
 		return err
 	}
-	v, err := parseJSON(data)
-	if obj, ok := v.(*vObject); err == nil && ok {
-		if keyID, _ := memberString(obj, "keyId"); keyID != "" && !reached(keyID) {
-			return refuse("store holds a receipt that", keyID)
+	// the first receipt of every series that holds one: a series left
+	// empty is passed over, and the next is read, so no series is skipped
+	// because an earlier one holds nothing
+	for _, s := range series {
+		entries, err := receipts.listEntries(s)
+		if err != nil {
+			return err
+		}
+		if len(entries) == 0 {
+			continue
+		}
+		data, err := receipts.getEntry(s, entries[0])
+		if err != nil {
+			return err
+		}
+		v, err := parseJSON(data)
+		if obj, ok := v.(*vObject); err == nil && ok {
+			if keyID, _ := memberString(obj, "keyId"); keyID != "" && !reached(keyID) {
+				return refuse("store holds a receipt that", keyID)
+			}
 		}
 	}
 	return nil

@@ -728,13 +728,11 @@ func (g *gatewayService) bindLifetime(parent context.Context) {
 }
 
 // holdStoreUnderKey refuses a store whose receipts are under a key the
-// registry's walk did not reach, where a key service signs (ADR-0050).
+// registry's walk did not reach, whether a key service or the seed signs
+// (ADR-0050): a store a key service signed for, started under the seed, is
+// refused as the reverse is.
 func holdStoreUnderKey(st *store, reg *registryWriter) error {
-	key := st.signing.key()
-	if _, service := key.signer.(*keyServiceSigner); !service {
-		return nil
-	}
-	return heldUnderAnotherKey(nil, reg.startKeys, key.public, st.receipts)
+	return heldUnderAnotherKey(nil, reg.startKeys, st.signing.key().public, st.receipts)
 }
 
 // envGroupAnchor and anchorArg together select the anchor mode of this
