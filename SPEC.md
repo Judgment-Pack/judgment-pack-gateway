@@ -1714,9 +1714,59 @@ file there that no such receipt names is not read, and its being there is nothin
 verifier reports. The directory is taken by its spelling as the decision-record directory is
 (§4.1).
 
+**A verdict by scope.** A verifier may be run with the option `--scope <identifier>`, given to
+`gateway verify` and to verify-ts's `verify` as the first argument, before
+`--ordinary-seals-only` and `--artifacts`
+(`docs/adr/0042-a-seal-names-its-scope-over-a-salt-the-registry-does-not-hold.md`, decisions 6
+to 9). The identifier is of the form §1.2a gives `scope`. It is never given with a
+decision-record directory: an action receipt carries no scope (§1.2a), so steps 6 to 8 read
+nothing of one. An identifier of another form, the option in a later place, and a
+decision-record directory beside it are each a usage error (exit 2 from `gateway verify`, 64 from
+verify-ts's `verify`), as for the other options; a store root so spelled is given as
+`./--scope`. The verdict runs every step above over the whole store and the whole registry, and
+attributes each session the store holds, and each sealed session (step 2) it does not, to the
+identifier S, to another scope or none, or to neither (*unattributed*), by what the gateway
+signed. A receipt is read for this where its ladder status is past §1.4's first six orders (its
+form, version, key, signature, place and authority hold), whatever the artifact step and those
+after it find:
+
+1. A session the store holds is of S where one such receipt carries `scope` S, whatever its seal
+   says.
+2. Otherwise, a session the store holds is attributed by its first loaded seal. A seal of
+   version 2, or one after an interruption naming a scope with no salt (§3c), is of S where its
+   `scopeDigest` is S's digest in the session (§3), which the verifier recomputes, and of another
+   scope otherwise. A seal of version 3, or one after an
+   interruption naming a scope over a salt (§3c), is of another scope where such a receipt's
+   `scope` and `scopeSalt` digest to its `scopeDigest`, and unattributed otherwise. A seal naming
+   no scope (§3's form, and §3c's without one) is of another scope or of none where the store
+   holds every receipt it counts (the files `0` to `finalCount − 1`, each such a receipt, and no
+   other) and, for a seal after an interruption, the last is its head (step 3). Otherwise it is
+   unattributed.
+3. A session the store holds that no seal closes is of another scope where at least one of its
+   receipts is such a receipt and each that is carries another scope and a `scopeSalt`, which only
+   a gateway that holds a session to one scope mints (ADR-0042). Otherwise it is unattributed: a
+   release before the salt minted none, and a session it left open may hold receipts of several
+   scopes or have lost its last.
+4. A sealed session the store does not hold is of the scope that a `session-removal` record
+   naming it (step 4) states. Otherwise its seal of version 2 attributes it to S or to another
+   scope. Otherwise it is unattributed.
+
+The verdict reports the findings and the observations that name a session of S or an
+unattributed one, and every finding that names no session (a rotation's, §3b). Its `witnesses`
+are those the receipts of those sessions name. It carries the member `cut`,
+`{"scope": <S>, "sessions": [...], "unattributed": [...]}`: the sessions of S and the sessions it
+could not attribute, each list sorted by its UTF-8 bytes. A verdict without the option carries no
+`cut`. Its `ok` is read over the findings it reports, and is false while `unattributed` names a
+session: such a session may be of S, so the cut cannot be shown to hold all of S. The verdict
+names the sessions that stand in the way, and reports what it finds of each, rather than leaving
+them out. A session of S that neither the store nor the registry holds any more is in neither
+list, as a verdict of the whole store finds nothing of it either (§4.1).
+
 `ok` is true only if the inline verify passed **and** no registry finding fired
 **and** no rotation finding fired (§3b) **and** no citation, decision-record,
-decision-pack, decision-cites, decision-trail or record-citation finding fired.
+decision-pack, decision-cites, decision-trail or record-citation finding fired (of a verdict
+by scope, among the findings it reports) **and**, for a verdict by scope, no session is
+unattributed.
 
 The verifier must obtain the registry from the gateway (the key holder), **not** from
 the untrusted store. That is the whole point: the anchor's authority comes from being
@@ -1913,13 +1963,44 @@ no finding naming it, so there is nothing in it to act on (the first rule above)
 record, the session is `sealed-session-missing` and withholds every session, store-wide, as
 any finding does.
 
-A consumer of one scope identifier's receipts verifies the whole store, or an export of it:
-no verifier of this document selects by scope, since the registry is one chain read whole
-(§3b) and step 4 finds a sealed session a cut by scope leaves out `sealed-session-missing`,
-and a seal an earlier release wrote names no scope, so a cut could not be shown to hold every
-session of the scope (`docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md`,
-decision 7). It may take a session-scoped verdict for each session whose seal names that
-identifier, the session's `seal-scope-mismatch` among the findings that withhold it.
+A consumer of one scope identifier's receipts may run a verdict by scope (§4) and read its
+`ok` as the verdict of the cut, store-wide within it. `ok: false` withholds every session of
+the cut, whether it comes from a finding the verdict reports or from a session it names
+`unattributed`. Within it, a consumer MAY take a session-scoped verdict for a session of the
+cut's `sessions` under the rules above, the session's `seal-scope-mismatch` among the findings
+that withhold it. A consumer may instead verify the whole store, or an export of it, and take a
+session-scoped verdict for each session of the scope. Cutting by scope is a choice with a name,
+as session-scoping is.
+
+**An export by scope.** `gateway export --scope S` (`docs/design/store-contract.md`, "The audit
+export") holds the sessions that the attribution of §4, made over the whole store, gives to S,
+the artifacts their receipts name, and the removal records of those sessions and of S. Of the
+registry it holds the rotation statements (§3b) and every line naming a session of S, in their
+order and byte for byte. Its manifest names S. It holds nothing of another scope: no receipt,
+artifact, seal or removal record of another session. A rotation statement is of the key and
+names no scope.
+
+The export is refused before anything is written, naming the sessions in each case:
+
+- where the gateway's own reading of its registry finds anything (§3b);
+- where a session is unattributed;
+- where a session of S holds a receipt past §1.4's first six orders that carries another scope
+  or none, which only a release before ADR-0036 mints, and which the export would otherwise
+  carry.
+
+Every rotation is kept and the walk found nothing, so the walk of the export's registry from
+the pinned key reaches each line it holds under the key it reached it under in the registry.
+Against its own registry the export therefore verifies by S as the store does by S, and whole
+to the same findings.
+That registry shows that each seal it holds is the gateway's. It does not show that the store
+held no other session of S: that rests on the exporter's attribution, which a reader of the
+export alone cannot repeat, since a seal of version 3 names its scope only over a salt carried
+in receipts the export does not hold. A reader holding the gateway's registry (§5a.3) checks
+that each of the export's registry lines is one of it, in order. Run against that registry, a
+verdict by scope of the export names unattributed every session the export does not hold whose
+seal is of version 3 or of §3's form. It finds `sealed-session-missing` for each session of S
+the export does not hold whose seal is of version 2. A session of S left out is among these. Of
+a seal of version 3 or of §3's form, the reader cannot tell it from a session of another scope.
 
 Session-scoping is a choice with a name, made deliberately in the consumer's code or
 configuration. Silence means store-wide. The list above leans on an invariant of
@@ -2995,6 +3076,13 @@ receipts carry `artifact: "not-retained"` or are named by a removal record and p
 agrees with the rest but one kind: it holds `artifact` to no form, so a receipt whose member
 is not of its form or is on an action, its bytes in the store, is `ok` to it and `malformed` to
 this version.
+
+**A verdict by scope.** A store vector may give a scope identifier (`"scope"`,
+`corpus/README.md`): the process contract then passes `--scope <identifier>` first, before
+every other option, and the vector states the `cut` it expects, which the runner compares
+whole; a vector without it expects no `cut`. No verdict for such a vector, as a verifier written
+before the option gives, disagrees with that vector, and the run goes on to the next, as under
+`--ordinary-seals-only`.
 
 **Removed sessions.** The store vectors of §1.3a's removed session state their observations,
 so a verifier that does not report `session-removed` disagrees with those that observe one. A

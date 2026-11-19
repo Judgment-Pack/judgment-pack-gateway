@@ -146,6 +146,10 @@ scopes in one session is refused) falls on a use that ADR-0026 recorded as a gap
    whole store, or an export of it, and may take a session-scoped verdict (§5a.1) for each of the
    scope's sessions, whose seal now names the scope.
 
+   *Amended by ADR-0042, decisions 6 to 9 (#478):* `gateway verify --scope` and `gateway export
+   --scope` cut by one scope identifier, attributing sessions by what their receipts and seals
+   sign, and name the sessions they cannot attribute rather than leaving them out.
+
 8. **Versions.** No engine configuration version and no receipt version are added: no
    configuration member is added, and a receipt is unchanged. The seal gains a version member;
    the PostgreSQL schema is unchanged (the registry's rows hold a line's bytes). SPEC.md §3, §3c,
