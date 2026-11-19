@@ -138,7 +138,7 @@ func registryLink(data []byte) (int64, string) {
 // rotatedMarkPrefix begins what marks a store rotated away from (SPEC.md
 // §3d): "store-rotated:" and the SHA-256 of the continuation line the
 // rotation wrote, without its 0x0A -- on the filesystem kind a file beside
-// the registry, on the PostgreSQL kind a start-lease holder.
+// the registry, on the PostgreSQL kind the one row of gateway.rotated.
 const rotatedMarkPrefix = "store-rotated:"
 
 // rotatedMark is the mark of a rotation whose new registry's first line is

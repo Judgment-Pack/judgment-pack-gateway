@@ -200,8 +200,9 @@ func TestAPostgresStoreRotationSealsWhatIsOpenAndLinksTheNewDatabase(t *testing.
 	}
 
 	code, stdout, stderr = rotatePg(t, config, target, dir)
-	if code != 1 || stdout != "" || !strings.Contains(stderr, "the new database: it holds a registry") || !strings.HasSuffix(stderr, "; nothing was changed\n") {
-		t.Fatalf("a second rotation into the same database: %d %q %q", code, stdout, stderr)
+	// the old database is marked rotated: the second rotation takes no lease
+	if code != 1 || stdout != "" || !strings.Contains(stderr, errStoreRotated(rotatedMark([]byte(out[2]))).Error()) {
+		t.Fatalf("a second rotation of the store rotated away from: %d %q %q", code, stdout, stderr)
 	}
 	if pgRegistryOf(t, db) != old || pgRegistryOf(t, target) != out[2]+"\n" {
 		t.Fatal("a refused rotation changed a registry")
@@ -238,6 +239,9 @@ func TestAPostgresStoreRotationSealsWhatIsOpenAndLinksTheNewDatabase(t *testing.
 		}
 	}
 
+	// the mark refuses a start on the old database; the owner removes it,
+	// as only the owner can, and an instance serves the old store again
+	asOwnerIn(t, db, pgNoScope, `DELETE FROM gateway.rotated`)
 	stopLate := sealOpenPgLeaveOpen(t, cfg, sources, []string{`{"session":"late","source":"plain","arguments":{"q":"acme"}}`}, "late")
 	stopLate()
 	rep, laterRegistry := pgExportVerdict(t, dir, config, "export-old-later", "")
@@ -253,6 +257,73 @@ func TestAPostgresStoreRotationSealsWhatIsOpenAndLinksTheNewDatabase(t *testing.
 // the rotation, which takes the lease in the one-instance mode, is refused
 // with start-lease-held: nothing is sealed, and the new database is not
 // migrated.
+// The old database is marked rotated away from by the one row of
+// gateway.rotated, which the run-time role can neither change, remove nor
+// double; a start on it is refused by name before it takes the lease; and a
+// rotation rerun when its row was not written writes the row alone.
+func TestAPostgresStoreRotatedAwayFromIsMarkedAndAStartOnItIsRefusedByName(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	dir := tempDirAt(t, 0o700)
+	config, cfg := sealOpenPgConfig(t, db, dir, "engine.json", false, "")
+	stop := sealOpenPgLeaveOpen(t, cfg, sealOpenPgSources(t), []string{`{"session":"s-1","source":"plain","arguments":{"q":"acme"}}`})
+	stop()
+	target := pgTestDBBeside(t, db)
+	code, stdout, stderr := rotatePg(t, config, target, dir)
+	out := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	if code != 0 || stderr != "" || len(out) != 2 {
+		t.Fatalf("exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+	}
+	mark := rotatedMark([]byte(out[1]))
+	if rows := pgTestQuery(t, db.runtime, `SELECT continuation FROM gateway.rotated`); len(rows.rows) != 1 || rotatedMarkPrefix+string(rows.rows[0][0]) != mark {
+		t.Fatalf("the old database's mark: %v, not %s", rows.rows, mark)
+	}
+
+	kind := db.open(t, nil)
+	t.Cleanup(kind.close)
+	if lease, err := kind.takeStartLease(newTestLeaseHolder(t), pgStartLeasePeriod, pgStartLeaseRenewal); err == nil || !strings.Contains(err.Error(), errStoreRotated(mark).Error()) {
+		if lease != nil {
+			lease.closeOwn()
+		}
+		t.Fatalf("a start on the store rotated away from: %v", err)
+	}
+	if pgLeaseLive(t, db) {
+		t.Fatal("a refused start left the start lease live")
+	}
+
+	for _, change := range []string{
+		`UPDATE gateway.rotated SET rotated_at = pg_catalog.now()`,
+		`DELETE FROM gateway.rotated`,
+		`TRUNCATE gateway.rotated`,
+	} {
+		if _, err := pgTestQueryErr(db.runtime, change); err == nil || !strings.Contains(err.Error(), "SQLSTATE 42501") {
+			t.Fatalf("the run-time role's %q: %v", change, err)
+		}
+	}
+	zeros := strings.Repeat("0", 64)
+	if _, err := pgTestQueryErr(db.runtime, `INSERT INTO gateway.rotated (continuation, rotated_at) VALUES ($1, pg_catalog.now())`, zeros); err == nil || !strings.Contains(err.Error(), "SQLSTATE 23505") {
+		t.Fatalf("a second mark: %v", err)
+	}
+	if _, err := pgTestQueryErr(db.runtime, `INSERT INTO gateway.rotated (singleton, continuation, rotated_at) VALUES (false, $1, pg_catalog.now())`, zeros); err == nil || !strings.Contains(err.Error(), "SQLSTATE 23514") {
+		t.Fatalf("a second mark of another key: %v", err)
+	}
+
+	// the rerun: the row not written, the new database's registry the
+	// continuation alone; the rotation writes the row and nothing else
+	newRegistry := pgRegistryOf(t, target)
+	asOwnerIn(t, db, pgNoScope, `DELETE FROM gateway.rotated`)
+	code, stdout, stderr = rotatePg(t, config, target, dir)
+	if code != 0 || stderr != "" || stdout != out[1]+"\n" {
+		t.Fatalf("the rerun: exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+	}
+	if rows := pgTestQuery(t, db.runtime, `SELECT continuation FROM gateway.rotated`); len(rows.rows) != 1 || rotatedMarkPrefix+string(rows.rows[0][0]) != mark {
+		t.Fatalf("the mark the rerun wrote: %v", rows.rows)
+	}
+	if pgRegistryOf(t, target) != newRegistry {
+		t.Fatal("the rerun changed the new database's registry")
+	}
+}
+
 func TestAPostgresStoreRotationIsRefusedWhileAnInstanceServes(t *testing.T) {
 	db := newPgTestDB(t)
 	db.migrate(t)

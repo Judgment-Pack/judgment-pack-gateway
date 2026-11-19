@@ -563,6 +563,7 @@ start refuses a table it was not restored on.
 | `gateway.start_lease` (a row for each instance) | SELECT, INSERT, UPDATE | every one: it carries no scope |
 | `gateway.scope_identifiers` (schema version 3: the scope identifiers recorded) | SELECT, INSERT | no scope's: every row is of no scope |
 | `gateway.removal_records` (schema version 5: the removal records) | SELECT | no scope's: every row is of no scope |
+| `gateway.rotated` (schema version 7: the mark of a store rotated away from) | SELECT, INSERT | every one: it carries no scope, and holds one row at most |
 
 Append-only by privilege: nothing but a document and the start lease's rows are changed once written,
 and nothing but a document is removed; a scope identifier, once recorded, stays, and a removal
@@ -831,13 +832,21 @@ It is refused, with exit status 1, by name:
   held for no more than a write's margin by the time the new database's transaction is to commit,
   or when that transaction fails. The seals appended stay in the old registry, and a run again into
   an empty database rotates the store. When the COMMIT itself does not answer, the command says the
-  store *may have rotated; rerun to check*: a run again refuses a new database that holds the
-  registry (`it holds a registry`), and rotates into one that does not.
+  store *may have rotated; rerun to check*: a run again into a new database that holds more than
+  a registry is refused (`it holds a registry`), into one that holds the continuation of the old
+  registry alone writes the mark below and nothing else, and into an empty one rotates the store.
 
-This release writes no mark into the old database: the filesystem kind's mark (SPEC.md §3d) has
-no place there yet, since the start lease's rows take only an instance's holder and a lease of at
-most ten minutes. An instance started on the old database after a rotation is not refused, and
-appends to the old registry; the link to that registry no longer holds.
+The mark (SPEC.md §3d) is the one row of `gateway.rotated` (schema version 7): the hexadecimal
+SHA-256 of the continuation line and the time it was written. The command writes it last, as the
+run-time login, under the start lease and fenced as every write is, once the new database's
+transaction is committed; a mark that fails to write is said so, and a run again writes it. A
+start on the old database reads the row before the start lease's rows and is refused by name,
+*the store was rotated away from (store-rotated:...)*; so is every command that takes the lease,
+`seal-open` and a second `store rotate` among them. `grants.sql`
+gives the run-time role SELECT and INSERT on the table and nothing else, and the key admits one
+row: a run-time login can only mark its own store rotated, which it could already cause by
+holding the lease. Removing the mark is the owner's alone. A database at schema version 6 is
+refused by this release's open until it is migrated (`apply the store's migrations`).
 
 Exit 2 on a usage error: `--new-store` and `--new-registry` are the filesystem kind's, and the
 migration login's flags are refused beside a configuration of that kind. Dropping the old database

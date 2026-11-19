@@ -300,6 +300,16 @@ func (k *pgKind) takeStartLease(holder string, period, every time.Duration) (*pg
 				return nil
 			}
 		}
+		// a store rotated away from starts nothing again: its mark is
+		// read before the lease's rows, and refused by name
+		mark, err := tx.exec(`SELECT continuation FROM gateway.rotated`)
+		if err != nil {
+			return err
+		}
+		if len(mark.rows) > 0 {
+			refusal = errStoreRotated(rotatedMarkPrefix + string(mark.rows[0][0]))
+			return nil
+		}
 		read, err := tx.exec(pgStartLeaseRows)
 		if err != nil {
 			return err

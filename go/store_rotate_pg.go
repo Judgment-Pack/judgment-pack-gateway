@@ -29,9 +29,11 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -52,7 +54,13 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 		return nil, nil, err
 	}
 	set := pgShippedMigrations()
-	if _, err := migratePostgresThen(dsn, set, target.roles, target.timeout, pgRotationTargetEmpty, false); err != nil {
+	// prior is the new database's registry when it holds the continuation
+	// alone: a rotation whose mark was not written, rerun to write it
+	var prior []byte
+	if _, err := migratePostgresThen(dsn, set, target.roles, target.timeout, func(tx pgTx) (err error) {
+		prior, err = pgRotationTargetContinued(tx)
+		return err
+	}, false); err != nil {
 		return nil, nil, fmt.Errorf("the new database: %v; nothing was changed", err)
 	}
 	var line []byte
@@ -71,6 +79,18 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 			priv := ed25519.NewKeyFromSeed(seed)
 			if _, err := engineWalk(data, priv.Public().(ed25519.PublicKey)); err != nil {
 				return err
+			}
+			if prior != nil {
+				// the rerun: the new database holds the continuation of
+				// this registry as it ends, and the old one is marked
+				if err := continuesRegistry(prior, data, priv.Public().(ed25519.PublicKey)); err != nil {
+					return fmt.Errorf("the new database: it holds a registry; %v; a rotation starts a new store in a database that holds none", err)
+				}
+				if err := pgMarkRotated(kind, prior); err != nil {
+					return fmt.Errorf("the new database holds the continuation, and the old one is not marked rotated: %v; rerun to mark it", err)
+				}
+				line = prior
+				return nil
 			}
 			made := newContinuationLine(priv, data, stamp())
 			_, err = migratePostgresThen(dsn, set, target.roles, target.timeout, func(tx pgTx) error {
@@ -96,6 +116,10 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 			}
 			if err != nil {
 				return fmt.Errorf("the new database: %v; the store is not rotated, and the seals appended stay in the old registry", err)
+			}
+			// the mark, last: a start on the old database is refused by name
+			if err := pgMarkRotated(kind, made); err != nil {
+				return fmt.Errorf("the new database holds the continuation, and the old one is not marked rotated: %v; rerun to mark it", err)
 			}
 			line = made
 			return nil
@@ -143,7 +167,7 @@ func pgRotationTargetEmpty(tx pgTx) error {
 		EXISTS (SELECT 1 FROM gateway.start_lease) OR EXISTS (SELECT 1 FROM gateway.secrets)
 		OR EXISTS (SELECT 1 FROM gateway.scope_identifiers) OR EXISTS (SELECT 1 FROM gateway.series)
 		OR EXISTS (SELECT 1 FROM gateway.blobs) OR EXISTS (SELECT 1 FROM gateway.documents)
-		OR EXISTS (SELECT 1 FROM gateway.removal_records)`)
+		OR EXISTS (SELECT 1 FROM gateway.removal_records) OR EXISTS (SELECT 1 FROM gateway.rotated)`)
 	if err != nil {
 		return err
 	}
@@ -155,10 +179,69 @@ func pgRotationTargetEmpty(tx pgTx) error {
 	switch {
 	case !ok1 || !ok2:
 		return errors.New("store: what the database holds did not read")
+	case registry && !other:
+		return errPgTargetHoldsRegistry
 	case registry:
 		return errors.New("it holds a registry; a rotation starts a new store in a database that holds none")
 	case other:
 		return errors.New("it holds rows of a store; a rotation starts a new store in a database that holds none")
+	}
+	return nil
+}
+
+// pgRotationTargetContinued is pgRotationTargetEmpty, except that a database
+// holding a registry of one record and nothing else gives that record back:
+// the continuation of a rotation rerun to write its mark, which the caller
+// holds to name the old registry.
+func pgRotationTargetContinued(tx pgTx) ([]byte, error) {
+	err := pgRotationTargetEmpty(tx)
+	if err != errPgTargetHoldsRegistry { //nolint:errorlint // the sentinel itself, never wrapped
+		return nil, err
+	}
+	rows, err := tx.exec(`SELECT data FROM gateway.log_records WHERE log = 'registry' ORDER BY start`)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows.rows) != 1 {
+		return nil, errPgTargetHoldsRegistry
+	}
+	return append([]byte(nil), rows.rows[0][0]...), nil
+}
+
+// errPgTargetHoldsRegistry refuses a database holding a registry and no
+// other row of a store.
+var errPgTargetHoldsRegistry = errors.New("it holds a registry; a rotation starts a new store in a database that holds none")
+
+// continuesRegistry holds line to be a store continuation, signed by pub,
+// that names previous as it ends.
+func continuesRegistry(line, previous []byte, pub ed25519.PublicKey) error {
+	if _, err := engineWalk(line, pub); err != nil {
+		return err
+	}
+	var c struct {
+		Lines  *int64  `json:"previousLines"`
+		Digest *string `json:"previousDigest"`
+	}
+	if err := json.Unmarshal(bytes.TrimSuffix(line, []byte("\n")), &c); err != nil || c.Lines == nil || c.Digest == nil {
+		return errors.New("its one line is not a store continuation")
+	}
+	if lines, digest := registryLink(previous); *c.Lines != lines || *c.Digest != digest {
+		return errors.New("its continuation names another registry")
+	}
+	return nil
+}
+
+// pgMarkRotated writes the one row of gateway.rotated, as the run-time
+// login, fenced as every write is: the old store is marked rotated away from
+// to the continuation line.
+func pgMarkRotated(k *pgKind, line []byte) error {
+	mark := strings.TrimPrefix(rotatedMark(line), rotatedMarkPrefix)
+	err := k.transact(pgWriteCommitted, func(tx pgTx) error {
+		_, err := tx.exec(`INSERT INTO gateway.rotated (continuation, rotated_at) VALUES ($1, pg_catalog.now())`, mark)
+		return err
+	})
+	if err != nil {
+		return pgFailure("mark-rotated", false, err)
 	}
 	return nil
 }
