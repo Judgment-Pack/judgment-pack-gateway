@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -224,5 +225,147 @@ func TestTheListingOfOneScopeIsTheSameWhateverAnotherScopeHolds(t *testing.T) {
 	}
 	if got := listed(beside, scopeReach{every: true}); !bytes.Contains(got, []byte(aWords)) || bytes.Contains(got, []byte(bWords)) {
 		t.Errorf("a caller of every scope: the platforms first in the table that fit are described, and no further: %s", got)
+	}
+}
+
+// A front fixed to scope B, sealing a session of scope A this process does not
+// hold, is answered as it is for a name the gateway never held: one A's caller
+// left in the store (another process's, here dropped from the map), and one
+// this process sealed. A session another process sealed in the registry is
+// said to be sealed whatever its scope, as /registry shows anyone, so B's
+// answer for A's is B's own with the name changed (ADR-0041, decision 2).
+func TestAFrontFixedToAScopeAnswersAnotherScopesSessionsItDoesNotHold(t *testing.T) {
+	f := scopedMCPFixture(t, mcpConfig{scope: callerScopeB})
+	f.token = tokenFor(t, f.issuer, subjectEvery, nil)
+	sid := f.open(t)
+	seal := func(session string) []byte {
+		t.Helper()
+		return f.rawCall(t, sid, toolCall(7, mcpSealTool, `{"session":"`+session+`"}`, ""))
+	}
+	acquire := func(session, source, scope string) {
+		t.Helper()
+		if code, out := authed(t, f.signer, "/acquire", acquireBodyFor(session, source, scope), f.token); code != http.StatusOK {
+			t.Fatalf("an acquisition into %s at the signer: %d %v", session, code, out)
+		}
+	}
+	sealDirect := func(session string) {
+		t.Helper()
+		if code, out := authed(t, f.signer, "/seal", `{"session":"`+session+`"}`, f.token); code != http.StatusOK {
+			t.Fatalf("the seal of %s at the signer: %d %v", session, code, out)
+		}
+	}
+	forget := func(session string) {
+		f.service.mu.Lock()
+		delete(f.service.sessions, session)
+		f.service.mu.Unlock()
+	}
+	before := map[string][]byte{"stored-a": seal("stored-a"), "kept-a": seal("kept-a")}
+	acquire("stored-a", "a/live", callerScopeA)
+	forget("stored-a")
+	acquire("kept-a", "a/live", callerScopeA)
+	sealDirect("kept-a")
+	for session, unknown := range before {
+		if got := seal(session); !bytes.Equal(got, unknown) {
+			t.Errorf("the front fixed to B seals %s of scope A:\n%s\nnot as when it did not exist:\n%s", session, got, unknown)
+		}
+	}
+	// the stored session is one the signer holds in its store: asked
+	// directly by the installation's caller, it is not "no such session"
+	if code, out := authed(t, f.signer, "/seal", `{"session":"stored-a"}`, f.token); code != http.StatusBadRequest || strings.Contains(fmt.Sprint(out["error"]), "no such session") {
+		t.Fatalf("stored-a at the signer: %d %v", code, out)
+	}
+	for _, tc := range []struct{ session, source, scope string }{{"sealed-a", "a/live", callerScopeA}, {"sealed-b", "b/live", callerScopeB}} {
+		acquire(tc.session, tc.source, tc.scope)
+		sealDirect(tc.session)
+		forget(tc.session)
+	}
+	ofA, ofB := seal("sealed-a"), seal("sealed-b")
+	if !bytes.Contains(ofA, []byte("session is sealed in the registry: sealed-a")) || !bytes.Equal(ofA, bytes.ReplaceAll(ofB, []byte("sealed-b"), []byte("sealed-a"))) {
+		t.Errorf("a session another process sealed, of scope A and of scope B:\n%s\n%s", ofA, ofB)
+	}
+}
+
+// A report cut to a caller's reach says what the caller reaches, and nothing
+// of what it does not: no source fixed to a scope identifier among the
+// sources it reaches, where it reaches only the sources of none; no source,
+// where it reaches none. Uncut, the lines say what they said before.
+func TestACutPostureSaysWhatTheCallerReaches(t *testing.T) {
+	plain := map[string]sourceSpec{"plain/live": {argv: []string{"/nonexistent/plain"}}}
+	cut := callerScopesLine("checked", plain, true)
+	if len(cut) != 1 || cut[0].state != postureEnforced || cut[0].reason != "no source this caller's token reaches is fixed to a scope identifier; a token whose "+scopeClaimName+" names one the configuration does not grant its subject is refused 401" {
+		t.Errorf("cut, no scoped source: %+v", cut)
+	}
+	if whole := callerScopesLine("checked", plain, false); len(whole) != 1 || !strings.HasPrefix(whole[0].reason, "no source is fixed to a scope identifier;") {
+		t.Errorf("uncut, no scoped source: %+v", whole)
+	}
+	userLine := func(in postureInput) postureLine {
+		t.Helper()
+		for _, l := range hostPosture(in).lines {
+			if l.name == protectionSourceUser {
+				return l
+			}
+		}
+		t.Fatalf("no %s line", protectionSourceUser)
+		return postureLine{}
+	}
+	scoped := map[string]sourceSpec{"a/live": {argv: []string{"/nonexistent/a"}, scope: callerScopeA}}
+	if l := userLine(postureInput{configured: true, sources: scoped, reach: &scopeReach{}, callerScopes: "checked"}); l.state != postureNotApplicable || l.reason != "this caller's token reaches no source, so there is none to judge" {
+		t.Errorf("a reach of nothing: %+v", l)
+	}
+	if l := userLine(postureInput{configured: true, sources: map[string]sourceSpec{}}); l.reason != "the configuration names no source" {
+		t.Errorf("no source, uncut: %+v", l)
+	}
+}
+
+// Through the /posture route: a caller reaching only the sources of none,
+// and one of scope B where the configuration holds no source of B, are each
+// answered the same bytes whether or not the sources they do not reach exist,
+// with the cut lines' wording.
+func TestPostureOverTheRouteIsTheSameWhateverAnotherScopeHolds(t *testing.T) {
+	callers := callerScopes{entries: map[string]callerEntry{
+		subjectA: {grants: map[string]bool{callerScopeA: true}},
+		subjectB: {grants: map[string]bool{callerScopeB: true}},
+	}}
+	service, server, issuer := callerScopesService(t, callers)
+	configured := service.sources
+	posture := func(token string, sources map[string]sourceSpec) ([]byte, map[string]string) {
+		t.Helper()
+		service.sources = sources
+		code, raw := postRawWith(t, server, "/posture", ``, token)
+		service.sources = configured
+		var report struct {
+			Protections []struct{ Name, Reason string }
+		}
+		if code != http.StatusOK || json.Unmarshal(raw, &report) != nil {
+			t.Fatalf("/posture: %d %s", code, raw)
+		}
+		reasons := map[string]string{}
+		for _, p := range report.Protections {
+			reasons[p.Name] = p.Reason
+		}
+		return raw, reasons
+	}
+	only := func(names ...string) map[string]sourceSpec {
+		out := map[string]sourceSpec{}
+		for _, name := range names {
+			out[name] = configured[name]
+		}
+		return out
+	}
+	unscoped := tokenFor(t, issuer, "subject-with-no-entry", nil)
+	got, reasons := posture(unscoped, configured)
+	if alone, _ := posture(unscoped, only("plain")); !bytes.Equal(got, alone) {
+		t.Errorf("the caller of the sources of none, with and without the scoped sources:\n%s\n%s", got, alone)
+	}
+	if !strings.HasPrefix(reasons[protectionCallerScopes], "no source this caller's token reaches is fixed to a scope identifier;") {
+		t.Errorf("the caller of the sources of none: %q", reasons[protectionCallerScopes])
+	}
+	ofB := tokenFor(t, issuer, subjectB, []any{callerScopeB})
+	got, reasons = posture(ofB, only("scoped-a", "plain"))
+	if alone, _ := posture(ofB, map[string]sourceSpec{}); !bytes.Equal(got, alone) {
+		t.Errorf("B's caller reaching no source, with and without A's:\n%s\n%s", got, alone)
+	}
+	if reasons[protectionSourceUser] != "this caller's token reaches no source, so there is none to judge" {
+		t.Errorf("B's caller reaching no source: %q", reasons[protectionSourceUser])
 	}
 }
