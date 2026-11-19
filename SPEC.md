@@ -1547,9 +1547,10 @@ since the store before it may have been deleted under retention.
 root) also reads the registry of the store before, absent or unreadable no verdict, and holds the link:
 no continuation loads and neither finding above stands → **`continuation-missing`**; `previousLines` is
 not its line count → **`continuation-count-mismatch`**; otherwise `previousLastLine` is not the SHA-256
-of its last line → **`continuation-tail-mismatch`**; each `{status}`, and the verdict then fails. Each
-store is verified on its own, with its own run; a verdict over a sequence is `ok` only when every store's
-is and every link holds. A receipt is never read across stores.
+of its last line → **`continuation-tail-mismatch`**; each `{status}`, and the verdict then fails. `--previous`
+is given at most once, naming one registry: a second is a usage error. Each store is verified on its own,
+with its own run, so a sequence is verified pairwise, each store with the registry of the one before it;
+a verdict over a sequence is `ok` only when every store's is and every link holds. A receipt is never read across stores.
 
 **Older verifiers.** A verifier written before this section reads a store continuation as a line that
 is not a rotation statement, and so as a seal (§4 step 2), which loads nothing: it reports no finding and

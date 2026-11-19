@@ -2393,6 +2393,9 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 	refusalOfScope := func(name string) string {
 		return "store " + name + ": no verdict under --scope: " + strconv.Quote(conformStubUsage)
 	}
+	// the store-continuation vectors (SPEC.md §3d), which state continues-from
+	continuation := []string{"store-continuation-links", "store-continuation-read-alone", "store-continuation-tail-mismatch"}
+	withContinuation := func(names ...string) []string { return append(slices.Clone(continuation), names...) }
 	kept := func(name string) string {
 		return "store " + name + ": observations disagree\n    expected: []\n" +
 			`    produced: [{"callIndex":2,"observation":"sealed-after-interruption","sessionId":"s1"}]`
@@ -2404,13 +2407,13 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 		exact func(name string) string
 	}{
 		{"faithful", nil, nil},
-		{"no-observations", append([]string{"observations-interruption-seal", "ordinary-seals-only-interruption-seal-forged"}, retentionObserving...), nil},
+		{"no-observations", append(withContinuation("observations-interruption-seal", "ordinary-seals-only-interruption-seal-forged"), retentionObserving...), nil},
 		{"ignore-option", []string{"ordinary-seals-only-interruption-seal", "ordinary-seals-only-interruption-seal-twice"}, nil},
-		{"older", append([]string{
+		{"older", append(withContinuation(
 			"observations-interruption-seal", "ordinary-seals-only-interruption-seal",
 			"ordinary-seals-only-interruption-seal-forged", "ordinary-seals-only-interruption-seal-twice",
-		}, retentionObserving...), nil},
-		{"observations-twice", append([]string{"observations-interruption-seal", "ordinary-seals-only-interruption-seal-forged"}, retentionObserving...), nil},
+		), retentionObserving...), nil},
+		{"observations-twice", append(withContinuation("observations-interruption-seal", "ordinary-seals-only-interruption-seal-forged"), retentionObserving...), nil},
 		{"observations-malformed", append(slices.Clone(stating), retentionStating...), nil},
 		{"rejects-option", underTheOption, refusal},
 		{"rejects-artifacts", supplying, refusalOfArtifacts},
