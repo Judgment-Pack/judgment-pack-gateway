@@ -25,6 +25,9 @@ type graphAPI struct {
 	mu       sync.Mutex
 	token    string
 	received []string
+	// serve, when set, answers every authenticated request in place of the
+	// built-in routes (the stream fixtures' test).
+	serve func(w http.ResponseWriter, r *http.Request, origin string)
 }
 
 func (g *graphAPI) handler(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +40,10 @@ func (g *graphAPI) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	origin := "http://" + r.Host
+	if g.serve != nil {
+		g.serve(w, r, origin)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	switch r.RequestURI {
 	case "/v1.0/organization":
@@ -64,16 +71,13 @@ func (g *graphAPI) handler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// From the shipped binding to receipts, by the real adapter-http, with a
-// token step of a federated identity against a stand-in token endpoint of
-// the directory's form and a stand-in directory on loopback: a collection
-// is paged by the next links its pages name and a delta round by its next
-// and delta links, each followed as written, and each page's statement
-// commits to the path and the query sent; a template's path is read with
-// a GUID; an expired delta token is answered source_reference_expired, a
-// throttled read 429 with its wait; and a link to another host is refused
-// before any token is obtained for it. One token serves every page.
-func TestAGraphSourceIsPagedByTheLinksItsPagesName(t *testing.T) {
+// graphGateway stands the shipped microsoft-graph binding up behind a
+// gateway: a stand-in token endpoint of the directory's form, api as the
+// stand-in directory on loopback, the real adapter-http. It returns the
+// gateway, the directory, the token requests made so far and how many of
+// them the source check made.
+func graphGateway(t *testing.T, api *graphAPI) (server, graph *httptest.Server, tokenRequests func() int, checkTokens int) {
+	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(bin, 0o700); err != nil {
@@ -83,14 +87,13 @@ func TestAGraphSourceIsPagedByTheLinksItsPagesName(t *testing.T) {
 	const tenant = "5d2c1b0a-3e4f-4a5b-9c6d-7e8f9a0b1c2d"
 	const federatedText = "federated-identity-token-graph-4e1a"
 	var mu sync.Mutex
-	tokenRequests := 0
-	api := &graphAPI{}
+	count := 0
 	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
 		form := r.PostForm
 		mu.Lock()
 		defer mu.Unlock()
-		tokenRequests++
+		count++
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path != "/"+tenant+"/oauth2/v2.0/token" || form.Get("grant_type") != "client_credentials" || form.Get("client_id") != "directory-reader" ||
 			form.Get("client_assertion_type") != "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" || form.Get("client_assertion") != federatedText ||
@@ -99,15 +102,15 @@ func TestAGraphSourceIsPagedByTheLinksItsPagesName(t *testing.T) {
 			io.WriteString(w, `{"error":"invalid_request"}`)
 			return
 		}
-		token := fmt.Sprintf("graph-access-%d", tokenRequests)
+		token := fmt.Sprintf("graph-access-%d", count)
 		api.mu.Lock()
 		api.token = token
 		api.mu.Unlock()
 		io.WriteString(w, `{"access_token":"`+token+`","token_type":"Bearer","expires_in":3599}`)
 	}))
-	defer tokens.Close()
-	graph := httptest.NewServer(http.HandlerFunc(api.handler))
-	defer graph.Close()
+	t.Cleanup(tokens.Close)
+	graph = httptest.NewServer(http.HandlerFunc(api.handler))
+	t.Cleanup(graph.Close)
 
 	shipped, err := os.ReadFile(filepath.Join("..", "catalog", "microsoft-graph.json"))
 	if err != nil {
@@ -163,26 +166,42 @@ func TestAGraphSourceIsPagedByTheLinksItsPagesName(t *testing.T) {
 	if line, err := describeSourceCheck(live, report); err != nil || !strings.HasSuffix(line, "; GET /v1.0/organization answered 200") {
 		t.Fatalf("the check as connect reads it: %q %v", line, err)
 	}
-	mu.Lock()
-	checkTokens := tokenRequests
-	mu.Unlock()
+	tokenRequests = func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return count
+	}
+	checkTokens = tokenRequests()
 
 	service, err := buildService(cfg.store, testSeed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(service.handler())
-	defer server.Close()
+	server = httptest.NewServer(service.handler())
+	t.Cleanup(server.Close)
 	api.mu.Lock()
 	api.received = nil
 	api.mu.Unlock()
+	return server, graph, tokenRequests, checkTokens
+}
+
+// From the shipped binding to receipts, by the real adapter-http, with a
+// token step of a federated identity against a stand-in token endpoint of
+// the directory's form and a stand-in directory on loopback: a collection
+// is paged by the next links its pages name and a delta round by its next
+// and delta links, each followed as written, and each page's statement
+// commits to the path and the query sent; a template's path is read with
+// a GUID; an expired delta token is answered source_reference_expired, a
+// throttled read 429 with its wait; and a link to another host is refused
+// before any token is obtained for it. One token serves every page.
+func TestAGraphSourceIsPagedByTheLinksItsPagesName(t *testing.T) {
+	api := &graphAPI{}
+	server, graph, tokenRequests, checkTokens := graphGateway(t, api)
 
 	// A link to another host, before any token is held: refused, nothing
 	// requested of either endpoint.
 	code, body := post(t, server, "/acquire", `{"session":"dir-x","source":"directory/live","arguments":{"link":"http://other.example/v1.0/users?$skiptoken=zq7","method":"GET"}}`)
-	mu.Lock()
-	requested := tokenRequests
-	mu.Unlock()
+	requested := tokenRequests()
 	if code == http.StatusOK || !strings.Contains(fmt.Sprint(body), fmt.Sprintf(errTokenRequestNotAdmitted, "directory/live")) || strings.Contains(fmt.Sprint(body), "zq7") ||
 		requested != checkTokens || len(api.received) != 0 {
 		t.Fatalf("a link to another host: %d %v; %d token requests", code, body, requested-checkTokens)
@@ -237,9 +256,7 @@ func TestAGraphSourceIsPagedByTheLinksItsPagesName(t *testing.T) {
 		t.Fatalf("a throttled read: %d %v %s", throttled.code, throttled.header, throttled.body)
 	}
 
-	mu.Lock()
-	requested = tokenRequests
-	mu.Unlock()
+	requested = tokenRequests()
 	if requested != checkTokens+1 {
 		t.Fatalf("one token serves every page: %d token requests", requested-checkTokens)
 	}

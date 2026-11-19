@@ -1,0 +1,11 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#roleassignments",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000116",
+      "principalId": "00000000-0000-4000-8000-000000000117",
+      "roleDefinitionId": "00000000-0000-4000-8000-000000000118",
+      "directoryScopeId": "/"
+    }
+  ]
+}

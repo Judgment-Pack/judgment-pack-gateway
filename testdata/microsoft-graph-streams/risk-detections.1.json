@@ -1,0 +1,24 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#riskdetections",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000140",
+      "riskEventType": "unfamiliarFeatures",
+      "riskLevel": "low",
+      "riskState": "atRisk",
+      "userPrincipalName": "user1@example.com",
+      "ipAddress": "192.0.2.21",
+      "detectedDateTime": "2026-01-01T12:00:00Z"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000141",
+      "riskEventType": "unfamiliarFeatures",
+      "riskLevel": "low",
+      "riskState": "atRisk",
+      "userPrincipalName": "user2@example.com",
+      "ipAddress": "192.0.2.22",
+      "detectedDateTime": "2026-01-02T12:00:00Z"
+    }
+  ],
+  "@odata.nextLink": "https://graph.example.com/v1.0/identityProtection/riskDetections?$top=2&$skiptoken=risk-detections-page-2"
+}

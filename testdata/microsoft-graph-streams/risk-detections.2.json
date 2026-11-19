@@ -1,0 +1,14 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#riskdetections",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000142",
+      "riskEventType": "unfamiliarFeatures",
+      "riskLevel": "low",
+      "riskState": "atRisk",
+      "userPrincipalName": "user3@example.com",
+      "ipAddress": "192.0.2.23",
+      "detectedDateTime": "2026-01-03T12:00:00Z"
+    }
+  ]
+}

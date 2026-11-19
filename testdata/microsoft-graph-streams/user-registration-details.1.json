@@ -1,0 +1,22 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#userregistrationdetails",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000146",
+      "userPrincipalName": "user1@example.com",
+      "userDisplayName": "User 1",
+      "isMfaRegistered": false,
+      "methodsRegistered": []
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000147",
+      "userPrincipalName": "user2@example.com",
+      "userDisplayName": "User 2",
+      "isMfaRegistered": true,
+      "methodsRegistered": [
+        "mobilePhone"
+      ]
+    }
+  ],
+  "@odata.nextLink": "https://graph.example.com/v1.0/reports/authenticationMethods/userRegistrationDetails?$top=2&$skiptoken=user-registration-details-page-2"
+}

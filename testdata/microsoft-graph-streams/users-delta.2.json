@@ -1,0 +1,12 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#users",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000103",
+      "displayName": "User 3",
+      "userPrincipalName": "user3@example.com",
+      "mail": "user3@example.com"
+    }
+  ],
+  "@odata.deltaLink": "https://graph.example.com/v1.0/users/delta?$deltatoken=users-delta-round-1"
+}

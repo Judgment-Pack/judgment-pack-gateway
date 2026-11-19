@@ -1,0 +1,16 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#signins",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000136",
+      "createdDateTime": "2026-01-03T10:00:00Z",
+      "userPrincipalName": "user3@example.com",
+      "userDisplayName": "User 3",
+      "appDisplayName": "Application 3",
+      "ipAddress": "192.0.2.13",
+      "status": {
+        "errorCode": 0
+      }
+    }
+  ]
+}

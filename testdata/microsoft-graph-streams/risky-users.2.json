@@ -1,0 +1,12 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#riskyusers",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000145",
+      "userPrincipalName": "user3@example.com",
+      "userDisplayName": "User 3",
+      "riskLevel": "low",
+      "riskState": "atRisk"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#groups",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000106",
+      "displayName": "Group C",
+      "securityEnabled": true,
+      "mailEnabled": false
+    }
+  ],
+  "@odata.deltaLink": "https://graph.example.com/v1.0/groups/delta?$deltatoken=groups-delta-round-1"
+}

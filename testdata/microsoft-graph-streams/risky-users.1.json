@@ -1,0 +1,20 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#riskyusers",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000143",
+      "userPrincipalName": "user1@example.com",
+      "userDisplayName": "User 1",
+      "riskLevel": "low",
+      "riskState": "atRisk"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000144",
+      "userPrincipalName": "user2@example.com",
+      "userDisplayName": "User 2",
+      "riskLevel": "low",
+      "riskState": "atRisk"
+    }
+  ],
+  "@odata.nextLink": "https://graph.example.com/v1.0/identityProtection/riskyUsers?$top=2&$skiptoken=risky-users-page-2"
+}
