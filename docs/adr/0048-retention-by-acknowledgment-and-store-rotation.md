@@ -73,7 +73,8 @@ version 37, `gateway retain` and `gateway store retain`). Items 3 and 4 (store r
 - **R1. ADR-0034's `session-removal` record alone, one per session, and no record for the
   call.** The record names the session and its seal, and §4 step 4 already reads it. No SPEC
   change, no verifier change and no new vector is needed for the reading. The call's summary
-  goes to its output and to the action journal, as for any operator command. The scope
+  goes to its output: until an operator-command journal exists (#543), no operator command
+  writes the action journal, so the summary is on stderr alone. The scope
   identifier is the session's own, which the record requires (SPEC.md §1.3a, `scope`).
 - **R2. A new call record, `retention-removal`, beside the session records.** It would be
   readable by people, but a verifier that loads `artifact-removals.jsonl` holds each line to a
@@ -143,9 +144,12 @@ The narrowest form, to be built in a later milestone:
 
    It never removes an open session. On the PostgreSQL kind it is `gateway store retain`, as
    the migration login acting as the owner, under the start lease, as `store remove-scope` is.
-   Its action journal entry holds the SHA-256 of the acknowledgment file it read and the
-   acknowledging key's id, so the call can be traced to the acknowledgments it acted on, though
-   no record in the store names them (R1).
+   Its last stderr line, the call's summary, holds the SHA-256 of the acknowledgment file it
+   read and the acknowledging key's id, so the call can be traced to the acknowledgments it
+   acted on, though no record in the store names them (R1). The operator keeps that line; a
+   durable operator-command journal entry is #543. Before it, the call names on stderr each
+   sealed session it keeps and why (named by no acknowledgment, or within the window), and
+   counts them, so a re-run with a cumulative acknowledgment file is the same call.
 3. **`gateway store rotate`**, the gateway stopped, as S2 sets out. On the PostgreSQL kind a
    rotation starts **a new database**, or a new schema where the migration login can own one,
    and the old one is dropped whole once past retention. It cannot be a new instance on the

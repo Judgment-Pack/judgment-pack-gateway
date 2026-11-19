@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -212,7 +213,10 @@ type retentionChoice struct {
 func chooseRetained(acks []retentionAck, walk *registryWalk, cfg *retentionConfig, now time.Time, onlyScope string,
 	removed func(session string, s seal) bool, hold func(session string) retentionHold) retentionChoice {
 	c := retentionChoice{take: map[string]string{}}
+	named := map[string]bool{}
+	window := 0
 	for _, ack := range acks {
+		named[ack.sessionID] = true
 		name := fmt.Sprintf("acknowledgment line %d names session %s", ack.line, ack.sessionID)
 		s, sealed := walk.seals[ack.sessionID]
 		h := hold(ack.sessionID)
@@ -265,9 +269,26 @@ func chooseRetained(acks []retentionAck, walk *registryWalk, cfg *retentionConfi
 		}
 		if until := later.Add(cfg.window); now.Before(until) {
 			c.notes = append(c.notes, fmt.Sprintf("session %s is within the retention window until %s; it is kept", ack.sessionID, until.UTC().Format(time.RFC3339)))
+			window++
 			continue
 		}
 		c.take[ack.sessionID] = h.scope
+	}
+	// Every sealed session no acknowledgment names is kept, and named, so a
+	// call says what it left as well as what it took; a re-run with a
+	// cumulative acknowledgment file is the same call.
+	var unnamed []string
+	for session, s := range walk.seals {
+		if !named[session] && !removed(session, s) {
+			unnamed = append(unnamed, session)
+		}
+	}
+	sort.Strings(unnamed)
+	for _, session := range unnamed {
+		c.notes = append(c.notes, fmt.Sprintf("session %s is named by no acknowledgment; it is kept", session))
+	}
+	if len(c.refused) == 0 {
+		c.notes = append(c.notes, fmt.Sprintf("kept %d sealed session(s): %d named by no acknowledgment, %d within the retention window", len(unnamed)+window, len(unnamed), window))
 	}
 	return c
 }

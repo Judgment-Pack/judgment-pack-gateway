@@ -160,10 +160,17 @@ func TestRetainRefusesByNameAndKeepsWhatIsNotPastRetention(t *testing.T) {
 		{"no scope", [][]byte{retentionAckLine(retentionAckKey, "p1", p1.signature, p1.finalCount, stampOf(sealTime(t, p1)))}, sealTime(t, p1).Add(31 * 24 * time.Hour), 1,
 			"retain: acknowledgment line 1 names session p1, which is of no scope identifier; it goes only with its whole store"},
 	}
+	keptSummary := map[string]string{
+		"not acknowledged":  "retain: kept 3 sealed session(s): 3 named by no acknowledgment, 0 within the retention window",
+		"inside the window": "retain: kept 3 sealed session(s): 2 named by no acknowledgment, 1 within the retention window",
+	}
 	for _, tc := range cases {
 		code, stdout, stderr := runRetain(config, writeAcks(t, tc.lines...), tc.now)
 		if code != tc.code || stdout != "" || !strings.Contains(stderr, tc.want+"\n") {
 			t.Errorf("%s: %d %q %q", tc.name, code, stdout, stderr)
+		}
+		if kept := keptSummary[tc.name]; kept != "" && !strings.Contains(stderr, "retain: session b1 is named by no acknowledgment; it is kept\nretain: session p1 is named by no acknowledgment; it is kept\n"+kept+"\n") {
+			t.Errorf("%s: the kept sessions are not named by reason and counted: %q", tc.name, stderr)
 		}
 		if tc.code == 1 && !strings.Contains(stderr, "retain: nothing was removed\n") {
 			t.Errorf("%s: %q", tc.name, stderr)
