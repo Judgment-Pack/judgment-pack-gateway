@@ -292,6 +292,12 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if b.live != nil && b.live.gcpAsset != nil {
 		return out, fmt.Errorf("binding %s serves live by the gcp-asset shape, whose platform names credentials.live.tokenSource, which connect has no flag for; write the platform's entry in the configuration by hand (docs/design/engine-config.md)", ref)
 	}
+	// A binding with a path template is read from engine version 31, and
+	// connect raises no file to it: raising a file's version is a change to
+	// how all of it reads, which is the operator's to make.
+	if err := httpTemplatesMatch(b, ref, cfg.version); err != nil {
+		return out, fmt.Errorf("%v; raise engineVersion to %q first", err, httpTemplatesVersion)
+	}
 	for _, op := range enabledMCPOperations(platformConfig{write: req.write}, b) {
 		if err := currentToolOwners(op); err != nil {
 			return out, err

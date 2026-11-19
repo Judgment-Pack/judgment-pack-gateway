@@ -192,9 +192,9 @@ const (
 	errTokenRefused      = "source %s: the token endpoint refused the token request, or answered with no token the gateway takes"
 	errTokenRejected     = "source %s: the source refused the access token the token step obtained; the token is dropped, and the request was not sent again"
 	errTokenAnswer       = "source %s: the token step did not answer with a sealed token"
-	// errTokenRequestNotAdmitted is a request naming a path or a method
-	// the source's operation does not allow, refused before a token is
-	// obtained for it.
+	// errTokenRequestNotAdmitted is a request naming a path, a link or a
+	// method the source's operation does not allow, refused before a token
+	// is obtained for it. It names nothing of the request.
 	errTokenRequestNotAdmitted = "source %s: the request does not name a path and a method the source's operation allows; no token was requested"
 )
 
@@ -454,11 +454,15 @@ func (g *gatewayService) runOnce(ctx context.Context, timeout time.Duration, sou
 	return g.runSourceUnder(run, cancel, timeout, source, spec, stdin)
 }
 
-// tokenStepAdmits holds a token step's request to its operation's paths and
-// methods, as adapter-http holds it: an object whose path, a string, is one
-// of the paths, and whose method, POST when it names none, is one of the
-// methods. Anything else is refused by one fixed sentence, before a token
-// is obtained for it.
+// tokenStepAdmits holds a token step's request to its operation's
+// endpoint, paths and methods, as adapter-http holds it
+// (http_request_target.go): an object naming exactly one of a path, a
+// string the paths admit -- one of them, or a template's with a GUID for
+// its {id} -- with a query, when it gives one, of strings, and a link, a
+// string under the endpoint whose path the paths admit, with no query
+// beside it; and a method, POST when it names none, among the methods.
+// Anything else is refused by one fixed sentence, before a token is
+// obtained for it.
 func tokenStepAdmits(source string, spec sourceSpec, stdin []byte) error {
 	refused := fmt.Errorf(errTokenRequestNotAdmitted, source)
 	args, err := parseJSON(stdin)
@@ -469,9 +473,22 @@ func tokenStepAdmits(source string, spec sourceSpec, stdin []byte) error {
 	if !ok {
 		return refused
 	}
-	path, ok := memberString(request, "path")
-	if !ok || !contains(spec.requestPaths, path) {
+	_, hasPath := request.get("path")
+	_, hasLink := request.get("link")
+	switch {
+	case hasPath == hasLink:
 		return refused
+	case hasLink:
+		link, ok := memberString(request, "link")
+		_, hasQuery := request.get("query")
+		if !ok || hasQuery || !httpLinkAdmitted(spec.requestEndpoint, spec.requestPaths, link) {
+			return refused
+		}
+	default:
+		path, ok := memberString(request, "path")
+		if !ok || !httpPathAdmitted(spec.requestPaths, path) || !httpQueryObject(request) {
+			return refused
+		}
 	}
 	method := "POST"
 	if _, present := request.get("method"); present {

@@ -141,9 +141,11 @@ type sourceSpec struct {
 	// written under artifacts/, and its version 3 receipt carries artifact
 	// "not-retained". false for a source that keeps every payload.
 	notRetained bool
-	// requestPaths and requestMethods are, for a source with a token step,
-	// its operation's paths and methods: a request naming another is
-	// refused before a token is obtained for it (token_step.go).
+	// requestEndpoint, requestPaths and requestMethods are, for a source
+	// with a token step, its operation's endpoint, paths and methods: a
+	// request naming another is refused before a token is obtained for it
+	// (token_step.go, http_request_target.go).
+	requestEndpoint              string
 	requestPaths, requestMethods []string
 	// gcpAsset is, for a source of a gcp-asset binding (engineVersion 29,
 	// gcp_asset_binding.go), what the signer holds of it: the configured
