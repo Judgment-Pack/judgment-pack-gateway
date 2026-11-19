@@ -59,6 +59,10 @@ argument naming the scope would let the client choose it, which is the thing ADR
    or with `"unchecked"`, every caller reaches every source, and the configuration is refused.
    It is served over `--http` alone: over `--stdio` one token is given at start for the life of
    the process, and the start is refused.
+
+   *Narrowed by ADR-0044 (#520), for decisions 2 and 3:* a front of either form serves only live
+   tools declared effect `read-external`. A platform it serves with any other live tool refuses
+   both starts, and `connect` refuses to write it.
 4. **What a caller is served.** In both forms, `tools/list` lists, and `tools/call` admits, the
    platform tools whose platform's identifier the caller's token reaches (`reachOf`,
    `go/caller_scopes.go`). Any other tool is answered `unknown tool`, byte for byte as a name

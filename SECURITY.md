@@ -807,7 +807,11 @@ identifier included, since `/registry` shows that seal to anyone.
 decisions 6 to 9) attribute a session to a scope identifier only by what the gateway signed: a
 receipt carrying the identifier, a seal of version 2 naming it, or a seal of version 3 matched
 through the salt its receipts carry. A session they cannot attribute is named, and the verdict
-is not `ok`. The export refuses it. Neither leaves it out. An export by scope carries nothing of
+is not `ok`. The export refuses it. Neither leaves it out. An open session of no scope carries
+no salt, so until it is sealed it is unattributed for every scope identifier: one caller's
+abandoned session blocks another scope's export, and that scope's verdict is not `ok`, until the
+session is sealed by `/seal`, or by `gateway seal-open` or `sealOpenAtStart` for a session this
+process does not hold. An export by scope carries nothing of
 another scope beyond the key's rotations. It does not establish that the store held no other
 session of the scope: that is the exporter's attribution over the whole store. A reader of the
 export alone cannot repeat it, since a seal of version 3 that is left out names its scope only
