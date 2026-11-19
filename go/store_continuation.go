@@ -1,13 +1,14 @@
 package main
 
 // The store continuation (SPEC.md §3d; ADR-0048, S2): the first line of a
-// registry that a store rotation started, naming the tail of the registry
-// before it -- its line count and the SHA-256 of its last line -- signed by
-// the key in force. A verifier given the new store alone observes
-// continues-from, which is no finding; given the registry before it
-// (--previous), it holds the statement to that registry's tail.
+// registry that a store rotation started, naming the registry before it --
+// its line count and the SHA-256 of its bytes, whole -- signed by the key in
+// force. A verifier given the new store alone observes continues-from, which
+// is no finding; given the registry before it (--previous), it holds the
+// statement to that registry's bytes and to the key its rotations end at.
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -28,11 +29,12 @@ const (
 // The findings a store continuation can give (SPEC.md §3d): of the registry
 // read alone, and of the link to the registry before it under --previous.
 const (
-	statusContinuationMisplaced     = "continuation-misplaced"
-	statusContinuationForged        = "continuation-forged"
-	statusContinuationMissing       = "continuation-missing"
-	statusContinuationCountMismatch = "continuation-count-mismatch"
-	statusContinuationTailMismatch  = "continuation-tail-mismatch"
+	statusContinuationMisplaced      = "continuation-misplaced"
+	statusContinuationForged         = "continuation-forged"
+	statusContinuationMissing        = "continuation-missing"
+	statusContinuationCountMismatch  = "continuation-count-mismatch"
+	statusContinuationDigestMismatch = "continuation-digest-mismatch"
+	statusContinuationKeyMismatch    = "continuation-key-mismatch"
 )
 
 // observationContinuesFrom is what a verifier says of a registry whose first
@@ -41,13 +43,14 @@ const observationContinuesFrom = "continues-from"
 
 var continuationMembers = map[string]bool{
 	"kind": true, "continuationVersion": true, "continuedAt": true, "keyId": true,
-	"previousLines": true, "previousLastLine": true, "signature": true,
+	"previousLines": true, "previousDigest": true, "signature": true,
 }
 
 // storeContinuation is a store-continuation statement that loaded.
 type storeContinuation struct {
-	previousLines    int64
-	previousLastLine string
+	keyID          string
+	previousLines  int64
+	previousDigest string
 }
 
 // continuationLine is the object of a registry line that is a store
@@ -82,7 +85,7 @@ func continuationOf(obj *vObject, key reachedKey) (*storeContinuation, bool) {
 	version, _ := memberString(obj, "continuationVersion")
 	at, okAt := memberString(obj, "continuedAt")
 	keyID, okID := memberString(obj, "keyId")
-	last, okLast := memberString(obj, "previousLastLine")
+	last, okLast := memberString(obj, "previousDigest")
 	sigHex, okSig := memberString(obj, "signature")
 	linesV, _ := obj.get("previousLines")
 	lines, okLines := linesV.(vInt)
@@ -95,7 +98,7 @@ func continuationOf(obj *vObject, key reachedKey) (*storeContinuation, bool) {
 	if keyID != key.keyID || len(key.key) != ed25519.PublicKeySize || !ed25519.Verify(key.key, continuationSigningInput(obj), signature) {
 		return nil, false
 	}
-	return &storeContinuation{previousLines: int64(lines), previousLastLine: last}, true
+	return &storeContinuation{keyID: keyID, previousLines: int64(lines), previousDigest: last}, true
 }
 
 // continuationSigningInput is what a store continuation's signature covers:
@@ -121,33 +124,46 @@ func (w *registryWalk) readContinuation(obj *vObject, at int) {
 	w.continuation = c
 }
 
-// registryTail is what a store continuation names of a registry: its line
+// registryLink is what a store continuation names of a registry: its line
 // count -- its bytes split at each 0x0A, an empty piece after the last one
-// not a line -- and the lowercase hexadecimal SHA-256 of its last line's
-// bytes, of no bytes where it has none.
-func registryTail(data []byte) (int64, string) {
-	text := string(data)
-	text = strings.TrimSuffix(text, "\n")
+// not a line -- and the lowercase hexadecimal SHA-256 of its bytes, whole.
+func registryLink(data []byte) (int64, string) {
+	sum := sha256.Sum256(data)
 	if len(data) == 0 {
-		sum := sha256.Sum256(nil)
 		return 0, hex.EncodeToString(sum[:])
 	}
-	lines := strings.Split(text, "\n")
-	sum := sha256.Sum256([]byte(lines[len(lines)-1]))
-	return int64(len(lines)), hex.EncodeToString(sum[:])
+	return int64(len(strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"))), hex.EncodeToString(sum[:])
+}
+
+// rotatedMarkPrefix begins what marks a store rotated away from (SPEC.md
+// §3d): "store-rotated:" and the SHA-256 of the continuation line the
+// rotation wrote, without its 0x0A -- on the filesystem kind a file beside
+// the registry, on the PostgreSQL kind a start-lease holder.
+const rotatedMarkPrefix = "store-rotated:"
+
+// rotatedMark is the mark of a rotation whose new registry's first line is
+// line.
+func rotatedMark(line []byte) string {
+	sum := sha256.Sum256(bytes.TrimSuffix(line, []byte("\n")))
+	return rotatedMarkPrefix + hex.EncodeToString(sum[:])
+}
+
+// errStoreRotated is the refusal of a store marked rotated away from.
+func errStoreRotated(mark string) error {
+	return fmt.Errorf("the store was rotated away from (%s): nothing starts on it or appends to it again; start the gateway on the store it was rotated to", mark)
 }
 
 // newContinuationLine is the store continuation a rotation writes as the new
 // registry's first line, signed by priv, naming the tail of previous.
 func newContinuationLine(priv ed25519.PrivateKey, previous []byte, at string) []byte {
-	lines, last := registryTail(previous)
+	lines, last := registryLink(previous)
 	pub := priv.Public().(ed25519.PublicKey)
 	obj := newObject()
 	obj.set("continuationVersion", vString(continuationVersion))
 	obj.set("continuedAt", vString(at))
 	obj.set("keyId", vString(keyIDFor(pub)))
 	obj.set("kind", vString(continuationKind))
-	obj.set("previousLastLine", vString(last))
+	obj.set("previousDigest", vString(last))
 	obj.set("previousLines", vInt(lines))
 	obj.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, continuationSigningInput(obj)))))
 	return append(canon(obj), '\n')
@@ -156,8 +172,11 @@ func newContinuationLine(priv ed25519.PrivateKey, previous []byte, at string) []
 // linkPrevious holds a verdict's store continuation to the registry before
 // it (--previous; SPEC.md §3d): the registry's bytes read as the registry is
 // read, absent or unreadable no verdict, and a link that does not hold a
-// finding.
-func linkPrevious(rep *report, previous string) error {
+// finding. That registry is walked as a gateway walks its own (§3b), from
+// its first key-continuation's previous key where it has one and from the
+// key pinned otherwise, and the continuation's key must be the key its walk
+// ends at.
+func linkPrevious(rep *report, previous string, pinned ed25519.PublicKey) error {
 	if previous == "" {
 		return nil
 	}
@@ -175,11 +194,14 @@ func linkPrevious(rep *report, previous string) error {
 	case c == nil:
 		status = statusContinuationMissing
 	default:
-		lines, last := registryTail(data)
+		lines, digest := registryLink(data)
+		before := walkRegistry(data, registryFirstKey(data, pinned))
 		if c.previousLines != lines {
 			status = statusContinuationCountMismatch
-		} else if c.previousLastLine != last {
-			status = statusContinuationTailMismatch
+		} else if c.previousDigest != digest {
+			status = statusContinuationDigestMismatch
+		} else if before.finding != nil || before.current().keyID != c.keyID {
+			status = statusContinuationKeyMismatch
 		}
 	}
 	if status != "" {

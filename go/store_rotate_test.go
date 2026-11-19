@@ -23,9 +23,10 @@ func rotateOn(t *testing.T, g *gatewayService, seedPath, newStore, newRegistry, 
 // against the one at previous.
 func linkOf(t *testing.T, registry, previous string) []finding {
 	t.Helper()
-	walk := walkRegistry([]byte(readFile(t, registry)), ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey))
+	pub := ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey)
+	walk := walkRegistry([]byte(readFile(t, registry)), pub)
 	rep := &report{OK: true, continuation: walk.continuation, continuationRefused: walk.continuationFinding != nil}
-	if err := linkPrevious(rep, previous); err != nil {
+	if err := linkPrevious(rep, previous, pub); err != nil {
 		t.Fatal(err)
 	}
 	return rep.Findings
@@ -33,10 +34,10 @@ func linkOf(t *testing.T, registry, previous string) []finding {
 
 // A rotation seals what was left open, as seal-open --all does, then makes a
 // new store and a registry whose one line is a store continuation naming the
-// old registry's tail as it stands after those seals; the old store keeps
-// its receipts. The new registry links to the old one, and to no other: a
-// registry of another count, or of the same count and another last line, is
-// refused by name.
+// old registry's bytes as they stand after those seals; the old store keeps
+// its receipts and is marked rotated away from. The new registry links to
+// the old one, and to no other: a registry of another count, or of the same
+// count and other bytes anywhere in it, is refused by name.
 func TestStoreRotateSealsWhatIsOpenAndLinksTheNewRegistry(t *testing.T) {
 	g := leftOpenStore(t)
 	seedPath := writeSeedFile(t, t.TempDir(), testSeed)
@@ -64,9 +65,9 @@ func TestStoreRotateSealsWhatIsOpenAndLinksTheNewRegistry(t *testing.T) {
 	if after := storeTree(t, g.storeRoot); len(after) != len(receipts) {
 		t.Fatalf("the old store changed: %d files, was %d", len(after), len(receipts))
 	}
-	lines, last := registryTail([]byte(old))
+	lines, last := registryLink([]byte(old))
 	walk, err := engineWalk([]byte(readFile(t, newRegistry)), ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey))
-	if err != nil || walk.continuation == nil || walk.continuation.previousLines != lines || walk.continuation.previousLastLine != last {
+	if err != nil || walk.continuation == nil || walk.continuation.previousLines != lines || walk.continuation.previousDigest != last {
 		t.Fatalf("the new registry's own reading: %v %+v, want %d %s", err, walk, lines, last)
 	}
 	if f := linkOf(t, newRegistry, g.regPath); len(f) != 0 {
@@ -78,7 +79,10 @@ func TestStoreRotateSealsWhatIsOpenAndLinksTheNewRegistry(t *testing.T) {
 	}{
 		{"one line more", old + out[1] + "\n", statusContinuationCountMismatch},
 		{"one line fewer", strings.Join(strings.SplitAfter(old, "\n")[1:], ""), statusContinuationCountMismatch},
-		{"the last line changed", strings.TrimSuffix(old, out[0]+"\n") + strings.Replace(out[0], `"left"`, `"lefT"`, 1) + "\n", statusContinuationTailMismatch},
+		{"the last line changed", strings.TrimSuffix(old, out[0]+"\n") + strings.Replace(out[0], `"left"`, `"lefT"`, 1) + "\n", statusContinuationDigestMismatch},
+		// a line blanked keeps the count and the last line, and is not the
+		// registry the continuation names
+		{"an earlier line blanked", "\n" + strings.Join(strings.SplitAfter(old, "\n")[1:], ""), statusContinuationDigestMismatch},
 	} {
 		path := filepath.Join(t.TempDir(), "previous.jsonl")
 		if err := os.WriteFile(path, []byte(tc.previous), 0o600); err != nil {
@@ -93,10 +97,16 @@ func TestStoreRotateSealsWhatIsOpenAndLinksTheNewRegistry(t *testing.T) {
 		t.Fatalf("a registry with no continuation: %v", f)
 	}
 
-	// a second rotation into paths that are there is refused, nothing made
+	// the old store is marked rotated away from, outside its registry's
+	// bytes, and a second rotation of it is refused by the mark's name,
+	// nothing made
+	mark := rotatedMark([]byte(out[1] + "\n"))
+	if got := readFile(t, rotatedMarkPath(g.regPath)); got != mark+"\n" || readFile(t, g.regPath) != old {
+		t.Fatalf("the mark is %q, want %q", got, mark)
+	}
 	code, _, stderr = rotateOn(t, g, seedPath, newStore, filepath.Join(dir, "other.jsonl"), "2026-11-19T00:00:02Z")
-	if code != 1 || !strings.Contains(stderr, "is there already") || readFile(t, g.regPath) != old {
-		t.Fatalf("into a store that is there: exit %d: %s", code, stderr)
+	if code != 1 || !strings.Contains(stderr, "the store was rotated away from ("+mark+")") || readFile(t, g.regPath) != old {
+		t.Fatalf("a store rotated away from: exit %d: %s", code, stderr)
 	}
 	if _, err := os.Lstat(filepath.Join(dir, "other.jsonl")); err == nil {
 		t.Fatal("a refused rotation made a registry")
@@ -155,5 +165,110 @@ func TestStoreRotateIsRefusedWhileAGatewayHoldsTheRegistry(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Fatalf("a refused rotation made %v", entries)
+	}
+}
+
+// Every later hold of a store rotated away from is refused by the mark's
+// name: the gateway's start, seal-open and rotate-key take the same hold.
+// A rerun after a crash finishes the rotation: one stopped before the new
+// registry was renamed into place leaves an empty store directory and the
+// file written beside it, which do not refuse it; one stopped before the
+// mark leaves the new registry whole, and the rerun writes only the mark.
+func TestStoreRotateMarksTheOldStoreAndARerunFinishesIt(t *testing.T) {
+	g := leftOpenStore(t)
+	seedPath := writeSeedFile(t, t.TempDir(), testSeed)
+	dir := t.TempDir()
+	newStore := filepath.Join(dir, "store")
+	newRegistry := filepath.Join(newStore, "registry.jsonl")
+	if err := os.Mkdir(newStore, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newRegistryTemp(newRegistry), []byte(`{"kind":"store-cont`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := rotateOn(t, g, seedPath, newStore, newRegistry, "2026-11-19T00:00:01Z")
+	if code != 0 {
+		t.Fatalf("over what a crash left: exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+	}
+	out := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	line := out[len(out)-1] + "\n"
+	if readFile(t, newRegistry) != line {
+		t.Fatalf("the new registry: %q", readFile(t, newRegistry))
+	}
+	if _, err := os.Lstat(newRegistryTemp(newRegistry)); err == nil {
+		t.Fatal("the file the registry was written to is still there")
+	}
+	mark := rotatedMark([]byte(line))
+	if _, err := holdEngineRegistry([]string{seedPath}, g.regPath, testSeed); err == nil || !strings.Contains(err.Error(), "("+mark+")") {
+		t.Fatalf("a hold of the old registry: %v", err)
+	}
+
+	// stopped before the mark: the rerun writes it, and nothing else
+	if err := os.Remove(rotatedMarkPath(g.regPath)); err != nil {
+		t.Fatal(err)
+	}
+	old := readFile(t, g.regPath)
+	code, stdout, stderr = rotateOn(t, g, seedPath, newStore, newRegistry, "2026-11-19T00:00:09Z")
+	if code != 0 || stdout != line || readFile(t, newRegistry) != line || readFile(t, g.regPath) != old {
+		t.Fatalf("the rerun: exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+	}
+	if readFile(t, rotatedMarkPath(g.regPath)) != mark+"\n" {
+		t.Fatal("the rerun did not mark the old store")
+	}
+
+	// a new registry that is not this registry's continuation alone is
+	// refused, the mark not written
+	if err := os.Remove(rotatedMarkPath(g.regPath)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newRegistry, []byte(line+line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr = rotateOn(t, g, seedPath, newStore, newRegistry, "2026-11-19T00:00:09Z")
+	if code != 1 || !strings.Contains(stderr, "is there already") {
+		t.Fatalf("a new registry of two lines: exit %d: %s", code, stderr)
+	}
+	if _, err := os.Lstat(rotatedMarkPath(g.regPath)); err == nil {
+		t.Fatal("a refused rerun marked the old store")
+	}
+	// a store directory holding anything else is refused before the hold
+	if err := os.WriteFile(filepath.Join(newStore, "other"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr = rotateOn(t, g, seedPath, newStore, filepath.Join(dir, "r.jsonl"), "2026-11-19T00:00:09Z"); code != 1 || !strings.Contains(stderr, newStore+" is there already") {
+		t.Fatalf("a store directory holding a file: exit %d: %s", code, stderr)
+	}
+}
+
+// Under --previous the continuation's key is the key the registry before it
+// ends at, walked from its first key-continuation's previous key: a new
+// store whose key is not where the old registry's rotations end does not
+// link, though it names that registry's count and digest.
+func TestALinkHoldsTheContinuationToTheOldRegistrysLastKey(t *testing.T) {
+	priv := ed25519.NewKeyFromSeed(testSeed)
+	first := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{3}, 32))
+	other := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{5}, 32))
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name   string
+		old    []byte
+		status string
+	}{
+		{"rotated to the new store's key", rotationRecord(nil, 1, "2026-11-18T00:00:00Z", first, priv), ""},
+		{"rotated to another key", rotationRecord(nil, 1, "2026-11-18T00:00:00Z", first, other), statusContinuationKeyMismatch},
+		{"rotated to it, then on to another", append(rotationRecord(nil, 1, "2026-11-18T00:00:00Z", first, priv),
+			rotationRecord(nil, 2, "2026-11-18T00:00:01Z", priv, other)...), statusContinuationKeyMismatch},
+	} {
+		previous, registry := filepath.Join(dir, "previous.jsonl"), filepath.Join(dir, "registry.jsonl")
+		if err := os.WriteFile(previous, tc.old, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(registry, newContinuationLine(priv, tc.old, "2026-11-19T00:00:00Z"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f := linkOf(t, registry, previous)
+		if (tc.status == "" && len(f) != 0) || (tc.status != "" && (len(f) != 1 || f[0]["status"] != tc.status)) {
+			t.Fatalf("%s: %v, want %q", tc.name, f, tc.status)
+		}
 	}
 }
