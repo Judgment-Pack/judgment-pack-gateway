@@ -227,7 +227,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 202 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 203 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -450,7 +450,7 @@ seal of version 3 and removed is observed `session-removed` where its session-re
 carries the salt (ten members), and is `sealed-session-missing` where the record carries none or
 another. By §3, a verifier that knows no version 3 loads none of these seals.
 
-Fourteen are of a verdict by scope (§4, "A verdict by scope";
+Fifteen are of a verdict by scope (§4, "A verdict by scope";
 `docs/adr/0042-a-seal-names-its-scope-over-a-salt-the-registry-does-not-hold.md`, decisions 6
 to 9), named `v3-cut-*` and signed by a second signer written for them as the first was and not
 kept here. Each gives `"scope"` beside `registry`, which the runner passes as `--scope <identifier>`
@@ -469,7 +469,10 @@ not `ok` by the cut alone; one sealed by a seal of version 3 that no receipt's s
 to is named unattributed too, beside its `seal-scope-mismatch`. A removed session is cut
 by the scope its record names, observed `session-removed` in that cut alone. A session whose
 receipts carry `scope-a` is of `scope-a` whatever its seal names (`seal-scope-mismatch`) and
-whatever the artifact step finds of them (`artifact-mismatch`). A verifier written before the
+whatever the artifact step finds of them (`artifact-mismatch`). A receipt changed after signing
+to carry `scope-a`, in a session sealed by a seal of version 3 for `scope-b`, is
+`signature-mismatch` and carries no scope the cut counts: the session is of another by the receipt
+that passes the signed orders. A verifier written before the
 option refuses it, which disagrees with each of these vectors.
 
 **`witnesses`.** A vector whose report names witnesses gives them in `expected`
