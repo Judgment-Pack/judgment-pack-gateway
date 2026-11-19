@@ -211,6 +211,12 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 	if err != nil {
 		return nil, err
 	}
+	// A server of either form serves live tools declared read-external
+	// alone (ADR-0044); before the owners' general check, so that a tool
+	// with no declaration is named.
+	if err := scopedFrontReads(cfg, bindings); err != nil {
+		return nil, err
+	}
 	// The listing is counted as the table is made, and refused the moment
 	// it passes its bound: the table holds no more than a listing can.
 	of := 1

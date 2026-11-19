@@ -575,7 +575,10 @@ grants nothing: an `act` live tool is still acquired through `/acquire`, and a w
 
 A binding's `write` operation is the executor's write-back: each of its tools declares
 `act`/`act`, and a weaker declaration refuses the binding. A live tool may be an act too: the
-shipped Postgres binding's `execute_sql` is.
+shipped Postgres binding's `execute_sql` is. A frontend that names `mcp.scope` or
+`mcp.scopeFrom` serves no such tool: a live tool there that is not declared effect
+`read-external` refuses its start
+([ADR-0044](../adr/0044-a-scoped-mcp-front-serves-only-live-tools-declared-read-external.md)).
 
 `adapter-mcp` serves no tools. Its check report lists the server's tools by name, and its
 snapshot holds each allowed tool's owner declaration and the server's hints, a contradiction

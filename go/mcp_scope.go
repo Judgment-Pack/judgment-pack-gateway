@@ -129,6 +129,41 @@ func servedPlatforms(cfg engineConfig) ([]platformConfig, error) {
 	return served, nil
 }
 
+// scopedFrontReads holds a server that names scope or scopeFrom to reads by
+// declaration (ADR-0044): each live tool of each platform it serves -- those
+// fixed to its scope identifier, or in the caller form every platform, those
+// of none included -- declares effect read-external, or the start is refused
+// naming the platform and the tool. No decision policy holds a live tool's
+// call, and a platform fixed to a scope identifier enables no write
+// operation to carry one (ADR-0026, decision 4), so a propose or an act
+// tool, and a tool with no declaration, is refused rather than served or
+// left out. A configuration with no mcp member, or one of neither form, is
+// not read here. Both starts apply it, serve's and gateway mcp's, and
+// connect holds the configuration it would write to it.
+func scopedFrontReads(cfg engineConfig, bindings map[string]binding) error {
+	if cfg.mcp == nil || !cfg.mcp.scoped() {
+		return nil
+	}
+	for _, p := range cfg.platforms {
+		// a platform of another scope identifier is served by no server of
+		// this configuration
+		if cfg.mcp.scope != "" && p.scope != cfg.mcp.scope {
+			continue
+		}
+		b, ok := bindings[p.name]
+		if !ok || b.live == nil {
+			continue
+		}
+		for _, tool := range b.live.tools {
+			owner, declared := b.live.taxonomies[tool]
+			if !declared || !owner.Valid() || owner.Effect != "read-external" {
+				return fmt.Errorf("platform %s: tool %q is not declared effect read-external, and an MCP server that names scope or scopeFrom serves no other live tool, since no decision policy holds a live tool's call (ADR-0044); declare the tool read-external if it only reads, or serve it from a platform of no scope identifier behind an mcp that names neither", p.name, requestText(tool))
+			}
+		}
+	}
+	return nil
+}
+
 // forwardScope is the scope identifier an acquisition of the tool names, and
 // whether it names one: the server's, where it is fixed to one; the tool's
 // platform's, where it takes its callers', none for a platform of none; and
