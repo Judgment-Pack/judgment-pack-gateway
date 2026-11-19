@@ -801,13 +801,15 @@ checked. What holds:
 - a caller reaches the sources of the identifiers it is granted, and no others. `/acquire` gives
   the wrong-scope refusal for any other identifier; the MCP front lists and calls only the tools
   of the sources the caller reaches; `/seal` answers another identifier's session `no such
-  session`; a delegated request reaches no identifier; `/act` is refused to a caller that does
-  not reach the sources of no identifier, and `/verify`, whose verdict is of the whole store, to
+  session`, but for one already sealed in the open registry, which it says is sealed (above); a
+  delegated request reaches no identifier; `/act` is refused to a caller that does not reach the
+  unscoped sources (those of no identifier), and `/verify`, whose verdict is of the whole store, to
   one that does not reach every source (ADR-0037 gives the one exception, where nothing is scoped);
 - `/posture` and the MCP listing answer the same whatever another identifier holds
   ([ADR-0041](docs/adr/0041-what-one-scope-learns-of-another-through-a-shared-gateway.md));
 - a seal of version 3 names its identifier over a salt the registry does not hold
   ([ADR-0042](docs/adr/0042-a-seal-names-its-scope-over-a-salt-the-registry-does-not-hold.md));
+  a seal of version 2 already in a registry stays testable against a guessed identifier;
 - an MCP front that names `mcp.scope` or `mcp.scopeFrom` serves no write tool, and serves only
   live tools declared effect `read-external`: a configuration under which it would serve another
   refuses both starts, and `connect` refuses to write it
