@@ -36,6 +36,33 @@
       ],
       "bearer": "token",
       "checkPath": "/v1.0/organization",
+      "errorCodes": {
+        "at": [
+          "error",
+          "code"
+        ],
+        "referenceExpired": [
+          {
+            "status": 400,
+            "code": "syncStateNotFound"
+          },
+          {
+            "status": 404,
+            "code": "syncStateNotFound"
+          },
+          {
+            "status": 400,
+            "code": "resyncRequired"
+          },
+          {
+            "status": 404,
+            "code": "resyncRequired"
+          }
+        ],
+        "accessRefused": [
+          "Authorization_RequestDenied"
+        ]
+      },
       "licence": "hosted service: the operator's own service terms"
     }
   }

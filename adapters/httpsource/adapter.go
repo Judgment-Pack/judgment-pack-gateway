@@ -85,6 +85,11 @@ type Config struct {
 	// (ObtainSealed), which an acquisition opens and sends instead of
 	// obtaining one; empty, it obtains one for its one request.
 	SealedToken string
+	// ErrorCodes, when given, is the binding's declaration of the
+	// endpoint's error codes (error_code.go, ADR-0047): the pairs that
+	// mean an expired reference, and the codes an access refusal passes
+	// on. nil declares none.
+	ErrorCodes *ErrorCodes
 }
 
 // Request is the canonical arguments the gateway hands the adapter on
@@ -697,6 +702,10 @@ type answer struct {
 	body         []byte
 	peerIdentity *string
 	observedAt   string
+	// oversized is a refusing answer past the output bound: body holds its
+	// first MaxOutput bytes, for the diagnostic alone, and no code is read
+	// from it.
+	oversized bool
 }
 
 // send performs the request and reads the answer within the bound; the
@@ -732,13 +741,20 @@ func (p *prepared) send(ctx context.Context, cfg Config, req *http.Request) (*an
 		return nil, fmt.Errorf("the answer could not be read whole: %v", err)
 	}
 	observedAt := time.Now().UTC().Truncate(time.Second).Format(stampLayout)
-	if int64(len(body)) > cfg.MaxOutput {
+	// A success past the bound is refused, never cut. A refusing answer past
+	// it is still said by its status (a 401, 403, 410 or 429 keeps its
+	// class), from its first bytes alone and with no code read from them.
+	oversized := int64(len(body)) > cfg.MaxOutput
+	if oversized && resp.StatusCode >= 200 && resp.StatusCode <= 299 {
 		return nil, fmt.Errorf("the answer exceeds the output bound of %d bytes", cfg.MaxOutput)
+	}
+	if oversized {
+		body = body[:cfg.MaxOutput]
 	}
 	if encoding := resp.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
 		return nil, fmt.Errorf("the endpoint answered with content-encoding %q; this adapter asks for none and carries bytes as sent", encoding)
 	}
-	a := &answer{status: resp.StatusCode, header: resp.Header, body: body, observedAt: observedAt}
+	a := &answer{status: resp.StatusCode, header: resp.Header, body: body, observedAt: observedAt, oversized: oversized}
 	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
 		sum := sha256.Sum256(resp.TLS.PeerCertificates[0].Raw)
 		a.peerIdentity = ptr("tls:sha256:" + hex.EncodeToString(sum[:]))
@@ -792,9 +808,14 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 		// it, and its first bytes say why, redacted, since an endpoint
 		// may quote the credential it refused.
 		head := a.body
-		truncated := false
+		truncated := a.oversized
 		if len(head) > diagnosticBodyBytes {
 			head, truncated = head[:diagnosticBodyBytes], true
+		}
+		// The body a code is read from: none when the answer was cut.
+		codeBody := a.body
+		if a.oversized {
+			codeBody = nil
 		}
 		// Redacted on the bytes as answered, and only then trimmed: a
 		// credential that ends in whitespace is matched whole before the
@@ -809,6 +830,16 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 			// The same diagnostic, said by its kind beside it: the class,
 			// and nothing else of the answer.
 			return nil, &ReferenceExpired{text: strings.TrimSpace(redacted)}
+		}
+		if code, ok := cfg.ErrorCodes.expiredPair(a.status, codeBody); ok {
+			// A pair the binding declares an expired reference: the
+			// class, and the pair as the binding states it.
+			return nil, &ReferenceExpired{Status: a.status, Code: code, text: strings.TrimSpace(redacted)}
+		}
+		if refusesAccess(a.status) {
+			// The same diagnostic, said by its kind beside it: the status,
+			// and the code when the binding lists it, never the body.
+			return nil, &AccessRefused{Status: a.status, Code: cfg.ErrorCodes.accessCode(codeBody), text: strings.TrimSpace(redacted)}
 		}
 		return nil, errors.New(strings.TrimSpace(redacted))
 	}

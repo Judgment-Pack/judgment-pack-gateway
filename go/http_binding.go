@@ -47,6 +47,9 @@ type httpOperation struct {
 	// paths and not a template, with GET among methods, so a check asks for
 	// nothing an acquisition could not.
 	checkPath string
+	// errorCodes is the binding's declaration of the endpoint's error
+	// codes (ADR-0047, source_access_refused.go), or nil.
+	errorCodes *httpErrorCodes
 }
 
 // The bounds of an http operation, so a binding cannot grow the command
@@ -75,6 +78,7 @@ var (
 var httpOperationMembers = map[string]bool{
 	"shape": true, "licence": true, "endpoint": true, "paths": true,
 	"methods": false, "headers": false, "bearer": false, "credentialHeader": false, "checkPath": false,
+	"errorCodes": false,
 }
 
 // parseHTTPOperation holds an http operation to its shape: exactly the
@@ -192,6 +196,11 @@ func parseHTTPOperation(op *vObject, name string, o *operation) error {
 		}
 		if !contains(h.methods, "GET") {
 			return fmt.Errorf("operation %s: checkPath is requested by GET, which methods does not name", name)
+		}
+	}
+	if raw, present := op.get("errorCodes"); present {
+		if h.errorCodes, err = parseHTTPErrorCodes(raw, name); err != nil {
+			return err
 		}
 	}
 	o.http = h
@@ -338,7 +347,7 @@ func httpSourceArgv(adapter string, op httpOperation, credentials string, token 
 	for _, h := range op.headers {
 		argv = append(argv, "--header="+h)
 	}
-	return argv
+	return append(argv, op.errorCodes.argv()...)
 }
 
 // httpPathsWord is the word of adapter-http's command line that carries

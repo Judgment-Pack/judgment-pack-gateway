@@ -171,6 +171,11 @@ type sourceSpec struct {
 	// (token_step.go, http_request_target.go).
 	requestEndpoint              string
 	requestPaths, requestMethods []string
+	// errorCodes is, for a source of an http binding that declares them
+	// (ADR-0047, source_access_refused.go), the error codes its reports
+	// are held to; nil for every other source, whose access refusals are
+	// answered "unlisted" and whose only expired reference is a 410.
+	errorCodes *httpErrorCodes
 	// gcpAsset is, for a source of a gcp-asset binding (engineVersion 29,
 	// gcp_asset_binding.go), what the signer holds of it: the configured
 	// set a request is held to and whether the source serves, shared by
@@ -1760,11 +1765,24 @@ func (g *gatewayService) runSourceUnder(ctx context.Context, cancel context.Canc
 				return nil, "", "", throttled
 			}
 		}
-		if code == sourceExitReferenceExpired && spec.shape == "http" && referenceExpiredReport(stdout.buf.Bytes()) {
+		if code == sourceExitReferenceExpired && spec.shape == "http" {
 			// An http adapter's expired reference, read from the report
 			// it wrote beside the status (source_reference_expired.go); a
-			// report out of its form is a failure as any other.
-			return nil, "", "", &sourceReferenceExpired{failed: failed}
+			// report out of its form, and a pair the source's binding does
+			// not declare, are a failure as any other.
+			if status, ok := referenceExpiredReport(stdout.buf.Bytes(), spec.errorCodes); ok {
+				return nil, "", "", &sourceReferenceExpired{status: status, failed: failed}
+			}
+		}
+		if code == sourceExitAccessRefused && spec.shape == "http" && spec.gcpAsset == nil {
+			// An http adapter's access refusal, read from the report it
+			// wrote beside the status (source_access_refused.go), its code
+			// held to the binding's list; a report out of its form is a
+			// failure as any other.
+			if refused, ok := accessRefusedReport(stdout.buf.Bytes(), spec.errorCodes, spec.tokenStep); ok {
+				refused.failed = failed
+				return nil, "", "", refused
+			}
 		}
 		if code == sourceExitRefused && spec.gcpAsset != nil {
 			// adapter-gcp-asset's read-only refusal, read from the report
@@ -2370,6 +2388,18 @@ func (g *gatewayService) handler() http.Handler {
 		var expired *sourceReferenceExpired
 		if errors.As(err, &expired) {
 			writeJSON(w, http.StatusGone, map[string]any{"error": expired.Error(), "code": sourceReferenceExpiredCode})
+			return
+		}
+		// A source whose endpoint answered 401 or 403
+		// (source_access_refused.go): 403, whatever the endpoint's status,
+		// since a 401 of the gateway's is the caller's own credential
+		// refused; the code a caller acts on, the endpoint's status, the
+		// endpoint's code from the binding's list or "unlisted", and the
+		// gateway's sentence.
+		var refused *sourceAccessRefused
+		if errors.As(err, &refused) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": refused.Error(), "code": sourceAccessRefusedCode,
+				"endpointStatus": refused.status, "endpointCode": refused.code})
 			return
 		}
 		// A session another live instance serving the database holds
