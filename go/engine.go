@@ -95,12 +95,17 @@ import (
 // an http live operation's path template, a path whose one {id} segment a
 // GUID fills (ADR-0040; http_request_target.go): a binding with one is
 // refused under an earlier version, and a binding without one derives the
-// sources it did. connect raises a file to
+// sources it did; and version 32 (metadataTokenVersion) a token step's
+// optional `federatedToken`, by which adapter-http asks the platform's
+// metadata server, at the address it has built in, for the identity token it
+// presents (docs/adr/0043-a-federated-token-from-the-platforms-metadata-server.md;
+// token_step.go): a file with the member is refused under an earlier
+// version, and the other forms are unchanged. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
-// were; it never lowers a configuration version, and it raises none to 31.
-const engineVersion = "31"
+// were; it never lowers a configuration version, and it raises none to 31 or 32.
+const engineVersion = metadataTokenVersion
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.

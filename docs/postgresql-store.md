@@ -712,8 +712,9 @@ available with this kind yet").
   identifier without the salt; one of version 2 is not a secret: one who guesses an identifier
   can digest it in a session's id and test it. When a scope's rows are removed its
   seals stay, digests of rows no longer held: the chain needs every line. `gateway verify` reads
-  the chain from an export, which holds every line; neither it nor the export selects by scope
-  (engine-config.md, "A platform's scope").
+  the chain from an export, which holds every line. `gateway export --scope` holds the rotation
+  statements and the scope's lines alone, which walk from the pinned key as the whole chain does,
+  and `gateway verify --scope` cuts a verdict by one scope (SPEC.md §4, §5a).
 - **The export** reads every scope recorded, whichever scopes the configuration names now, and
   writes the layout of SPEC.md §1.3 the filesystem kind writes: a session once, under its name; a
   payload two scopes hold alike once, its bytes read from each and compared, and refused where

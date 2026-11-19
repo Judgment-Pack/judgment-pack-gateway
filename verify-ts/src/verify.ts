@@ -70,7 +70,14 @@ export type Verdict = {
   readonly observations: Iterable<Finding>;
   readonly witnesses: Iterable<Witness>;
   readonly rotations: { readonly count: number; readonly keyId: string } | null;
+  // A verdict by scope's cut (§4, "A verdict by scope"): the scope
+  // identifier, the sessions of it, and those it could attribute to none,
+  // each sorted; absent from a verdict of the whole store.
+  readonly cut?: Cut;
 };
+
+// A cut by one scope identifier, as a verdict reports it.
+export type Cut = { readonly scope: string; readonly sessions: readonly string[]; readonly unattributed: readonly string[] };
 
 // A witness a receipt names: the trail it is named for, where it serves,
 // and its key's identifier.
@@ -91,9 +98,12 @@ type Judged = {
   // For a receipt that passed with no bytes re-digested: what the artifact
   // step says of it (§1.3a), artifact-not-retained or artifact-removed.
   readonly observation?: string;
-  // For a receipt that passed: its top-level scope, absent for none, which a
-  // seal naming a scope is held to (ADR-0036), and its scopeSalt, which one
-  // of version 3 is taken over (ADR-0042).
+  // For a receipt past the signed orders (§1.4, orders 1 to 6): its
+  // top-level scope, absent for none, which a seal naming a scope is held
+  // to where the receipt passed (ADR-0036), and its scopeSalt, which one of
+  // version 3 is taken over (ADR-0042); and signed, which a verdict by scope
+  // attributes the session by (§4, "A verdict by scope").
+  readonly signed?: true;
   readonly scope?: string;
   readonly scopeSalt?: string;
   // For a receipt that passed: what the chain walk reads of it, its key's
@@ -645,6 +655,16 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
   if (str(member(receipt, "authority")) !== authority) {
     return judged("authority-mismatch");
   }
+  // Past the signed orders, what the receipt carries is the gateway's, its
+  // scope and scope salt among them, whatever the steps after find.
+  const scope = str(member(receipt, "scope"));
+  const scopeSalt = str(member(receipt, "scopeSalt"));
+  const carried = {
+    signed: true as const,
+    ...(scope !== undefined && { scope: own(scope) }),
+    ...(scopeSalt !== undefined && { scopeSalt: own(scopeSalt) }),
+  };
+  const judgedSigned = (status: Status): Judged => ({ file, status, callIndex, ...carried });
   // 7. artifact-missing, and 8. artifact-mismatch: the artifact at the
   // result digest's hex, re-digested; where nothing at all is there, a
   // receipt that says its call kept no payload, or that a removal record
@@ -656,7 +676,7 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
   let observation: string | undefined;
   if (digest === null) {
     if (!nothingAt(at)) {
-      return judged("artifact-missing");
+      return judgedSigned("artifact-missing");
     }
     if (version === "3" && member(receipt, "artifact") !== undefined) {
       observation = "artifact-not-retained";
@@ -667,23 +687,23 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
     ) {
       observation = "artifact-removed";
     } else {
-      return judged("artifact-missing");
+      return judgedSigned("artifact-missing");
     }
     if (retention.supplied !== undefined) {
       const supplied = digestSupplied(under(retention.supplied, hex));
       if (supplied !== null) {
         if (supplied !== hex) {
-          return judged("artifact-mismatch");
+          return judgedSigned("artifact-mismatch");
         }
         observation = undefined;
       }
     }
   } else if (digest !== hex) {
-    return judged("artifact-mismatch");
+    return judgedSigned("artifact-mismatch");
   }
   if (version === "3") {
     const status = descriptorStatus(root,receipt,keys.slice(0,keyPos+1));
-    if (status !== "ok") return judged(status);
+    if (status !== "ok") return judgedSigned(status);
   }
   const prevValue = member(receipt, "prevSignature");
   const prev: Prev =
@@ -732,8 +752,7 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
     status: "ok",
     callIndex,
     ...(observation !== undefined && { observation }),
-    ...(str(member(receipt, "scope")) !== undefined && { scope: own(str(member(receipt, "scope"))!) }),
-    ...(str(member(receipt, "scopeSalt")) !== undefined && { scopeSalt: own(str(member(receipt, "scopeSalt"))!) }),
+    ...carried,
     chain: { version: own(version), signature: own(signature), prev, keyPos },
     ...(action && { action }),
     ...(delivery && {delivery}),
@@ -909,19 +928,112 @@ function interruptionSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string
   return { sessionId: own(sessionId), finalCount: finalCount.integer, head: own(head), signature: own(signature), keyPos, ...(scopeDigest !== undefined && { scopeDigest: own(scopeDigest) }), ...(version === "3" && { salted: true }) };
 }
 
+// A session's receipt files as a verdict by scope reads them (§4, "A
+// verdict by scope"): the scope and scope salt of each past the signed
+// orders, once each pair; whether one of them holds no scope; whether every
+// file is past them, at the places 0 to count-1; and the signature the file
+// at count-1 gives, undefined for none.
+type Holding = {
+  readonly scopes: ReadonlyArray<{ readonly scope: string; readonly salt: string | undefined }>;
+  readonly noScope: boolean;
+  readonly signedAll: boolean;
+  readonly count: bigint;
+  readonly last: string | undefined;
+};
+
+function holdingOf(judged: readonly Judged[], stems: ReadonlyMap<string, string | undefined> | undefined): Holding {
+  const scopes = new Map<string, { readonly scope: string; readonly salt: string | undefined }>();
+  const indexes = new Set<bigint>();
+  let noScope = false;
+  let signedAll = true;
+  for (const j of judged) {
+    if (j.signed !== true) {
+      signedAll = false;
+      continue;
+    }
+    indexes.add(j.callIndex!);
+    if (j.scope === undefined) {
+      noScope = true;
+    } else {
+      scopes.set(JSON.stringify([j.scope, j.scopeSalt ?? ""]), { scope: j.scope, salt: j.scopeSalt });
+    }
+  }
+  const count = BigInt(judged.length);
+  for (let i = 0n; i < count && signedAll; i++) {
+    signedAll = indexes.has(i);
+  }
+  return { scopes: [...scopes.values()], noScope, signedAll, count, last: count > 0n ? stems?.get(String(count - 1n)) : undefined };
+}
+
+type Attribution = "of-another" | "of-the-scope" | "unattributed";
+
+// attribute is the attribution of the session sessionId to scope (§4, "A
+// verdict by scope"): seal its first seal that loaded, undefined for none;
+// holding its receipts', undefined for a sealed session the store does not
+// hold; removal the session-removal record naming a sealed session.
+//
+// Held in the store, a session is of the scope where a receipt past the
+// signed orders carries it, whatever its seal says. Otherwise a seal of
+// version 2 attributes it by the scope its digest names; one of version 3 to
+// another where a receipt's scope and salt are its digest's, and to none
+// where none is; a seal naming no scope to another where every receipt it
+// counts is held and past the signed orders, its head the last for one after
+// an interruption, and to none otherwise; and with no seal, it is of another
+// where a receipt is past the signed orders and each that is carries another
+// scope with a scope salt, and of none otherwise.
+// A sealed session the store does not hold is of the scope a record naming
+// it states, of the scope a seal of version 2 names, and otherwise of none.
+function attribute(scope: string, sessionId: string, seal: Seal | undefined, holding: Holding | undefined, removal: SessionRemoval | undefined): Attribution {
+  if (holding === undefined) {
+    if (removal !== undefined) {
+      return removal.scope === scope ? "of-the-scope" : "of-another";
+    }
+    if (seal !== undefined && seal.scopeDigest !== undefined && seal.salted !== true) {
+      return namesScope(seal, sessionId, scope, undefined) ? "of-the-scope" : "of-another";
+    }
+    return "unattributed";
+  }
+  if (holding.scopes.some((h) => h.scope === scope)) {
+    return "of-the-scope";
+  }
+  if (seal !== undefined && seal.scopeDigest !== undefined && seal.salted !== true) {
+    return namesScope(seal, sessionId, scope, undefined) ? "of-the-scope" : "of-another";
+  }
+  if (seal !== undefined && seal.scopeDigest !== undefined) {
+    return holding.scopes.some((h) => namesScope(seal, sessionId, h.scope, h.salt)) ? "of-another" : "unattributed";
+  }
+  if (seal !== undefined) {
+    return holding.signedAll && holding.count === seal.finalCount && (seal.head === undefined || holding.last === seal.head) ? "of-another" : "unattributed";
+  }
+  if (holding.scopes.length === 0 || holding.noScope || holding.scopes.some((h) => h.salt === undefined)) {
+    return "unattributed";
+  }
+  return "of-another";
+}
+
 // verifyStore is the verdict of §4 over the store at root, against the
 // registry at registryPath, under the public key. With ordinarySealsOnly,
 // a session a seal made after an interruption anchors is a finding, not an
-// observation (§4 step 3).
+// observation (§4 step 3). With scope, it is a verdict by scope (§4, "A
+// verdict by scope"), which reads no decision records.
 export function verifyStore(
   root: string,
   registryPath: string,
   authority: string,
   decisionRecordsPath: string | undefined,
   publicKey: Uint8Array,
-  options: { readonly ordinarySealsOnly?: boolean; readonly artifacts?: string } = {},
+  options: { readonly ordinarySealsOnly?: boolean; readonly artifacts?: string; readonly scope?: string } = {},
 ): Verdict {
   const ordinarySealsOnly = options.ordinarySealsOnly === true;
+  // A verdict by scope names a scope identifier of its form, and reads no
+  // decision record: an action receipt carries no scope, and a session of a
+  // scope identifier is refused one.
+  if (options.scope !== undefined && !isScopeIdentifier(options.scope)) {
+    throw new NoVerdict("the scope is not a scope identifier");
+  }
+  if (options.scope !== undefined && decisionRecordsPath !== undefined) {
+    throw new NoVerdict("a verdict by scope reads no decision records");
+  }
   refuseUnsupportedPlatform();
   if (publicKey.length !== 32) {
     throw new NoVerdict(`the public key is ${publicKey.length} bytes, not 32`);
@@ -1004,9 +1116,9 @@ export function verifyStore(
   // reached after it, and, for a seal of version 2 or 3, by the scope it
   // names: the record's scope digested in the session -- over the record's
   // scope salt, for version 3 -- is the seal's scopeDigest.
-  const removedSession = (sessionId: string): boolean => {
+  const removalOf = (sessionId: string): SessionRemoval | undefined => {
     const seal = seals.get(sessionId)!;
-    return (loaded.sessions.get(sessionId) ?? []).some(
+    return (loaded.sessions.get(sessionId) ?? []).find(
       (r) =>
         r.sealSignature === seal.signature &&
         r.finalCount === seal.finalCount &&
@@ -1014,6 +1126,7 @@ export function verifyStore(
         (seal.scopeDigest === undefined || namesScope(seal, sessionId, r.scope, r.scopeSalt)),
     );
   };
+  const removedSession = (sessionId: string): boolean => removalOf(sessionId) !== undefined;
 
   for (const [session, files] of store) {
     const judged: Judged[] = [];
@@ -1037,6 +1150,44 @@ export function verifyStore(
     sessions.set(session, judged);
     signatures.set(session, stems);
   }
+  // A verdict by scope attributes every session the store holds, and every
+  // sealed one it does not, before anything is reported: it reports those of
+  // the scope and those it could attribute to none (kept), and is ok only
+  // where it attributed every one.
+  let cut: Cut | undefined;
+  const kept = new Set<string>();
+  if (options.scope !== undefined) {
+    const scope = options.scope;
+    const of: string[] = [];
+    const none: string[] = [];
+    const take = (sessionId: string, a: Attribution): void => {
+      if (a === "of-another") {
+        return;
+      }
+      (a === "of-the-scope" ? of : none).push(sessionId);
+      kept.add(sessionId);
+    };
+    for (const [session, judged] of sessions) {
+      take(session, attribute(scope, session, seals.get(session), holdingOf(judged, signatures.get(session)), undefined));
+    }
+    for (const [sessionId, seal] of seals) {
+      if (!sessions.has(sessionId)) {
+        take(sessionId, attribute(scope, sessionId, seal, undefined, removalOf(sessionId)));
+      }
+    }
+    const order = (a: string, b: string): number => Buffer.compare(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+    cut = { scope, sessions: of.sort(order), unattributed: none.sort(order) };
+  }
+  // keeps is whether a verdict reports a finding or an observation: every
+  // one of a verdict of the whole store; of a verdict by scope, one naming a
+  // session it keeps, and one naming none.
+  const keeps = (f: Finding): boolean => {
+    if (cut === undefined) {
+      return true;
+    }
+    const named = f.find(([name]) => name === "sessionId");
+    return named === undefined || kept.has(named[1] as string);
+  };
   const reconciliationTargets = new Map<string,Judged>();
   for (const [session,judged] of sessions) for (const j of judged) if (j.delivery) reconciliationTargets.set(session+"\0"+j.file,j);
   const reconciliationUnresolved = new Set<Judged>();
@@ -1160,7 +1311,7 @@ export function verifyStore(
   testHooks.sample?.("decision records");
 
   // The findings, made from what was kept, each time they are read.
-  function* findings(): Generator<Finding> {
+  function* everyFinding(): Generator<Finding> {
     for (const [session, judged] of sessions) {
       for (const j of judged) {
         if (j.status === "malformed") {
@@ -1312,7 +1463,7 @@ export function verifyStore(
   // each uncertain action; §4 step 3's of each open session; and §4 step
   // 8's of each action whose record was found and is not a runtime
   // evaluation record, which is not compared.
-  function* observations(): Generator<Finding> {
+  function* everyObservation(): Generator<Finding> {
     // §1.3a's, of each receipt that passed with no bytes re-digested.
     for (const [session, judged] of sessions) {
       for (const j of judged) {
@@ -1374,10 +1525,28 @@ export function verifyStore(
       }
     }
   }
-  // The witnesses the receipts that passed name, each once (ADR-0014).
+  function* findings(): Generator<Finding> {
+    for (const f of everyFinding()) {
+      if (keeps(f)) {
+        yield f;
+      }
+    }
+  }
+  function* observations(): Generator<Finding> {
+    for (const o of everyObservation()) {
+      if (keeps(o)) {
+        yield o;
+      }
+    }
+  }
+  // The witnesses the receipts that passed name, each once (ADR-0014); of
+  // a verdict by scope, those of the sessions it keeps.
   function* witnesses(): Generator<Witness> {
     const seen = new Set<string>();
-    for (const judged of sessions.values()) {
+    for (const [session, judged] of sessions) {
+      if (cut !== undefined && !kept.has(session)) {
+        continue;
+      }
       for (const j of judged) {
         if (j.witness === undefined) {
           continue;
@@ -1392,12 +1561,13 @@ export function verifyStore(
   }
   // The verdict is ok when every finding's status is; an observation is no
   // part of it, and neither is a witness named.
-  let ok = true;
+  let ok = cut === undefined || cut.unattributed.length === 0;
   for (const f of findings()) {
     ok &&= f.some(([name, value]) => name === "status" && value === "ok");
   }
   return {
     ok,
+    ...(cut !== undefined && { cut }),
     findings: { [Symbol.iterator]: findings },
     observations: { [Symbol.iterator]: observations },
     witnesses: { [Symbol.iterator]: witnesses },
@@ -1562,5 +1732,6 @@ export function writeVerdict(v: Verdict, write: (text: string) => void): void {
   }
   // The rotations followed close the verdict, with the last array.
   const rotations = v.rotations === null ? "" : `,"rotations":${JSON.stringify({ count: v.rotations.count, keyId: v.rotations.keyId })}`;
-  write(`]${rotations}}\n`);
+  const cut = v.cut === undefined ? "" : `,"cut":${JSON.stringify({ scope: v.cut.scope, sessions: v.cut.sessions, unattributed: v.cut.unattributed })}`;
+  write(`]${rotations}${cut}}\n`);
 }

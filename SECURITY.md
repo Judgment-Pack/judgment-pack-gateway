@@ -335,7 +335,13 @@ token request included, so a token endpoint that hangs holds an acquisition no l
 source that hangs. A request naming a path or a method the operation does not allow is refused
 before a token is requested for it. The token step does not establish which identity the token was issued to, or
 that the token endpoint is the one the source trusts; it changes how the credential is obtained,
-not what the receipt says.
+not what the receipt says. A token step whose federated token is asked of the platform's metadata
+server (`federatedToken`, engine configuration version 32, the version after the path-template change; gateway
+#502; [ADR-0043](docs/adr/0043-a-federated-token-from-the-platforms-metadata-server.md)) presents
+the compute's own identity, not a file the platform's user holds, so every process on that compute
+can ask for an identity token and the separation by the platform's user above does not hold for
+that credential; its access token is sealed under the credentials file's `sealKey` instead,
+which the adapter checks at the source's first acquisition, not the engine at load.
 
 **A read-only asset inventory source is one more program that holds a credential, with the
 platform's user; the signer holds its list token sealed** (engine configuration version 29;
@@ -795,6 +801,19 @@ bits of randomness. One `/seal` answer is shared by every scope: a session anoth
 sealed in the registry is said to be sealed to any caller, a front fixed to another scope
 identifier included, since `/registry` shows that seal to anyone.
 
+**A verdict or an export by scope holds what the signatures show of the scope.** `gateway verify
+--scope` and `gateway export --scope` ([`SPEC.md`](SPEC.md) §4, "A verdict by scope", and §5a;
+[ADR-0042](docs/adr/0042-a-seal-names-its-scope-over-a-salt-the-registry-does-not-hold.md),
+decisions 6 to 9) attribute a session to a scope identifier only by what the gateway signed: a
+receipt carrying the identifier, a seal of version 2 naming it, or a seal of version 3 matched
+through the salt its receipts carry. A session they cannot attribute is named, and the verdict
+is not `ok`. The export refuses it. Neither leaves it out. An export by scope carries nothing of
+another scope beyond the key's rotations. It does not establish that the store held no other
+session of the scope: that is the exporter's attribution over the whole store. A reader of the
+export alone cannot repeat it, since a seal of version 3 that is left out names its scope only
+over a salt carried in receipts the export does not hold. A reader holding the gateway's
+registry bounds it, but cannot close it.
+
 **What holds between scope identifiers on one gateway, and what does not.** This summarizes the
 paragraphs above for a gateway that several scope identifiers share, with `identity.callerScopes`
 checked. What holds:
@@ -810,6 +829,9 @@ checked. What holds:
 - a seal of version 3 names its identifier over a salt the registry does not hold
   ([ADR-0042](docs/adr/0042-a-seal-names-its-scope-over-a-salt-the-registry-does-not-hold.md));
   a seal of version 2 already in a registry stays testable against a guessed identifier;
+- a verdict or an export by scope attributes a session only by what the gateway signed, names
+  the sessions it cannot attribute, and an export carries nothing of another scope beyond the
+  key's rotations (above);
 - an MCP front that names `mcp.scope` or `mcp.scopeFrom` serves no write tool, and serves only
   live tools declared effect `read-external`: a configuration under which it would serve another
   refuses both starts, and `connect` refuses to write it
