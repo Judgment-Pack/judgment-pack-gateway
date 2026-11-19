@@ -3104,7 +3104,8 @@ one another.
   between sends.
 - Each send is bounded as a whole by 5 seconds.
 - A call stops at the first receipt not acknowledged, so a failing sink adds at most 15.75
-  seconds to it.
+  seconds of sending to it. A call may first wait, at most 5 seconds, for another call of the
+  same session to end its delivery, so a call that waits adds at most 20.75 seconds.
 
 The source's timeout bounds the source's run alone; delivery starts after it and adds its
 time to the acquisition's.
