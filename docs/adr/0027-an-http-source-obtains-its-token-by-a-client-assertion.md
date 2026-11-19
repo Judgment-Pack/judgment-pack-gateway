@@ -144,11 +144,48 @@ holder (the adapter's user) of every secret with no process kept running.
   token was issued to, and that the token endpoint is the one the source trusts, it does not
   establish.
 
+## Amendment: PS256 for the certificate form's client assertion (#513)
+
+Decision 2 takes the algorithm from the key alone: RS256 for an RSA key, ES256 for a P-256 key.
+The Microsoft identity platform's documentation for certificate credentials asks for a client
+assertion signed PS256, so a token endpoint that holds to it is not shown taking the
+certificate form's assertion. Two ways were weighed: a closed member that asks for PS256, or a
+new default of PS256 for every RSA key. A new default would change the assertion of every
+configuration that has one today without a word from its operator, and a token endpoint that
+takes RS256 and not PS256 would refuse a configuration that worked. The member is chosen.
+
+1. **The member.** From engine configuration version 34, `tokenStep.assertionAlgorithm` is
+   `"RS256"` or `"PS256"`, optional, beside `privateKey` alone. Absent, the algorithm is the
+   key's, as decision 2 has it, so a file without the member signs what it signed before. Any
+   other value is refused at load by name, and the refusal repeats no value; beside
+   `federatedTokenFile`, `federatedToken` or `signedBy` it is refused by name; in a file before
+   version 34 it is refused by name, and a version-33 file loads, and passes the adapter its
+   flags, unchanged. `ES256` is not a value: a P-256 key gives it, and nothing else may.
+2. **The key it is beside.** The signer never reads the key (decision drivers), so the load
+   cannot tell an RSA key from a P-256 one. The member is passed as `--assertion-alg=RS256` or
+   `--assertion-alg=PS256`, and adapter-http, reading the key, refuses either beside a P-256
+   key as no credential (status 3, decision 7) in a sentence that names the algorithm asked,
+   before any token request is sent. An RSA key shorter than 2048 bits is refused as before.
+3. **PS256 exactly.** RSASSA-PSS (RFC 8017 section 8.1) with SHA-256 as the hash, MGF1 with
+   SHA-256, and a salt of 32 bytes, the hash's length, as RFC 7518 section 3.5 requires: in Go,
+   `rsa.SignPSS` with `rsa.PSSOptions{SaltLength: 32, Hash: crypto.SHA256}`, never
+   `PSSSaltLengthAuto`, whose longest salt a verifier holding to 32 bytes refuses. A PSS
+   signature is randomised, so a vector is held by verification, not by its bytes.
+4. **The header and claims.** The header `alg` is `PS256`, `typ` `JWT`, and `x5t` or
+   `x5t#S256` as configured; the claims are decision 2's. `assertionAlgorithm` `"RS256"` beside
+   an RSA key signs what the member's absence signs: the same key, claims and clock give the
+   same bytes as before this amendment.
+5. **The seal.** The seal's binding (decision 4) gains the algorithm when the member is given,
+   so a step without it is bound as before, and a step whose algorithm changes obtains a new
+   token rather than opening one obtained under the other.
+6. **Nothing else moves.** No receipt member, no `/posture` member, no binding version; RS256
+   and ES256 are signed as before; `connect --replace` keeps the member as it keeps the step.
+
 ## More information
 
 - RFC 7523 §2.2 and RFC 7521 §4.2 (client assertions), RFC 6749 §3.3, §4.4 and §5.1 (scope, the
   client-credentials grant, the answer), RFC 6750 §2.1 (the token form), RFC 7515 §4.1.7 and
-  §4.1.8 (`x5t`, `x5t#S256`).
+  §4.1.8 (`x5t`, `x5t#S256`); RFC 7518 §3.5 and RFC 8017 §8.1 (PS256, RSASSA-PSS).
 - [engine-config.md](../design/engine-config.md), "A live operation's token step (engine version
   21)"; [adapters/README.md](../../adapters/README.md#adapter-http); `go/token_step.go`;
   `adapters/httpsource/token.go`.

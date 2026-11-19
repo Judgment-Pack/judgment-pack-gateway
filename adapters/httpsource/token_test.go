@@ -67,6 +67,7 @@ type tokenStub struct {
 	federated  func() string
 	clientID   string
 	thumbprint [2]string // header member and value expected, or empty
+	pss        bool      // an RSA key's assertion is expected PS256, salt 32
 	answer     func(w http.ResponseWriter)
 	issued     string
 	tokenHits  atomic.Int64
@@ -158,7 +159,11 @@ func (s *tokenStub) checkAssertion(assertion, audience string) string {
 	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
 	switch key := s.public.(type) {
 	case *rsa.PublicKey:
-		if header["alg"] != "RS256" || rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], signature) != nil {
+		if s.pss {
+			if header["alg"] != "PS256" || rsa.VerifyPSS(key, crypto.SHA256, digest[:], signature, &rsa.PSSOptions{SaltLength: 32, Hash: crypto.SHA256}) != nil {
+				return "PS256 signature"
+			}
+		} else if header["alg"] != "RS256" || rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], signature) != nil {
 			return "RS256 signature"
 		}
 	case *ecdsa.PublicKey:

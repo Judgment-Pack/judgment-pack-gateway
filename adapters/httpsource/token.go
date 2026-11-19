@@ -56,8 +56,10 @@ import (
 // at each token request (metadata.go), and ServiceAccount, the service
 // account the credentials API signs a JWT-bearer assertion as, naming
 // Subject, beside which ClientID is empty (delegated.go). X5T and X5TS256 are a fixed certificate thumbprint for the
-// assertion's header, at most one, beside KeyMember only. Scope, when
-// given, is sent as the request's scope.
+// assertion's header, at most one, beside KeyMember only. Algorithm, beside
+// KeyMember only, is "RS256" or "PS256" for an RSA key; empty, the algorithm
+// is the key's (ADR-0027, amendment #513). Scope, when given, is sent as the
+// request's scope.
 type TokenStep struct {
 	Endpoint           string
 	ClientID           string
@@ -69,6 +71,7 @@ type TokenStep struct {
 	Subject            string
 	X5T                string
 	X5TS256            string
+	Algorithm          string
 	Scope              string
 }
 
@@ -136,6 +139,9 @@ const (
 	// no longer opened, so a request does not reach the source with a token
 	// about to lapse.
 	expiryMargin = 30 * time.Second
+	// ps256SaltLength is PS256's salt: 32 bytes, SHA-256's length (RFC 7518
+	// section 3.5), never the longest salt the key allows.
+	ps256SaltLength = 32
 	// maxSealed bounds a sealed token handed in.
 	maxSealed = 64 << 10
 	sealInfo  = "adapter-http sealed token 1"
@@ -193,6 +199,10 @@ func holdTokenStep(t *TokenStep) (*url.URL, error) {
 		return nil, errors.New("--assertion-x5t is the base64url, unpadded, of a 20-byte SHA-1 thumbprint")
 	case t.X5TS256 != "" && !thumbprintOf(t.X5TS256, sha256.Size):
 		return nil, errors.New("--assertion-x5t-s256 is the base64url, unpadded, of a 32-byte SHA-256 thumbprint")
+	case t.KeyMember == "" && t.Algorithm != "":
+		return nil, errors.New("--assertion-alg is the algorithm of an assertion this adapter signs, with --assertion-key")
+	case t.Algorithm != "" && t.Algorithm != "RS256" && t.Algorithm != "PS256":
+		return nil, errors.New("--assertion-alg is RS256 or PS256")
 	case t.ServiceAccount != "":
 		if err := holdDelegated(t); err != nil {
 			return nil, err
@@ -246,8 +256,9 @@ type tokenSigner struct {
 }
 
 // readTokenCredential reads the step's credential: the PKCS#8 key under
-// the credentials member, an RSA key of at least 2048 bits (RS256) or a
-// P-256 key (ES256); or the federated token, the file's content without
+// the credentials member, an RSA key of at least 2048 bits (RS256, or PS256
+// when the step asks for it) or a P-256 key (ES256, and only when the step
+// asks for no algorithm); or the federated token, the file's content without
 // the white space around it, of at most 16 KiB of printable ASCII. A
 // credential that is not there, or is not one of these, is
 // TokenNoCredential, and the refusal quotes nothing of it. A metadata step
@@ -308,9 +319,17 @@ func readTokenCredential(t *TokenStep, members map[string]string) (*tokenSigner,
 			return nil, tokenFailure(TokenNoCredential, "the token step's RSA key is shorter than 2048 bits")
 		}
 		signer.key, signer.alg = key, "RS256"
+		if t.Algorithm == "PS256" {
+			signer.alg = "PS256"
+		}
 	case *ecdsa.PrivateKey:
 		if key.Curve != elliptic.P256() {
 			return nil, tokenFailure(TokenNoCredential, "the token step's EC key is not on P-256")
+		}
+		if t.Algorithm != "" {
+			// holdTokenStep let through RS256 and PS256 alone, neither of
+			// which an EC key signs; the sentence names the one asked.
+			return nil, tokenFailure(TokenNoCredential, "the token step's key is EC P-256, which signs ES256; --assertion-alg=%s is for an RSA key", t.Algorithm)
 		}
 		signer.key, signer.alg = key, "ES256"
 	default:
@@ -322,8 +341,9 @@ func readTokenCredential(t *TokenStep, members map[string]string) (*tokenSigner,
 // assertion is the client assertion: the federated token as read, or a
 // JWT this adapter signs -- iss and sub the client identifier, aud the
 // token endpoint as configured, a fresh jti, and iat, nbf and exp five
-// minutes apart; its header names the algorithm the key's type gives,
-// typ JWT, and the configured thumbprint.
+// minutes apart; its header names the algorithm the key's type gives, or
+// PS256 when the step asks for it beside an RSA key, typ JWT, and the
+// configured thumbprint.
 func (s *tokenSigner) assertion(t *TokenStep, now time.Time) (string, error) {
 	if s.federated != "" {
 		return s.federated, nil
@@ -360,6 +380,14 @@ func (s *tokenSigner) assertion(t *TokenStep, now time.Time) (string, error) {
 	var signature []byte
 	switch key := s.key.(type) {
 	case *rsa.PrivateKey:
+		if s.alg == "PS256" {
+			// RSASSA-PSS (RFC 8017 section 8.1), SHA-256 and MGF1 SHA-256,
+			// a salt of 32 bytes (RFC 7518 section 3.5).
+			if signature, err = rsa.SignPSS(rand.Reader, key, crypto.SHA256, digest[:], &rsa.PSSOptions{SaltLength: ps256SaltLength, Hash: crypto.SHA256}); err != nil {
+				return "", err
+			}
+			break
+		}
 		if signature, err = rsa.SignPKCS1v15(nil, key, crypto.SHA256, digest[:]); err != nil {
 			return "", err
 		}
@@ -522,7 +550,8 @@ func federatedOrNone(t *TokenStep) string {
 // assertion and the scope asked for, and a metadata step's audience. A
 // token sealed for one is not opened under another, whatever hands it in.
 // A step of the key or the file form is bound as it was before the
-// metadata form existed.
+// metadata form existed, and one with no algorithm asked as it was before
+// --assertion-alg existed.
 func sealAAD(cfg Config) []byte {
 	t := cfg.Token
 	words := []string{sealInfo, cfg.Endpoint, t.Endpoint, t.ClientID, t.KeyMember, t.FederatedTokenFile, federatedOrNone(t), t.X5T, t.X5TS256, t.Scope}
@@ -531,6 +560,9 @@ func sealAAD(cfg Config) []byte {
 	}
 	if t.ServiceAccount != "" {
 		words = append(words, "credentials-api", t.ServiceAccount, t.Subject)
+	}
+	if t.Algorithm != "" {
+		words = append(words, "assertion-alg", t.Algorithm)
 	}
 	out, _ := json.Marshal(words)
 	return out

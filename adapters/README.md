@@ -789,7 +789,11 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   client-credentials grant with a client assertion (RFC 7523) and sends it as
   `Authorization: Bearer`. With `--assertion-key`, the assertion is a JWT the adapter signs with
   the PKCS #8 key under that member of the credentials file — RS256 for an RSA key of 2048 bits or
-  more, ES256 for a P-256 key — and `--assertion-x5t` or `--assertion-x5t-s256` places a fixed
+  more, ES256 for a P-256 key, or PS256 (RSASSA-PSS with SHA-256, MGF1 SHA-256 and a 32-byte salt)
+  for an RSA key when `--assertion-alg=PS256` asks for it (engine configuration version 34,
+  `tokenStep.assertionAlgorithm`; ADR-0027's amendment); `--assertion-alg` is `RS256` or `PS256`,
+  beside `--assertion-key` alone, and either beside a P-256 key is refused as no credential
+  (status 3) in a sentence naming the algorithm asked — and `--assertion-x5t` or `--assertion-x5t-s256` places a fixed
   thumbprint in its header; with `--federated-token-file`, it is that file's text, read at each
   token request. The file is found again at each request under `--federated-token-dir` (the
   file's own directory when not given): from there through each link on the way, owned by root

@@ -257,9 +257,11 @@ operation's token step (engine version 21)"):
   registered on the app, with `x5t#S256` its thumbprint. The identity platform asks of such an
   assertion a header whose "`alg` Should be **PS256**", a `x5t#S256`, and an `aud` of the token
   endpoint ([certificate credentials](https://learn.microsoft.com/en-us/entra/identity-platform/certificate-credentials),
-  dated 2025-01-04, updated 2026-06-15); `adapter-http` signs RS256 for an RSA key and ES256 for a
-  P-256 key, and no PS256, so whether the token endpoint takes its assertion is not established
-  here. The federated form is the one this binding is tested in, against a stand-in.
+  dated 2025-01-04, updated 2026-06-15); from engine configuration version 34 the certificate form
+  signs PS256 when the step asks for it with `"assertionAlgorithm": "PS256"` (RSASSA-PSS, SHA-256,
+  MGF1 SHA-256, a 32-byte salt), and RS256 for an RSA key otherwise. That assertion is held here by
+  an independent PS256 verifier and a stand-in token endpoint, not against the identity platform's
+  own. The federated form is the one this binding is tested in, against a stand-in.
 - The live credentials file is still required, and nothing of it is sent: with a token step the
   binding's `bearer` member, `token`, is not read.
 
