@@ -2125,7 +2125,13 @@ at the front's HTTP transport, and over stdio the server does not start. A scope
 is never read from the client: no tool's input schema has a member for one, and a call's
 arguments and `_meta` do not change the `scope` sent. Every `/acquire` the front sends carries
 the caller's token and is held by this section as a direct request is. The receipt's `scope` is
-the identifier sent. The front serves no write tool.
+the identifier sent. The front serves no write tool. In both forms it serves only live tools
+whose owner declares effect `read-external`: under `mcp.scope` those of the platforms fixed to
+it, and under `mcp.scopeFrom` those of every platform, platforms of none included. A
+configuration under which it would serve a tool declared `propose` or `act`, or a tool with no
+declaration, is refused at start, by the front and by the gateway, in a refusal that names the
+platform and the tool and no scope identifier
+(`docs/adr/0044-a-scoped-mcp-front-serves-only-live-tools-declared-read-external.md`).
 
 ### When an acquisition does not happen
 

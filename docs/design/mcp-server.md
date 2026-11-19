@@ -333,7 +333,13 @@ call's arguments are carried to the signer byte for byte, and `_meta` is read fo
 alone, so a scope named in either has no effect. The forward carries the caller's token, so
 the signer holds it to the source's scope identifier and to the caller's reach as it holds a
 direct `/acquire`. The receipt's `scope` is the identifier the forward named. No write tool is
-served in either form.
+served in either form, and no live tool that is not declared effect `read-external`
+([ADR-0044](../adr/0044-a-scoped-mcp-front-serves-only-live-tools-declared-read-external.md)).
+Under `scope` that holds each platform fixed to the identifier, and under `scopeFrom` every
+platform, those of none included. A tool declared `propose` or `act`, or one with no
+declaration, is not left out: `gateway mcp` and `serve` refuse to start, and `connect` refuses
+to write the platform, with `platform <name>: tool "<tool>" is not declared effect
+read-external` and the two ways out, naming no scope identifier.
 
 A session is of one scope identifier (ADR-0036). In the caller form, a caller that reaches two
 scope identifiers names a session per identifier in `_meta`. Otherwise the signer refuses its
@@ -529,7 +535,14 @@ omitting `/act` make the tools read-only: `execute_sql` sits in the postgres bin
 operation (which is its only operation that names it; the binding has no write operation), and
 what holds a live tool to reading is the
 credential the operator gave it — a role that can only read — as `catalog/README.md` says.
-The server names tools; it cannot make them harmless.
+The server names tools; it cannot make them harmless. On a server of neither form, that is the
+whole of it.
+A server that names `scope` or `scopeFrom` serves no live tool that is not declared effect
+`read-external`, and refuses to start where one would be served
+([ADR-0044](../adr/0044-a-scoped-mcp-front-serves-only-live-tools-declared-read-external.md)).
+No decision policy holds a live tool's call, and a platform fixed to a scope identifier enables
+no write operation to carry one. So `execute_sql` is not served behind a scoped front at all. A
+declared read still reads only as far as its credential lets it.
 
 ## Where it lives, and what proves it
 
