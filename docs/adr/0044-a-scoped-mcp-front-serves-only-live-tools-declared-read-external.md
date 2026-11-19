@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (autopilot; maintainer may revise)
 date: 2026-11-18
 deciders: maintainer
 ---
