@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
@@ -336,6 +337,64 @@ func TestAnExportByScopeRefusesAReceiptFileNotShownToBeOfTheScope(t *testing.T) 
 	}
 	if _, err := os.Lstat(filepath.Join(changed, "store", "receipts", "a1", "0.json")); !os.IsNotExist(err) {
 		t.Fatalf("the changed receipt was written: %v", err)
+	}
+}
+
+// An export by scope holds the artifacts its receipts name by the members
+// that name one -- resultDigest, and a descriptor provenance's snapshot and
+// statement -- and no other: a digest of another scope's artifact written
+// in what a source reports, signed by the gateway as it signs any such
+// member, pulls in nothing.
+func TestAnExportByScopeTakesNoArtifactFromWhatASourceReports(t *testing.T) {
+	g, _ := scopeStore(t)
+	digestIn := func(path, name string) string {
+		v, _ := parseJSON([]byte(readFile(t, path)))
+		d, _ := memberString(v.(*vObject), name)
+		return d
+	}
+	// b1/1 (q only-b) alone names its artifact
+	theirs := digestIn(filepath.Join(g.storeRoot, "receipts", "b1", "1.json"), "resultDigest")
+	path := filepath.Join(g.storeRoot, "receipts", "a1", "1.json")
+	ours := digestIn(path, "resultDigest")
+	v, err := parseJSON([]byte(readFile(t, path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj := v.(*vObject)
+	a, _ := obj.get("acquisition")
+	acq := a.(*vObject)
+	acq.set("schema", vString(theirs))
+	acq.set("snapshot", vString(theirs))
+	r, err := receiptFrom(obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj.set("signature", vString(hex.EncodeToString(ed25519.Sign(ed25519.NewKeyFromSeed(testSeed), r.signingInput()))))
+	if err := os.WriteFile(path, canon(obj), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := exportInputs{authority: g.authority, keyID: keyIDFor(g.publicKey), publicKey: g.publicKey,
+		kind: newFsKind(fsLayout{store: g.storeRoot, registry: g.regPath}), storeRoot: g.storeRoot, scope: testScope}
+	out := filepath.Join(t.TempDir(), "export")
+	if _, err := writeExport(in, out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(out, "store", "artifacts", strings.TrimPrefix(theirs, "sha256:"))); !os.IsNotExist(err) {
+		t.Fatalf("a digest a source reports pulled another scope's artifact into the export: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(out, "store", "artifacts", strings.TrimPrefix(ours, "sha256:"))); err != nil {
+		t.Fatalf("the receipt's own artifact: %v", err)
+	}
+
+	// a descriptor provenance names its snapshot and statement; its binding's
+	// pin, a commitment, the caller's token and the schema name none
+	digest := func(c string) string { return "sha256:" + strings.Repeat(c, 64) }
+	named := map[string]bool{}
+	digestsNamed([]byte(`{"resultDigest":"`+digest("1")+`","argumentsCommitment":"`+digest("2")+`","caller":{"tokenDigest":"`+digest("3")+`"},`+
+		`"acquisition":{"statement":"`+digest("4")+`","schema":"`+digest("5")+`","adapter":{"digest":"`+digest("6")+`"},"pageItems":["`+digest("7")+`"],`+
+		`"descriptorProvenance":{"snapshot":"`+digest("8")+`","statement":"`+digest("9")+`","binding":"n@`+digest("a")+`"}}}`), named)
+	if want := map[string]bool{strings.Repeat("1", 64): true, strings.Repeat("8", 64): true, strings.Repeat("9", 64): true}; !reflect.DeepEqual(named, want) {
+		t.Fatalf("the artifacts a receipt names: %v", named)
 	}
 }
 

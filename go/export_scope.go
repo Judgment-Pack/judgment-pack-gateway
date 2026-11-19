@@ -192,11 +192,20 @@ func sessionIDOfLine(line string) string {
 	return id
 }
 
-// digestsNamed adds to into the lowercase hexadecimal of every digest a
-// receipt's bytes name ("sha256:" and 64 lowercase hexadecimal characters,
-// at any depth): the artifacts an export by scope holds are those its
-// receipts name, its result's and its descriptor snapshot's and statement's
-// among them.
+// digestsNamed adds to into the lowercase hexadecimal of each artifact a
+// receipt's bytes name: the artifacts an export by scope holds are those its
+// receipts name. A receipt names an artifact by the members whose digest the
+// store keeps bytes under, and by no other:
+//   - resultDigest, the result at artifacts/<hex> (SPEC.md §1.3, §1.3a);
+//   - acquisition.descriptorProvenance's snapshot and statement (§9).
+//
+// The other digests a receipt carries name no artifact: argumentsCommitment,
+// acquisition.statement and action.request are salted commitments to values
+// never kept (§1.2a); acquisition.schema, adapter.digest, snapshot and every
+// other member a source or adapter reports, and caller's tokenDigest, are
+// what they say and are kept nowhere; pageItems digest items within the
+// result. A digest written in one of them pulls in no artifact, whatever
+// artifact of another scope it is the digest of.
 //
 // A receipt the canonical parser does not read names none: it is written as
 // it is, and verification finds it malformed.
@@ -205,23 +214,24 @@ func digestsNamed(data []byte, into map[string]bool) {
 	if err != nil {
 		return
 	}
-	var walk func(v value)
-	walk = func(v value) {
-		switch t := v.(type) {
-		case vString:
-			if hexSum, ok := blobHex(string(t)); ok {
+	obj, isObject := v.(*vObject)
+	if !isObject {
+		return
+	}
+	take := func(o *vObject, name string) {
+		if digest, held := memberString(o, name); held {
+			if hexSum, ok := blobHex(digest); ok {
 				into[hexSum] = true
-			}
-		case vArray:
-			for _, e := range t {
-				walk(e)
-			}
-		case *vObject:
-			for _, name := range t.names {
-				member, _ := t.get(name)
-				walk(member)
 			}
 		}
 	}
-	walk(v)
+	take(obj, "resultDigest")
+	a, _ := obj.get("acquisition")
+	if acq, isObject := a.(*vObject); isObject {
+		p, _ := acq.get("descriptorProvenance")
+		if provenance, isObject := p.(*vObject); isObject {
+			take(provenance, "snapshot")
+			take(provenance, "statement")
+		}
+	}
 }
