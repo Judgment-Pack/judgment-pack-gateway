@@ -12,6 +12,10 @@ in the directory named. A shipped binding whose bytes change in a release (as `m
 does in v0.35.0) then changes nothing for that operator until they edit their copy and run
 `connect --replace`.
 
+The `catalog` member names one directory for every binding, with no fallback to the shipped one.
+An operator who keeps their own copy of one binding therefore copies every binding their
+configuration pins into that directory.
+
 Every image is pinned by the digest of its manifest index, as the registry served it on
 the date recorded here; every licence is copied from the artifact's own statement for that
 version, never assumed. `go test ./...` in `go/` holds each file to its shape and to its

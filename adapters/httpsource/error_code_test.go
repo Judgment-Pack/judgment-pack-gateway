@@ -252,3 +252,59 @@ func TestARefusalPastTheOutputBoundKeepsItsClass(t *testing.T) {
 		t.Fatalf("a success past the bound: %v", err)
 	}
 }
+
+// Every success past the output bound is refused for its size, never cut
+// and minted: 200 and every other 2xx.
+func TestEverySuccessPastTheOutputBoundIsRefused(t *testing.T) {
+	var status int
+	e := newEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		io.WriteString(w, `{"a":1}`+strings.Repeat(" ", 3000)+`{}`)
+	})
+	cfg := e.config(t)
+	cfg.MaxOutput = 2048
+	for _, status = range []int{200, 201, 203, 206, 299} {
+		out, err := Acquire(context.Background(), cfg, parseRequest(t, `{"path":"/search","body":{}}`))
+		if err == nil || !strings.Contains(err.Error(), "exceeds the output bound") {
+			t.Errorf("status %d past the bound: minted %d bytes, err=%v", status, len(out), err)
+		}
+	}
+}
+
+// A declared expired pair is not read from bytes the output bound cut: the
+// answer stays a refusing answer of its status, not an expired reference.
+func TestNoExpiredPairIsReadFromCutBytes(t *testing.T) {
+	e := newEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(testCodes.Expired[0].Status)
+		io.WriteString(w, `{"error":{"code":"`+testCodes.Expired[0].Code+`"}}`+strings.Repeat(" ", 3000)+`{}`)
+	})
+	cfg := e.config(t)
+	cfg.MaxOutput = 2048
+	cfg.ErrorCodes = testCodes
+	_, err := Acquire(context.Background(), cfg, parseRequest(t, `{"path":"/search","body":{}}`))
+	var expired *ReferenceExpired
+	if err == nil || errors.As(err, &expired) {
+		t.Fatalf("a declared pair read from the cut bytes: %#v", err)
+	}
+}
+
+// A refusing answer cut at a small output bound is said as cut, and no part
+// of a credential at the cut reaches the diagnostic.
+func TestACutRefusalKeepsAPartialCredentialOut(t *testing.T) {
+	e := newEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(403)
+		io.WriteString(w, strings.Repeat("a", 100-12)+"secret-token-value"+strings.Repeat("b", 100))
+	})
+	cfg := e.config(t)
+	cfg.MaxOutput = 100
+	_, err := Acquire(context.Background(), cfg, parseRequest(t, `{"path":"/search","body":{}}`))
+	if err == nil {
+		t.Fatal("a refusing answer past the bound was taken")
+	}
+	if msg := err.Error(); strings.Contains(msg, "secret-tok") {
+		t.Fatalf("a partial credential at the cut reaches the diagnostic: %q", msg)
+	}
+}
