@@ -1853,7 +1853,10 @@ function registryLink(data: Buffer): { readonly lines: bigint; readonly digest: 
 // lastKeyOf is the key id the registry at previous's rotations end at (§3d, under
 // --previous), walked as a gateway walks its own (§3b): from the previous key
 // its first key-continuation names, where it has one, and from the key pinned
-// otherwise; null where the walk finds a rotation finding.
+// otherwise; null where the walk finds a rotation finding, or where the
+// keyId its last seal states is not the key in force at that seal's line, so
+// that a registry that never rotated is held to the key its seals name. A
+// registry holding no seal is held by its walk's last key alone.
 function lastKeyOf(previous: string, pinned: Uint8Array): string | null {
   const values: (Value | null)[] = [];
   eachRegistryLine({ absent: false, path: previous }, (line) => {
@@ -1887,9 +1890,22 @@ function lastKeyOf(previous: string, pinned: Uint8Array): string | null {
     break;
   }
   const walk = new RegistryWalk(start, () => {});
+  // the last seal: the keyId it states, and the key in force at its line
+  let lastSeal: { readonly stated: string; readonly inForce: string } | null = null;
   for (const v of values) {
-    walk.take(isContinuation(v) ? null : v);
+    if (walk.take(isContinuation(v) ? null : v) || isContinuation(v) || rotationKind(v) !== null || v === null || v.type !== "object") {
+      continue;
+    }
+    const keyId = member(v, "keyId");
+    const session = member(v, "sessionId");
+    if (keyId?.type === "string" && session?.type === "string") {
+      lastSeal = { stated: keyId.value, inForce: walk.current().keyId };
+    }
   }
   walk.end();
-  return walk.finding === null ? walk.current().keyId : null;
+  const seal = lastSeal as { readonly stated: string; readonly inForce: string } | null;
+  if (walk.finding !== null || (seal !== null && seal.stated !== seal.inForce)) {
+    return null;
+  }
+  return walk.current().keyId;
 }
