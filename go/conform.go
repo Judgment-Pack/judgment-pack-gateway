@@ -349,7 +349,11 @@ type storeVector struct {
 	// materialized as a directory of their own: the process contract then
 	// passes --artifacts <dir>. Absent means the option is not passed.
 	SuppliedArtifacts map[string]string `json:"suppliedArtifacts"`
-	Expected          struct {
+	// Scope runs the vector as a verdict by scope (SPEC.md §4, "A verdict
+	// by scope"): the process contract passes --scope <identifier> first,
+	// before every other option. Absent is a verdict of the whole store.
+	Scope    string `json:"scope"`
+	Expected struct {
 		OK       bool             `json:"ok"`
 		Findings []map[string]any `json:"findings"`
 		// Witnesses are SPEC.md §4's witnesses, compared as a set; absent
@@ -364,6 +368,9 @@ type storeVector struct {
 		// all (§7). Kept as written, so a member given as null is told
 		// from one not given (expectedObservations).
 		Observations json.RawMessage `json:"observations"`
+		// Cut is a verdict by scope's cut, compared whole; absent means a
+		// verdict of the whole store, which gives none.
+		Cut map[string]any `json:"cut"`
 	} `json:"expected"`
 }
 
@@ -403,15 +410,17 @@ type contractVerdict struct {
 	Observations json.RawMessage  `json:"observations"`
 	Witnesses    []map[string]any `json:"witnesses"`
 	Rotations    map[string]any   `json:"rotations"`
+	Cut          map[string]any   `json:"cut"`
 }
 
 // implementation is either this binary's own code or another process.
 type implementation interface {
 	canon(source string) ([]byte, bool)
 	// verify answers the verdict the process contract gives (SPEC.md §4),
-	// under --ordinary-seals-only when ordinarySealsOnly is set, and with
-	// --artifacts supplied when supplied is not "".
-	verify(storeRoot, registryPath, authority, decisionRecords, supplied string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error)
+	// under --ordinary-seals-only when ordinarySealsOnly is set, with
+	// --artifacts supplied when supplied is not "", and cut by --scope scope
+	// when scope is not "".
+	verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error)
 	// witness reads one chain of witness statements (SPEC.md §8.6) from
 	// files, and answers with the verdict the process contract gives.
 	witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error)
@@ -430,8 +439,8 @@ func (inProcess) canon(source string) ([]byte, bool) {
 	return out, true
 }
 
-func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords, supplied string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
-	rep, err := verifierFor(ordinarySealsOnly)(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey)
+func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
+	rep, err := verifierBy(ordinarySealsOnly, scope)(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey)
 	if err != nil {
 		return contractVerdict{}, err
 	}
@@ -446,7 +455,17 @@ func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords, sup
 // --ordinary-seals-only (SPEC.md §4), with the bytes a reader supplied, ""
 // for none.
 func verifierFor(ordinarySealsOnly bool) func(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte) (*report, error) {
+	return verifierBy(ordinarySealsOnly, "")
+}
+
+// verifierBy is verifierFor's verdict, cut by the scope identifier scope as
+// gateway verify --scope cuts it (SPEC.md §4, "A verdict by scope"), "" for
+// a verdict of the whole store.
+func verifierBy(ordinarySealsOnly bool, scope string) func(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte) (*report, error) {
 	return func(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte) (*report, error) {
+		if scope != "" {
+			return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, false, ordinarySealsOnly, scope)
+		}
 		return verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, ordinarySealsOnly)
 	}
 }
@@ -492,8 +511,13 @@ func (s subprocess) canon(source string) ([]byte, bool) {
 	return stdout.Bytes(), true
 }
 
-func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords, supplied string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
+func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
 	args := append(append([]string{}, s.argv[1:]...), "verify")
+	if scope != "" {
+		// First, before every other option (corpus/README.md): passed
+		// exactly when the vector is a verdict by scope.
+		args = append(args, "--scope", scope)
+	}
 	if ordinarySealsOnly {
 		// The option first, before the store root, as gateway verify takes
 		// it (corpus/README.md): passed exactly when the vector says so.
@@ -845,16 +869,19 @@ func runStoreVectors(corpusDir string, impl implementation) ([]string, int, erro
 		if err != nil {
 			return nil, 0, err
 		}
-		verdict, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, suppliedOf(vector, root), vector.OrdinarySealsOnly, publicKey)
+		verdict, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, suppliedOf(vector, root), vector.Scope, vector.OrdinarySealsOnly, publicKey)
 		os.RemoveAll(root)
 		var refused noVerdict
-		if err != nil && (vector.OrdinarySealsOnly || vector.SuppliedArtifacts != nil) && errors.As(err, &refused) {
+		if err != nil && (vector.OrdinarySealsOnly || vector.SuppliedArtifacts != nil || vector.Scope != "") && errors.As(err, &refused) {
 			// A verifier written before the option refuses one it does not
 			// know: that is its answer to this vector, a disagreement, and
 			// the run goes on (SPEC.md §7). No verdict for a vector run
-			// without either option still stops it.
+			// without any option still stops it.
 			option := "--ordinary-seals-only"
-			if !vector.OrdinarySealsOnly {
+			switch {
+			case vector.Scope != "":
+				option = "--scope"
+			case !vector.OrdinarySealsOnly:
 				option = "--artifacts"
 			}
 			failures = append(failures, fmt.Sprintf("store %s: no verdict under %s: %s",
@@ -882,6 +909,13 @@ func runStoreVectors(corpusDir string, impl implementation) ([]string, int, erro
 		if want, have := rotationsText(vector.Expected.Rotations), rotationsText(verdict.Rotations); want != have {
 			failures = append(failures, fmt.Sprintf(
 				"store %s: rotations disagree\n    expected: %s\n    produced: %s",
+				vector.Name, want, have))
+		}
+		// A verdict by scope's cut, whole; one of the whole store gives
+		// none, and so must the implementation.
+		if want, have := rotationsText(vector.Expected.Cut), rotationsText(verdict.Cut); want != have {
+			failures = append(failures, fmt.Sprintf(
+				"store %s: cut disagrees\n    expected: %s\n    produced: %s",
 				vector.Name, want, have))
 		}
 		// Only where the vector states them (SPEC.md §7): a vector without

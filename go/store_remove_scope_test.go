@@ -182,7 +182,7 @@ func TestPostgresRemoveScopeRemovesOneScopesRowsAndRecordsIt(t *testing.T) {
 
 	t.Chdir(dir)
 	out := filepath.Join(dir, "export")
-	if _, err := exportEngine(config, out, nil); err != nil {
+	if _, err := exportEngine(config, out, nil, ""); err != nil {
 		t.Fatalf("export: %v", err)
 	}
 	requireExportChecks(t, out)

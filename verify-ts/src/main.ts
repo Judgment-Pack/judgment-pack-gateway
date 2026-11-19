@@ -5,7 +5,7 @@
 //   main.ts canon      stdin: one JSON document; stdout: its canonical
 //                      bytes; exit 0 inside the domain, 1 refused, 2
 //                      past what this implementation reads
-//   main.ts verify [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>]
+//   main.ts verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>]
 //                      stdin: the 32-byte Ed25519 public key; stdout:
 //                      {"ok": bool, "findings": [...]}; exit 0 whenever a
 //                      verdict was reached, 2 when none could be; with
@@ -17,7 +17,11 @@
 //                      --artifacts <dir>, after it and before the store
 //                      root, is the bytes a reader supplied (SPEC.md §4,
 //                      "Supplied bytes"), and in any other place a usage
-//                      error, exit 64
+//                      error, exit 64; --scope <identifier>, first or not
+//                      at all, cuts the verdict by the scope identifier
+//                      (SPEC.md §4, "A verdict by scope") and takes no
+//                      decision-records directory, and in any other place,
+//                      or with one, is a usage error, exit 64
 //   main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]
 //                      a reading of a chain of witness statements
 //                      (SPEC.md §8.6); stdout: the answer, a refusal
@@ -30,6 +34,7 @@ import { canonical } from "./canon.ts";
 import { Bytes, NoVerdict, code, documentBound } from "./inputs.ts";
 import { TooLarge, maxValues, parse } from "./json.ts";
 import type { Value } from "./json.ts";
+import { isScopeIdentifier } from "./structure.ts";
 import { verifyStore, writeVerdict } from "./verify.ts";
 import { readWitnessFiles } from "./witness.ts";
 
@@ -180,17 +185,22 @@ function main(args: string[]): number {
     process.stdout.write(bytes);
     return 0;
   }
-  const ordinarySealsOnly = command === "verify" && rest[0] === "--ordinary-seals-only";
-  const afterOption = ordinarySealsOnly ? rest.slice(1) : rest;
+  // --scope <identifier>, first or not at all.
+  const scoped = command === "verify" && rest[0] === "--scope";
+  const badScope = scoped && (rest.length < 2 || !isScopeIdentifier(rest[1]!));
+  const options = scoped ? rest.slice(2) : rest;
+  const misplacedScope = command === "verify" && options.includes("--scope");
+  const ordinarySealsOnly = command === "verify" && options[0] === "--ordinary-seals-only";
+  const afterOption = ordinarySealsOnly ? options.slice(1) : options;
   // --artifacts <dir>, after --ordinary-seals-only and before the store
   // root, or not at all.
   const supplied = command === "verify" && afterOption[0] === "--artifacts" && afterOption.length > 1 && afterOption[1] !== "";
   const positional = supplied ? afterOption.slice(2) : afterOption;
   // Either option in any later place is a usage error, never taken as an
   // argument and the plain verdict run in its stead.
-  const misplaced = command === "verify" && rest.slice(1).includes("--ordinary-seals-only");
+  const misplaced = command === "verify" && options.slice(1).includes("--ordinary-seals-only");
   const misplacedArtifacts = command === "verify" && (positional.includes("--artifacts") || (afterOption[0] === "--artifacts" && !supplied));
-  if (command === "verify" && !misplaced && !misplacedArtifacts && (positional.length === 3 || positional.length === 4)) {
+  if (command === "verify" && !badScope && !misplacedScope && !misplaced && !misplacedArtifacts && (positional.length === 3 || (positional.length === 4 && !scoped))) {
     try {
       // The directory comes right before the positional arguments, so the
       // command line's last entries are it and them.
@@ -201,7 +211,13 @@ function main(args: string[]): number {
       if (key === null) {
         throw new NoVerdict("the public key on standard input is more than 32 bytes");
       }
-      const verdict = verifyStore(root, registry, authority, decisionRecords, key, { ordinarySealsOnly, ...(artifacts !== undefined && { artifacts }) });
+      // The scope's own bytes, as the command line holds them.
+      const scope = scoped ? exactArguments(rest)[1] : undefined;
+      const verdict = verifyStore(root, registry, authority, decisionRecords, key, {
+        ordinarySealsOnly,
+        ...(artifacts !== undefined && { artifacts }),
+        ...(scope !== undefined && { scope }),
+      });
       const output = new Output();
       writeVerdict(verdict, (text) => output.write(text));
       output.flush();
@@ -217,6 +233,15 @@ function main(args: string[]): number {
   if (command === "witness") {
     return witness(rest);
   }
+  if (badScope) {
+    process.stderr.write("verify: --scope names a scope identifier\n");
+  }
+  if (misplacedScope) {
+    process.stderr.write("verify: --scope goes first, before every other option; a directory so named is given as ./--scope\n");
+  }
+  if (scoped && !badScope && positional.length === 4) {
+    process.stderr.write("verify: a verdict by scope reads no decision records\n");
+  }
   if (misplaced) {
     process.stderr.write("verify: --ordinary-seals-only goes first, before the store root; a directory so named is given as ./--ordinary-seals-only\n");
   }
@@ -224,7 +249,7 @@ function main(args: string[]): number {
     process.stderr.write("verify: --artifacts <dir> goes before the store root, after --ordinary-seals-only; a directory so named is given as ./--artifacts\n");
   }
   process.stderr.write(
-    "usage: main.ts canon | main.ts verify [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n",
+    "usage: main.ts canon | main.ts verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n",
   );
   return 64;
 }

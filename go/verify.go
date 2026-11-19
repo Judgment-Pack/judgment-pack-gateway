@@ -58,6 +58,10 @@ type report struct {
 	// key pinned (SPEC.md §3b, §4): absent when it followed none, and never
 	// a part of ok.
 	Rotations *rotationsFollowed `json:"rotations,omitempty"`
+	// Cut is a verdict by scope's (SPEC.md §4, "A verdict by scope"): the
+	// scope identifier, the sessions of it and those it could attribute to
+	// none; absent from a verdict of the whole store.
+	Cut *scopeCut `json:"cut,omitempty"`
 	// namedAt is, for each of them, when the receipts naming it were
 	// minted, earliest first; the reader's report says so (witness fetch).
 	namedAt map[witnessTriple][]string
@@ -633,14 +637,23 @@ func verifyWithRegistry(storeRoot, registryPath, authority string, publicKey []b
 // per-session findings, the registry anchor, and for version 3 action receipts
 // the citation and decision-record checks of steps 5 to 8.
 func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
-	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, "", publicKey, false, false)
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, "", publicKey, false, false, "")
 }
 
 // verifySupplied is verifyWithRegistryAndRecords, or the strict verdict, with
 // the bytes a reader supplied (gateway verify --artifacts; SPEC.md §4,
 // "Supplied bytes"): "" supplies none.
 func verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte, ordinarySealsOnly bool) (*report, error) {
-	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, false, ordinarySealsOnly)
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, false, ordinarySealsOnly, "")
+}
+
+// verifyByScope is verifySupplied cut by the scope identifier scope (gateway
+// verify --scope; SPEC.md §4, "A verdict by scope"): the findings and
+// observations of the sessions of the scope and of those attributed to none,
+// which the verdict names, and of the registry's walk. A cut that names a
+// session it could not attribute is not ok.
+func verifyByScope(storeRoot, registryPath, authority, supplied, scope string, publicKey []byte, ordinarySealsOnly bool) (*report, error) {
+	return verifyAgainst(storeRoot, registryPath, authority, "", supplied, publicKey, false, ordinarySealsOnly, scope)
 }
 
 // verifyOrdinarySealsOnly is the strict verdict (gateway verify
@@ -649,7 +662,7 @@ func verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplie
 // verdict observes it so, for a consumer that accepts only a session sealed
 // by the process that minted it.
 func verifyOrdinarySealsOnly(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
-	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, "", publicKey, false, true)
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, "", publicKey, false, true, "")
 }
 
 // verifyAsEngine is the engine's own verification (/verify): the registry it
@@ -657,10 +670,19 @@ func verifyOrdinarySealsOnly(storeRoot, registryPath, authority, decisionRecords
 // verdict, never "no seals" -- which, with no session left to enumerate,
 // would verify.
 func verifyAsEngine(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
-	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, "", publicKey, true, false)
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, "", publicKey, true, false, "")
 }
 
-func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte, registryRequired, ordinarySealsOnly bool) (*report, error) {
+func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte, registryRequired, ordinarySealsOnly bool, scope string) (*report, error) {
+	// A verdict by scope names a scope identifier of its form, and reads no
+	// decision record: an action receipt carries no scope, and a session of
+	// a scope identifier is refused one (SPEC.md §4, "A verdict by scope").
+	if scope != "" && !isScopeIdentifier(scope) {
+		return nil, fmt.Errorf("the scope is not a scope identifier: %s", scopeForm)
+	}
+	if scope != "" && decisionRecords != "" {
+		return nil, errors.New("a verdict by scope reads no decision records")
+	}
 	// the inputs' spellings are judged before anything is read (SPEC.md §4.1)
 	if err := requirePlainSpelling(registryPath, true); err != nil {
 		return nil, err
@@ -756,6 +778,24 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 	// SPEC.md §1.2b: an uncertain action is a record of uncertainty, not a
 	// target's answer; the report says which, beside ok.
 	rep.Observations = append(rep.Observations, deliveryObservations(actions, reconciling)...)
+	// A verdict by scope attributes every session the store holds, and
+	// every sealed one it does not, before anything is reported: the
+	// witnesses it names are those of the sessions it keeps.
+	var cut *scopeCut
+	if scope != "" {
+		holdings := map[string]*scopeHolding{}
+		for _, sessionID := range sessions {
+			holdings[sessionID] = results[sessionID].holding
+		}
+		cut = cutOf(scope, holdings, seals, ret)
+		var kept []*receipt
+		for _, r := range naming {
+			if cut.kept[r.sessionID] {
+				kept = append(kept, r)
+			}
+		}
+		naming = kept
+	}
 	rep.witnessesNamed(naming)
 	for _, s := range seals {
 		rep.scoped = rep.scoped || s.scopeDigest != ""
@@ -966,6 +1006,18 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 
 	rep.Findings = append(rep.Findings, recordFindings...)
 
+	// A verdict by scope reports what its cut keeps, and is ok only where
+	// the cut attributed every session: a session it names unattributed may
+	// be of the scope, so the cut cannot be shown to hold all of it.
+	if cut != nil {
+		rep.Findings, rep.Cut = cut.filter(rep.Findings), cut
+		if rep.Observations != nil {
+			rep.Observations = cut.filter(rep.Observations)
+		}
+		if len(cut.Unattributed) > 0 {
+			rep.OK = false
+		}
+	}
 	for _, f := range rep.Findings {
 		if f["status"] != "ok" {
 			rep.OK = false
@@ -1065,6 +1117,9 @@ type sessionResult struct {
 	// scoped is whether any receipt of the session, whatever its status,
 	// holds a scope member: one that reads as a JSON object (report.scoped).
 	scoped bool
+	// holding is what its receipts that pass the signed orders say of its
+	// scope, by which a verdict by scope attributes it (scope_cut.go).
+	holding *scopeHolding
 }
 
 // scopeNaming is a receipt's scope identifier and its scope salt, "" for a
@@ -1174,7 +1229,7 @@ func fsSessionReading(storeRoot, sessionID string) (sessionReading, error) {
 
 // verifySessionRead is verifySessionWith of a session as reading holds it.
 func verifySessionRead(sessionID, authority string, keys []reachedKey, ret *retention, reading sessionReading) (*sessionResult, error) {
-	result := &sessionResult{signatures: map[string]string{}, scopes: map[scopeNaming]bool{}}
+	result := &sessionResult{signatures: map[string]string{}, scopes: map[scopeNaming]bool{}, holding: newScopeHolding()}
 	names := slices.Clone(reading.names)
 	// Filename string order. SPEC.md does not make finding order normative;
 	// corpus/README.md records that as an open question.
@@ -1201,6 +1256,7 @@ func verifySessionRead(sessionID, authority string, keys []reachedKey, ret *rete
 		if err != nil {
 			return nil, err
 		}
+		result.holding.take(r, status)
 		if r != nil {
 			if _, held := r.obj.get("scope"); held {
 				result.scoped = true
@@ -1281,6 +1337,7 @@ func verifySessionRead(sessionID, authority string, keys []reachedKey, ret *rete
 		}
 	}
 	result.findings, result.count = findings, int64(len(names))
+	result.holding.done(result.signatures)
 	result.whole = len(names) > 0
 	for _, f := range findings {
 		if f["status"] != "ok" {

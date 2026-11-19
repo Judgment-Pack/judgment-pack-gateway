@@ -1761,15 +1761,18 @@ of one operator's sources can be told apart by the party each serves.
   it (postgresql-store.md, "Several instances on one database"). The same holds again for a seal
   of version 3: v0.31.0 and v0.32.0 do not read it, so stop every instance of them before one of
   this release serves the store, and never run them on it afterwards.
-- **`gateway verify` and `gateway export` do not select by scope**: each reads the whole store
-  and the whole registry. The registry is one chain that a verifier needs whole to walk from the
-  key it pins (SPEC.md §3b), and a verifier reports every sealed session a store does not hold
-  `sealed-session-missing`, so a store or export cut to one scope would read as damaged. Excusing
-  an absent session by its seal's scope would work only for seals of version 2: a seal an
-  earlier gateway wrote names no scope, so a cut could not be shown to hold every sealed session
-  of the scope. A consumer of one scope verifies the whole store, or an export of it, and may take
-  a session-scoped verdict (SPEC.md §5a.1) for each session whose seal names the scope. A verdict
-  by scope is left to an issue of its own.
+- **`gateway verify --scope <identifier>` and `gateway export --scope <identifier>` cut by one
+  scope identifier** (SPEC.md §4, "A verdict by scope"; §5a, "An export by scope"; ADR-0042,
+  decisions 6 to 9). Each attributes every session by what its receipts and its seal sign: a seal
+  of version 3 through the salt the session's receipts carry, and one of version 2 by recomputing
+  its digest. The verdict reports the scope's sessions and names, in `cut.unattributed`, the
+  sessions it cannot attribute. It reports their findings and is not `ok` while there are any. An
+  earlier release's session left open, or sealed in §3's form over a receipt the store no longer
+  holds, is such a session. The export holds the scope's sessions, their artifacts and removal
+  records, and of the registry the rotations and the scope's lines; it carries nothing of another
+  scope. It is refused, by name, where a session is unattributed or a session of the scope holds a
+  receipt of another scope or none, as only an earlier release mints. Such a store is verified and
+  exported whole. `/verify` over HTTP stays a verdict of the whole store.
 - **When the file is loaded** (`serve`, `connect`, `connect --replace`, `posture`), the member is
   refused at a version before 20, on a platform that sets `write: true` (`/act` takes no scope),
   and in a file with `mcp` that names neither `scope` nor `scopeFrom` (such a server forwards a

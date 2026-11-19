@@ -99,7 +99,7 @@ func TestStoreVectors(t *testing.T) {
 		}
 		defer os.RemoveAll(tmp)
 
-		rep, err := verifierFor(vec.OrdinarySealsOnly)(root, registryPath, vec.Authority, decisionRecords, suppliedOf(vec, tmp), publicKey)
+		rep, err := verifierBy(vec.OrdinarySealsOnly, vec.Scope)(root, registryPath, vec.Authority, decisionRecords, suppliedOf(vec, tmp), publicKey)
 		if err != nil {
 			t.Errorf("%s: no verdict: %v", vec.Name, err)
 			continue
@@ -113,6 +113,16 @@ func TestStoreVectors(t *testing.T) {
 		want := normalizeFindingMaps(vec.Expected.Findings)
 		if !equalMultiset(got, want) {
 			t.Errorf("%s: findings\n got %v\nwant %v", vec.Name, got, want)
+			ok = false
+		}
+		// A verdict by scope's cut, whole; one of the whole store gives none.
+		var cut map[string]any
+		if rep.Cut != nil {
+			encoded, _ := json.Marshal(rep.Cut)
+			_ = json.Unmarshal(encoded, &cut)
+		}
+		if want, have := rotationsText(vec.Expected.Cut), rotationsText(cut); want != have {
+			t.Errorf("%s: cut\n got %s\nwant %s", vec.Name, have, want)
 			ok = false
 		}
 		// The observations, as a multiset, where the vector states them
@@ -721,7 +731,7 @@ func TestREADMEVectorCounts(t *testing.T) {
 	for _, edit := range []struct{ what, from, to string }{
 		{"the canon count", "**`canon.json`** — 30 vectors", "**`canon.json`** — 31 vectors"},
 		{"the store count", "**`stores/*.json`** — 51 vectors", "**`stores/*.json`** — 50 vectors"},
-		{"the version 3 count", "**`v3/stores/*.json`** — 188 vectors", "**`v3/stores/*.json`** — 189 vectors"},
+		{"the version 3 count", "**`v3/stores/*.json`** — 203 vectors", "**`v3/stores/*.json`** — 204 vectors"},
 		{"the witness count", "**`witness/*.json`** — 54 vectors", "**`witness/*.json`** — 55 vectors"},
 		{"a family's row", "| `chain` | 10 |", "| `chain` | 11 |"},
 		{"a family no runner reads", "| `chain` | 10 |", "| `chain` | 10 |\n| `continuation` | 0 |"},
