@@ -2206,11 +2206,17 @@ scope identifier ([ADR-0038](../adr/0038-the-mcp-server-on-platforms-fixed-to-a-
 
 In both, a caller is listed, and may call, only the tools of the sources its token reaches
 ("Caller scope identifiers (engine version 27)", above); any other tool is answered as one the
-server does not hold. No tool's arguments name a scope identifier.
+server does not hold. No tool's arguments name a scope identifier. In both, every live tool of
+a platform the server serves is declared effect `read-external` in its binding's
+`toolTaxonomies`
+([ADR-0044](../adr/0044-a-scoped-mcp-front-serves-only-live-tools-declared-read-external.md)):
+under `scope` each platform fixed to it, under `scopeFrom` every platform, those of no scope
+identifier included. The shipped postgres binding, whose `execute_sql` is an act, is not served
+by either form.
 
 ```json
 "engineVersion": "28",
-"platforms": { "warehouse": { "binding": "postgres@sha256:…", "scope": "team-a" } },
+"platforms": { "records": { "binding": "records@sha256:…", "scope": "team-a" } },
 "mcp": { "listen": "127.0.0.1:8788", "scope": "team-a" }
 ```
 
@@ -2227,6 +2233,10 @@ Refused by name, `engine configuration: …`, quoting nothing of the value:
 
 `gateway mcp` refuses to start a server whose `scope` no platform is fixed to, and one of
 `scopeFrom` over `--stdio`, where one token is given at start for the life of the process.
+`gateway mcp` and `serve` both refuse to start, and `connect` refuses to write the platform,
+where a server of either form would serve a live tool declared `propose` or `act`, or one with
+no declaration: `platform <name>: tool "<tool>" is not declared effect read-external`, naming
+no scope identifier.
 
 **Upgrading.** A file of version 27 or earlier loads as before, and an MCP server without
 either member serves as before, with one change in a file of any version: under `identity`
@@ -2234,7 +2244,11 @@ with `callerScopes` checked, the server's HTTP transport refuses `401`, before a
 out of form or wider than its subject's entry, with the signer's sentence. Before, that token
 was refused at the forward, by the signer. To serve a scoped platform over MCP, raise `engineVersion` to
 `"28"` and add one member. A gateway older than this one refuses a version-28 file by its
-version.
+version. From ADR-0044 a version-28 file whose server names `scope` or `scopeFrom` and serves
+a live tool not declared `read-external` no longer starts. If the tool only reads, declare it
+`read-external` in the binding and approve it again with `connect --replace`. Otherwise pin a
+binding whose live operation names reading tools alone, or serve the platform with no scope
+identifier behind an `mcp` of neither form.
 
 ## A read-only Cloud Asset Inventory source (engine version 29)
 

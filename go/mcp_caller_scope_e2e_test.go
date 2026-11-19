@@ -241,7 +241,10 @@ func (g *recordsGateway) request(p recordsPlatform) connectRequest {
 	return req
 }
 
-func newRecordsGateway(t *testing.T, platforms []recordsPlatform) *recordsGateway {
+// recordsConfiguration is the configuration connect wrote for the platforms,
+// raised as newRecordsGateway raises it, loaded as serve and gateway mcp load
+// it, and its identity read; nothing is built of it.
+func recordsConfiguration(t *testing.T, platforms []recordsPlatform) (*recordsGateway, *identityConfig) {
 	t.Helper()
 	bin, _ := buildMCPStandIns(t, t.TempDir())
 	f := newConnectFixture(t, restrictedBinding, "")
@@ -315,6 +318,13 @@ func newRecordsGateway(t *testing.T, platforms []recordsPlatform) *recordsGatewa
 	if err != nil {
 		t.Fatal(err)
 	}
+	return g, id
+}
+
+func newRecordsGateway(t *testing.T, platforms []recordsPlatform) *recordsGateway {
+	t.Helper()
+	g, id := recordsConfiguration(t, platforms)
+	f := g.connect
 	sources := map[string]sourceSpec{}
 	for name, spec := range deriveSources(g.cfg, g.bindings) {
 		sources[name] = g.adapt(strings.SplitN(name, "/", 2)[0], spec)
@@ -669,38 +679,26 @@ func TestMCPFrontServesOperatorReadToolsByCallerScope(t *testing.T) {
 	}
 }
 
-// Current behaviour, by design (ADR-0021; docs/design/mcp-server.md,
-// "Writes"): the front serves a binding's live tools whatever effect their
-// owner declares. A live tool declared operation act and effect act is
-// listed with readOnlyHint false and destructiveHint true, and a call of it
-// is forwarded to /acquire and receipted with its platform's scope
-// identifier, as any live tool is; what holds a live tool to reading is the
-// credential the operator gives it. Whether the front of scoped platforms
-// should serve such a tool is pending the maintainer's decision: a change
-// that refuses it fails this test, which is then rewritten to the refusal.
-func TestMCPFrontServesLiveActToolToday(t *testing.T) {
+// A front that takes its callers' scope identifiers serves live tools
+// declared effect read-external alone (ADR-0044): a scoped platform whose
+// live operation names a tool declared operation act and effect act refuses
+// both starts, gateway mcp's as it builds its table and serve's, with a
+// sentence naming the platform and the tool and no scope identifier. Nothing
+// is served, so no tool of the platform's server is called.
+func TestMCPFrontRefusesLiveActToolOfScopedPlatform(t *testing.T) {
 	server := newRecordsStandIn(t, "server-a")
-	g := newRecordsGateway(t, []recordsPlatform{
+	g, id := recordsConfiguration(t, []recordsPlatform{
 		{name: "records-a", scope: callerScopeA, user: "engine-warehouse", uid: 1001, binding: recordsServerBinding(t, "records-a", server.URL, []string{"list_records"}, []string{recordsActTool}, nil)},
 	})
-	g.token = tokenFor(t, g.issuer, subjectA, []any{callerScopeA})
-	sid := g.open(t)
-	listed := g.listing(t, sid)
-	entry := listed["records-a."+recordsActTool]
-	if len(listed) != 3 || entry == nil {
-		t.Fatalf("A's caller is listed %v", listed)
+	const refusal = `platform records-a: tool "` + recordsActTool + `" is not declared effect read-external`
+	_, mcpErr := newMCPServer(g.cfg, g.bindings, id, g.connect.config)
+	_, _, serveErr := engineStart(&g.cfg, g.bindings, engineHost{})
+	for start, err := range map[string]error{"gateway mcp": mcpErr, "serve": serveErr} {
+		if err == nil || !strings.Contains(err.Error(), refusal) || strings.Contains(err.Error(), callerScopeA) {
+			t.Fatalf("%s: want %q naming no scope identifier, got %v", start, refusal, err)
+		}
 	}
-	meta := entry["_meta"].(map[string]any)
-	hints := entry["annotations"].(map[string]any)
-	if meta["operation"] != "act" || meta["effect"] != "act" || hints["readOnlyHint"] != false || hints["destructiveHint"] != true {
-		t.Fatalf("the act tool is listed %v", entry)
-	}
-	_, _, body := g.call(t, http.MethodPost, sid, toolCall(10, "records-a."+recordsActTool, `{"id":"R-101"}`, `{"`+mcpSessionMeta+`":"act-session"}`), nil)
-	structured := acquired(t, body)
-	if receipt := structured["receipt"].(map[string]any); receipt["scope"] != callerScopeA || receipt["source"] != "records-a/live" {
-		t.Fatalf("the act tool's receipt: %v", receipt)
-	}
-	if calls := server.called(); len(calls) != 1 || calls[0].tool != recordsActTool {
+	if calls := server.called(); len(calls) != 0 {
 		t.Fatalf("the server was called %+v", calls)
 	}
 }
