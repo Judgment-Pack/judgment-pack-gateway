@@ -79,13 +79,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	federatedTokenFile := fs.String("federated-token-file", "", "token step: a file whose content, read at each token request, is the client assertion, in place of --assertion-key")
 	federatedTokenDir := fs.String("federated-token-dir", "", "token step, with --federated-token-file: the directory the file is found again under at each token request, its links followed within it; the file's own directory when not given")
 	metadataAudience := fs.String("federated-token-metadata-audience", "", "token step: the audience of an identity token asked, at each token request, of the platform's metadata server at its fixed address, which is the client assertion, in place of --assertion-key and --federated-token-file; the credentials file holds sealKey")
-	tokenScope := fs.String("token-scope", "", "token step: the scope the token request asks for")
+	serviceAccount := fs.String("signed-by-service-account", "", "token step: the service account the credentials API, at its fixed address, signs a JWT-bearer assertion as, authenticated by the compute's access token from the platform's metadata server, in place of --client-id, --assertion-key and the federated forms; with --token-subject and --token-scope; the credentials file holds sealKey")
+	subject := fs.String("token-subject", "", "token step, with --signed-by-service-account: the subject the assertion names, which the service account acts as")
+	tokenScope := fs.String("token-scope", "", "token step: the scope the token request asks for; with --signed-by-service-account, the assertion's scope, of the read-only Admin SDK scopes alone")
 	tokenOnly := fs.Bool("token-only", false, "token step: obtain an access token and write it on stdout sealed under a key derived from the step's credential, instead of reading a request; an acquisition is then handed it in "+httpsource.SealedTokenVariable)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 0 || *endpoint == "" || *paths == "" {
-		fmt.Fprintln(stderr, "usage: adapter-http --endpoint URL --paths /A,/B [--check [--check-path /P]] [--credentials FILE (--bearer MEMBER | --credential-header NAME=MEMBER)] [--header NAME=VALUE]... [--methods GET,POST] [--ca-file FILE] [--max-output BYTES] [--timeout D] [--token-endpoint URL --client-id ID (--assertion-key MEMBER [--assertion-x5t T | --assertion-x5t-s256 T] | --federated-token-file FILE [--federated-token-dir DIR] | --federated-token-metadata-audience AUDIENCE) [--token-scope S] [--token-only]]")
+		fmt.Fprintln(stderr, "usage: adapter-http --endpoint URL --paths /A,/B [--check [--check-path /P]] [--credentials FILE (--bearer MEMBER | --credential-header NAME=MEMBER)] [--header NAME=VALUE]... [--methods GET,POST] [--ca-file FILE] [--max-output BYTES] [--timeout D] [--token-endpoint URL --client-id ID (--assertion-key MEMBER [--assertion-x5t T | --assertion-x5t-s256 T] | --federated-token-file FILE [--federated-token-dir DIR] | --federated-token-metadata-audience AUDIENCE) [--token-scope S] [--token-only] | --token-endpoint URL --signed-by-service-account SA --token-subject S --token-scope S [--token-only]]")
 		return 2
 	}
 	if *checkPath != "" && !*check {
@@ -101,9 +103,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		Headers: headers, Paths: split(*paths), Methods: split(*methods), MaxOutput: *maxOutput, CAFile: *caFile,
 		CheckPath: *checkPath,
 	}
-	if *tokenEndpoint != "" || *clientID != "" || *assertionKey != "" || *federatedTokenFile != "" || *federatedTokenDir != "" || *metadataAudience != "" || *assertionX5T != "" || *assertionX5TS256 != "" || *tokenScope != "" || *tokenOnly {
+	if *tokenEndpoint != "" || *clientID != "" || *assertionKey != "" || *federatedTokenFile != "" || *federatedTokenDir != "" || *metadataAudience != "" || *serviceAccount != "" || *subject != "" || *assertionX5T != "" || *assertionX5TS256 != "" || *tokenScope != "" || *tokenOnly {
 		cfg.Token = &httpsource.TokenStep{Endpoint: *tokenEndpoint, ClientID: *clientID, KeyMember: *assertionKey, FederatedTokenFile: *federatedTokenFile,
-			FederatedTokenDir: *federatedTokenDir, MetadataAudience: *metadataAudience, X5T: *assertionX5T, X5TS256: *assertionX5TS256, Scope: *tokenScope}
+			FederatedTokenDir: *federatedTokenDir, MetadataAudience: *metadataAudience, ServiceAccount: *serviceAccount, Subject: *subject, X5T: *assertionX5T, X5TS256: *assertionX5TS256, Scope: *tokenScope}
 		// A sealed token is for an acquisition; a check and the token
 		// step alone obtain their own.
 		if !*check && !*tokenOnly {

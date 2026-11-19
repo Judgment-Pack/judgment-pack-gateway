@@ -813,6 +813,21 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   that answers 429 or 503 is a throttled answer (below), exit 7; no diagnostic
   carries the key, the federated token, the assertion, the token or the token endpoint's answer.
   `--check` obtains a token as an acquisition does.
+- `--signed-by-service-account SA --token-subject S --token-scope SCOPES`, in place of
+  `--client-id`, `--assertion-key` and the federated forms, has the token step obtain its token by
+  the JWT-bearer grant with an assertion the service account credentials API signs
+  ([ADR-0045](../docs/adr/0045-a-delegated-subject-token-signed-by-the-credentials-api.md)): an
+  access token of the compute's identity from the metadata server
+  (`GET http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token`, under
+  the rules of the identity token below), then
+  `POST https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/SA:signJwt` under it for
+  the claims `iss` SA, `sub` S, `scope` SCOPES, `aud` the token endpoint, `iat` and `exp` five
+  minutes apart, then `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer` with the signed JWT
+  as `assertion`. Both addresses are built in; no flag or environment variable names another. SA
+  is `NAME@PROJECT.iam.gserviceaccount.com`; SCOPES are the Admin SDK's read-only scopes alone,
+  each once. A signed JWT of other claims is not sent. Every failure before the token request
+  exits 3, a 429 or 503 is a throttled answer, exit 7, and no diagnostic quotes an answer, the
+  subject, the scopes or SA. The credentials file holds `sealKey`; no key is read.
 - `--federated-token-metadata-audience AUDIENCE`, in place of `--assertion-key` and
   `--federated-token-file`, has the token step ask the Google Cloud metadata server
   (`Metadata-Flavor: Google`, `/computeMetadata/v1`) of the compute it runs on for the

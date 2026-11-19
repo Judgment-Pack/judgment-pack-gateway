@@ -4,12 +4,12 @@
   "Read by adapter-http (adapters/httpsource, ParseRequest and admits), which is what refuses a request before a connection is made, and by the engine (go/http_request_target.go, tokenStepAdmits), which refuses the same requests before a token is obtained for one, each in a test of its own.",
   "Each case names the rule it is written for: an accepted case stands on the accepting side of that rule, and a refused case breaks it. Every rule has a case on each side. An accepted case gives the path sent under the endpoint and the query sent, byte for byte; adapter-http's test holds the request it forms to both.",
   "endpoint, paths and methods are those every case is read under, unless the case gives its own. padLinkTo: the request's link is extended with \"a\" until it is that many bytes long, and an accepted case's rawQuery by the same \"a\"s.",
-  "Written by hand from ADR-0040, not computed by an implementation. Every name, host and identifier is invented."
+  "Written by hand from ADR-0040 and ADR-0045 (decision 9, the numeric-id and alnum-id rules), not computed by an implementation. Every name, host and identifier is invented."
  ],
  "endpoint": "https://graph.example",
  "paths": ["/v1.0/users", "/v1.0/users/delta", "/v1.0/groups/{id}/members", "/v1.0/servicePrincipals/{id}"],
  "methods": ["GET"],
- "rules": ["fixed-path", "template", "method", "form", "query-object", "link-form", "link-scheme", "link-host", "link-port", "link-user", "link-fragment", "link-percent", "link-dot", "link-empty-segment", "link-backslash", "link-path", "link-query", "link-base-path", "link-loopback"],
+ "rules": ["fixed-path", "template", "method", "form", "query-object", "link-form", "link-scheme", "link-host", "link-port", "link-user", "link-fragment", "link-percent", "link-dot", "link-empty-segment", "link-backslash", "link-path", "link-query", "link-base-path", "link-loopback", "numeric-id", "alnum-id"],
  "accepted": [
   {"rule": "fixed-path", "request": {"path": "/v1.0/users", "method": "GET"}, "path": "/v1.0/users", "rawQuery": ""},
   {"rule": "template", "request": {"path": "/v1.0/groups/6a1f0c2e-4b7d-4e9a-8c3f-2d5e7b9a1c40/members", "method": "GET"}, "path": "/v1.0/groups/6a1f0c2e-4b7d-4e9a-8c3f-2d5e7b9a1c40/members", "rawQuery": ""},
@@ -34,7 +34,14 @@
   {"rule": "link-base-path", "request": {"link": "https://records.example/api/search?cursor=c-2", "method": "GET"}, "endpoint": "https://records.example/api", "paths": ["/search"], "path": "/search", "rawQuery": "cursor=c-2"},
   {"rule": "link-base-path", "request": {"link": "https://records.example/api/search", "method": "GET"}, "endpoint": "https://records.example/api/", "paths": ["/search"], "path": "/search", "rawQuery": ""},
   {"rule": "link-loopback", "request": {"link": "http://127.0.0.1:8080/v1.0/users?$skiptoken=p2", "method": "GET"}, "endpoint": "http://127.0.0.1:8080", "path": "/v1.0/users", "rawQuery": "$skiptoken=p2"},
-  {"rule": "link-loopback", "request": {"link": "http://[::1]:8080/v1.0/users", "method": "GET"}, "endpoint": "http://[::1]:8080", "path": "/v1.0/users", "rawQuery": ""}
+  {"rule": "link-loopback", "request": {"link": "http://[::1]:8080/v1.0/users", "method": "GET"}, "endpoint": "http://[::1]:8080", "path": "/v1.0/users", "rawQuery": ""},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/115813357217846539498", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"], "path": "/directory/users/115813357217846539498", "rawQuery": ""},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/77777777777777777777777777777777", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"], "path": "/directory/users/77777777777777777777777777777777", "rawQuery": ""},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/0", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"], "path": "/directory/users/0", "rawQuery": ""},
+  {"rule": "numeric-id", "request": {"path": "/directory/users", "query": {"query": "email:alice@example.com"}, "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"], "path": "/directory/users", "rawQuery": "query=email%3Aalice%40example.com"},
+  {"rule": "alnum-id", "request": {"path": "/directory/groups/03x8tuzt3kzz0ym/members", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"], "path": "/directory/groups/03x8tuzt3kzz0ym/members", "rawQuery": ""},
+  {"rule": "alnum-id", "request": {"path": "/directory/groups/z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9/members", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"], "path": "/directory/groups/z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9z9/members", "rawQuery": ""},
+  {"rule": "alnum-id", "request": {"link": "https://directory.example/directory/groups/0abc9/members?pageToken=next-1", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"], "path": "/directory/groups/0abc9/members", "rawQuery": "pageToken=next-1"}
  ],
  "refused": [
   {"rule": "fixed-path", "request": {"path": "/v1.0/groups", "method": "GET"}},
@@ -110,14 +117,38 @@
   {"rule": "link-base-path", "request": {"link": "https://records.example/API/search", "method": "GET"}, "endpoint": "https://records.example/api", "paths": ["/search"]},
   {"rule": "link-loopback", "request": {"link": "http://localhost:8080/v1.0/users", "method": "GET"}, "endpoint": "http://127.0.0.1:8080"},
   {"rule": "link-loopback", "request": {"link": "http://[::2]:8080/v1.0/users", "method": "GET"}, "endpoint": "http://[::1]:8080"},
-  {"rule": "link-loopback", "request": {"link": "http://[::1:8080/v1.0/users", "method": "GET"}, "endpoint": "http://[::1]:8080"}
+  {"rule": "link-loopback", "request": {"link": "http://[::1:8080/v1.0/users", "method": "GET"}, "endpoint": "http://[::1]:8080"},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/777777777777777777777777777777777", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/12a4", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/alice@example.com", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/6a1f0c2e-4b7d-4e9a-8c3f-2d5e7b9a1c40", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/+1234", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/-1234", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/12.34", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/12%2F34", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/١٢", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "numeric-id", "request": {"path": "/directory/users/1234/members", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "alnum-id", "request": {"path": "/directory/groups/03X8tuzt3kzz0ym/members", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "alnum-id", "request": {"path": "/directory/groups/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz/members", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "alnum-id", "request": {"path": "/directory/groups/03x8-tuzt/members", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "alnum-id", "request": {"path": "/directory/groups/03x8_tuzt/members", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "alnum-id", "request": {"path": "/directory/groups/team@example.com/members", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "alnum-id", "request": {"path": "/directory/groups/../members", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "alnum-id", "request": {"path": "/directory/groups//members", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "alnum-id", "request": {"path": "/directory/groups/team.example/members", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "alnum-id", "request": {"path": "/directory/groups/0abc9", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]},
+  {"rule": "alnum-id", "request": {"link": "https://directory.example/directory/groups/team%40example.com/members", "method": "GET"}, "endpoint": "https://directory.example", "paths": ["/directory/users/{numericId}", "/directory/groups/{alnumId}/members", "/directory/users"]}
  ],
  "templates": {
   "accepted": [
    "/v1.0/groups/{id}/members",
    "/{id}",
    "/v1.0/servicePrincipals/{id}",
-   "/v1.0/users"
+   "/v1.0/users",
+   "/directory/users/{numericId}",
+   "/directory/groups/{alnumId}/members",
+   "/{alnumId}"
   ],
   "refused": [
    {"rule": "two-placeholders", "path": "/v1.0/groups/{id}/members/{id}"},
@@ -129,7 +160,16 @@
    {"rule": "other-brace", "path": "/v1.0/groups/{{id}}/members"},
    {"rule": "path-form", "path": "/v1.0/groups/{id}//members"},
    {"rule": "path-form", "path": "/v1.0/groups/{id}/../members"},
-   {"rule": "path-form", "path": "v1.0/groups/{id}"}
+   {"rule": "path-form", "path": "v1.0/groups/{id}"},
+   {"rule": "two-placeholders", "path": "/directory/groups/{alnumId}/members/{numericId}"},
+   {"rule": "two-placeholders", "path": "/directory/{id}/users/{numericId}"},
+   {"rule": "two-placeholders", "path": "/directory/users/{numericId}/{numericId}"},
+   {"rule": "within-a-segment", "path": "/directory/users/x{numericId}"},
+   {"rule": "within-a-segment", "path": "/directory/groups/{alnumId}.json"},
+   {"rule": "other-brace", "path": "/directory/users/{numericid}"},
+   {"rule": "other-brace", "path": "/directory/users/{numericId"},
+   {"rule": "other-brace", "path": "/directory/users/{email}"},
+   {"rule": "path-form", "path": "/directory/{numericId}//members"}
   ]
  }
 }

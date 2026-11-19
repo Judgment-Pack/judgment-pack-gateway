@@ -1,0 +1,26 @@
+{
+  "bindingVersion": "1",
+  "platform": "google-workspace-reports",
+  "operations": {
+    "live": {
+      "shape": "http",
+      "endpoint": "https://admin.googleapis.com",
+      "paths": [
+        "/admin/reports/v1/activity/users/all/applications/admin",
+        "/admin/reports/v1/activity/users/all/applications/login",
+        "/admin/reports/v1/activity/users/all/applications/token",
+        "/admin/reports/v1/activity/users/all/applications/user_accounts",
+        "/admin/reports/v1/activity/users/all/applications/groups",
+        "/admin/reports/v1/activity/users/all/applications/saml",
+        "/admin/reports/v1/activity/users/all/applications/drive",
+        "/admin/reports/v1/activity/users/all/applications/mobile"
+      ],
+      "methods": [
+        "GET"
+      ],
+      "bearer": "token",
+      "checkPath": "/admin/reports/v1/activity/users/all/applications/admin",
+      "licence": "service API: the operator's own service terms"
+    }
+  }
+}

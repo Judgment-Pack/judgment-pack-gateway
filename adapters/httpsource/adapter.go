@@ -458,6 +458,8 @@ func tokenCredentials(cfg Config) (*tokenSigner, []string, error) {
 		return nil, nil, tokenFailure(TokenNoCredential, "the token step's key is a credentials member, and no --credentials file is given")
 	} else if cfg.Token.MetadataAudience != "" {
 		return nil, nil, tokenFailure(TokenNoCredential, "a metadata token step's seal key is the credentials member sealKey, and no --credentials file is given")
+	} else if cfg.Token.ServiceAccount != "" {
+		return nil, nil, tokenFailure(TokenNoCredential, "a credentials API token step's seal key is the credentials member sealKey, and no --credentials file is given")
 	}
 	signer, err := readTokenCredential(cfg.Token, members)
 	if err != nil {

@@ -1,0 +1,27 @@
+{
+  "bindingVersion": "1",
+  "platform": "google-workspace-directory",
+  "operations": {
+    "live": {
+      "shape": "http",
+      "endpoint": "https://admin.googleapis.com",
+      "paths": [
+        "/admin/directory/v1/users",
+        "/admin/directory/v1/users/{numericId}",
+        "/admin/directory/v1/groups",
+        "/admin/directory/v1/groups/{alnumId}",
+        "/admin/directory/v1/groups/{alnumId}/members",
+        "/admin/directory/v1/customer/my_customer/roles",
+        "/admin/directory/v1/customer/my_customer/roles/{numericId}",
+        "/admin/directory/v1/customer/my_customer/roleassignments",
+        "/admin/directory/v1/customer/my_customer/roleassignments/{numericId}"
+      ],
+      "methods": [
+        "GET"
+      ],
+      "bearer": "token",
+      "checkPath": "/admin/directory/v1/customer/my_customer/roles",
+      "licence": "service API: the operator's own service terms"
+    }
+  }
+}

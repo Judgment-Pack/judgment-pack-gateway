@@ -2,7 +2,10 @@ package main
 
 // What an acquisition of an http source may name (docs/adr/0040-path-templates-and-links-on-an-http-source.md):
 // a binding's path is fixed, or a template whose one placeholder, {id}, is
-// a whole segment a GUID fills and nothing else, from engine version 31;
+// a whole segment a GUID fills and nothing else, from engine version 31,
+// or, from engine version 33, {numericId}, 1 to 32 ASCII digits, or
+// {alnumId}, 1 to 64 lowercase ASCII letters and digits
+// (docs/adr/0045-a-delegated-subject-token-signed-by-the-credentials-api.md, decision 9);
 // and a request names a path among them with a query object, or a link --
 // an absolute URL the endpoint handed out, a next page's or a delta's --
 // under the binding's endpoint. adapter-http is what holds a request to
@@ -35,31 +38,95 @@ const (
 	httpTemplatesVersion = "31"
 )
 
-// httpTemplateProblem holds a binding path's placeholder to its rule: at
-// most one {id}, a whole segment, and no other brace. It returns the path
-// with a GUID in place of {id}, which the rest of a path's rules then hold.
-func httpTemplateProblem(path string) (string, error) {
-	switch strings.Count(path, httpIDPlaceholder) {
-	case 0:
-	case 1:
-		for _, segment := range strings.Split(path, "/") {
-			if strings.Contains(segment, httpIDPlaceholder) && segment != httpIDPlaceholder {
-				return "", fmt.Errorf("carries %s within a segment; the placeholder is a whole segment", httpIDPlaceholder)
-			}
-		}
-	default:
-		return "", fmt.Errorf("carries more than one %s placeholder", httpIDPlaceholder)
+// httpPlaceholder is a placeholder an http path may carry as a whole
+// segment: the form of what fills it, a value of that form a template is
+// held to a path's rules with, and the engine version a binding may carry
+// it from. {id} is ADR-0040's, unchanged; {numericId} and {alnumId} are
+// ADR-0045's, narrow forms of their own beside it, not a widening of it.
+type httpPlaceholder struct {
+	name, check, version string
+	admits               func(string) bool
+}
+
+var httpPlaceholders = []httpPlaceholder{
+	{httpIDPlaceholder, httpTemplateCheckID, httpTemplatesVersion, isGUID},
+	{"{numericId}", "0", delegatedTokenVersion, isNumericID},
+	{"{alnumId}", "0", delegatedTokenVersion, isAlnumID},
+}
+
+// isNumericID is whether s is 1 to 32 ASCII digits and nothing else.
+func isNumericID(s string) bool {
+	if s == "" || len(s) > 32 {
+		return false
 	}
-	filled := strings.Replace(path, httpIDPlaceholder, httpTemplateCheckID, 1)
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isAlnumID is whether s is 1 to 64 lowercase ASCII letters and digits and
+// nothing else.
+func isAlnumID(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !('0' <= s[i] && s[i] <= '9' || 'a' <= s[i] && s[i] <= 'z') {
+			return false
+		}
+	}
+	return true
+}
+
+// httpPlaceholderOf is the placeholder a path carries, nil when none.
+func httpPlaceholderOf(path string) *httpPlaceholder {
+	for i := range httpPlaceholders {
+		if strings.Contains(path, httpPlaceholders[i].name) {
+			return &httpPlaceholders[i]
+		}
+	}
+	return nil
+}
+
+// httpTemplateProblem holds a binding path's placeholder to its rule: at
+// most one placeholder of any kind, a whole segment, and no other brace.
+// It returns the path with a value of the placeholder's form in its place,
+// which the rest of a path's rules then hold.
+func httpTemplateProblem(path string) (string, error) {
+	count := 0
+	for _, p := range httpPlaceholders {
+		count += strings.Count(path, p.name)
+	}
+	p := httpPlaceholderOf(path)
+	switch {
+	case count == 0:
+		if strings.ContainsAny(path, "{}") {
+			return "", fmt.Errorf("carries a brace that is not the %s placeholder", httpIDPlaceholder)
+		}
+		return path, nil
+	case count > 1 && strings.Count(path, httpIDPlaceholder) > 1:
+		return "", fmt.Errorf("carries more than one %s placeholder", httpIDPlaceholder)
+	case count > 1:
+		return "", fmt.Errorf("carries more than one placeholder")
+	}
+	for _, segment := range strings.Split(path, "/") {
+		if strings.Contains(segment, p.name) && segment != p.name {
+			return "", fmt.Errorf("carries %s within a segment; the placeholder is a whole segment", p.name)
+		}
+	}
+	filled := strings.Replace(path, p.name, p.check, 1)
 	if strings.ContainsAny(filled, "{}") {
-		return "", fmt.Errorf("carries a brace that is not the %s placeholder", httpIDPlaceholder)
+		return "", fmt.Errorf("carries a brace that is not the %s placeholder", p.name)
 	}
 	return filled, nil
 }
 
 // httpTemplated is whether a binding path is a template.
 func httpTemplated(path string) bool {
-	return strings.Contains(path, httpIDPlaceholder)
+	return httpPlaceholderOf(path) != nil
 }
 
 // isGUID is whether s is a GUID in its 8-4-4-4-12 form: 36 characters,
@@ -101,13 +168,14 @@ func httpTemplateMatches(template, path string) bool {
 	if !httpTemplated(template) {
 		return template == path
 	}
+	p := httpPlaceholderOf(template)
 	want, got := strings.Split(template, "/"), strings.Split(path, "/")
 	if len(want) != len(got) {
 		return false
 	}
 	for i := range want {
-		if want[i] == httpIDPlaceholder {
-			if !isGUID(got[i]) {
+		if want[i] == p.name {
+			if !p.admits(got[i]) {
 				return false
 			}
 		} else if want[i] != got[i] {
@@ -227,16 +295,23 @@ func httpQueryObject(request *vObject) bool {
 }
 
 // httpTemplatesMatch refuses a binding whose http paths carry a template
-// under a configuration of an engine version before httpTemplatesVersion:
-// the version a file states is the reading of it its author reviewed, and
-// a path that admits every GUID is not a path an earlier reading admitted.
+// under a configuration of an engine version before the placeholder's:
+// {id} before httpTemplatesVersion, {numericId} and {alnumId} before
+// delegatedTokenVersion. The version a file states is the reading of it its
+// author reviewed, and a path that admits every value of a form is not a
+// path an earlier reading admitted.
 func httpTemplatesMatch(b binding, ref, version string) error {
-	if b.live == nil || b.live.http == nil || versionAtLeast(version, httpTemplatesVersion) {
+	if b.live == nil || b.live.http == nil {
 		return nil
 	}
 	for i, path := range b.live.http.paths {
-		if httpTemplated(path) {
+		p := httpPlaceholderOf(path)
+		switch {
+		case p == nil || versionAtLeast(version, p.version):
+		case p.name == httpIDPlaceholder:
 			return fmt.Errorf("binding %s's live operation names a path template, paths[%d], a version-%s member; engineVersion %s has none", ref, i, httpTemplatesVersion, version)
+		default:
+			return fmt.Errorf("binding %s's live operation names a path template of %s, paths[%d], a version-%s member; engineVersion %s has none", ref, p.name, i, p.version, version)
 		}
 	}
 	return nil
