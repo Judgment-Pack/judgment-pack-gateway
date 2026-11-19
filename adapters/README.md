@@ -1042,7 +1042,12 @@ cannot be read, is `credential-scope-unknown`. The token sources
 
 - `metadata`: the metadata server of the platform's own compute, no key on disk; the live
   credentials file holds `{"sealKey": "<64 hex digits>"}`, the key the list token is sealed
-  under while the signer holds it.
+  under while the signer holds it. The metadata server is asked at the link-local IP literal
+  `169.254.169.254` built into the adapter, with the client adapter-http's metadata token step
+  uses (ADR-0043, gateway #510): no member, flag or environment variable names the address, no
+  resolver or proxy is consulted, a connection to any other address is not made, no redirect is
+  followed, and an answer is taken only when it carries `Metadata-Flavor: Google` once and is
+  at most 64 KiB.
 - `key`: a service account's key in the live credentials file, the least preferred.
 
 **What the platform grants the source.** `roles/cloudasset.viewer` on each configured project,
