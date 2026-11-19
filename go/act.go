@@ -494,6 +494,14 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	}
 	defer g.release(sessionID)
 
+	// What the session holds for the receipt sink goes first (ADR-0049), as
+	// it does for /acquire: a receipt of the session not yet acknowledged is
+	// delivered again before the executor runs, and while it is not, the
+	// action is refused with the fixed sentence and nothing is sent.
+	if err := g.redeliver(sessionID); err != nil {
+		return nil, err
+	}
+
 	var result value
 	// A dispatch marker without its not-dispatched answer: the mutation may
 	// have been sent, so it is recorded as uncertain and never sent again.

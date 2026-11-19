@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "resyncRequired",
+    "message": "The delta token is no longer valid; read again from the first page.",
+    "innerError": {
+      "date": "2026-01-05T09:00:00",
+      "request-id": "00000000-0000-4000-8000-000000000164",
+      "client-request-id": "00000000-0000-4000-8000-000000000165"
+    }
+  }
+}

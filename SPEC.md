@@ -2346,10 +2346,41 @@ status:
   is counted as any failed call. The status is the endpoint's class, as a throttled answer's is. A token step's
   token endpoint that answers `410` is a refused token request, answered `400` as before, since
   a token request sends no reference. The text begins as a failed source's does.
+  A source whose binding declares, under `errorCodes.referenceExpired`, a pair of a status and
+  the endpoint's error code (`docs/design/engine-config.md`; ADR-0047) is answered the same
+  for an answer of that status whose error code is that code: `410`, the same `code`, nothing
+  of the endpoint's answer, the sentence naming the status the endpoint gave, for `400`
+
+  `{"code":"source_reference_expired","error":"source failed: the source's endpoint answered 400 Bad Request with an error code its binding declares an expired reference: the reference the request sent has expired; nothing was retained or minted"}`
+
+  An undeclared pair is a failed source, `400`, as before.
+- **`403`** with the code `source_access_refused`, for a source of shape `http` whose adapter
+  reported an access refusal ("Adapter sources", below): its endpoint answered `403`, or `401`
+  to a request that carried no token a token step obtained. The body is exactly, for `403`,
+
+  `{"code":"source_access_refused","endpointCode":"unlisted","endpointStatus":403,"error":"source failed: the source's endpoint answered 403 Forbidden: it refused this read to the source's credential; nothing was retained or minted"}`
+
+  and for `401` the same with `401` and `401 Unauthorized`, whatever the endpoint's answer
+  held: nothing of its body or its headers, and nothing of the adapter's stderr, reaches the
+  caller. `endpointStatus` is the endpoint's status. `endpointCode` is the endpoint's error
+  code when the source's binding lists it under `errorCodes.accessRefused`, the binding's own
+  copy of it, and `unlisted` otherwise, including where the body could not be read for a code.
+  An answer past the source's output bound is classed by its status all the same, as a `401`,
+  `403`, `410` and `429` are above, and no code is read from it; only a success past the bound
+  is a failed source for that reason.
+  The answer is `403` for an endpoint's `401` too, since a `401` of the gateway's is the
+  caller's own credential refused. It is not receipted and takes no `callIndex`, and the session
+  is left open. A source's `401` to a token its token step obtained is the token refused,
+  answered `400` with the token step's fixed sentence as before, and a token endpoint's `401` is
+  a refused token request. The text begins as a failed source's does.
 - **`503`** with `{"error":"admission is closed for maintenance; nothing was admitted"}` while
   the gateway's admission is closed (`docs/design/mcp-server.md`, "Rotation"). It carries no
   `Retry-After`: the closure ends when its operator reopens admission, which the gateway does
   not know in advance.
+
+A gateway whose configuration names a receipt sink (§6a) has one more answer. It is **`503`**
+with `code` `receipt_not_forwarded` beside the fixed sentence of §6a, and it is the one refused
+acquisition after which a receipt is in the store.
 
 An acquisition is one receipted read, however many runs of its adapter it takes: a token
 step's token request, the request, and the token request and run once more after a sealed
@@ -2693,6 +2724,36 @@ the report existed. `adapter-http` reports a `410` from the source's endpoint so
 from its token endpoint as a refused token request (status 4), as before; its stderr for the
 answer is the diagnostic it wrote for any refusing answer, unchanged.
 
+A source of a binding that declares `errorCodes.referenceExpired` may also exit with status
+**8** and write `{"referenceExpired": {"code": "syncStateNotFound", "status": 400}}`: exactly
+`status` and `code`, held as above, and read only when the two are a pair the source's binding
+declares. A pair it does not declare, or this form from a source whose binding declares none, is
+a failed source as before. `adapter-http` reports so an answer whose status and error code, read
+from at most 4 KiB of its body (ADR-0047), are a declared pair.
+
+**An access refusal, shape `http`.** An adapter of a source declared `http` whose endpoint
+answered `403`, or `401` to a request that carried no token a token step obtained, may exit with
+status **10** and write on stdout exactly
+
+```json
+{"accessRefused": {"code": "unlisted", "status": 403}}
+```
+
+— one member, `accessRefused`, an object of exactly `status`, `401` or `403`, and `code`, the
+string `unlisted` or a code of 1 to 64 ASCII letters, digits, `_`, `.` and `-`; each member once,
+held as the reports above are. The gateway reads stdout beside status 10 from a source declared
+`http` and from no other, from no token step's token request, and a `401` from no source with a
+token step, and answers the acquisition `403` with the code `source_access_refused` ("When an
+acquisition does not happen", above). It passes on the reported code only when the source's
+binding lists it under `errorCodes.accessRefused`, and `unlisted` otherwise. Status 10 from a
+source of another shape, or from a bare command, status 10 beside anything else on stdout, and
+the report beside any other status are a failed source, answered `400` with the stderr text, as
+before the report existed. `adapter-http` reads the error code at `errorCodes.at` from at most
+4 KiB of the body: exactly one JSON value, no member name repeated in any object, a string of
+the code form. It reports that code only when it is on the access list, and `unlisted` for any
+other body. Its stderr for the answer is the diagnostic it wrote for any refusing answer,
+unchanged.
+
 **A read-only refusal, shape `gcp-asset`.** The engine's source of a `gcp-asset` binding (above)
 refuses a credential it cannot show to be read-only by exiting with status **9** and writing on
 stdout exactly
@@ -3000,6 +3061,84 @@ name of its `continuation` in the directories `--witness-resume` and `--witness-
 sentences, and the runtime's `report` as it wrote it, with its `exit`. It
 exits `0` whenever it gave a report, as `gateway verify` does (§5a.2). The runtime is named by its
 path, version 0.28.0 or later.
+
+## 6a. Receipt forwarding
+
+A gateway whose engine configuration names `receiptSink` (engine version 35,
+`docs/design/engine-config.md`; ADR-0049) delivers each receipt `/acquire` mints to that one
+endpoint. `/acquire` answers only once the sink has acknowledged the receipt. Nothing here
+changes a receipt, a seal or the registry, and a receipt verifies (§4) with or without the
+sink.
+
+**The endpoint.** `receiptSink.url` is `https`, or plain `http` to a loopback address written
+as one: 127.0.0.0/8 in dotted decimal, or `[::1]`. A name, `localhost` included, is refused
+for plain http at load. The url carries no user, query or fragment. An `https` host is
+resolved by the system resolver when a connection is opened, never at load. No proxy is
+taken from the environment, the certificate is verified for the url's host, and no redirect
+is followed.
+
+**The delivery.** One `POST` per receipt, `Content-Type: application/json`. The body is the
+canonical JSON (§1.1) of exactly these members:
+- `deliveryVersion`, `"1"`;
+- `payloadDigest`, the receipt's `resultDigest`;
+- `receipt`, the stored receipt, whole;
+- `receiptDigest`, `sha256:` followed by the lowercase hexadecimal SHA-256 of the receipt's
+  canonical bytes (the line under `receipts/` without its line feed);
+- `payload`, the result as `/acquire` answers it. It is present only where
+  `receiptSink.payload` is `true` and the source keeps its payload. A source that keeps none
+  ("Payloads a gateway does not keep", §6) never has its result carried.
+
+**The acknowledgment.** A `200` whose body is exactly `{"acknowledged":"<receiptDigest>"}`,
+optionally followed by one line feed, naming the delivered receipt's digest. At most 512 bytes
+are read. Anything else is not an acknowledgment: another status, a redirect, another digest,
+another member, other whitespace, or a longer body.
+
+**Order and at least once.** A session's receipts are delivered in the order of their
+`callIndex`, one delivery at a time for the session. A receipt is sent, in the same bytes,
+until it is acknowledged. A sink keeps each `receiptDigest` once: the same receipt arrives
+again where its acknowledgment was lost. Receipts of different sessions are in no order to
+one another.
+
+**Retries and deadlines.**
+- A receipt is sent at most three times in one call, with waits of 250 ms and then 500 ms
+  between sends.
+- Each send is bounded as a whole by 5 seconds.
+- A call stops at the first receipt not acknowledged, so a failing sink adds at most 15.75
+  seconds to it.
+
+The source's timeout bounds the source's run alone; delivery starts after it and adds its
+time to the acquisition's.
+
+**When the sink does not acknowledge.** The answer is `503`, `Content-Type:
+application/json`, with no `Retry-After` and exactly this body:
+
+`{"error":"receipt not forwarded: the receipt sink did not acknowledge a receipt of this session; nothing was answered, and the receipt is held to be delivered again before the session's next acquisition or seal","code":"receipt_not_forwarded"}`
+
+It is the same whatever the cause: an unreachable sink, a send past its deadline, or an
+answer that is not the acknowledgment. Nothing of the sink's answer, the receipt or the result
+reaches the caller.
+
+The receipt is in the store at its `callIndex`, and the session is begun. The receipt is
+held, and is delivered again, oldest first with any other held receipt of the session:
+- before the session's next acquisition proceeds: before a delegation counts it, the grant is
+  asked or the source runs;
+- before an action (`/act`) of the session runs its executor;
+- before the session is sealed, for a caller that reaches the session's scope identifier.
+
+While a held receipt is not acknowledged, all three are answered with the same `503`. The
+acquisition and the action run nothing and mint nothing, and the session is not sealed. A held
+receipt is never answered to any caller.
+
+Held receipts are kept in the serving process's memory, and each is in the store. A session
+left open by a stop or a crash is sealed after the interruption (§3c, by `seal-open` or at the
+start) only once each receipt the store holds of it, oldest first, has been delivered and
+acknowledged; one whose receipts are not all acknowledged is left open and named (ADR-0049,
+consequences).
+
+**What is not forwarded.** These are unchanged:
+- an action's receipt minted by `/act`;
+- a seal and every other registry line;
+- a removal record.
 
 ## 7. Conformance
 

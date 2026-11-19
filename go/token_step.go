@@ -73,16 +73,14 @@ const delegatedTokenVersion = "33"
 const assertionAlgorithmVersion = "34"
 
 // keyServiceSignerVersion is the engine configuration version that admits
-// signingKeyVersion (ADR-0050): 36. Version 35 is reserved
-// (reservedEngineVersions) for the receipt forwarding hook (#505,
-// ADR-0049), built beside this change: whichever merges second is
-// renumbered here alone. engine.go reads this constant as the newest
-// version.
+// signingKeyVersion (ADR-0050): 36, the version after the receipt sink
+// (35, receiptSinkVersion, ADR-0049). engine.go reads this constant as the
+// newest version.
 const keyServiceSignerVersion = "36"
 
 // reservedEngineVersions are versions a change not yet merged takes: none
-// is read, and the newest version counts them.
-var reservedEngineVersions = map[string]string{"35": "the receipt forwarding hook (#505, ADR-0049)"}
+// is read, and the newest version counts them. None is reserved now.
+var reservedEngineVersions = map[string]string{}
 
 // assertionAlgorithms are tokenStep.assertionAlgorithm's values: the two an
 // RSA key signs. ES256 is not one: a P-256 key gives it, and nothing else
@@ -734,6 +732,11 @@ func (g *gatewayService) obtainToken(ctx context.Context, timeout time.Duration,
 	var expired *sourceReferenceExpired
 	if errors.As(err, &expired) {
 		err = expired.failed
+	}
+	// So is an access refusal: a token request is not the source's read.
+	var refused *sourceAccessRefused
+	if errors.As(err, &refused) {
+		err = refused.failed
 	}
 	switch exitCodeOf(err) {
 	case tokenExitNoCredential:

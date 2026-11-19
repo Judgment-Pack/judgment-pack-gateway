@@ -55,7 +55,7 @@ The seed stays required when a key service signs. It keys the arguments commitme
 
 ### Configuration
 
-`signingKeyVersion` is a member of engine configuration version 36 (version 35 is reserved for #505, ADR-0049; `keyServiceSignerVersion` is the one constant to renumber). It holds one key version's resource name in a closed form:
+`signingKeyVersion` is a member of engine configuration version 36 (version 35 is the receipt sink's, ADR-0049; `keyServiceSignerVersion` is the one constant to renumber). It holds one key version's resource name in a closed form:
 
 ```
 projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>/cryptoKeyVersions/<n>

@@ -410,6 +410,9 @@ func applyServeOptions(service *gatewayService, opts serveOptions) {
 	service.decisionRecords = opts.decisionRecords
 	service.witnessedBy = opts.witnessedBy
 	service.seedPath = opts.seedPath
+	if opts.receiptSink != nil {
+		service.forwarder = newReceiptForwarder(opts.receiptSink)
+	}
 }
 
 // engineStart is what serve --config judges before it loads the seed, in
@@ -934,6 +937,9 @@ type serveOptions struct {
 	// maxRequest bounds an /acquire body (--max-request).
 	maxRequest     int64
 	receiptVersion string
+	// receiptSink is the configuration's receipt sink (ADR-0049); nil for
+	// none, and for serve from the command line.
+	receiptSink *receiptSinkSpec
 	// identity, when set, is who may call: every request that acquires,
 	// seals or verifies carries a bearer token this issuer signed, and a
 	// receipt names the caller it proved. Nil records caller null.

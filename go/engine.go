@@ -110,12 +110,17 @@ import (
 // (assertionAlgorithmVersion) a token step's `assertionAlgorithm`, RS256 or
 // PS256 beside an RSA privateKey (docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md,
 // amendment #513; token_step.go): a file with the member is refused under an
-// earlier version, and a file without it signs as before. connect raises a file to
+// earlier version, and a file without it signs as before; and version 35
+// (receiptSinkVersion) the optional `receiptSink`, the endpoint each receipt
+// /acquire mints is delivered to before /acquire answers
+// (docs/adr/0049-a-receipt-is-acknowledged-by-the-sink-before-it-is-answered.md;
+// receipt_sink.go): a file with the member is refused under an earlier
+// version, and a file without it serves as before. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
-// were; it never lowers a configuration version, and it raises none to 31, 32, 33 or 34.
+// were; it never lowers a configuration version, and it raises none to 31, 32, 33, 34, 35 or 36.
 const engineVersion = keyServiceSignerVersion
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, keyServiceSignerVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -178,6 +183,9 @@ type engineConfig struct {
 	// source's sandbox and refuses to start unless each source would
 	// launch (sandbox_at_start.go); off unless the configuration sets it.
 	measureSandboxAtStart bool
+	// receiptSink is where each receipt /acquire mints is delivered before
+	// /acquire answers (engineVersion 35, receipt_sink.go); nil for none.
+	receiptSink *receiptSinkSpec
 	// storage names the PostgreSQL kind that keeps the store and the
 	// registry (engineVersion 24, storage_kind.go); nil when the filesystem
 	// kind keeps them at store and registry, as before the member. With it,
@@ -411,6 +419,7 @@ var engineMembers = map[string]bool{
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
 	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
 	"sealOpenAtStart": false, "signingKeyVersion": false, "signingPublicKey": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
+	"receiptSink": false,
 }
 
 var platformMembers = map[string]bool{
@@ -600,6 +609,16 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			return engineConfig{}, errors.New("engine configuration: measureSandboxAtStart, when present, is true or false")
 		}
 		cfg.measureSandboxAtStart = bool(on)
+	}
+	if value, present := obj.get("receiptSink"); present {
+		if !versionAtLeast(version, receiptSinkVersion) {
+			return engineConfig{}, fmt.Errorf("engine configuration: receiptSink is a version-%s member; engineVersion %s has no receiptSink", receiptSinkVersion, version)
+		}
+		sink, err := parseReceiptSink(value)
+		if err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
+		}
+		cfg.receiptSink = sink
 	}
 	for _, name := range []string{"rootSigner", "hostRuntime"} {
 		if _, present := obj.get(name); !present {
@@ -1653,7 +1672,8 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.live.http.checkPath != "" {
 				check = []string{"--check-path=" + b.live.http.checkPath}
 			}
-			spec := sourceSpec{argv: httpSourceArgv(adapter("adapter-http"), *b.live.http, p.credentials["live"], p.tokenStep), env: env, user: p.user, shape: "http", binding: p.binding, check: check, scope: p.scope, tokenStep: p.tokenStep != nil, notRetained: p.notRetained}
+			spec := sourceSpec{argv: httpSourceArgv(adapter("adapter-http"), *b.live.http, p.credentials["live"], p.tokenStep), env: env, user: p.user, shape: "http", binding: p.binding, check: check, scope: p.scope, tokenStep: p.tokenStep != nil, notRetained: p.notRetained,
+				errorCodes: b.live.http.errorCodes}
 			if spec.tokenStep {
 				spec.requestEndpoint = b.live.http.endpoint
 				spec.requestPaths = append([]string(nil), b.live.http.paths...)
@@ -2720,7 +2740,7 @@ func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, e
 // engineServeOptions is what `serve` runs for a configuration: the derived
 // sources, the receipt version the design assumes, and the defaults.
 func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec, identity *identityConfig) serveOptions {
-	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed}
+	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed, receiptSink: cfg.receiptSink}
 }
 
 // maxKeySetBytes bounds the issuer's key file.

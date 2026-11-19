@@ -417,7 +417,7 @@ func TestSigningKeyVersionIsAVersion36MemberOfItsForm(t *testing.T) {
 	if _, _, err := load(t, atVersion(t, assertionAlgorithmVersion, catalog, member(ksVersion1), platform)); err == nil || !strings.Contains(err.Error(), "version-36 member") {
 		t.Fatalf("version 34: %v", err)
 	}
-	if _, _, err := load(t, atVersion(t, "35", catalog, member(ksVersion1), platform)); err == nil || !strings.Contains(err.Error(), "unsupported engineVersion") {
+	if _, _, err := load(t, atVersion(t, receiptSinkVersion, catalog, member(ksVersion1), platform)); err == nil || !strings.Contains(err.Error(), "version-36 member") {
 		t.Fatalf("version 35: %v", err)
 	}
 	for _, bad := range []string{"", ksVersion1 + "x/", "projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1", "https://cloudkms.googleapis.com/v1/" + ksVersion1} {

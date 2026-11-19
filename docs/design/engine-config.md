@@ -62,7 +62,7 @@ entry is `{"file": …}`, and a live one's may carry `tokenStep` beside `file`. 
 absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"34"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"35"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
@@ -88,8 +88,9 @@ absolute.
   below), version 32 a token step's `federatedToken` ("A federated token from the
   platform's metadata server", below), version 33 a token step's `signedBy` and `subject`
   and an http path's `{numericId}` and `{alnumId}` ("A token step with a delegated subject
-  (engine version 33)", below), and version 34 a token step's `assertionAlgorithm` ("A live
-  operation's token step (engine version 21)", below). A
+  (engine version 33)", below), version 34 a token step's `assertionAlgorithm` ("A live
+  operation's token step (engine version 21)", below), and version 35 `receiptSink` ("A
+  receipt sink (engine version 35)", below). A
   file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -828,8 +829,8 @@ whose one operation is `live` of the `http` shape (gateway #384,
 }
 ```
 
-The members are exactly these, `methods`, `headers` and `checkPath` optional, and exactly one of
-`bearer` and `credentialHeader`:
+The members are exactly these, `methods`, `headers`, `checkPath` and `errorCodes` optional, and
+exactly one of `bearer` and `credentialHeader`:
 
 - `endpoint` is the base URL every request goes under, held to the endpoint form SPEC.md §1.2a
   gives a remote server — `https`, or `http` at a loopback address written as one, `localhost`
@@ -867,6 +868,19 @@ The members are exactly these, `methods`, `headers` and `checkPath` optional, an
   have no GUID to fill, with `GET` among `methods`, so a check asks for nothing an acquisition
   could not. Without it a check is the TLS handshake, or, to
   plaintext loopback, the connection alone.
+- `errorCodes` declares the endpoint's error codes the gateway may act on (gateway #514 and #524,
+  [ADR-0047](../adr/0047-an-endpoints-error-code-from-a-closed-list.md)): an object of exactly `at` and
+  at least one of `referenceExpired` and `accessRefused`. `at` is 1 to 4 member names, each 1 to
+  64 ASCII letters, digits, `_` and `-`, from the error object's top to the code (`["error",
+  "code"]` for an answer `{"error": {"code": …}}`). `referenceExpired` is 1 to 8 objects of
+  exactly `status` and `code`, the status a 4xx other than `401`, `403`, `410` and `429`: an
+  answer of that status whose code is that code is an expired reference ("An expired reference",
+  below). `accessRefused` is 1 to 16 codes an access refusal passes on ("An access refusal",
+  below). Every code is 1 to 64 ASCII letters, digits, `_`, `.` and `-`, once in its list, and
+  not `unlisted`. Only `adapter-http` reads the body, at most 4 KiB of it, and only a value of
+  these lists crosses to the gateway, which holds it to the same lists. It is a binding-format
+  member and needs no engine configuration version: the configuration pins the binding by
+  digest, and an engine written before it refuses a binding naming it.
 
 A path is sent as written, or refused when the binding is loaded (gateway #407). The adapter sets
 a request's path, the endpoint's decoded path followed by the request's, and leaves its escaping
@@ -935,7 +949,20 @@ body (SPEC.md §6, "When an acquisition does not happen"). It is not receipted a
 `callIndex`, the sealed token is kept, and the session is left open: the caller drops the
 reference it kept and reads again from its first value, in the same session or a new one. A
 `410` from the token step's token endpoint is a refused token request, and a `404` or a `400`
-from the endpoint is answered `400` as before.
+from the endpoint is answered `400` as before, unless the binding's `errorCodes.referenceExpired`
+declares its status beside the error code it carries (ADR-0047). A declared pair is answered as the
+`410` is, with a sentence that names the status the endpoint gave.
+
+**An access refusal** (gateway #524, ADR-0047). When the endpoint answers `403`, or `401` to a
+request that carried no token a token step obtained, `/acquire` answers `403` with
+`"code": "source_access_refused"`, `endpointStatus` (the endpoint's `401` or `403`), and
+`endpointCode`, beside the gateway's own sentence. `endpointCode` is the endpoint's error code when
+`errorCodes.accessRefused` lists it, and `unlisted` otherwise, including for a body over 4 KiB, not
+JSON, without the code, or with a code of another type. Nothing of the body reaches the caller. It
+is not receipted and takes no `callIndex`, the sealed token is kept, and the session is left open.
+A `401` to a token the token step obtained is the token refused: the token is dropped, and the
+answer is the token step's fixed sentence, as before. A token endpoint's own `401` is a refused
+token request.
 
 **Paging is the caller's** (gateway #389). The engine keeps no cursor, no high-water mark and no
 "since" for a source of this shape, or for any generic source: each `/acquire` is one request to
@@ -2591,12 +2618,40 @@ endpoint with `$` rather than `%24`, and its statement is unchanged. To bind tem
 `engineVersion` to `"31"`. A gateway older than this one refuses a version-31 file by its
 version.
 
+## A receipt sink (engine version 35)
+
+Version 35 adds the optional `receiptSink` member
+([ADR-0049](../adr/0049-a-receipt-is-acknowledged-by-the-sink-before-it-is-answered.md),
+SPEC.md §6a, gateway #505). Each receipt `/acquire` mints is delivered to this one endpoint,
+and acknowledged by it, before `/acquire` answers.
+
+```json
+"receiptSink": {"url": "https://audit-log.example/receipts", "payload": false}
+```
+
+- `url` is required: 1 to 2048 bytes, absolute, with no user, query or fragment. It is
+  `https`, or plain `http` only to a loopback address written as one: `127.0.0.1` (any of
+  127.0.0.0/8) or `[::1]`. A name, `localhost` included, is refused for plain http, so a
+  plain-http sink is reached without a name being resolved.
+- `payload` is optional, `true` or `false`, and `false` when absent. With `true` the delivery
+  carries the result beside its digest, except for a platform whose `artifact` is
+  `"not-retained"`: its results are never carried.
+- Any other member is refused by name. The member under version 34 or earlier is refused as
+  `receiptSink is a version-35 member; engineVersion <n> has no receiptSink`. A refusal
+  repeats no value of the url.
+
+Without the member, `/acquire` answers as it did before. With it, a sink that does not
+acknowledge refuses the acquisition `503` with `code` `receipt_not_forwarded`. The receipt is
+held, and the session's next acquisition and its seal deliver it first and are refused until
+it is acknowledged. The delivery, acknowledgment, retry and deadline rules are SPEC.md §6a's.
+The member names no credential: the sink checks each receipt against the gateway's public
+key, which it pins as any verifier does.
+
 ## A signer in a key service (engine version 36)
 
 From engine version 36, `signingKeyVersion` names one Ed25519 key version in Cloud KMS
 (`EC_SIGN_ED25519`), which signs the gateway's receipts, seals and descriptor statements in place
-of the seed's key ([ADR-0050](../adr/0050-an-external-signer-in-a-key-service.md), #431). Version
-35 is reserved for the receipt forwarding hook (#505).
+of the seed's key ([ADR-0050](../adr/0050-an-external-signer-in-a-key-service.md), #431).
 
 ```json
 "signingKeyVersion": "projects/example-project/locations/global/keyRings/receipts/cryptoKeys/gateway/cryptoKeyVersions/1",
