@@ -55,10 +55,19 @@ func newMetadataStub(t *testing.T, token func() string) *metadataStub {
 		s.mu.Unlock()
 		answer(w, r)
 	}))
-	previous := metadataBase
-	metadataBase = s.server.URL
-	t.Cleanup(func() { metadataBase = previous; s.server.Close() })
+	t.Cleanup(s.server.Close)
+	pointMetadataAt(t, s.server.URL)
 	return s
+}
+
+// pointMetadataAt points metadataBase at base for the rest of the test and
+// restores it when the test ends, so no test leaves another the stand-in's
+// address in place of the fixed one, in whatever order they run.
+func pointMetadataAt(t *testing.T, base string) {
+	t.Helper()
+	previous := metadataBase
+	metadataBase = base
+	t.Cleanup(func() { metadataBase = previous })
 }
 
 func (s *metadataStub) answerWith(answer func(w http.ResponseWriter, r *http.Request)) {
@@ -394,7 +403,7 @@ func TestMetadataServerUnreachableFailsClosed(t *testing.T) {
 		t.Fatalf("a metadata server that does not answer: %v", err)
 	}
 	closed := httptest.NewServer(http.NotFoundHandler())
-	metadataBase = closed.URL
+	pointMetadataAt(t, closed.URL)
 	closed.Close()
 	if _, err := ObtainSealed(context.Background(), cfg); !refusedWith(err, "could not be reached in time") {
 		t.Fatalf("a metadata server that is not there: %v", err)
@@ -415,7 +424,7 @@ func TestMetadataAddressIsReachedFromNothingTheAdapterIsGiven(t *testing.T) {
 	stub.federated = func() string { return identity }
 	decoy := newMetadataStub(t, func() string { return identity })
 	closed := httptest.NewServer(http.NotFoundHandler())
-	metadataBase = closed.URL
+	pointMetadataAt(t, closed.URL)
 	closed.Close()
 	host := strings.TrimPrefix(decoy.server.URL, "http://")
 	t.Setenv("GCE_METADATA_HOST", host)
@@ -428,7 +437,7 @@ func TestMetadataAddressIsReachedFromNothingTheAdapterIsGiven(t *testing.T) {
 		t.Fatal("the environment steered the metadata request")
 	}
 	// The client dials the metadata server's address and port alone.
-	metadataBase = decoy.server.URL
+	pointMetadataAt(t, decoy.server.URL)
 	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("another address was dialed") }))
 	defer other.Close()
 	client, err := metadataClient()
@@ -443,6 +452,40 @@ func TestMetadataAddressIsReachedFromNothingTheAdapterIsGiven(t *testing.T) {
 		if strings.Contains(field.Name, "Metadata") && field.Name != "MetadataAudience" {
 			t.Fatalf("TokenStep.%s names more of the metadata server than its audience", field.Name)
 		}
+	}
+}
+
+// The metadata request takes no proxy from the environment, since a proxy
+// would carry it off the link. The client's transport has no proxy function
+// at all: Go's environment proxy lets a loopback address by, so the
+// stand-in's hits alone could not tell. With every proxy variable naming a
+// stand-in proxy, the request reaches the metadata server directly and the
+// proxy is asked nothing. The request is made with the metadata client
+// alone, so no other client of this package reads the proxy variables (Go
+// reads them once per process) while they are set.
+func TestMetadataRequestTakesNoProxyFromTheEnvironment(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("the proxy was asked") }))
+	defer proxy.Close()
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
+		t.Setenv(name, proxy.URL)
+	}
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	meta := newMetadataStub(t, func() string { return "identity" })
+	client, err := metadataClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transport, ok := client.Transport.(*http.Transport); !ok || transport.Proxy != nil {
+		t.Fatal("the metadata client's transport takes a proxy")
+	}
+	resp, err := client.Get(metadataBase + metadataIdentityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if meta.hits.Load() != 1 {
+		t.Fatalf("the metadata server was asked %d times, not once", meta.hits.Load())
 	}
 }
 

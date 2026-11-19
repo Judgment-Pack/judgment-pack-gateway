@@ -337,7 +337,8 @@ server (`federatedToken`, the engine configuration version after the path-templa
 #502; [ADR-0043](docs/adr/0043-a-federated-token-from-the-platforms-metadata-server.md)) presents
 the compute's own identity, not a file the platform's user holds, so every process on that compute
 can ask for an identity token and the separation by the platform's user above does not hold for
-that credential; its access token is sealed under the credentials file's `sealKey` instead.
+that credential; its access token is sealed under the credentials file's `sealKey` instead,
+which the adapter checks at the source's first acquisition, not the engine at load.
 
 **A read-only asset inventory source is one more program that holds a credential, with the
 platform's user; the signer holds its list token sealed** (engine configuration version 29;

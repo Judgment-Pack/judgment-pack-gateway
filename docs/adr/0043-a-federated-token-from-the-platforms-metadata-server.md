@@ -116,8 +116,9 @@ gains nothing but reach on IPv6-only compute (below).
 ### Consequences
 
 - Good, because no sidecar is needed and the identity token is never on disk.
-- Good, because nothing a configuration, a flag or the environment holds can point this path at
-  another host, and no DNS answer can.
+- Good, because no software input can point this path at another host: no configuration member,
+  flag, environment variable or DNS answer. The network path to the link-local address (the
+  host's routes and the link itself) is the platform's, as the address is.
 - Bad, because the identity token is the compute's identity, not the platform's user's. Every
   process on that compute can ask the metadata server for an identity token of any audience,
   the signer's user included. The per-platform user separation the file form has does not hold

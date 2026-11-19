@@ -1890,7 +1890,10 @@ and writes it nowhere. Any other answer, and a server that is not reached, is th
 sentence above, and no token is requested. A 429 or 503 carrying the header is a throttled answer,
 as the token endpoint's is. The live credentials file holds `sealKey`, a string of at least 32
 bytes that the sealed token's key is derived from, since the identity token changes at the
-metadata server's will. The identity token is the compute's: every process on it can ask for
+metadata server's will. `sealKey` is checked by the adapter when it first obtains a token, at
+the source's first acquisition or its `--check`, not at engine load. A missing or short one is
+the no-credential sentence there, since the engine never reads the live credentials file. The
+identity token is the compute's: every process on it can ask for
 one, so this form does not hold platforms apart by their users as the file form does. Under an
 earlier version `federatedToken` is refused by name, and a file without it loads and derives its
 sources as before.
