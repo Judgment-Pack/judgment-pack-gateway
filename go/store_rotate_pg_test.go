@@ -9,6 +9,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -289,6 +290,17 @@ func TestAPostgresStoreRotatedAwayFromIsMarkedAndAStartOnItIsRefusedByName(t *te
 	}
 	if pgLeaseLive(t, db) {
 		t.Fatal("a refused start left the start lease live")
+	}
+
+	// a removal is refused on it too: it would append to the registry the
+	// new store's continuation names
+	seed := filepath.Join(tempDirAt(t, 0o700), "gateway.seed")
+	if err := os.WriteFile(seed, []byte(hex.EncodeToString(testSeed)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := runStoreRemoveScope("--connection-file", writeConnection(t, db.migrator), "--owner", db.roles.owner, "--runtime", db.roles.runtime,
+		"--seed", seed, "--scope", "scope-a", "--by", "operator-1", "--timeout", "60"); code != 1 || !strings.Contains(stderr, errStoreRotated(mark).Error()+"; nothing was removed") {
+		t.Fatalf("remove-scope on the store rotated away from: %d %q", code, stderr)
 	}
 
 	for _, change := range []string{

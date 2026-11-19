@@ -272,6 +272,9 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv ed25519.PrivateK
 	if err := pgHoldEveryInstance(c, "remove"); err != nil {
 		return failed(err)
 	}
+	if err := pgRefuseRotated(c); err != nil {
+		return failed(err)
+	}
 
 	tx := pgTx{c}
 	data, present, err := pgLog{name: "registry"}.readTx(tx, 0)

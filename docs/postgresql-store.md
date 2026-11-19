@@ -842,7 +842,9 @@ run-time login, under the start lease and fenced as every write is, once the new
 transaction is committed; a mark that fails to write is said so, and a run again writes it. A
 start on the old database reads the row before the start lease's rows and is refused by name,
 *the store was rotated away from (store-rotated:...)*; so is every command that takes the lease,
-`seal-open` and a second `store rotate` among them. `grants.sql`
+`seal-open` and a second `store rotate` among them. `gateway store remove-scope`, which holds the
+lease's rows without taking a row, is refused by the same sentence, since a removal appended to
+the old registry would break the link the new store names. `grants.sql`
 gives the run-time role SELECT and INSERT on the table and nothing else, and the key admits one
 row: a run-time login can only mark its own store rotated, which it could already cause by
 holding the lease. Removing the mark is the owner's alone. A database at schema version 6 is

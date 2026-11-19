@@ -427,6 +427,22 @@ func pgHoldEveryInstance(c *pgConn, what string) error {
 	return nil
 }
 
+// pgRefuseRotated refuses, by name, a database a store rotation marked
+// rotated away from (gateway.rotated): a removal appended to its registry
+// would break the link the new store's continuation names. The commands
+// that hold every row of the lease without taking it (store remove-scope)
+// call it after pgHoldEveryInstance, in the same transaction.
+func pgRefuseRotated(c *pgConn) error {
+	mark, err := c.exec(`SELECT continuation FROM gateway.rotated`)
+	if err != nil {
+		return err
+	}
+	if len(mark.rows) > 0 {
+		return errStoreRotated(rotatedMarkPrefix + string(mark.rows[0][0]))
+	}
+	return nil
+}
+
 // onItsConnection runs fn in a write transaction on the lease's own
 // connection, within bound, opening the connection again where it failed.
 // The transaction is the kind's (transactOn), with bound for its
