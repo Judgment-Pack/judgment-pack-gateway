@@ -1,0 +1,20 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#devices",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000149",
+      "deviceId": "00000000-0000-4000-8000-000000000150",
+      "displayName": "Device 1",
+      "operatingSystem": "Linux",
+      "accountEnabled": true
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000151",
+      "deviceId": "00000000-0000-4000-8000-000000000152",
+      "displayName": "Device 2",
+      "operatingSystem": "Linux",
+      "accountEnabled": true
+    }
+  ],
+  "@odata.nextLink": "https://graph.example.com/v1.0/devices?$top=2&$skiptoken=devices-page-2"
+}

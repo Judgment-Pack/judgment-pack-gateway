@@ -1,0 +1,20 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#oauth2permissiongrants",
+  "value": [
+    {
+      "id": "grant-1",
+      "clientId": "00000000-0000-4000-8000-000000000122",
+      "consentType": "AllPrincipals",
+      "resourceId": "00000000-0000-4000-8000-000000000123",
+      "scope": "Records.Read"
+    },
+    {
+      "id": "grant-2",
+      "clientId": "00000000-0000-4000-8000-000000000124",
+      "consentType": "AllPrincipals",
+      "resourceId": "00000000-0000-4000-8000-000000000125",
+      "scope": "Records.Read"
+    }
+  ],
+  "@odata.nextLink": "https://graph.example.com/v1.0/oauth2PermissionGrants?$top=2&$skiptoken=oauth2-permission-grants-page-2"
+}

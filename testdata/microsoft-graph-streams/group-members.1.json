@@ -1,0 +1,20 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#groupmembers",
+  "value": [
+    {
+      "@odata.type": "#microsoft.graph.user",
+      "id": "00000000-0000-4000-8000-000000000107",
+      "displayName": "User 1",
+      "userPrincipalName": "user1@example.com",
+      "mail": "user1@example.com"
+    },
+    {
+      "@odata.type": "#microsoft.graph.user",
+      "id": "00000000-0000-4000-8000-000000000108",
+      "displayName": "User 2",
+      "userPrincipalName": "user2@example.com",
+      "mail": "user2@example.com"
+    }
+  ],
+  "@odata.nextLink": "https://graph.example.com/v1.0/groups/00000000-0000-4000-8000-0000000000aa/members?$top=2&$skiptoken=group-members-page-2"
+}

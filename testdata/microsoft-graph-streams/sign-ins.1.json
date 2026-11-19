@@ -1,0 +1,28 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#signins",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000134",
+      "createdDateTime": "2026-01-01T10:00:00Z",
+      "userPrincipalName": "user1@example.com",
+      "userDisplayName": "User 1",
+      "appDisplayName": "Application 1",
+      "ipAddress": "192.0.2.11",
+      "status": {
+        "errorCode": 0
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000135",
+      "createdDateTime": "2026-01-02T10:00:00Z",
+      "userPrincipalName": "user2@example.com",
+      "userDisplayName": "User 2",
+      "appDisplayName": "Application 2",
+      "ipAddress": "192.0.2.12",
+      "status": {
+        "errorCode": 0
+      }
+    }
+  ],
+  "@odata.nextLink": "https://graph.example.com/v1.0/auditLogs/signIns?$top=2&$skiptoken=sign-ins-page-2"
+}

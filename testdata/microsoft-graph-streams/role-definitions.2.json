@@ -1,0 +1,12 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#roledefinitions",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000121",
+      "displayName": "Role 3",
+      "description": "Invented role 3.",
+      "isBuiltIn": false,
+      "isEnabled": true
+    }
+  ]
+}

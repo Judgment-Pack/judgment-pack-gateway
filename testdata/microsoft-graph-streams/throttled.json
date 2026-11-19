@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "TooManyRequests",
+    "message": "Too many requests were made; retry after the wait named.",
+    "innerError": {
+      "date": "2026-01-05T09:00:00",
+      "request-id": "00000000-0000-4000-8000-000000000160",
+      "client-request-id": "00000000-0000-4000-8000-000000000161"
+    }
+  }
+}

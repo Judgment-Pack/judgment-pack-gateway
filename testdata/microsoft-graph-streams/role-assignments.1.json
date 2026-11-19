@@ -1,0 +1,18 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#roleassignments",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000110",
+      "principalId": "00000000-0000-4000-8000-000000000111",
+      "roleDefinitionId": "00000000-0000-4000-8000-000000000112",
+      "directoryScopeId": "/"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000113",
+      "principalId": "00000000-0000-4000-8000-000000000114",
+      "roleDefinitionId": "00000000-0000-4000-8000-000000000115",
+      "directoryScopeId": "/"
+    }
+  ],
+  "@odata.nextLink": "https://graph.example.com/v1.0/roleManagement/directory/roleAssignments?$top=2&$skiptoken=role-assignments-page-2"
+}
