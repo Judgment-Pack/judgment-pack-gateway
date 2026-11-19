@@ -48,7 +48,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | seal-open | remove-artifact | remove-scope | journal | store | mcp | posture | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | seal-open | remove-artifact | remove-scope | retain | journal | store | mcp | posture | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -78,6 +78,8 @@ func main() {
 		os.Exit(cmdSealOpen(os.Args[2:], os.Stdout, os.Stderr))
 	case "remove-artifact":
 		os.Exit(cmdRemoveArtifact(os.Args[2:], os.Stdout, os.Stderr))
+	case "retain":
+		os.Exit(cmdRetain(os.Args[2:], os.Stdout, os.Stderr))
 	case "remove-scope":
 		os.Exit(cmdRemoveScope(os.Args[2:], os.Stdout, os.Stderr))
 	case "journal":

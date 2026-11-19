@@ -162,7 +162,7 @@ place:
 | a platform's `write: true`; `/act` | the configuration's load; `/act` answers 501 | an action keeps its journal and evidence on disk |
 | a platform's `descriptorStatements`; descriptor provenance; a descriptor capture by `gateway connect` | the load; the start; `connect` before any adapter is asked | the signed snapshot is read from the store on disk (`gateway connect --no-descriptors` connects a platform without one) |
 | `/verify` | answers 501 | it verifies the store on disk: export the store and verify the export |
-| `gateway remove-artifact --config`, `gateway remove-scope --config` | the command | they keep removal records, and remove files, on disk; on this kind `gateway store remove-scope` removes a scope identifier's rows ("Removing one scope identifier's rows") |
+| `gateway remove-artifact --config`, `gateway remove-scope --config` | the command | they keep removal records, and remove files, on disk; on this kind `gateway store remove-scope` removes a scope identifier's rows ("Removing one scope identifier's rows"), and `gateway store retain` an acknowledged session's ("Retention by acknowledgment") |
 | `gateway rotate-key` | the start refuses a rotation under way beside the seed | the rotation keeps the registry at a path |
 
 `gateway verify` takes a store directory and a registry file: it reads an export of this kind
@@ -778,6 +778,21 @@ which the records are signed.
 Exit 0 on success, 1 on a refusal or failure, 2 on a usage error. A gateway started again on the
 store serves as before; a platform fixed to the removed scope identifier records it again at its
 start and begins anew.
+
+
+## Retention by acknowledgment
+
+`gateway store retain (--connection-file <path> | --connection-env <NAME>) --owner <role>
+--runtime <role> --config <engine.json> --acknowledgments <file> [--scope <identifier>] --by
+<label> [--timeout <seconds>]` is `gateway retain` on this kind (docs/design/engine-config.md,
+"Retention by acknowledgment"). The connection is the migration login's; the configuration
+gives the `retention` member and the seed. It runs as the migration login acting as the owner,
+in one transaction that holds the migration's lock and the start lease, as `gateway store
+remove-scope` does, so a gateway serving the database refuses it. For each session it removes
+it deletes the session's receipts, its holders and its row, and the payloads of its scope that
+no other receipt or document of the scope names, and keeps a `session-removal` record in the
+same transaction. A session of no scope identifier is refused: it goes only with its whole
+database. The run-time role's privileges do not change.
 
 ## Time
 

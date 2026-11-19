@@ -113,9 +113,15 @@ import (
 // earlier version, and a file without it signs as before. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version, and it raises none to 31, 32, 33 or 34.
-const engineVersion = assertionAlgorithmVersion
+// Version 37 (retentionVersion) is the optional `retention`, by which
+// gateway retain and gateway store retain remove a sealed session an
+// acknowledgment signed under a pinned key names, once a window has passed
+// (docs/adr/0048-retention-by-acknowledgment-and-store-rotation.md; retain.go):
+// a file with the member is refused under an earlier version, and with no
+// member nothing is removed by age.
+const engineVersion = retentionVersion
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, retentionVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -137,7 +143,10 @@ const maxEngineConfigBytes = 1 << 20
 
 type engineConfig struct {
 	configPath string // internal path for approval-bound adapter snapshot arguments
-	sandbox    *engineSandbox
+	// retention is the retention member (retentionVersion, retain.go); nil
+	// when the configuration carries none, and nothing is removed by age.
+	retention *retentionConfig
+	sandbox   *engineSandbox
 
 	authority       string
 	seed            string
@@ -404,6 +413,7 @@ var engineMembers = map[string]bool{
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
 	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
 	"sealOpenAtStart": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
+	"retention": false,
 }
 
 var platformMembers = map[string]bool{
@@ -583,6 +593,16 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			return engineConfig{}, errors.New("engine configuration: sealOpenAtStart, when present, is true or false")
 		}
 		cfg.sealOpenAtStart = bool(on)
+	}
+	if value, present := obj.get("retention"); present {
+		if !versionAtLeast(version, retentionVersion) {
+			return engineConfig{}, fmt.Errorf("engine configuration: retention is a version-%s member; engineVersion %s has no retention", retentionVersion, version)
+		}
+		r, err := parseRetentionConfig(value)
+		if err != nil {
+			return engineConfig{}, err
+		}
+		cfg.retention = r
 	}
 	if value, present := obj.get("measureSandboxAtStart"); present {
 		if !versionAtLeast(version, "23") {

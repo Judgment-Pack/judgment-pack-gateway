@@ -30,11 +30,14 @@ JSON, the versions applied, the schema's version and the migrations' digest.`
 const storeMigrateDefaultTimeout = 5 * time.Minute
 
 func cmdStore(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "retain" {
+		return cmdStoreRetain(args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "remove-scope" {
 		return cmdStoreRemoveScope(args[1:], stdout, stderr)
 	}
 	if len(args) == 0 || args[0] != "migrate" {
-		fmt.Fprintln(stderr, storeUsage+"\n"+storeRemoveScopeUsage)
+		fmt.Fprintln(stderr, storeUsage+"\n"+storeRemoveScopeUsage+"\n"+storeRetainUsage)
 		return 2
 	}
 	flags, code := storeFlags(args[1:], []string{"--connection-file", "--connection-env", "--owner", "--runtime", "--timeout"}, "store migrate", storeUsage, stderr)

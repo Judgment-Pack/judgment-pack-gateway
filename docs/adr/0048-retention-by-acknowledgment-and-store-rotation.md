@@ -32,7 +32,11 @@ What is missing is narrower:
    records with their session ids and scope identifier, stay in the store for as long as the
    store exists (ADR-0034, consequences).
 
-This record sets out the options for each and the form chosen. Nothing of it is built yet; the build is #535.
+This record sets out the options for each and the form chosen.
+
+Implemented in #535: items 1 and 2 of the decision outcome (the `retention` member at engine
+version 37, `gateway retain` and `gateway store retain`). Items 3 and 4 (store rotation, the
+`store-continuation` line and `--previous`) are not built yet.
 
 ## Decision drivers
 
