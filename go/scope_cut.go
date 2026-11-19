@@ -196,6 +196,9 @@ type scopeCut struct {
 	// kept are the sessions whose findings a verdict by scope reports: those
 	// of the scope and those unattributed.
 	kept map[string]bool
+	// judged is, for an export by scope, the SHA-256 of each receipt file's
+	// bytes as its attribution read them, by "<session>/<entry>".
+	judged map[string][32]byte
 }
 
 // cutOf attributes every session the store holds (holdings, by id) and

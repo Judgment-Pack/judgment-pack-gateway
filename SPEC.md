@@ -1987,6 +1987,7 @@ The export is refused before anything is written, naming the sessions in each ca
 - where a session of S holds a receipt past §1.4's first six orders that carries another scope
   or none, which only a release before ADR-0036 mints, and which the export would otherwise
   carry.
+- where a session of S holds a receipt file failing one of §1.4's first six orders.
 
 Every rotation is kept and the walk found nothing, so the walk of the export's registry from
 the pinned key reaches each line it holds under the key it reached it under in the registry.

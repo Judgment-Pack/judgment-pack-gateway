@@ -9,10 +9,13 @@ package main
 // by name, before a file is written: an export that left it out could not
 // say so in any file a verifier reads. So does a session of S holding a
 // receipt the gateway signed of another scope, or of none, which only an
-// earlier release mints: the export carries nothing of another scope.
+// earlier release mints; and so does a session of S holding a receipt file
+// that fails the signed orders, whose scope nothing shows: the export
+// carries nothing of another scope.
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 )
@@ -32,7 +35,9 @@ var attributionProbe = storeProbe{
 // does not hold, to in.scope, reading the registry under the gateway's own
 // walk (engineWalk) and the removal records the cut gives (removals, present
 // whether there are any). A walk that does not hold, or a session it cannot
-// attribute, refuses the export.
+// attribute, refuses the export. The cut it gives holds the digest of each
+// receipt file's bytes as it judged them (scopeCut.judged), which are the
+// bytes the export writes and takes artifact digests from.
 func exportSelection(in exportInputs, cut *storeCut, removals []byte, present bool) (*scopeCut, error) {
 	var log []byte
 	if cut.logPresent {
@@ -50,6 +55,9 @@ func exportSelection(in exportInputs, cut *storeCut, removals []byte, present bo
 	}
 	ret := &retention{removals: records.artifacts, sessions: records.sessions}
 	holdings := map[string]*scopeHolding{}
+	// unproven are each session's receipt files that fail the signed orders
+	unproven := map[string][]string{}
+	judged := map[string][sha256.Size]byte{}
 	for _, series := range cut.series {
 		h, signatures := newScopeHolding(), map[string]string{}
 		for _, entry := range cut.entries[series] {
@@ -64,6 +72,10 @@ func exportSelection(in exportInputs, cut *storeCut, removals []byte, present bo
 			if err != nil {
 				return nil, err
 			}
+			if !pastSignedOrders(r, status) {
+				unproven[series] = append(unproven[series], series+"/"+entry+".json")
+			}
+			judged[series+"/"+entry] = sha256.Sum256(data)
 			h.take(r, status)
 		}
 		h.done(signatures)
@@ -73,6 +85,19 @@ func exportSelection(in exportInputs, cut *storeCut, removals []byte, present bo
 	if len(sel.Unattributed) > 0 {
 		return nil, fmt.Errorf("the store holds sessions an export by scope cannot attribute to the scope or to another: %s; gateway verify --scope names what it finds of each, and nothing was written",
 			strings.Join(sel.Unattributed, ", "))
+	}
+	// A session of the scope holding a receipt file that fails the signed
+	// orders (SPEC.md §1.4, orders 1 to 6) -- one copied into it from another
+	// session among them -- refuses the export: nothing shows what scope it
+	// carries, and written it would carry the file and the artifacts it
+	// names, which may be another scope's.
+	var unsigned []string
+	for _, sessionID := range sel.Sessions {
+		unsigned = append(unsigned, unproven[sessionID]...)
+	}
+	if len(unsigned) > 0 {
+		return nil, fmt.Errorf("the store holds sessions of the scope with receipt files that fail the signed orders, whose scope an export by scope cannot show: %s; gateway verify --scope names what it finds of each, the whole store exports them, and nothing was written",
+			strings.Join(unsigned, ", "))
 	}
 	// A session of the scope holding a receipt the gateway signed of another
 	// scope, or of none -- an earlier release's, which did not hold a
@@ -89,6 +114,7 @@ func exportSelection(in exportInputs, cut *storeCut, removals []byte, present bo
 		return nil, fmt.Errorf("the store holds sessions of the scope whose receipts carry another scope, or none, which an export by scope would carry: %s; the whole store exports them, and nothing was written",
 			strings.Join(mixed, ", "))
 	}
+	sel.judged = judged
 	return sel, nil
 }
 

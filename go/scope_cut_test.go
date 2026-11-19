@@ -295,6 +295,86 @@ func TestAnExportByScopeOfAnEarlierStoreCarriesNothingOfAnother(t *testing.T) {
 	}
 }
 
+// An export by scope of a store whose session of the scope holds a receipt
+// file that fails the signed orders -- a genuine receipt of another scope
+// copied into it -- is refused, naming the session and the file, and
+// nothing is written: the file shows no scope, and the export would carry
+// it and the artifacts it names. A receipt file whose bytes change after
+// the attribution read them is refused before it is written.
+func TestAnExportByScopeRefusesAReceiptFileNotShownToBeOfTheScope(t *testing.T) {
+	g, _ := scopeStore(t)
+	in := exportInputs{authority: g.authority, keyID: keyIDFor(g.publicKey), publicKey: g.publicKey,
+		kind: newFsKind(fsLayout{store: g.storeRoot, registry: g.regPath}), storeRoot: g.storeRoot, scope: testScope}
+	other := readFile(t, filepath.Join(g.storeRoot, "receipts", "b1", "0.json"))
+	misfiled := filepath.Join(g.storeRoot, "receipts", "a1", "2.json")
+	if err := os.WriteFile(misfiled, []byte(other), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "export")
+	if _, err := writeExport(in, out); err == nil || !strings.Contains(err.Error(), "fail the signed orders") || !strings.Contains(err.Error(), "a1/2.json") {
+		t.Fatalf("an export by scope of a session holding another scope's receipt: %v", err)
+	}
+	if _, err := os.Lstat(out); !os.IsNotExist(err) {
+		t.Fatalf("the refused export left its directory: %v", err)
+	}
+	if err := os.Remove(misfiled); err != nil {
+		t.Fatal(err)
+	}
+
+	reads := 0
+	in.kind = rereadKind{in.kind, func(series, entry string, data []byte) []byte {
+		if series == "a1" && entry == "0" {
+			if reads++; reads > 1 {
+				return []byte(other)
+			}
+		}
+		return data
+	}}
+	changed := filepath.Join(t.TempDir(), "changed")
+	if _, err := writeExport(in, changed); err == nil || !strings.Contains(err.Error(), "a1/0.json changed after") {
+		t.Fatalf("an export by scope of a receipt changed after its attribution: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(changed, "store", "receipts", "a1", "0.json")); !os.IsNotExist(err) {
+		t.Fatalf("the changed receipt was written: %v", err)
+	}
+}
+
+// rereadKind is a kind whose cut gives each receipt's bytes through change.
+type rereadKind struct {
+	storeKind
+	change func(series, entry string, data []byte) []byte
+}
+
+func (k rereadKind) snapshot() (*storeCut, error) {
+	cut, err := k.storeKind.snapshot()
+	if err != nil {
+		return nil, err
+	}
+	entry := cut.entry
+	cut.entry = func(series, name string) ([]byte, error) {
+		data, err := entry(series, name)
+		if err != nil {
+			return nil, err
+		}
+		return k.change(series, name, data), nil
+	}
+	return cut, nil
+}
+
+// unprovenOfCut are a verdict by scope's findings naming a session of its
+// cut with a status of the signed orders (SPEC.md §1.4, orders 1 to 6).
+func unprovenOfCut(rep *report) []finding {
+	var out []finding
+	for _, f := range rep.Findings {
+		sessionID, _ := f["sessionId"].(string)
+		status, _ := f["status"].(string)
+		if slices.Contains(rep.Cut.Sessions, sessionID) && !pastSignedOrders(&receipt{}, status) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // Every corpus vector of a verdict by scope: where its cut attributes every
 // session, the store exports by that scope, and a restore of the export
 // checks against its manifest and verifies by the scope, byte for byte, as
@@ -349,6 +429,15 @@ func TestEveryCorpusCutExportsAndVerifiesByItsScopeAsTheStoreDoes(t *testing.T) 
 			if len(rep.Cut.Unattributed) > 0 {
 				if err == nil || !strings.Contains(err.Error(), "cannot attribute") {
 					t.Fatalf("an export of a cut naming %v unattributed: %v", rep.Cut.Unattributed, err)
+				}
+				if _, err := os.Lstat(out); !os.IsNotExist(err) {
+					t.Fatalf("the refused export left its directory: %v", err)
+				}
+				return
+			}
+			if unproven := unprovenOfCut(rep); len(unproven) > 0 {
+				if err == nil || !strings.Contains(err.Error(), "fail the signed orders") {
+					t.Fatalf("an export of a cut whose sessions hold %v: %v", unproven, err)
 				}
 				if _, err := os.Lstat(out); !os.IsNotExist(err) {
 					t.Fatalf("the refused export left its directory: %v", err)

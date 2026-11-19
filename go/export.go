@@ -456,6 +456,14 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 			if err != nil {
 				return nil, fmt.Errorf("receipt %s/%s.json: %w", series, entry, err)
 			}
+			// a cut by scope writes the bytes its attribution judged, and
+			// takes digests from no other: a file changed since is refused
+			// before it is written
+			if sel != nil {
+				if want, judged := sel.judged[series+"/"+entry]; !judged || sha256.Sum256(data) != want {
+					return nil, fmt.Errorf("receipt %s/%s.json changed after the export by scope attributed it; nothing of it was written", series, entry)
+				}
+			}
 			if err := w.put("store/receipts/"+series+"/"+entry+".json", data); err != nil {
 				return nil, err
 			}

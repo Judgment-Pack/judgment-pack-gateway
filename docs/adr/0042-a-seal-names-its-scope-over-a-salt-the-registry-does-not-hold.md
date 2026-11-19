@@ -152,7 +152,9 @@ decisions 6 to 9.
    its registry finds anything, where a session is unattributed, and where a session of S holds
    a signed receipt of another scope or none (only a release before ADR-0036 mints such a
    session). A session written whole would carry those receipts, and one written in part would
-   break its chain. Every rotation is kept and the walk found nothing, so the export's registry
+   break its chain. It is refused too where a session of S holds a receipt file failing
+   SPEC.md §1.4's orders 1 to 6, which shows no scope and names artifacts that may be another's.
+   Every rotation is kept and the walk found nothing, so the export's registry
    walks from the pinned key to each line it keeps under the same key as the registry does.
    Against its own registry the export verifies by S as the store does by S, and whole to the
    same findings.
