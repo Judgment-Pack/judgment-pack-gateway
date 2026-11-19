@@ -125,7 +125,7 @@ The narrowest form, to be built in a later milestone:
    stopped. It removes each sealed session that meets all four conditions:
    - it is of a scope identifier, the one `--scope` names if given;
    - a valid acknowledgment line names its seal exactly;
-   - the acknowledgment's time plus `window` has passed;
+   - `window` has passed since the later of the seal's time and the acknowledgment's time.
    - no receipt left in the store cites it.
 
    It writes ADR-0034's `session-removal` record for each, durably, before any file or row
@@ -133,13 +133,21 @@ The narrowest form, to be built in a later milestone:
    - a session an acknowledgment names that the store does not hold, or holds under another
      seal;
    - an acknowledgment that does not verify;
+   - an acknowledgment whose time is earlier than the seal's time, or later than the command's
+     clock;
    - a session of no scope identifier.
 
    It never removes an open session. On the PostgreSQL kind it is `gateway store retain`, as
    the migration login acting as the owner, under the start lease, as `store remove-scope` is.
+   Its action journal entry holds the SHA-256 of the acknowledgment file it read and the
+   acknowledging key's id, so the call can be traced to the acknowledgments it acted on, though
+   no record in the store names them (R1).
 3. **`gateway store rotate`**, the gateway stopped, as S2 sets out. On the PostgreSQL kind a
-   rotation starts a new instance on the database (ADR-0035) rather than a new database, and
-   the build decides how the old instance is read and dropped.
+   rotation starts **a new database**, or a new schema where the migration login can own one,
+   and the old one is dropped whole once past retention. It cannot be a new instance on the
+   same database (ADR-0035): from schema version 6 every instance on a database shares one
+   registry chain (#471, option C), so a new instance starts no new registry and leaves no old
+   store to delete whole.
 4. **The verifiers, SPEC.md and the corpus**, in one change, for S2 alone:
    - the `store-continuation` line and `--previous`;
    - vectors for a pair that links, a pair that does not, and a new store read alone.
@@ -184,12 +192,16 @@ rotation seals what was open.
   what it acknowledged. A log that acknowledges and then loses a session's receipts loses them.
 - Bad, because a session of no scope identifier can be let go of only with its whole store.
 - Bad, because a mixed-scope session on the filesystem kind is still refused whole (ADR-0034).
+- Bad, because on the PostgreSQL kind a rotation needs a database, or a schema, per store, which
+  the operator provisions. Dropping the old one does not remove its rows from the write-ahead
+  log, backups or replicas, which the operator's own retention governs.
 - Revisit when an external log can prove that it holds a session's receipts, not only state
   that it does, or when a seal and its removal can name no scope.
 
 ## More information
 
 - Issue #504; ADR-0034 (removal of one scope identifier), ADR-0042 (export and verify by
-  scope), ADR-0035 (several instances on one database), ADR-0031, decision 6.
+  scope), ADR-0035 (several instances on one database) and #471 (one registry chain per
+  database, schema version 6), ADR-0031, decision 6.
 - SPEC.md §1.3a ("A removed session"), §3c (sealing after an interruption), §3b (rotation
   statements), §4 step 4, §8.8 (what a witness statement establishes).
