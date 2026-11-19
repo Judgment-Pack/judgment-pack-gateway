@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -258,6 +259,13 @@ func TestALinkHoldsTheContinuationToTheOldRegistrysLastKey(t *testing.T) {
 		{"rotated to another key", rotationRecord(nil, 1, "2026-11-18T00:00:00Z", first, other), statusContinuationKeyMismatch},
 		{"rotated to it, then on to another", append(rotationRecord(nil, 1, "2026-11-18T00:00:00Z", first, priv),
 			rotationRecord(nil, 2, "2026-11-18T00:00:01Z", priv, other)...), statusContinuationKeyMismatch},
+		// a registry that never rotated is held to the key its last seal
+		// states, not to the key pinned
+		{"never rotated, its seals another key's", sealLineBy(other, "s1"), statusContinuationKeyMismatch},
+		{"never rotated, its seals the new store's key", sealLineBy(priv, "s1"), ""},
+		// a seal before the rotation states the key it was made under
+		{"sealed, then rotated to the new store's key", append(sealLineBy(first, "s1"), rotationRecord([]byte("x\n"), 1, "2026-11-18T00:00:00Z", first, priv)...), ""},
+		{"rotated to it, a seal after stating another key", append(rotationRecord(nil, 1, "2026-11-18T00:00:00Z", first, priv), sealLineBy(first, "s2")...), statusContinuationKeyMismatch},
 	} {
 		previous, registry := filepath.Join(dir, "previous.jsonl"), filepath.Join(dir, "registry.jsonl")
 		if err := os.WriteFile(previous, tc.old, 0o600); err != nil {
@@ -271,4 +279,17 @@ func TestALinkHoldsTheContinuationToTheOldRegistrysLastKey(t *testing.T) {
 			t.Fatalf("%s: %v, want %q", tc.name, f, tc.status)
 		}
 	}
+}
+
+// sealLineBy is a seal of today's form of session, count 1, signed by key.
+func sealLineBy(key ed25519.PrivateKey, session string) []byte {
+	keyID := keyIDFor(key.Public().(ed25519.PublicKey))
+	at := "2026-11-18T00:00:00Z"
+	obj := newObject()
+	obj.set("finalCount", vInt(1))
+	obj.set("keyId", vString(keyID))
+	obj.set("sealedAt", vString(at))
+	obj.set("sessionId", vString(session))
+	obj.set("signature", vString(hex.EncodeToString(ed25519.Sign(key, sealSigningInput(session, 1, at, keyID)))))
+	return append(canon(obj), '\n')
 }

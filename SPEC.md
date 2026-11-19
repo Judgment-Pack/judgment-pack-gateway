@@ -1565,8 +1565,13 @@ not its line count → **`continuation-count-mismatch`**; otherwise `previousDig
 **`continuation-digest-mismatch`**; otherwise the continuation's `keyId` is not the key that registry's
 rotations end at → **`continuation-key-mismatch`**. That registry is walked as a gateway walks its own
 (§3b): from the key its first `key-continuation` names as `previous`, where it holds one, and from the
-key pinned otherwise; a walk that finds one of §3b's findings ends at no key, and is that finding too. Each
-is `{status}`, and the verdict then fails. `--previous`
+key pinned otherwise; a walk that finds one of §3b's findings ends at no key, and is that finding too.
+The keyId that registry's last seal states -- its last line that is one JSON object holding a string
+`sessionId` and a string `keyId`, and no rotation statement or store continuation -- must also be the
+key in force at that line, or the link is **`continuation-key-mismatch`**: a registry that never rotated
+is so held to the key its seals name, and one holding no seal to its walk's last key alone. Each link
+is checked pairwise: the store before is verified under its own pin, in its own run, and this run
+reads its registry for the link alone. Each is `{status}`, and the verdict then fails. `--previous`
 is given at most once, naming one registry: a second is a usage error. Each store is verified on its own,
 with its own run, so a sequence is verified pairwise, each store with the registry of the one before it;
 a verdict over a sequence is `ok` only when every store's is and every link holds. A receipt is never read across stores.

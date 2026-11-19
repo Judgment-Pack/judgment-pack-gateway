@@ -175,7 +175,9 @@ func newContinuationLine(priv ed25519.PrivateKey, previous []byte, at string) []
 // finding. That registry is walked as a gateway walks its own (§3b), from
 // its first key-continuation's previous key where it has one and from the
 // key pinned otherwise, and the continuation's key must be the key its walk
-// ends at.
+// ends at; and the key its last seal states must be the key in force at
+// that seal's line, so that a registry that never rotated is held to the
+// key its seals name, not to the key pinned (lastSealHolds).
 func linkPrevious(rep *report, previous string, pinned ed25519.PublicKey) error {
 	if previous == "" {
 		return nil
@@ -200,7 +202,7 @@ func linkPrevious(rep *report, previous string, pinned ed25519.PublicKey) error 
 			status = statusContinuationCountMismatch
 		} else if c.previousDigest != digest {
 			status = statusContinuationDigestMismatch
-		} else if before.finding != nil || before.current().keyID != c.keyID {
+		} else if before.finding != nil || before.current().keyID != c.keyID || !lastSealHolds(data, registryFirstKey(data, pinned)) {
 			status = statusContinuationKeyMismatch
 		}
 	}
@@ -209,4 +211,37 @@ func linkPrevious(rep *report, previous string, pinned ed25519.PublicKey) error 
 		rep.OK = false
 	}
 	return nil
+}
+
+// lastSealHolds is whether the keyId the registry's last seal states -- its
+// last line that is one JSON object holding a string sessionId and a string
+// keyId, and no rotation statement or store continuation -- is the key in
+// force at that line, the registry walked from start. A registry holding no
+// seal holds: its walk's last key alone is held to the continuation.
+func lastSealHolds(data []byte, start ed25519.PublicKey) bool {
+	lines := strings.SplitAfter(string(data), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSuffix(lines[i], "\n")
+		if continuationLine(line) != nil {
+			continue
+		}
+		if kind, _ := rotationKindOf(line); kind != "" {
+			continue
+		}
+		v, err := parseJSON([]byte(line))
+		if err != nil {
+			continue
+		}
+		obj, ok := v.(*vObject)
+		if !ok {
+			continue
+		}
+		keyID, okKey := memberString(obj, "keyId")
+		if _, okSession := memberString(obj, "sessionId"); !okKey || !okSession {
+			continue
+		}
+		upTo := walkRegistry([]byte(strings.Join(lines[:i+1], "")), start)
+		return upTo.finding == nil && upTo.current().keyID == keyID
+	}
+	return true
 }

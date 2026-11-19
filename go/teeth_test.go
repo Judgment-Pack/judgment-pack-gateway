@@ -2274,7 +2274,7 @@ func objectText(members []jsonMember) json.RawMessage {
 func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *testing.T) {
 	stating := []string{
 		// the store continuation (SPEC.md §3d): each states and observes continues-from
-		"store-continuation-links", "store-continuation-read-alone", "store-continuation-digest-mismatch", "store-continuation-key-mismatch",
+		"store-continuation-links", "store-continuation-read-alone", "store-continuation-digest-mismatch", "store-continuation-key-mismatch", "store-continuation-key-not-the-seals",
 		"observations-interruption-seal", "ordinary-seals-only-interruption-seal",
 		"ordinary-seals-only-interruption-seal-forged", "ordinary-seals-only-interruption-seal-twice",
 		"ordinary-seals-only-valid-sealed",
@@ -2394,7 +2394,7 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 		return "store " + name + ": no verdict under --scope: " + strconv.Quote(conformStubUsage)
 	}
 	// the store-continuation vectors (SPEC.md §3d), which state continues-from
-	continuation := []string{"store-continuation-links", "store-continuation-read-alone", "store-continuation-digest-mismatch", "store-continuation-key-mismatch"}
+	continuation := []string{"store-continuation-links", "store-continuation-read-alone", "store-continuation-digest-mismatch", "store-continuation-key-mismatch", "store-continuation-key-not-the-seals"}
 	withContinuation := func(names ...string) []string { return append(slices.Clone(continuation), names...) }
 	kept := func(name string) string {
 		return "store " + name + ": observations disagree\n    expected: []\n" +
@@ -2430,8 +2430,8 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 			if err != nil {
 				t.Fatalf("no run: %v", err)
 			}
-			if count != 260 {
-				t.Fatalf("%d store vectors read, want 260", count)
+			if count != 261 {
+				t.Fatalf("%d store vectors read, want 261", count)
 			}
 			disagreeing := map[string]bool{}
 			for _, failure := range failures {
@@ -2609,7 +2609,7 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 	// observes in.
 	if got, want := []int{len(stores), len(okTrue), len(withFindings), len(withWitnesses), len(withRotations), len(stating),
 		len(witnesses), len(refusals), len(readings), len(okReadings), len(withHead)},
-		[]int{260, 65, 257, 3, 14, 40, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
+		[]int{261, 65, 258, 3, 14, 41, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
 		t.Fatalf("the corpus's vectors, by what their answers give: %v, want %v", got, want)
 	}
 	for name := range stating {
