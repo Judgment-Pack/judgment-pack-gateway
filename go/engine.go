@@ -106,12 +106,16 @@ import (
 // credentials API signs, and an http path's {numericId} and {alnumId}
 // placeholders (docs/adr/0045-a-delegated-subject-token-signed-by-the-credentials-api.md;
 // token_step.go, http_request_target.go): a file or binding with one is
-// refused under an earlier version. connect raises a file to
+// refused under an earlier version; and version 34
+// (assertionAlgorithmVersion) a token step's `assertionAlgorithm`, RS256 or
+// PS256 beside an RSA privateKey (docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md,
+// amendment #513; token_step.go): a file with the member is refused under an
+// earlier version, and a file without it signs as before. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
-// were; it never lowers a configuration version, and it raises none to 31, 32 or 33.
-const engineVersion = delegatedTokenVersion
+// were; it never lowers a configuration version, and it raises none to 31, 32, 33 or 34.
+const engineVersion = assertionAlgorithmVersion
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
