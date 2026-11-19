@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted, 2026-11-19
 date: 2026-11-19
 deciders: maintainer
 ---
@@ -32,7 +32,7 @@ What is missing is narrower:
    records with their session ids and scope identifier, stay in the store for as long as the
    store exists (ADR-0034, consequences).
 
-This record sets out the options for each and recommends one form. Nothing of it is built.
+This record sets out the options for each and the form chosen. Nothing of it is built yet; the build is #535.
 
 ## Decision drivers
 
@@ -110,7 +110,7 @@ store does.
 
 ## Decision outcome
 
-Recommended, for the maintainer to decide: **A1, R1 and S2**.
+Chosen by the maintainer on 2026-11-19: **A1, R1 and S2**, as recommended.
 - **A1** makes the gate a signature the gateway checks, under a key the operator chose to trust.
 - **R1** reuses a record §4 already reads, so retention needs no SPEC change.
 - **S2** is the only option that lets go of what a removal keeps, and shows that no store was

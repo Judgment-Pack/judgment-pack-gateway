@@ -62,6 +62,7 @@ func TestAnAccessRefusalCarriesOnlyAListedCode(t *testing.T) {
 		{"an object", 403, `{"error":{"code":{"value":"Authorization_RequestDenied"}}}`, testCodes, UnlistedCode},
 		{"a code of another form", 403, `{"error":{"code":"Authorization RequestDenied"}}`, testCodes, UnlistedCode},
 		{"a repeated member", 403, `{"error":{"code":"codeNotDeclared","code":"Authorization_RequestDenied"}}`, testCodes, UnlistedCode},
+		{"a repeated member written with an escape", 403, `{"error":{"code":"codeNotDeclared","\u0063ode":"Authorization_RequestDenied"}}`, testCodes, UnlistedCode},
 		{"a value after it", 403, errorBody("Authorization_RequestDenied", 0) + `{}`, testCodes, UnlistedCode},
 		{"nothing declared", 403, errorBody("Authorization_RequestDenied", 0), nil, UnlistedCode},
 		{"no access list", 403, errorBody("Authorization_RequestDenied", 0), &ErrorCodes{At: testCodes.At, Expired: testCodes.Expired}, UnlistedCode},
@@ -215,5 +216,39 @@ func TestParseErrorCodesHoldsTheListsToTheirBounds(t *testing.T) {
 		if got, err := ParseErrorCodes(c[0], c[1], c[2]); err == nil || got != nil || strings.Contains(err.Error(), long) {
 			t.Errorf("%q: %+v %v", c, got, err)
 		}
+	}
+}
+
+// A refusing answer past the output bound is still said by its status, not
+// by the bound: a 403 is an access refusal with no code read from its cut
+// bytes, a 410 an expired reference. A success past the bound is refused.
+func TestARefusalPastTheOutputBoundKeepsItsClass(t *testing.T) {
+	var status int
+	e := newEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		// Cut at the bound, the first bytes are one JSON value naming a
+		// listed code; whole, a second value follows it. No code is read.
+		io.WriteString(w, `{"error":{"code":"Authorization_RequestDenied"}}`+strings.Repeat(" ", 3000)+`{}`)
+	})
+	cfg := e.config(t)
+	cfg.MaxOutput = 2048
+	cfg.ErrorCodes = testCodes
+	status = 403
+	_, err := Acquire(context.Background(), cfg, parseRequest(t, `{"path":"/search","body":{}}`))
+	var refused *AccessRefused
+	if !errors.As(err, &refused) || refused.Status != 403 || refused.Code != UnlistedCode || strings.Contains(err.Error(), "output bound") {
+		t.Fatalf("a 403 past the bound: %#v", err)
+	}
+	status = 410
+	_, err = Acquire(context.Background(), cfg, parseRequest(t, `{"path":"/search","body":{}}`))
+	var expired *ReferenceExpired
+	if !errors.As(err, &expired) {
+		t.Fatalf("a 410 past the bound: %#v", err)
+	}
+	status = 200
+	_, err = Acquire(context.Background(), cfg, parseRequest(t, `{"path":"/search","body":{}}`))
+	if err == nil || !strings.Contains(err.Error(), "exceeds the output bound of 2048 bytes") {
+		t.Fatalf("a success past the bound: %v", err)
 	}
 }
