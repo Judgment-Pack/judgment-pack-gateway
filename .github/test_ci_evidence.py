@@ -718,10 +718,17 @@ class ConfigurationTest(unittest.TestCase):
                 self.assertEqual(profile['tools'].get('go'), ['go', 'version'])
                 self.assertEqual(profile['pins'].get('go'), 'go version go%s %s/%s' % (
                     version, GOOS[platform['RUNNER_OS']], GOARCH[platform['RUNNER_ARCH']]))
-                # Only the release job's own platform is compared with the release runner.
-                expected = 'release-runner' if (platform['RUNNER_OS'], platform['RUNNER_ARCH']) == (
-                    'Linux', 'X64') else 'pins'
-                self.assertEqual(profile['compare'], expected)
+                # Every leg is held to its pins: GitHub serves several builds of one runner image
+                # at once, so the image version is not something a release can match.
+                self.assertEqual(profile['compare'], 'pins')
+
+    def test_the_check_profile_pins_the_exact_node_and_python_dev_json_names(self):
+        toolchains = json.loads(read('dev.json'))['toolchains']
+        pins = self.config['profiles']['check']['pins']
+        self.assertRegex(toolchains['node']['version'], r'^\d+\.\d+\.\d+$')
+        self.assertRegex(toolchains['python']['version'], r'^\d+\.\d+\.\d+$')
+        self.assertEqual(pins['node'], 'v' + toolchains['node']['version'])
+        self.assertEqual(pins['python'], 'Python ' + toolchains['python']['version'])
 
     def test_every_input_is_tracked_and_its_change_runs_this_test(self):
         files = tracked()

@@ -255,10 +255,11 @@ the evidence only when all of this holds, and refuses otherwise:
   was skipped; each lane passed every setup step, and `check` holds every check exactly once
   across the two lanes, each passed, with none left out and none run twice;
 - each job's evidence names the commit and the inputs the release's checkout holds; the Go of each
-  leg and of the check jobs is the one `release.yml` names (`1.26.5`); the Linux runner image and its
-  operating system release, and the Go, Node, Python and Docker of the check jobs and the Linux leg, are
-  what the release's own runner resolves now, setting the toolchains up as `ci.yml` does; the
-  macOS leg ran on macOS `ARM64` and the Windows leg on Windows `X64`;
+  leg and of the check jobs is the one `release.yml` names (`1.26.5`); the Node and Python of the
+  check jobs are the exact versions `dev.json` names (`22.23.4`, `3.12.16`), held to the pins of
+  `.github/ci-evidence.json`; the Linux jobs ran on Linux `X64`, the macOS leg on macOS `ARM64` and the
+  Windows leg on Windows `X64`. Every runner's image version is recorded and not compared: GitHub
+  serves several builds of one image at once, so a release could not match it;
 - the tag is an annotated tag that names the commit, before and after the evidence is read.
 
 What it reuses and what it still does at the release:

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "toolchains": {"node": {"version": "22"}, "go": {}, "python": {"version": "3.12", "venv": ".venv"}},
+  "toolchains": {"node": {"version": "22.23.4"}, "go": {}, "python": {"version": "3.12.16", "venv": ".venv"}},
   "setup": [
     {"name": "python-deps", "run": "python3 -m pip install --disable-pip-version-check -q -r testdata/attachments/schema-requirements.txt", "toolchain": "python", "timeout": 600},
     {"name": "npm-ci-n8n", "run": "npm ci --ignore-scripts --no-audit --no-fund", "toolchain": "node", "cwd": "plugins/n8n-nodes-judgment-pack", "timeout": 900},
