@@ -437,21 +437,25 @@ func TestMCPFrontServesOperatorReadToolsByCallerScope(t *testing.T) {
 
 	tokenA := tokenFor(t, g.issuer, subjectA, []any{callerScopeA})
 	tokenB := tokenFor(t, g.issuer, subjectB, []any{callerScopeB})
-	arguments := map[string]string{
-		"list_records":         `{"filter":"status:open","scope":"` + callerScopeB + `"}`,
-		"get_record":           `{"id":"R-101"}`,
-		"get_item_state":       `{"id":"item-7"}`,
-		"get_item_timeline":    `{"id":"item-7"}`,
-		"list_related_records": `{"id":"R-101"}`,
+	// each caller names the other caller's scope in its arguments and in
+	// _meta: neither has any effect on where the call goes or its receipt
+	argumentsNaming := func(foreign string) map[string]string {
+		return map[string]string{
+			"list_records":         `{"filter":"status:open","scope":"` + foreign + `"}`,
+			"get_record":           `{"id":"R-101"}`,
+			"get_item_state":       `{"id":"item-7"}`,
+			"get_item_timeline":    `{"id":"item-7"}`,
+			"list_related_records": `{"id":"R-101"}`,
+		}
 	}
 	// each caller, side by side on the one gateway
 	type scopeCase struct {
-		who, platform, scope, subject, token, session, label string
-		server, other                                        *recordsStandIn
+		who, platform, scope, foreign, subject, token, session, label string
+		server, other                                                 *recordsStandIn
 	}
 	cases := []scopeCase{
-		{"A's caller", "records-a", callerScopeA, subjectA, tokenA, "records-a-session", "server-a", serverA, serverB},
-		{"B's caller", "records-b", callerScopeB, subjectB, tokenB, "records-b-session", "server-b", serverB, serverA},
+		{"A's caller", "records-a", callerScopeA, callerScopeB, subjectA, tokenA, "records-a-session", "server-a", serverA, serverB},
+		{"B's caller", "records-b", callerScopeB, callerScopeA, subjectB, tokenB, "records-b-session", "server-b", serverB, serverA},
 	}
 	sids := map[string]string{}
 	for _, tc := range cases {
@@ -481,7 +485,8 @@ func TestMCPFrontServesOperatorReadToolsByCallerScope(t *testing.T) {
 			}
 		}
 		calledBefore, otherBefore := len(tc.server.called()), len(tc.other.called())
-		meta := `{"` + mcpSessionMeta + `":"` + tc.session + `","scope":"` + callerScopeB + `"}`
+		meta := `{"` + mcpSessionMeta + `":"` + tc.session + `","scope":"` + tc.foreign + `"}`
+		arguments := argumentsNaming(tc.foreign)
 		for i, tool := range recordsReadTools {
 			_, _, body := g.call(t, http.MethodPost, sid, toolCall(10+i, tc.platform+"."+tool, arguments[tool], meta), nil)
 			structured := acquired(t, body)
@@ -623,7 +628,14 @@ func TestMCPFrontServesOperatorReadToolsByCallerScope(t *testing.T) {
 		if err := os.WriteFile(path, []byte(strings.Replace(string(minted), change.from, change.to, 1)), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if ok, statuses := g.verdicts(t, "records-a-session"); ok || len(statuses) == 0 || statuses[0] != "signature-mismatch" {
+		ok, statuses := g.verdicts(t, "records-a-session")
+		mismatched := 0
+		for _, status := range statuses {
+			if status == "signature-mismatch" {
+				mismatched++
+			}
+		}
+		if ok || mismatched != 1 {
 			t.Fatalf("%s changed: ok %v, %v", change.name, ok, statuses)
 		}
 	}
