@@ -303,7 +303,7 @@ func rotatedMarkPath(registryPath string) string { return registryPath + ".rotat
 // beside the old registry, durably.
 func markRotated(registryPath string, line []byte) error {
 	path := rotatedMarkPath(registryPath)
-	err := os.WriteFile(path, []byte(rotatedMark(line)+"\n"), 0o600)
+	err := writeFileSynced(path, []byte(rotatedMark(line)+"\n"))
 	if err == nil {
 		err = syncDirectoryAt(filepath.Dir(path))
 	}
@@ -311,6 +311,22 @@ func markRotated(registryPath string, line []byte) error {
 		return fmt.Errorf("the new registry is made, but the old store could not be marked rotated away from (%v); rerun the same rotation to mark it", err)
 	}
 	return nil
+}
+
+// writeFileSynced writes data to a new file at path and syncs it before it
+// is closed, so the bytes are durable before the directory is.
+func writeFileSynced(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // refuseRotatedStore refuses a registry whose store is marked rotated away
