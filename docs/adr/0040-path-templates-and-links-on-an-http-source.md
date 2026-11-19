@@ -22,7 +22,11 @@ resource, or bytes sent other than the binding and the receipt state.
 
 - A request reaches only the binding's endpoint and a path its binding admits, and is refused
   before a connection (and, with a token step, before a token) otherwise.
-- What is sent is what was written, byte for byte, and the statement commits to what was sent.
+- What is sent is what was written, byte for byte, and the statement commits to what was sent:
+  for a link, the path and the query as sent; for the path form, the path and the query
+  object, from which the bytes sent follow by the adapter's encoding, so the same object may
+  be sent as other bytes by another adapter version (this one sends `$` where an earlier one
+  sent `%24`), and the receipt's adapter digest is what fixes them.
 - A refusal of a link names nothing of it: it carries the endpoint's paging token.
 - Both modules hold the rules alike (the core never imports the adapters), against one table.
 - A reading of a configuration its author did not review is never applied silently.

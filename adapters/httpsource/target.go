@@ -13,6 +13,7 @@ package httpsource
 
 import (
 	"errors"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -180,7 +181,7 @@ func linkTarget(base *url.URL, paths []string, link string) (path, rawQuery stri
 	if err != nil {
 		return "", "", err
 	}
-	if !strings.EqualFold(host, base.Hostname()) {
+	if !strings.EqualFold(host, authorityHost(base)) {
 		return "", "", errLinkHost
 	}
 	if effectivePort(base.Scheme, port) != effectivePort(base.Scheme, base.Port()) {
@@ -207,10 +208,23 @@ func linkTarget(base *url.URL, paths []string, link string) (path, rawQuery stri
 	return path, query, nil
 }
 
-// splitAuthority is a link's host and port, the host without the brackets
-// of an IPv6 literal, or the refusal of an authority that is no host and
-// port: an empty or unclosed host, or a port that is empty, not decimal,
-// zero-led or past 65535.
+// authorityHost is the endpoint's host as an authority writes it: an IPv6
+// literal in its brackets, any other host as it is.
+func authorityHost(base *url.URL) string {
+	if strings.HasPrefix(base.Host, "[") {
+		return "[" + base.Hostname() + "]"
+	}
+	return base.Hostname()
+}
+
+// splitAuthority is a link's host and port, the host as the authority
+// writes it -- an IPv6 literal with its brackets, which authorityHost
+// gives the endpoint's too, so a bracketed name never compares equal to
+// the endpoint's bare one -- or the refusal of an authority that is no
+// host and port: an empty or unclosed host, brackets around anything but
+// an IPv6 address with no zone, or a port that is empty, not decimal,
+// zero-led or past 65535. The core module compares the bracketed text as
+// this does (go/http_request_target.go, httpLinkAdmitted).
 func splitAuthority(authority string) (host, port string, err error) {
 	rest := ""
 	if strings.HasPrefix(authority, "[") {
@@ -218,7 +232,10 @@ func splitAuthority(authority string) (host, port string, err error) {
 		if end < 0 {
 			return "", "", errLinkHost
 		}
-		host, rest = authority[1:end], authority[end+1:]
+		if addr, err := netip.ParseAddr(authority[1:end]); err != nil || !addr.Is6() || addr.Zone() != "" {
+			return "", "", errLinkHost
+		}
+		host, rest = authority[:end+1], authority[end+1:]
 		if rest != "" && rest[0] != ':' {
 			return "", "", errLinkHost
 		}

@@ -68,6 +68,8 @@
   {"rule": "link-host", "request": {"link": "https://graph.example./v1.0/users", "method": "GET"}},
   {"rule": "link-host", "request": {"link": "https:///v1.0/users", "method": "GET"}},
   {"rule": "link-host", "request": {"link": "https://graph%2Eexample/v1.0/users", "method": "GET"}},
+  {"rule": "link-host", "request": {"link": "https://[graph.example]/v1.0/users", "method": "GET"}},
+  {"rule": "link-host", "request": {"link": "https://[graph.example]:443/v1.0/users", "method": "GET"}},
   {"rule": "link-port", "request": {"link": "https://graph.example:8443/v1.0/users", "method": "GET"}},
   {"rule": "link-port", "request": {"link": "https://graph.example:0443/v1.0/users", "method": "GET"}},
   {"rule": "link-port", "request": {"link": "https://graph.example:/v1.0/users", "method": "GET"}},
