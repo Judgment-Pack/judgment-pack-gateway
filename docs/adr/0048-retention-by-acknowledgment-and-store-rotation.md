@@ -200,6 +200,10 @@ rotation seals what was open.
 
 ## More information
 
+- Store rotation implemented in #535 (part B), on the filesystem kind: `gateway store rotate`, the
+  `store-continuation` line and `gateway verify --previous` (SPEC.md §3d). The PostgreSQL kind's
+  rotation is refused by name until it is built.
+
 - Issue #504; ADR-0034 (removal of one scope identifier), ADR-0042 (export and verify by
   scope), ADR-0035 (several instances on one database) and #471 (one registry chain per
   database, schema version 6), ADR-0031, decision 6.

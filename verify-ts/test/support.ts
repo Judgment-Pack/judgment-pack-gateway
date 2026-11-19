@@ -40,6 +40,7 @@ export type StoreVector = {
   ordinarySealsOnly?: boolean;
   suppliedArtifacts?: Record<string, string>;
   scope?: string;
+  previousRegistry?: string;
   expected: {
     ok: boolean;
     findings: Record<string, unknown>[];
@@ -117,7 +118,7 @@ function only(file: string, o: unknown, ...names: string[]): void {
 // not read, at the top or in expected.
 export function readStoreVector(file: string): StoreVector {
   const v = readVector(file) as StoreVector;
-  only(file, v, "name", "note", "authority", "files", "registry", "decisionRecords", "absentRegistry", "emptySessions", "ordinarySealsOnly", "suppliedArtifacts", "scope", "expected");
+  only(file, v, "name", "note", "authority", "files", "registry", "decisionRecords", "absentRegistry", "emptySessions", "ordinarySealsOnly", "suppliedArtifacts", "scope", "previousRegistry", "expected");
   only(file, v.expected, "ok", "findings", "witnesses", "rotations", "observations", "cut");
   return v;
 }
@@ -134,7 +135,7 @@ export function storeVectors(): StoreVector[] {
 
 // materialize writes a vector as the runner would, and is the arguments
 // verify takes.
-export function materialize(v: StoreVector): { root: string; registry: string; decisionRecords: string | undefined; artifacts: string | undefined } {
+export function materialize(v: StoreVector): { root: string; registry: string; decisionRecords: string | undefined; artifacts: string | undefined; previous: string | undefined } {
   const at = tempDir();
   const root = path.join(at, "store");
   for (const [file, text] of Object.entries(v.files)) {
@@ -170,7 +171,13 @@ export function materialize(v: StoreVector): { root: string; registry: string; d
       fs.writeFileSync(path.join(artifacts, hex), text);
     }
   }
-  return { root, registry, decisionRecords, artifacts };
+  // the registry of the store before this one (SPEC.md §3d), beside it
+  let previous: string | undefined;
+  if (v.previousRegistry !== undefined) {
+    previous = path.join(at, "previous.jsonl");
+    fs.writeFileSync(previous, v.previousRegistry);
+  }
+  return { root, registry, decisionRecords, artifacts, previous };
 }
 
 // verdictText is the verdict as the process contract writes it.

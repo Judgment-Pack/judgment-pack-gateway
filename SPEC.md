@@ -1507,6 +1507,56 @@ no receipt, is not counted, and is left where it is. Nothing is changed or delet
 session that cannot be read stops the command, and the start, with nothing sealed; at the
 start, a session that is not whole is named and stays open, and the gateway serves.
 
+## 3d. Store rotation: the store continuation
+
+A store can be let go of whole by starting another (`docs/adr/0048-retention-by-acknowledgment-and-store-rotation.md`, S2).
+`gateway store rotate`, the gateway stopped and its registry held as `rotate-key` holds it (§3b), seals
+every session left open in the old store as after an interruption (§3c), refusing the rotation, nothing
+new made, when one cannot be sealed; then makes a new store directory and a new registry, neither there
+before, whose first line is a **store continuation**. The old store is left as it is, for its operator
+to archive or delete whole. On the PostgreSQL kind a rotation is to a new database, or a new schema the
+migration login owns, never a new instance on the same database (ADR-0035), whose instances share one
+registry chain; this release refuses the PostgreSQL kind by name.
+
+| Member | Form | Statement |
+|---|---|---|
+| `kind` | `"store-continuation"` | |
+| `continuationVersion` | the string `"1"` | |
+| `continuedAt` | `YYYY-MM-DDThh:mm:ssZ`, the form of `rotatedAt` | the gateway's clock when it rotated |
+| `keyId` | 32 lowercase hexadecimal characters | the key id of the key in force, which signs it |
+| `previousLines` | an integer from 0 to 2⁵³−1 | the old registry's line count |
+| `previousLastLine` | 64 lowercase hexadecimal characters | the SHA-256 of the old registry's last line |
+| `signature` | 128 lowercase hexadecimal characters | Ed25519 over `"judgment-pack-gateway/store-continuation/1:"` and `canon` of the statement without `signature` |
+
+A registry's **line count** is the number of pieces its bytes split into at each `0x0A`, a last piece
+that is empty not counted; its **last line** is the last of them, without its `0x0A`, of no bytes for a
+registry of none. A torn last line is a line like any other here: the continuation names the registry as
+it ends.
+
+**Reading it.** A registry line is a store continuation when §1.1's parser reads it as one JSON object
+whose `kind` is `"store-continuation"`. It is never a seal or a rotation statement. At the registry's
+first line (the first piece of §3b's split) it **loads** when it has exactly the members above, each once
+and of its form, its `keyId` is the current key's (§3b: the key pinned) and its signature verifies under
+that key; otherwise the registry is **`continuation-forged`**. At any other line it loads nothing and the
+registry is **`continuation-misplaced`**. A registry reports at most one of the two, `{status}`, naming
+no session; a gateway's own reading (§3b) refuses either. A continuation that loads is no finding: the
+report carries the **observation** `continues-from`, `{observation, previousLines, previousLastLine}`,
+since the store before it may have been deleted under retention.
+
+**Crossing a rotation.** `gateway verify --previous <registry>` (after `--artifacts`, before the store
+root) also reads the registry of the store before, absent or unreadable no verdict, and holds the link:
+no continuation loads and neither finding above stands → **`continuation-missing`**; `previousLines` is
+not its line count → **`continuation-count-mismatch`**; otherwise `previousLastLine` is not the SHA-256
+of its last line → **`continuation-tail-mismatch`**; each `{status}`, and the verdict then fails. Each
+store is verified on its own, with its own run; a verdict over a sequence is `ok` only when every store's
+is and every link holds. A receipt is never read across stores.
+
+**Older verifiers.** A verifier written before this section reads a store continuation as a line that
+is not a rotation statement, and so as a seal (§4 step 2), which loads nothing: it reports no finding and
+no observation of it, verifies the rest of the store as before, so a continued store is `ok` to it where
+it is `ok` here and a misplaced or forged continuation goes unreported; and it refuses `--previous` as a
+usage error, giving no verdict.
+
 ## 4. Registry-anchored verification
 
 `verify_with_registry(verify_store, store_root, key, registry_path, authority)`:

@@ -1022,7 +1022,7 @@ export function verifyStore(
   authority: string,
   decisionRecordsPath: string | undefined,
   publicKey: Uint8Array,
-  options: { readonly ordinarySealsOnly?: boolean; readonly artifacts?: string; readonly scope?: string } = {},
+  options: { readonly ordinarySealsOnly?: boolean; readonly artifacts?: string; readonly scope?: string; readonly previous?: string } = {},
 ): Verdict {
   const ordinarySealsOnly = options.ordinarySealsOnly === true;
   // A verdict by scope names a scope identifier of its form, and reads no
@@ -1068,7 +1068,13 @@ export function verifyStore(
   // least a seal made after an interruption; the first still anchors.
   const conflicted = new Set<string>();
   const walk = new RegistryWalk(publicKey, (k) => budget.charge(entryCost + size(k.keyId) + 64, "the keys the registry's rotations reached"));
+  // §3d: the store continuation, which loads only as the registry's first
+  // line, and is never a seal or a rotation statement.
+  let lineAt = -1;
+  let continuation: { readonly lines: bigint; readonly last: string } | null = null;
+  let continuationFinding: string | null = null;
   eachRegistryLine(registry, (line) => {
+    lineAt++;
     if (line.bytes === null) {
       if (line.opensObject) {
         throw new NoVerdict(`a registry line of more than ${documentBound} bytes cannot be read for a seal`);
@@ -1083,6 +1089,19 @@ export function verifyStore(
       }
       return null;
     });
+    if (isContinuation(read)) {
+      // the line after a key-rotation that is no continuation of it
+      walk.take(null);
+      if (lineAt > 0) {
+        continuationFinding ??= "continuation-misplaced";
+      } else {
+        continuation = continuationOf(read!, walk.current());
+        if (continuation === null) {
+          continuationFinding = "continuation-forged";
+        }
+      }
+      return;
+    }
     if (walk.take(read)) {
       return;
     }
@@ -1106,6 +1125,25 @@ export function verifyStore(
     }
   });
   walk.end();
+  // §3d: under --previous, the link to the registry before this one.
+  let linkFinding: string | null = null;
+  if (options.previous !== undefined) {
+    let before: Buffer;
+    try {
+      before = fs.readFileSync(options.previous);
+    } catch (e) {
+      throw new NoVerdict(`the previous registry cannot be read: ${options.previous}`);
+    }
+    const tail = registryTail(before);
+    const c = continuation as { readonly lines: bigint; readonly last: string } | null;
+    if (c === null) {
+      linkFinding = continuationFinding === null ? "continuation-missing" : null;
+    } else if (c.lines !== tail.lines) {
+      linkFinding = "continuation-count-mismatch";
+    } else if (c.last !== tail.last) {
+      linkFinding = "continuation-tail-mismatch";
+    }
+  }
   testHooks.sample?.("registry");
   const keys = walk.keys;
   // §1.3a: the removal records, under the keys the walk reached.
@@ -1458,12 +1496,26 @@ export function verifyStore(
         ["rotation", walk.finding.rotation],
       ];
     }
+    // §3d: a store continuation that does not load where it stands, and
+    // under --previous a link that does not hold.
+    if (continuationFinding !== null) {
+      yield [["status", continuationFinding]];
+    }
+    if (linkFinding !== null) {
+      yield [["status", linkFinding]];
+    }
   }
   // The observations, in the order the reference reports them: §1.2b's of
   // each uncertain action; §4 step 3's of each open session; and §4 step
   // 8's of each action whose record was found and is not a runtime
   // evaluation record, which is not compared.
   function* everyObservation(): Generator<Finding> {
+    // §3d's, of a registry whose first line is a store continuation that
+    // loads.
+    const c = continuation as { readonly lines: bigint; readonly last: string } | null;
+    if (c !== null) {
+      yield [["observation", "continues-from"], ["previousLines", c.lines], ["previousLastLine", c.last]];
+    }
     // §1.3a's, of each receipt that passed with no bytes re-digested.
     for (const [session, judged] of sessions) {
       for (const j of judged) {
@@ -1734,4 +1786,65 @@ export function writeVerdict(v: Verdict, write: (text: string) => void): void {
   const rotations = v.rotations === null ? "" : `,"rotations":${JSON.stringify({ count: v.rotations.count, keyId: v.rotations.keyId })}`;
   const cut = v.cut === undefined ? "" : `,"cut":${JSON.stringify({ scope: v.cut.scope, sessions: v.cut.sessions, unattributed: v.cut.unattributed })}`;
   write(`]${rotations}${cut}}\n`);
+}
+
+// §3d: a registry line is a store continuation when it is one JSON object,
+// no name given twice, whose kind is store-continuation.
+function isContinuation(v: Value | null): boolean {
+  if (v === null || v.type !== "object" || hasDuplicate(v)) {
+    return false;
+  }
+  const kind = member(v, "kind");
+  return kind?.type === "string" && kind.value === "store-continuation";
+}
+
+const continuationMembers = ["kind", "continuationVersion", "continuedAt", "keyId", "previousLines", "previousLastLine", "signature"];
+
+// continuationOf is a store continuation that holds its form and is signed
+// by the key in force at its line, or null.
+function continuationOf(v: Value, key: ReachedKey): { readonly lines: bigint; readonly last: string } | null {
+  if (v.type !== "object" || v.members.length !== continuationMembers.length || !v.members.every((m) => continuationMembers.includes(m.name))) {
+    return null;
+  }
+  const s = (name: string, form: RegExp): string | null => {
+    const m = member(v, name);
+    return m?.type === "string" && form.test(m.value) ? m.value : null;
+  };
+  const version = s("continuationVersion", /^1$/);
+  const at = s("continuedAt", /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
+  const keyId = s("keyId", /^[0-9a-f]{32}$/);
+  const last = s("previousLastLine", /^[0-9a-f]{64}$/);
+  const signature = s("signature", /^[0-9a-f]{128}$/);
+  const lines = member(v, "previousLines");
+  if (version === null || at === null || keyId === null || last === null || signature === null || lines?.type !== "number" || !/^(0|[1-9][0-9]*)$/.test(lines.text)) {
+    return null;
+  }
+  const body = canonical({ type: "object", members: v.members.filter((m) => m.name !== "signature") });
+  if (keyId !== key.keyId || body === null) {
+    return null;
+  }
+  const signed = Buffer.concat([Buffer.from("judgment-pack-gateway/store-continuation/1:", "utf8"), body]);
+  if (!crypto.verify(null, signed, key.key, Buffer.from(signature, "hex"))) {
+    return null;
+  }
+  return { lines: BigInt(lines.text), last };
+}
+
+// registryTail is what a store continuation names of a registry (§3d): its
+// line count, an empty piece after the last line feed no line, and the
+// SHA-256 of its last line's bytes, of no bytes where it has none.
+function registryTail(data: Buffer): { readonly lines: bigint; readonly last: string } {
+  const text = data.length > 0 && data[data.length - 1] === 0x0a ? data.subarray(0, data.length - 1) : data;
+  if (data.length === 0) {
+    return { lines: 0n, last: crypto.createHash("sha256").digest("hex") };
+  }
+  let count = 1n;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === 0x0a) {
+      count++;
+      start = i + 1;
+    }
+  }
+  return { lines: count, last: crypto.createHash("sha256").update(text.subarray(start)).digest("hex") };
 }

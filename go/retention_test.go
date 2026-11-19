@@ -412,7 +412,7 @@ func TestVerifyArtifactsOnTheCommandLine(t *testing.T) {
 		}
 	}
 	const misplaced = "gateway verify: --artifacts goes before the store root, after --ordinary-seals-only; a directory so named is given as ./--artifacts\n"
-	const usage = "usage: gateway verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]\n"
+	const usage = "usage: gateway verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] [--previous <registry>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]\n"
 	for name, c := range map[string]struct {
 		args []string
 		want string

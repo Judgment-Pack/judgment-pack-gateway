@@ -141,7 +141,7 @@ func cmdCanon() int {
 }
 
 func cmdVerify(args []string) int {
-	const usage = "usage: gateway verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
+	const usage = "usage: gateway verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] [--previous <registry>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
 	// --scope <identifier>, first or not at all: the verdict is cut by the
 	// scope identifier (SPEC.md §4, "A verdict by scope"), and takes no
 	// decision-record directory. In any later place it is a usage error,
@@ -198,6 +198,26 @@ func cmdVerify(args []string) int {
 			return 2
 		}
 	}
+	// --previous <registry>, the registry of the store before this one
+	// (SPEC.md §3d): after --artifacts, before the store root, or not at
+	// all; the verdict then holds the store continuation to that registry's
+	// tail. In any later place it is a usage error, as the options before
+	// it are; a directory of that spelling is given as ./--previous.
+	previous := ""
+	if len(args) > 0 && args[0] == "--previous" {
+		if len(args) < 2 || args[1] == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		previous, args = args[1], args[2:]
+	}
+	for _, a := range args {
+		if a == "--previous" {
+			fmt.Fprintln(os.Stderr, "gateway verify: --previous goes before the store root, after --artifacts; a directory so named is given as ./--previous")
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+	}
 	if len(args) < 3 || len(args) > 5 {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
@@ -248,6 +268,9 @@ func cmdVerify(args []string) int {
 		verdict, err = verifyByScope(storeRoot, registryPath, authority, supplied, scope, publicKey, ordinarySealsOnly)
 	} else {
 		verdict, err = verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, ordinarySealsOnly)
+	}
+	if err == nil {
+		err = linkPrevious(verdict, previous)
 	}
 	if err != nil {
 		// Could not produce a verdict at all.
