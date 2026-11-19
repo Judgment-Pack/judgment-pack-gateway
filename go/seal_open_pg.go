@@ -306,6 +306,25 @@ func namedPayload(data []byte) (string, bool) {
 // the start lease taken -- refused at once while an instance serves -- and
 // held until the command ends, and what may be sealed sealed under it.
 func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([]*vObject, []string, error) {
+	return sealOpenPostgresHeld(o, stamp, said, pgLeaseCommand{as: "seal-open", verb: "seal"})
+}
+
+// pgLeaseCommand is a command that seals under the start lease, as
+// seal-open does: as names it where its lease is said to be left to expire,
+// and verb what its refusal says to do once the gateway is stopped. Where
+// alone is set the lease is taken in the one-instance mode, whatever
+// storage.instances says, so the command is refused while any instance
+// serves, of either mode, and no instance starts while it holds the lease.
+// then, where it is not nil, runs once what may be sealed is sealed, the
+// lease still held, with the seed and the sessions refused.
+type pgLeaseCommand struct {
+	as, verb string
+	alone    bool
+	then     func(kind *pgKind, seed []byte, refused []string) error
+}
+
+// sealOpenPostgresHeld is sealOpenPostgres as the command c.
+func sealOpenPostgresHeld(o sealOpenOptions, stamp func() string, said io.Writer, c pgLeaseCommand) ([]*vObject, []string, error) {
 	seed, err := loadSeed(o.seedNames[0])
 	if err != nil {
 		return nil, nil, fmt.Errorf("seed: %w", err)
@@ -331,6 +350,9 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 		return nil, nil, err
 	}
 	kind.instance = instanceFor(&spec, seed, o.authority)
+	if c.alone {
+		kind.instance.several = false
+	}
 	holder, err := newStartLeaseHolder()
 	if err != nil {
 		kind.close()
@@ -340,11 +362,11 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 	if err != nil {
 		kind.close()
 		if errors.Is(err, errStartLeaseHeld) {
-			return nil, nil, fmt.Errorf("%w; stop the gateway, then seal", err)
+			return nil, nil, fmt.Errorf("%w; stop the gateway, then %s", err, c.verb)
 		}
 		return nil, nil, err
 	}
-	held := &kindStart{kind: kind, lease: lease, as: "seal-open"}
+	held := &kindStart{kind: kind, lease: lease, as: c.as}
 	held.renew()
 	defer held.stop(said)
 	if _, err := kind.registry().readLog(0); faultOf(err) == faultAbsent {
@@ -359,5 +381,9 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 	}
 	// a seal is appended only while the lease is held: once it is lost,
 	// each append fails at its fence and the command ends with that failure
-	return sealOpenOnKind(kind, o.authority, writer, o.session, sealedViaCommand, stamp)
+	sealed, refused, err := sealOpenOnKind(kind, o.authority, writer, o.session, sealedViaCommand, stamp)
+	if err != nil || c.then == nil {
+		return sealed, refused, err
+	}
+	return sealed, refused, c.then(kind, seed, refused)
 }

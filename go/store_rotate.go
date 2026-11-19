@@ -19,7 +19,9 @@ import (
 	"path/filepath"
 )
 
-const storeRotateUsage = `usage: gateway store rotate (--config <engine.json> | --store <dir> --seed <file> --registry <file> --authority <authority>) --new-store <dir> --new-registry <file>
+const storeRotateUsage = `usage:
+  gateway store rotate (--config <engine.json> | --store <dir> --seed <file> --registry <file> --authority <authority>) --new-store <dir> --new-registry <file>
+  gateway store rotate --config <engine.json> (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> [--timeout <seconds>]
 Rotates the store, the gateway stopped: seals every session left open in
 it, as seal-open --all does, then makes the new store directory and the new
 registry, whose first line names the old registry's line count and the
@@ -27,7 +29,19 @@ SHA-256 of its last line, signed by the key in force (SPEC.md §3d). Neither
 new path may be there already. A session that cannot be sealed refuses the
 rotation, and nothing new is made. The old store is not changed but by the
 seals; it is the operator's to archive or delete whole. Prints each seal
-appended, then the new registry's first line.`
+appended, then the new registry's first line.
+With the PostgreSQL kind (--config alone names it) the new store is a new
+database, which the migration login's connection string names, as gateway
+store migrate takes it: the database is to hold no store, and is migrated
+and given the registry in one transaction. The start lease of the old
+database is taken first: an instance serving it refuses the rotation.`
+
+// storeRotateTargetFlags are the flags of the new store: its directory and
+// registry on the filesystem kind, its database on the PostgreSQL kind.
+var (
+	storeRotateFsFlags = []string{"--new-store", "--new-registry"}
+	storeRotatePgFlags = []string{"--connection-file", "--connection-env", "--owner", "--runtime", "--timeout"}
+)
 
 func cmdStoreRotate(args []string, stdout, stderr io.Writer) int {
 	return cmdStoreRotateAt(args, stdout, stderr, nowStamp)
@@ -38,7 +52,7 @@ func cmdStoreRotateAt(args []string, stdout, stderr io.Writer, stamp func() stri
 	var rest []string
 	targets := map[string]string{}
 	for i := 0; i < len(args); i++ {
-		if name := args[i]; name == "--new-store" || name == "--new-registry" {
+		if name := args[i]; contains(storeRotateFsFlags, name) || contains(storeRotatePgFlags, name) {
 			if i+1 >= len(args) || args[i+1] == "" {
 				fmt.Fprintln(stderr, storeRotateUsage)
 				return 2
@@ -57,10 +71,6 @@ func cmdStoreRotateAt(args []string, stdout, stderr io.Writer, stamp func() stri
 		}
 		rest = append(rest, args[i])
 	}
-	if targets["--new-store"] == "" || targets["--new-registry"] == "" {
-		fmt.Fprintln(stderr, storeRotateUsage)
-		return 2
-	}
 	o, msg := parseSealOpen(append(rest, "--all"))
 	switch msg {
 	case "ok":
@@ -71,11 +81,48 @@ func cmdStoreRotateAt(args []string, stdout, stderr io.Writer, stamp func() stri
 		fmt.Fprintf(stderr, "store rotate: %s\n%s\n", msg, storeRotateUsage)
 		return 2
 	}
+	// each kind's flags of the new store, and none of the other's
+	own, other := storeRotateFsFlags, storeRotatePgFlags
 	if o.storage != nil {
-		fmt.Fprintln(stderr, "store rotate: the PostgreSQL kind is rotated to a new database or schema, which this release does not yet do; nothing was changed")
-		return 1
+		own, other = other, own
 	}
-	sealed, continuation, err := storeRotate(o, targets["--new-store"], targets["--new-registry"], stamp)
+	for _, name := range other {
+		if _, given := targets[name]; given {
+			fmt.Fprintf(stderr, "store rotate: %s is not of the storage kind the configuration names\n%s\n", name, storeRotateUsage)
+			return 2
+		}
+	}
+	var sealed []*vObject
+	var continuation []byte
+	var err error
+	if o.storage != nil {
+		var given []string
+		for _, name := range own {
+			if value, ok := targets[name]; ok {
+				given = append(given, name, value)
+			}
+		}
+		flags, code := storeFlags(given, own, "store rotate", storeRotateUsage, stderr)
+		if code != 0 {
+			return code
+		}
+		timeout, ok := storeTimeout(flags, "store rotate", storeRotateUsage, stderr)
+		if !ok {
+			return 2
+		}
+		spec, code := storeConnectionSpec(flags, "store rotate", stderr)
+		if code != 0 {
+			return code
+		}
+		target := pgRotationTarget{spec: spec, roles: pgRoles{owner: flags["--owner"], runtime: flags["--runtime"]}, timeout: timeout}
+		sealed, continuation, err = storeRotatePostgres(o, target, stamp, stderr)
+	} else {
+		if targets["--new-store"] == "" || targets["--new-registry"] == "" {
+			fmt.Fprintln(stderr, storeRotateUsage)
+			return 2
+		}
+		sealed, continuation, err = storeRotate(o, targets["--new-store"], targets["--new-registry"], stamp)
+	}
 	for _, record := range sealed {
 		fmt.Fprintf(stdout, "%s\n", canon(record))
 	}

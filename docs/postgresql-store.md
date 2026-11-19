@@ -779,6 +779,61 @@ Exit 0 on success, 1 on a refusal or failure, 2 on a usage error. A gateway star
 store serves as before; a platform fixed to the removed scope identifier records it again at its
 start and begins anew.
 
+## Rotating the store
+
+```text
+gateway store rotate --config <engine.json> (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> [--timeout <seconds>]
+```
+
+A rotation lets the store go by starting another
+([ADR-0048](adr/0048-retention-by-acknowledgment-and-store-rotation.md), decision 3; SPEC.md §3d).
+On this kind the new store is **a new database**, which the operator makes as in "Before the first
+start", for the same roles. It is never a new instance on the same database: every instance on one
+database shares one registry chain ("Several instances on one database"). `--config` names the old
+store, the seed and the authority, as `gateway seal-open --config` takes them. The connection flags
+name the migration login on the new database, as `gateway store migrate` takes them, never printed.
+`--timeout` bounds each of the command's two transactions there (default 300 seconds).
+
+- **The old database.** The command reaches it by the configuration's run-time login alone. It
+  takes the start lease first, in the one-instance mode whatever `storage.instances` says, and
+  holds it to its end. It seals every session left open, as `gateway seal-open --all` does
+  ("Sealing the sessions an instance left open"), each seal fenced on the lease. Nothing else is
+  written there.
+- **The new database.** Before anything is sealed, the migrations are run there in a transaction
+  that is rolled back at its end, and the database is held to hold no store. Once the seals are
+  appended, the migrations run again. In the same transaction, under the migration's lock, the
+  command checks the database again, reads the old registry again under the lease, and makes the
+  registry holding the store continuation alone. The migration and the registry commit together or
+  not at all.
+- **The grants.** The run-time role holds on the new database what `grants.sql` gives it on every
+  migration, and nothing more (a test compares them with the old database's).
+- **The line.** SPEC.md §3d's `store-continuation`, signed by the seed's key, naming the old
+  registry's line count and the SHA-256 of its last line as the registry stands after the seals.
+  The command prints each seal appended, then that line.
+- **Verifying the pair.** Export each database with `gateway export --config` and verify the new
+  export with `gateway verify --previous <old export>/registry`. The old export is to be taken
+  after the rotation, before any instance serves the old database again. An instance started there
+  later appends to its registry, and the link to that registry no longer holds (a test).
+
+It is refused, with exit status 1, by name:
+
+- while any instance's start lease on the old database is live (`start-lease-held: …; stop the
+  gateway, then rotate`). Nothing is sealed, and the new database is not migrated.
+- when the new database cannot be migrated, or holds a store: a registry (`it holds a registry`),
+  a row of the start lease, a secret, or a row of no scope, the scope identifiers recorded among
+  them (`it holds rows of a store`). The old database itself, or a database a rotation already
+  made, is refused so. Nothing is changed.
+- when a session left open cannot be sealed, or the old registry is not there. The new database
+  is not migrated.
+- when the old registry changed after it was read under the lease, or the new database's
+  transaction fails. The seals appended stay in the old registry, and a run again into an empty
+  database rotates the store.
+
+Exit 2 on a usage error: `--new-store` and `--new-registry` are the filesystem kind's, and the
+migration login's flags are refused beside a configuration of that kind. Dropping the old database
+once it is past retention is the operator's, with PostgreSQL's own tools. Its rows stay in the
+write-ahead log, base backups and replicas under the operator's own retention.
+
 ## Time
 
 Receipt and seal times are the gateway's, never the database's. A lease of the store contract

@@ -1516,7 +1516,8 @@ new made, when one cannot be sealed; then makes a new store directory and a new 
 before, whose first line is a **store continuation**. The old store is left as it is, for its operator
 to archive or delete whole. On the PostgreSQL kind a rotation is to a new database, or a new schema the
 migration login owns, never a new instance on the same database (ADR-0035), whose instances share one
-registry chain; this release refuses the PostgreSQL kind by name.
+registry chain; that kind rotates to a new database (`docs/postgresql-store.md`, "Rotating the
+store"), its continuation this one, byte for byte, read through `gateway export`.
 
 | Member | Form | Statement |
 |---|---|---|

@@ -203,8 +203,16 @@ rotation seals what was open.
 ## More information
 
 - Store rotation implemented in #535 (part B), on the filesystem kind: `gateway store rotate`, the
-  `store-continuation` line and `gateway verify --previous` (SPEC.md §3d). The PostgreSQL kind's
-  rotation is refused by name until it is built.
+  `store-continuation` line and `gateway verify --previous` (SPEC.md §3d).
+- PostgreSQL kind built in #535 (part C): `gateway store rotate --config` with the migration
+  login's connection to a new database, taken as `gateway store migrate` takes it, the start
+  lease of the old database taken first. The form is a new database, not a schema: every
+  statement and the start's checks name the schema `gateway`, so a new database holds the schema,
+  row security and grants of a fresh migration unchanged, where a schema of another name would be
+  carried into every statement and into the configuration. The run-time role holds on the new
+  database what `grants.sql` gives it on every migration, and nothing more; on the old one the
+  command uses the run-time login alone, for the lease and the seals. The line is §3d's, byte for
+  byte, and `gateway verify --previous` reads this kind through `gateway export --config`.
 
 - Issue #504; ADR-0034 (removal of one scope identifier), ADR-0042 (export and verify by
   scope), ADR-0035 (several instances on one database) and #471 (one registry chain per

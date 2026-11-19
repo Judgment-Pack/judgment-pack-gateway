@@ -168,6 +168,17 @@ const pgMigrationLock = 0x6761746577617931 // "gateway1" in ASCII, a constant of
 // login dsn names, and answers the versions it applied: none on a second
 // run. Nothing is applied unless every condition below holds.
 func migratePostgres(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout time.Duration) ([]int, error) {
+	return migratePostgresThen(dsn, set, roles, timeout, nil, true)
+}
+
+// migratePostgresThen is migratePostgres with then, where it is not nil,
+// run in the migration's transaction once the definitions hold and before
+// the commit -- as the owner, under the migration's lock -- its failure
+// rolling the migration back; and, where commit is not set, the
+// transaction rolled back at its end, so nothing is kept: a migration tried
+// (gateway store rotate holds the database it rotates into to this before
+// it seals anything).
+func migratePostgresThen(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout time.Duration, then func(pgTx) error, commit bool) ([]int, error) {
 	if !pgRoleName(roles.owner) || !pgRoleName(roles.runtime) {
 		return nil, errors.New("store: a role's name is 1 to 63 bytes with no NUL and no double quote")
 	}
@@ -270,6 +281,17 @@ func migratePostgres(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout time.
 		if err := pgDefinitionsHold(definitions); err != nil {
 			return failed(fmt.Errorf("%w; the migration was rolled back", err))
 		}
+	}
+	if then != nil {
+		if err := then(pgTx{c}); err != nil {
+			return failed(err)
+		}
+	}
+	if !commit {
+		if _, err := c.exec("ROLLBACK"); err != nil {
+			return nil, err
+		}
+		return applied, nil
 	}
 	done, err := c.exec("COMMIT")
 	if err != nil {
