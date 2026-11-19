@@ -489,7 +489,10 @@ the engine ships, with their pins and licences, are in [catalog/](catalog/README
 may also name a plain HTTP API as a platform's `live` operation, of the `http` shape: the engine
 runs `adapter-http` for it as the platform's user with the platform's credential, at the endpoint
 and paths the binding fixes, and its receipt is the one `--source-shape NAME=http` gives
-([ADR-0024](docs/adr/0024-an-http-source-in-the-engine.md)). For a provider that issues
+([ADR-0024](docs/adr/0024-an-http-source-in-the-engine.md)); a path may be a template a GUID
+fills, and a caller pages by the next or delta links the endpoint hands out, each held to the
+endpoint and the paths (engine configuration version 31,
+[ADR-0040](docs/adr/0040-path-templates-and-links-on-an-http-source.md)). For a provider that issues
 short-lived access tokens against a certificate or a federated identity, the platform's
 `credentials.live.tokenStep` (engine configuration version 21) has `adapter-http` obtain the token
 by a client assertion, with a key held in that credentials file or a federated token read from a

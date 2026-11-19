@@ -248,6 +248,15 @@ func TestEveryServedToolAndOperationCarriesOperationAndEffect(t *testing.T) {
 			if entry.op == nil {
 				continue
 			}
+			// No owner taxonomy is defined for an http or gcp-asset
+			// operation (ADR-0024, ADR-0039): it names no tool, so no
+			// MCP frontend can list it, and its binding is version 1
+			if entry.op.shape == "http" || entry.op.shape == gcpAssetShape {
+				if len(entry.op.tools) != 0 || entry.op.taxonomy != (ToolTaxonomy{}) {
+					t.Fatalf("%s operation %s of shape %s names a tool or an owner taxonomy", where, entry.name, entry.op.shape)
+				}
+				continue
+			}
 			if entry.op.shape != "mcp" {
 				if !entry.op.taxonomy.Valid() || entry.op.taxonomy.Operation == "" || entry.op.taxonomy.Effect == "" {
 					t.Fatalf("%s operation %s carries no operation and effect", where, entry.name)
@@ -264,7 +273,7 @@ func TestEveryServedToolAndOperationCarriesOperationAndEffect(t *testing.T) {
 				}
 			}
 		}
-		if b.live != nil {
+		if b.live != nil && b.live.shape != "http" && b.live.shape != gcpAssetShape {
 			live[strings.TrimSuffix(filepath.Base(file), ".json")] = b
 		}
 	}

@@ -62,7 +62,7 @@ entry is `{"file": …}`, and a live one's may carry `tokenStep` beside `file`. 
 absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"28"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"31"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
@@ -79,8 +79,13 @@ absolute.
   below), version 25 `storage`'s `startWaitSeconds` ("A start that waits for the start lease
   (engine version 25)", below), version 26 `storage`'s `instances` ("Several instances on one
   database (engine version 26)", below), version 27 `identity`'s `callerScopes` ("Caller
-  scope identifiers (engine version 27)", below), and version 28 `mcp`'s `scope` and
-  `scopeFrom` ("The MCP server on scoped platforms (engine version 28)", below). A
+  scope identifiers (engine version 27)", below), version 28 `mcp`'s `scope` and
+  `scopeFrom` ("The MCP server on scoped platforms (engine version 28)", below), version 29
+  the `gcp-asset` shape ("A read-only Cloud Asset Inventory source (engine version 29)",
+  below), version 30 a gcp-asset source's `groups` ("Grants through groups on a gcp-asset
+  source (engine version 30)", below), and version 31 a path template among an http live
+  operation's `paths` ("Path templates and links on an http source (engine version 31)",
+  below). A
   file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -832,10 +837,12 @@ The members are exactly these, `methods`, `headers` and `checkPath` optional, an
   receipt names the URL the adapter sent to under it;
 - `paths` are the only paths an acquisition may name, 1 to 128, each sent as written under the
   endpoint: it begins with `/`, is printable ASCII without a space, and carries no query,
-  fragment, backslash, dot segment or empty segment — what `adapter-http` accepts — and no comma,
-  percent sign or brace, which the engine's command line would split into two paths, the adapter
-  would send escaped, or a reader would take for a placeholder; nor any other character the
-  adapter would send percent-escaped (below). A path given twice is refused, and
+  fragment, backslash, dot segment or empty segment — what `adapter-http` accepts — and no comma
+  or percent sign, which the engine's command line would split into two paths or the adapter
+  would send escaped; nor any other character the adapter would send percent-escaped (below). A
+  brace is refused but in the one placeholder `{id}`, a whole segment at most once in a path,
+  which from engine version 31 makes the path a template a GUID fills ("Path templates and links
+  on an http source (engine version 31)", below). A path given twice is refused, and
   so are paths that, comma-joined after `--paths=`, make a word of 128 KiB or more: the one
   argument of the adapter's command line they are passed in, which Linux would refuse to start a
   program with;
@@ -852,8 +859,9 @@ The members are exactly these, `methods`, `headers` and `checkPath` optional, an
   header the adapter writes. One of them is required, since the platform names a credentials file
   for `live` as for every operation, and the adapter reads that member of it and sends nothing
   else;
-- `checkPath` is the path a check GETs: one of `paths`, with `GET` among `methods`, so a check
-  asks for nothing an acquisition could not. Without it a check is the TLS handshake, or, to
+- `checkPath` is the path a check GETs: one of `paths`, and not a template, which a check would
+  have no GUID to fill, with `GET` among `methods`, so a check asks for nothing an acquisition
+  could not. Without it a check is the TLS handshake, or, to
   plaintext loopback, the connection alone.
 
 A path is sent as written, or refused when the binding is loaded (gateway #407). The adapter sets
@@ -865,7 +873,9 @@ of its own: a path is refused when `url.URL{Path: p}.EscapedPath()` is not `p`. 
 the printable ASCII characters so refused are the space, `!`, `"`, `#`, `%`, `'`, `(`, `)`, `*`,
 `<`, `>`, `?`, `[`, `\`, `]`, `^`, `` ` ``, `{`, `|` and `}`; the punctuation sent as written is
 `$`, `&`, `+`, `,`, `-`, `.`, `/`, `:`, `;`, `=`, `@`, `_` and `~` (a comma is refused in `paths`
-anyway). The tests derive the set over every printable ASCII byte and log it. `adapter-http`
+anyway). A template is held to the rule with a GUID in place of `{id}`, since every path it
+admits differs from that one only in hex digits. The tests derive the set over every printable
+ASCII byte and log it. `adapter-http`
 holds the paths it is given, `--paths`, `--check-path` and a request's path, to the same rule, so
 the two agree on a path, and a path it was given in the plain form with such a character, a
 percent escape among them, is refused rather than sent escaped again.
@@ -897,9 +907,14 @@ directories (`XDG_RUNTIME_DIR`, `/run/user/<uid>`), which the source sandbox hid
 bubblewrap; the sandbox restricts writes, not reads, elsewhere. What a verifier can hold to is
 the receipt's `peerIdentity`, the digest of the certificate the endpoint presented.
 
-An acquisition's arguments are the adapter's request, `{"path", "method"?, "query"?, "body"?}`:
-the path one of `paths`, the method one of `methods`; anything else is refused by the adapter
-before a connection is made.
+An acquisition's arguments are the adapter's request, `{"path", "method"?, "query"?, "body"?}`
+or `{"link", "method"?, "body"?}`: the path one of `paths`, or a template's with a GUID in
+place of `{id}`; a link an absolute URL under the endpoint whose path is one of those ("Path
+templates and links on an http source (engine version 31)", below); the method one of
+`methods`; anything else is refused by the adapter before a connection is made, and, for a
+source with a token step, by the engine before a token is obtained. A `query` object's members
+are sent sorted by name and form-encoded, but for `$`, which is sent as written, so an OData
+system option (`$select`, `$top`, `$filter`) reaches the endpoint by the name it reads.
 
 **A throttled answer** (gateway #425, [ADR-0029](../adr/0029-a-throttled-source-is-answered-with-its-class.md)).
 When the endpoint, or the token step's token endpoint, answers `429` or `503`, `/acquire` answers
@@ -939,6 +954,10 @@ removed. The high-water mark, here `since`, is the caller's to record, from the 
 the gateway reads nothing in a result. A page answered `429` or `503` is not receipted and takes
 no `callIndex`: the caller waits the `Retry-After` it was given, or its own back-off when none
 was, and asks for the same page again in the same session, which is not sealed until it has.
+An endpoint that names its next page by a URL, an OData `@odata.nextLink` or a delta round's
+`@odata.deltaLink`, is followed by sending that URL as the request's `link`, as written: the
+receipt's `statement` then commits to the path and the query the link carried, as `rawQuery`
+("Path templates and links on an http source (engine version 31)", below).
 The recurring observations of the one built-in provider that has them
 ([recurring-source-observations.md](recurring-source-observations.md)) are unchanged.
 
@@ -967,7 +986,8 @@ and takes no static credential, is given a token step in the platform's `credent
 No engine version is added: the configuration's members are unchanged, and every release before
 this one refuses a binding that names the `http` shape by name, when it loads the binding and
 before any source is derived — so an older gateway refuses a configuration that pins one, and a
-binding that names no `http` operation derives exactly the sources it did.
+binding that names no `http` operation derives exactly the sources it did. A path template is
+the one later member, of engine version 31 (below).
 
 ## `connect`
 
@@ -2362,6 +2382,77 @@ is started with the command line, says the lines and reports the posture it did,
 groups, raise `engineVersion` to `"30"`, add the member, and let the source's principal view the
 memberships of the groups that matter. A gateway older than this one refuses a version-30 file
 by its version.
+
+## Path templates and links on an http source (engine version 31)
+
+An http live operation's `paths` may hold templates, and a caller may follow the next page or
+the delta an endpoint hands out by its URL
+([ADR-0040](../adr/0040-path-templates-and-links-on-an-http-source.md); adapters/README.md,
+"adapter-http"). Both exist for an API, a directory's among them, that names a member collection
+by an object's id and pages by absolute links; the shipped `microsoft-graph` binding is one
+([catalog/README.md](../../catalog/README.md#microsoft-graph)).
+
+```json
+"paths": ["/v1.0/groups", "/v1.0/groups/delta", "/v1.0/groups/{id}/members"]
+```
+
+**A path template** carries one placeholder, `{id}`, as a whole segment. It admits a request's
+path that equals it in every other segment and has, in that one, a GUID: 36 characters, hex
+digits of either case with hyphens at the 8-4-4-4-12 places, and nothing more — no brace,
+percent sign, dot, slash or other character, so a template admits no path that reaches
+another resource than a member of the collection it names. The template is otherwise held to
+every rule of a path above, with a GUID in its place, and passed to `adapter-http` as written
+in `--paths=`, the bound on that word included. Refused by name when the binding is loaded: a
+path with two placeholders (`carries more than one {id} placeholder`), with `{id}` within a
+segment, or with any other brace; a `checkPath` that is a template, which a check would have
+no GUID to fill; and a template in a file of version 30 or earlier (`names a path template,
+paths[N], a version-31 member; engineVersion 30 has none`), at the start and at `connect`,
+which names the version to raise to and does not raise it, since the version a file states is
+the reading its author reviewed.
+
+**A link** is an acquisition's `{"link": "<absolute URL>", "method"?, "body"?}`, in place of
+`path` and `query`: exactly one of `path` and `link`, and no `query` beside a link. The link
+is admitted when its scheme and host are the binding endpoint's, compared without regard to
+case; its port is the endpoint's, the scheme's default standing for an absent one; it carries
+no user and no fragment; its path, as written, is the endpoint's path followed by a path
+`paths` admits, fixed or a template's with a GUID, with no percent sign, backslash, dot segment
+or empty segment; its query holds only the characters RFC 3986 gives a query, a `%` only
+before two hex digits; and it is at most 16 KiB of visible ASCII. The request sent goes to the
+binding's endpoint, with the link's path and query byte for byte. A refusal is one fixed
+sentence naming the rule and nothing of the link, since a link carries the endpoint's paging
+or change token; for a source with a token step the engine refuses such a request before it
+obtains a token (`the request does not name a path and a method the source's operation allows;
+no token was requested`), as it does a path the binding does not name. A link reaches nothing a path and a query could not, so it is not a member of
+the configuration and no version gates it; a gateway older than this one refuses the member
+by name.
+
+**What the receipt records.** The `statement` is of the request as sent. A request that named
+a path commits to `{"method", "path", "query"?, "body"?}` as before, a template's path with its
+GUID; one that named a link commits to `{"method", "path", "rawQuery"?, "body"?}`, the path
+under the endpoint and the link's query, as sent, not to the link: its scheme, host and port
+are the endpoint's, which the acquisition's `endpoint`, the URL sent to without the query,
+names as the binding writes it. A next page followed by its link and the same page asked by
+`path` and `query` are therefore two statements, one with `rawQuery` and one with `query`.
+
+**Paging by link.** The caller sends the first page by `path` and `query`, takes
+`@odata.nextLink` from the page it was answered and sends it as `link`, in the same session,
+until a page names none; a delta round ends with `@odata.deltaLink`, which the caller keeps
+and sends as `link` for the next round. Each page is a receipt as any other; `/seal` after the
+last fixes the count. A delta token the endpoint no longer holds is answered `410`,
+`source_reference_expired` ("An expired reference", above), and the caller starts the round
+again from the delta path; a `429` or a `503` is answered with its class and `Retry-After`
+("A throttled answer", above).
+
+**`$` in a query object.** A `query` object's members are sent form-encoded with their names
+sorted, as before, but `$` is now sent as written, where it was sent `%24`: an OData endpoint
+reads `$select`, `$top` and `$filter` by those names, and `$` is a character RFC 3986 gives a
+query. A `%` written in a value is still sent `%25`, so every other byte is sent as before.
+
+**Upgrading.** A file of version 30 or earlier loads as before, and a binding with no template
+derives the sources it did; a request naming a `query` member with `$` in it reaches the
+endpoint with `$` rather than `%24`, and its statement is unchanged. To bind templates, raise
+`engineVersion` to `"31"`. A gateway older than this one refuses a version-31 file by its
+version.
 
 ## Keyed actions (engine version 14 and later)
 

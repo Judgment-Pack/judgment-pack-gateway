@@ -282,7 +282,10 @@ at mode `0600` under a path the signer walked and resolved, sends the one member
 of the endpoint form above — under a path and by a method the binding names, follows no redirect,
 and refuses an answer that repeats a credential. No request steers the host: the endpoint, the
 paths, the methods and the headers are the binding's, a path carrying a comma is refused since the
-command line would read it as two, a credential may not be sent under `Proxy-Authorization`,
+command line would read it as two, a template's `{id}` (engine version 31) admits a GUID in that
+one segment and nothing else, a link a caller follows is sent only when its scheme, host and port
+are the endpoint's and its path is one the binding admits, as written
+([ADR-0040](docs/adr/0040-path-templates-and-links-on-an-http-source.md)), a credential may not be sent under `Proxy-Authorization`,
 which a proxy reads, and the platform may name no endpoint, parameter or grant beside the binding.
 The signer never reads the credential: it reads the envelope from the adapter's stdout, within the
 engine's one mebibyte and thirty seconds, and signs what it attests. This is stricter than the
