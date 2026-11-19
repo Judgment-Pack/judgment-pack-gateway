@@ -57,7 +57,7 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 	}
 	var line []byte
 	sealed, _, err := sealOpenPostgresHeld(o, stamp, said, pgLeaseCommand{as: "store rotate", verb: "rotate", alone: true,
-		then: func(kind *pgKind, seed []byte, refused []string) error {
+		then: func(kind *pgKind, seed []byte, refused []string, held *kindStart) error {
 			if len(refused) > 0 {
 				return fmt.Errorf("a session left open could not be sealed, so the store is not rotated: %s", refused[0])
 			}
@@ -84,8 +84,16 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 				if !bytes.Equal(again, data) {
 					return errors.New("the old registry changed after it was read under the start lease")
 				}
-				return pgWriteContinuation(tx, made)
+				if err := pgWriteContinuation(tx, made); err != nil {
+					return err
+				}
+				// last before the commit: the lease is held still, with a
+				// write's margin of it to spare, or nothing is committed
+				return held.holding(kind.fenceMargin())
 			}, true)
+			if errors.Is(err, errPgCommitUncertain) {
+				return fmt.Errorf("the new database: %v; the store may have rotated; rerun to check, and the seals appended stay in the old registry", err)
+			}
 			if err != nil {
 				return fmt.Errorf("the new database: %v; the store is not rotated, and the seals appended stay in the old registry", err)
 			}

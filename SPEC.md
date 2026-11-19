@@ -1538,7 +1538,8 @@ ends, and a line blanked or changed anywhere in it is another registry.
 **The mark.** A store rotated away from carries the mark `store-rotated:` followed by the lowercase
 hexadecimal SHA-256 of the new registry's first line, the continuation, without its `0x0A`. On the
 filesystem kind it is a file beside the registry, the registry's path with `.rotated` appended, holding
-the mark and a `0x0A`. The mark is outside the registry's bytes, so it is not in the digest, and a verifier never reads it. Every later
+the mark and a `0x0A`; on the PostgreSQL kind this release writes no mark (`docs/postgresql-store.md`,
+"Rotating the store"). The mark is outside the registry's bytes, so it is not in the digest, and a verifier never reads it. Every later
 hold of the old registry -- a gateway's start, `seal-open`, `remove-artifact`, `remove-scope`, a second
 `store rotate` --
 refuses the store by the mark's name: *the store was rotated away from (store-rotated:...)*. A rotation

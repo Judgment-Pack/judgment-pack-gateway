@@ -178,6 +178,10 @@ func migratePostgres(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout time.
 // transaction rolled back at its end, so nothing is kept: a migration tried
 // (gateway store rotate holds the database it rotates into to this before
 // it seals anything).
+// errPgCommitUncertain is a migration's COMMIT that failed as it was sent
+// or answered: whether it committed is not known here.
+var errPgCommitUncertain = errors.New("the migration's COMMIT did not answer, and whether it committed is not known")
+
 func migratePostgresThen(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout time.Duration, then func(pgTx) error, commit bool) ([]int, error) {
 	if !pgRoleName(roles.owner) || !pgRoleName(roles.runtime) {
 		return nil, errors.New("store: a role's name is 1 to 63 bytes with no NUL and no double quote")
@@ -295,7 +299,7 @@ func migratePostgresThen(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout t
 	}
 	done, err := c.exec("COMMIT")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errPgCommitUncertain, err)
 	}
 	if done.tag != "COMMIT" {
 		return nil, errors.New("store: the database rolled the migration back")

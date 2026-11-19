@@ -808,7 +808,7 @@ name the migration login on the new database, as `gateway store migrate` takes t
 - **The grants.** The run-time role holds on the new database what `grants.sql` gives it on every
   migration, and nothing more (a test compares them with the old database's).
 - **The line.** SPEC.md §3d's `store-continuation`, signed by the seed's key, naming the old
-  registry's line count and the SHA-256 of its last line as the registry stands after the seals.
+  registry's line count and the SHA-256 of its bytes, whole, as the registry stands after the seals.
   The command prints each seal appended, then that line.
 - **Verifying the pair.** Export each database with `gateway export --config` and verify the new
   export with `gateway verify --previous <old export>/registry`. The old export is to be taken
@@ -822,12 +822,22 @@ It is refused, with exit status 1, by name:
 - when the new database cannot be migrated, or holds a store: a registry (`it holds a registry`),
   a row of the start lease, a secret, or a row of no scope, the scope identifiers recorded among
   them (`it holds rows of a store`). The old database itself, or a database a rotation already
-  made, is refused so. Nothing is changed.
+  made, is refused so. Nothing is changed. The check reads the scoped tables as rows of no scope
+  only, and every store a gateway made holds a registry and rows of the start lease, which are of no
+  scope: only a database built by hand, holding scoped rows alone, gets past it.
 - when a session left open cannot be sealed, or the old registry is not there. The new database
   is not migrated.
-- when the old registry changed after it was read under the lease, or the new database's
-  transaction fails. The seals appended stay in the old registry, and a run again into an empty
-  database rotates the store.
+- when the old registry changed after it was read under the lease, when the lease is lost or is
+  held for no more than a write's margin by the time the new database's transaction is to commit,
+  or when that transaction fails. The seals appended stay in the old registry, and a run again into
+  an empty database rotates the store. When the COMMIT itself does not answer, the command says the
+  store *may have rotated; rerun to check*: a run again refuses a new database that holds the
+  registry (`it holds a registry`), and rotates into one that does not.
+
+This release writes no mark into the old database: the filesystem kind's mark (SPEC.md §3d) has
+no place there yet, since the start lease's rows take only an instance's holder and a lease of at
+most ten minutes. An instance started on the old database after a rotation is not refused, and
+appends to the old registry; the link to that registry no longer holds.
 
 Exit 2 on a usage error: `--new-store` and `--new-registry` are the filesystem kind's, and the
 migration login's flags are refused beside a configuration of that kind. Dropping the old database

@@ -56,6 +56,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 )
 
 // sealOpenOnKind seals what may be sealed on the kind -- the session named,
@@ -316,11 +317,29 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 // storage.instances says, so the command is refused while any instance
 // serves, of either mode, and no instance starts while it holds the lease.
 // then, where it is not nil, runs once what may be sealed is sealed, the
-// lease still held, with the seed and the sessions refused.
+// lease still held, with the seed, the sessions refused and the hold.
 type pgLeaseCommand struct {
 	as, verb string
 	alone    bool
-	then     func(kind *pgKind, seed []byte, refused []string) error
+	then     func(kind *pgKind, seed []byte, refused []string, held *kindStart) error
+}
+
+// holding is whether the hold has the start lease still, with margin of it
+// to spare by this process's clock: no loss reported by its renewal, which
+// is left for the stop to say, and the lease held for longer than margin
+// from now. A write elsewhere that the lease is to cover checks it last,
+// before its commit.
+func (s *kindStart) holding(margin time.Duration) error {
+	select {
+	case err := <-s.lost:
+		s.lost <- err
+		return err
+	default:
+	}
+	if left := time.Until(s.lease.heldUntil()); left <= margin {
+		return fmt.Errorf("%w: gateway instance %s's start lease is held for %s more by this process's clock, not more than the %s a commit is given", errStartLeaseLost, s.lease.holder, left.Round(time.Millisecond), margin)
+	}
+	return nil
 }
 
 // sealOpenPostgresHeld is sealOpenPostgres as the command c.
@@ -385,5 +404,5 @@ func sealOpenPostgresHeld(o sealOpenOptions, stamp func() string, said io.Writer
 	if err != nil || c.then == nil {
 		return sealed, refused, err
 	}
-	return sealed, refused, c.then(kind, seed, refused)
+	return sealed, refused, c.then(kind, seed, refused, held)
 }
