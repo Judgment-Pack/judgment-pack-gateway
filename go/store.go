@@ -218,6 +218,8 @@ func (s *store) stampInto(core *vObject, before func() error) (*vObject, string,
 // --- the seal registry (write side) ---------------------------------------
 
 type registryWriter struct {
+	// startKeys are the keys the start's walk of the registry reached
+	startKeys []reachedKey
 	// path names the registry in messages
 	path string
 	log  appendLog
@@ -430,9 +432,16 @@ func newRegistryWriterOnWith(log appendLog, name string, seed []byte, signing *s
 	if err != nil {
 		return nil, fmt.Errorf("registry %s: %w", name, err)
 	}
+	// a key service's key (ADR-0050) is held to the history as well: a
+	// record under a key no rotation leads from to it refuses the start
+	if _, service := signing.key().signer.(*keyServiceSigner); service {
+		if err := heldUnderAnotherKey(existing, walk.keys, own, nil); err != nil {
+			return nil, fmt.Errorf("registry %s: %w", name, err)
+		}
+	}
 	w := &registryWriter{
 		path: name, log: log, seed: seed, signing: signing,
-		keyID: keyIDFor(own),
+		keyID: keyIDFor(own), startKeys: walk.keys,
 	}
 	if shared {
 		// the start's walk is where the seals' reading starts from: up to

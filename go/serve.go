@@ -307,8 +307,11 @@ type gatewayService struct {
 	// so shutting the service down cancels every source in flight; a source
 	// in its own process group would otherwise outlive the gateway that
 	// started it, since it no longer shares the terminal's signals.
-	ctx    context.Context
-	cancel context.CancelFunc
+	// rereadConfig, where it is set, reads the configuration the gateway
+	// started from again, for a rotation at SIGHUP (rotateOnHangup)
+	rereadConfig func() (engineConfig, error)
+	ctx          context.Context
+	cancel       context.CancelFunc
 	// waitDelay bounds how long, after a source's context is cancelled or
 	// the source has exited, the gateway keeps waiting for its stdout and
 	// stderr to reach end of file. A descendant that escaped the source's
@@ -396,6 +399,9 @@ func newGatewayServiceSigned(storeRoot string, seed []byte, sig signer, authorit
 	if err != nil {
 		return nil, err
 	}
+	if err := holdStoreUnderKey(st, reg); err != nil {
+		return nil, err
+	}
 	return newServiceAround(st, reg, storeRoot, registryPath, authority, sources), nil
 }
 
@@ -478,6 +484,17 @@ func sourceScopes(sources map[string]sourceSpec) []string {
 // scope identifier a source is fixed to: what the start then writes is the
 // record of each identifier, where it is not there (pgKind.scopeViews).
 func newGatewayServiceOn(kind storeKind, seed []byte, authority string, sources map[string]sourceSpec) (*gatewayService, error) {
+	return newGatewayServiceOnSigned(kind, seed, nil, authority, sources)
+}
+
+// newGatewayServiceOnSigned is newGatewayServiceOn signing through sig: the
+// seed's key where it is nil (ADR-0050). Every store over the kind, and its
+// registry, share one signerHolder.
+func newGatewayServiceOnSigned(kind storeKind, seed []byte, sig signer, authority string, sources map[string]sourceSpec) (*gatewayService, error) {
+	var signing *signerHolder
+	if sig != nil {
+		signing = newSignerHolder(sig)
+	}
 	if err := holdSourceForms(sources); err != nil {
 		return nil, err
 	}
@@ -489,7 +506,7 @@ func newGatewayServiceOn(kind storeKind, seed []byte, authority string, sources 
 	if len(seed) != seedBytes {
 		return nil, fmt.Errorf("an Ed25519 signing seed is %d bytes", seedBytes)
 	}
-	st := newStoreOn("", kind.artifacts(), kind.receipts(), seed, authority)
+	st := newStoreOnWith("", kind.artifacts(), kind.receipts(), seed, signing, authority)
 	startHook()
 	receipts := kind.receipts()
 	history := func() (bool, error) {
@@ -500,8 +517,11 @@ func newGatewayServiceOn(kind storeKind, seed []byte, authority string, sources 
 	if keeps {
 		history = keeper.holdsAnySeries
 	}
-	reg, err := newRegistryWriterOn(kind.registry(), pgRegistryName, seed, history)
+	reg, err := newRegistryWriterOnWith(kind.registry(), pgRegistryName, seed, st.signing, history)
 	if err != nil {
+		return nil, err
+	}
+	if err := holdStoreUnderKey(st, reg); err != nil {
 		return nil, err
 	}
 	g := newServiceAround(st, reg, "", "", authority, sources)
@@ -517,7 +537,7 @@ func newGatewayServiceOn(kind storeKind, seed []byte, authority string, sources 
 		}
 		g.scoped = map[string]*store{}
 		for scope, view := range views {
-			g.scoped[scope] = newStoreOn("", view.artifacts(), view.receipts(), seed, authority)
+			g.scoped[scope] = newStoreOnWith("", view.artifacts(), view.receipts(), seed, st.signing, authority)
 		}
 	}
 	return g, nil
@@ -698,6 +718,23 @@ func (g *gatewayService) openAdmission() {
 
 func (g *gatewayService) bindLifetime(parent context.Context) {
 	g.ctx, g.cancel = context.WithCancel(parent)
+	// a key service's signings derive from the lifetime, so a stop ends a
+	// signing that waits under g.mu (ADR-0050)
+	if g.store != nil && g.store.signing != nil {
+		if b, ok := g.store.signing.key().signer.(lifeBinder); ok {
+			b.bindLife(g.ctx)
+		}
+	}
+}
+
+// holdStoreUnderKey refuses a store whose receipts are under a key the
+// registry's walk did not reach, where a key service signs (ADR-0050).
+func holdStoreUnderKey(st *store, reg *registryWriter) error {
+	key := st.signing.key()
+	if _, service := key.signer.(*keyServiceSigner); !service {
+		return nil
+	}
+	return heldUnderAnotherKey(nil, reg.startKeys, key.public, st.receipts)
 }
 
 // envGroupAnchor and anchorArg together select the anchor mode of this

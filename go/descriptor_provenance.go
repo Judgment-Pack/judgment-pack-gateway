@@ -161,14 +161,17 @@ func retainConnectedCapture(cfg engineConfig, data []byte, operation string) (de
 	if err := refuseUnderPostgreSQL(cfg, connectCaptureUnsupported); err != nil {
 		return descriptorProvenance{}, err
 	}
-	if err := refuseUnderKeyService(cfg, "gateway connect's descriptor capture"); err != nil {
-		return descriptorProvenance{}, err
-	}
 	seed, err := loadSeed(cfg.seed)
 	if err != nil {
 		return descriptorProvenance{}, err
 	}
-	s, err := newStore(cfg.store, seed, cfg.authority)
+	// signed through the key service's key version where the configuration
+	// names one (ADR-0050), else the seed
+	sig, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, seed)
+	if err != nil {
+		return descriptorProvenance{}, err
+	}
+	s, err := newStoreWith(cfg.store, seed, newSignerHolder(sig), cfg.authority)
 	if err != nil {
 		return descriptorProvenance{}, err
 	}

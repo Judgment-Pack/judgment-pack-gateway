@@ -68,6 +68,9 @@ type kindRun struct {
 	restore       func()
 	bind          func(listen string, said io.Writer) (net.Listener, error)
 	said          io.Writer
+	// signer, where it is not nil, signs in place of the seed's key: the key
+	// service's key version (ADR-0050)
+	signer signer
 }
 
 // retryAfterOf is a Retry-After, in whole seconds and at least one, of the

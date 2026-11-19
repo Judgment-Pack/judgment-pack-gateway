@@ -144,19 +144,23 @@ type engineConfig struct {
 	// signingKeyVersion names the key service's key version that signs in
 	// place of the seed's key (ADR-0050); "" where the seed signs
 	signingKeyVersion string
-	store             string
-	registry          string
-	decisionRecords   string
-	listen            string
-	catalog           string
-	runtime           string
-	adapters          string
-	rootSigner        bool
-	hostRuntime       bool
-	identity          *identitySpec    // who may call; nil records caller null
-	platforms         []platformConfig // in name order
-	version           string
-	mcp               *mcpConfig // the MCP server's own settings; nil when the configuration has none
+	// signingPublicKey, where it is named, is the public key signingKeyVersion's
+	// key version must answer, 64 lowercase hexadecimal characters: a key
+	// version whose key is another signs nothing (ADR-0050)
+	signingPublicKey string
+	store            string
+	registry         string
+	decisionRecords  string
+	listen           string
+	catalog          string
+	runtime          string
+	adapters         string
+	rootSigner       bool
+	hostRuntime      bool
+	identity         *identitySpec    // who may call; nil records caller null
+	platforms        []platformConfig // in name order
+	version          string
+	mcp              *mcpConfig // the MCP server's own settings; nil when the configuration has none
 	// witness makes the signer a checkpoint witness (ADR-0013); nil when the
 	// configuration has none.
 	witness *witnessSpec
@@ -406,7 +410,7 @@ var engineMembers = map[string]bool{
 	"decisionRecords": true, "listen": true, "catalog": true, "platforms": true,
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
 	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
-	"sealOpenAtStart": false, "signingKeyVersion": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
+	"sealOpenAtStart": false, "signingKeyVersion": false, "signingPublicKey": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
 }
 
 var platformMembers = map[string]bool{
@@ -842,8 +846,8 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		return engineConfig{}, fmt.Errorf("engine configuration: %w", err)
 	}
 	// signingKeyVersion (ADR-0050): one key version's resource name, of its
-	// closed form, from keyServiceSignerVersion; not yet beside storage or a
-	// witness, which sign or name the seed's key
+	// closed form, from keyServiceSignerVersion; not yet beside a witness,
+	// whose checkpoints the seed's key signs
 	if keyValue, present := obj.get("signingKeyVersion"); present {
 		if !versionAtLeast(version, keyServiceSignerVersion) {
 			return engineConfig{}, fmt.Errorf("engine configuration: signingKeyVersion is a version-%s member; engineVersion %s has no signingKeyVersion", keyServiceSignerVersion, version)
@@ -852,13 +856,25 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		if !ok || !keyVersionForm.MatchString(string(named)) {
 			return engineConfig{}, fmt.Errorf("engine configuration: signingKeyVersion is one key version's resource name, %s", keyVersionFormText)
 		}
-		if cfg.storage != nil {
-			return engineConfig{}, fmt.Errorf("engine configuration: signingKeyVersion is not yet taken beside storage: on the %s kind the start lease names the seed's key (ADR-0050)", storagePostgreSQL)
-		}
 		if cfg.witness != nil {
 			return engineConfig{}, errors.New("engine configuration: signingKeyVersion is not yet taken beside witness, whose checkpoints the seed's key signs (ADR-0050)")
 		}
 		cfg.signingKeyVersion = string(named)
+	}
+	// signingPublicKey (ADR-0050): the key version's public key, pinned
+	// beside its name, as the seed's expected key is pinned elsewhere
+	if keyValue, present := obj.get("signingPublicKey"); present {
+		if !versionAtLeast(version, keyServiceSignerVersion) {
+			return engineConfig{}, fmt.Errorf("engine configuration: signingPublicKey is a version-%s member; engineVersion %s has no signingPublicKey", keyServiceSignerVersion, version)
+		}
+		named, ok := keyValue.(vString)
+		if !ok || !signingPublicKeyForm.MatchString(string(named)) {
+			return engineConfig{}, errors.New("engine configuration: signingPublicKey is the key version's Ed25519 public key, 64 lowercase hexadecimal characters")
+		}
+		if cfg.signingKeyVersion == "" {
+			return engineConfig{}, errors.New("engine configuration: signingPublicKey is the public key of signingKeyVersion's key version, and is not given without it")
+		}
+		cfg.signingPublicKey = string(named)
 	}
 	return cfg, nil
 }

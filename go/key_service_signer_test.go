@@ -55,8 +55,12 @@ type keyServiceStandIn struct {
 	publicKey   func(map[string]string)
 	redirect    string
 	tokenStatus int
-	kms         *httptest.Server
-	metadata    *httptest.Server
+	// signName, where not "", is the version a sign answer names;
+	// tokenBody, where not "", is the metadata server's whole answer
+	signName  string
+	tokenBody string
+	kms       *httptest.Server
+	metadata  *httptest.Server
 }
 
 func standInKeyService(t *testing.T) *keyServiceStandIn {
@@ -82,7 +86,7 @@ func (s *keyServiceStandIn) set(f func(*keyServiceStandIn)) {
 
 func (s *keyServiceStandIn) serveMetadata(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	status := s.tokenStatus
+	status, body := s.tokenStatus, s.tokenBody
 	s.mu.Unlock()
 	if r.Header.Get("Metadata-Flavor") != "Google" || r.URL.Path != metadataAccessPath {
 		http.Error(w, "no", http.StatusForbidden)
@@ -91,6 +95,10 @@ func (s *keyServiceStandIn) serveMetadata(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Metadata-Flavor", "Google")
 	if status != 0 {
 		w.WriteHeader(status)
+		return
+	}
+	if body != "" {
+		w.Write([]byte(body))
 		return
 	}
 	w.Write([]byte(`{"access_token":"` + ksToken + `","expires_in":3599,"token_type":"Bearer"}`))
@@ -148,6 +156,9 @@ func (s *keyServiceStandIn) serveKMS(w http.ResponseWriter, r *http.Request) {
 		key = s.signBy
 	}
 	signature := ed25519.Sign(key, data)
+	if s.signName != "" {
+		version = s.signName
+	}
 	json.NewEncoder(w).Encode(map[string]any{"name": version, "signature": base64.StdEncoding.EncodeToString(signature),
 		"signatureCrc32c": crc32c(signature), "verifiedDataCrc32c": true, "protectionLevel": "SOFTWARE"})
 }

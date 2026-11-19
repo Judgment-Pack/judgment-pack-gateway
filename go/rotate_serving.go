@@ -13,9 +13,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 // rotationMayBeWritten is a rotation whose record may be in the registry,
@@ -92,4 +97,76 @@ func (w *registryWriter) rotateTo(next signer, at string) (*signingKey, error) {
 	}
 	w.signing.switchTo(to)
 	return to, nil
+}
+
+// errRotationOnKind is SIGHUP on the PostgreSQL kind, where several
+// instances may serve one database: a rotation there is every instance
+// stopped, the registry rotated, and every instance started under the next
+// key; a coordinated rotation across instances while they serve is #537.
+var errRotationOnKind = errors.New("a rotation while serving is not made on the PostgreSQL kind: stop every instance, rotate, and start them all under the next key version (ADR-0050); nothing was changed")
+
+// installRotationOnHangup rotates the gateway's key at each SIGHUP until ctx
+// ends (rotateOnHangup), saying the outcome on said.
+func installRotationOnHangup(ctx context.Context, g *gatewayService, said io.Writer) {
+	hangups := make(chan os.Signal, 1)
+	signal.Notify(hangups, syscall.SIGHUP)
+	go func() {
+		defer signal.Stop(hangups)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hangups:
+				line, err := g.rotateOnHangup(nowStamp)
+				if err != nil {
+					fmt.Fprintln(said, "rotate:", err)
+					continue
+				}
+				fmt.Fprintln(said, "rotate:", line)
+			}
+		}
+	}()
+}
+
+// rotateOnHangup is the operator's trigger of a rotation while serving
+// (ADR-0050, decision 3(a)), on the file kind alone: the configuration read
+// again, under its own checks, for signingKeyVersion and signingPublicKey
+// only; the key version it names read and checked as at the start; and the
+// gateway's key rotated to it (registryWriter.rotateTo), whose walk check
+// refuses a key the registry rotated from. A gateway its seed signs for is
+// moved to the key service the same way. Anything refused changes nothing.
+func (g *gatewayService) rotateOnHangup(stamp func() string) (string, error) {
+	if g.kind != nil {
+		return "", errRotationOnKind
+	}
+	if g.rereadConfig == nil || g.registry == nil {
+		return "", errors.New("this gateway was not started from a configuration it can read again; nothing was changed")
+	}
+	cfg, err := g.rereadConfig()
+	if err != nil {
+		return "", fmt.Errorf("the configuration could not be read again: %w; nothing was changed", err)
+	}
+	if cfg.signingKeyVersion == "" {
+		return "", errors.New("the configuration names no signingKeyVersion; a rotation while serving is to a key service's key version; nothing was changed")
+	}
+	next, _, err := newKeyServiceSignerPinned(cfg.signingKeyVersion, cfg.signingPublicKey)
+	if err != nil {
+		return "", fmt.Errorf("%w; nothing was changed", err)
+	}
+	if g.ctx != nil {
+		next.bindLife(g.ctx)
+	}
+	to, err := g.registry.rotateTo(next, stamp())
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("the gateway's key is rotated to the key service's key version %s, keyId %s; a receipt begun from now on is under it", cfg.signingKeyVersion, to.keyID), nil
+}
+
+// said0 is said, or the standard error where it is nil.
+func said0(said io.Writer) io.Writer {
+	if said == nil {
+		return os.Stderr
+	}
+	return said
 }

@@ -16,6 +16,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -56,7 +57,23 @@ const (
 	keyServiceTokenMargin = 60 * time.Second
 	keyServiceAlgorithm   = "EC_SIGN_ED25519"
 	metadataAccessPath    = "/computeMetadata/v1/instance/service-accounts/default/token"
+	// keyServiceLatch is how long after a signing that failed every signing
+	// fails at once with the same sentence, asking nothing: a service that
+	// is down costs one deadline, not one for each acquisition waiting on
+	// the service's lock, and a stop is not starved behind them.
+	keyServiceLatch = 2 * time.Second
+	// keyServiceTokenLimit bounds the access token taken; keyServiceTokenLife
+	// bounds the life its answer may claim, in seconds.
+	keyServiceTokenLimit = 16 << 10
+	keyServiceTokenLife  = 86400
 )
+
+// accessTokenForm is an access token's form (RFC 6750 b64token).
+var accessTokenForm = regexp.MustCompile(`^[A-Za-z0-9._~+/-]+=*$`)
+
+// signingPublicKeyForm is signingPublicKey's form: the key version's Ed25519
+// public key, 64 lowercase hexadecimal characters.
+var signingPublicKeyForm = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // keyVersionForm is signingKeyVersion's closed form: one key version's
 // resource name, every segment of the service's own alphabet.
@@ -72,6 +89,7 @@ var (
 	errKeyServiceAnswer      = errors.New("the key service answered with no signature the gateway takes; nothing was signed")
 	errKeyServiceToken       = errors.New("the gateway's access token could not be had from the metadata server; nothing was signed")
 	errKeyServicePublicKey   = errors.New("the key service answered no Ed25519 public key of the key version configured; the gateway does not start")
+	errKeyServiceNotExpected = errors.New("the key service's key version answers a public key other than the one signingPublicKey names; nothing is signed with it")
 )
 
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
@@ -91,6 +109,40 @@ type keyServiceSigner struct {
 	mu      sync.Mutex
 	token   string
 	expires time.Time
+
+	// fault guards life, the context every signing derives from (the
+	// service's lifetime once bound, so a stop cancels a signing that
+	// waits), and the latch: the failure of the last signing, repeated at
+	// once until latchedUntil.
+	fault        sync.Mutex
+	life         context.Context
+	latched      error
+	latchedUntil time.Time
+}
+
+// bindLife makes every signing from now on derive from ctx: once ctx ends,
+// a signing that waits on the service ends with it.
+func (k *keyServiceSigner) bindLife(ctx context.Context) {
+	k.fault.Lock()
+	defer k.fault.Unlock()
+	k.life = ctx
+}
+
+// lifeBinder is a signer whose signings derive from a lifetime.
+type lifeBinder interface{ bindLife(context.Context) }
+
+// newKeyServiceSignerPinned is newKeyServiceSigner held to expected, where
+// it is named (signingPublicKey, ADR-0050): a key version whose public key
+// is another signs nothing. The refusal names neither key.
+func newKeyServiceSignerPinned(version, expected string) (*keyServiceSigner, string, error) {
+	k, line, err := newKeyServiceSigner(version)
+	if err != nil {
+		return nil, "", err
+	}
+	if expected != "" && hex.EncodeToString(k.public) != expected {
+		return nil, "", errKeyServiceNotExpected
+	}
+	return k, line, nil
 }
 
 // pinnedClient is a client that dials base's address alone, through no
@@ -202,7 +254,29 @@ func (k *keyServiceSigner) publicKey() ed25519.PublicKey { return k.public }
 // whose CRC32C is the one answered. The caller holds it to the public key
 // (signingKey.signVerified).
 func (k *keyServiceSigner) sign(message []byte) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), keyServiceDeadline)
+	k.fault.Lock()
+	life, latched, until := k.life, k.latched, k.latchedUntil
+	k.fault.Unlock()
+	if latched != nil && k.now().Before(until) {
+		return nil, latched
+	}
+	if life == nil {
+		life = context.Background()
+	}
+	signature, err := k.ask(life, message)
+	k.fault.Lock()
+	if err != nil {
+		k.latched, k.latchedUntil = err, k.now().Add(keyServiceLatch)
+	} else {
+		k.latched = nil
+	}
+	k.fault.Unlock()
+	return signature, err
+}
+
+// ask is one asymmetricSign call within keyServiceDeadline of life.
+func (k *keyServiceSigner) ask(life context.Context, message []byte) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(life, keyServiceDeadline)
 	defer cancel()
 	request, _ := json.Marshal(map[string]string{
 		"data":       base64.StdEncoding.EncodeToString(message),
@@ -298,7 +372,8 @@ func (k *keyServiceSigner) accessToken(ctx context.Context) (string, error) {
 		TokenType   string `json:"token_type"`
 	}
 	if err != nil || len(raw) > keyServiceAnswerLimit || json.Unmarshal(raw, &answer) != nil ||
-		answer.AccessToken == "" || answer.TokenType != "Bearer" || answer.ExpiresIn <= 0 {
+		len(answer.AccessToken) > keyServiceTokenLimit || !accessTokenForm.MatchString(answer.AccessToken) ||
+		answer.TokenType != "Bearer" || answer.ExpiresIn <= 0 || answer.ExpiresIn > keyServiceTokenLife {
 		return "", errKeyServiceToken
 	}
 	k.token = answer.AccessToken
@@ -306,13 +381,71 @@ func (k *keyServiceSigner) accessToken(ctx context.Context) (string, error) {
 	return k.token, nil
 }
 
-// refuseUnderKeyService refuses an operator command, run with the gateway
-// stopped, that signs with the seed where the configuration names
-// signingKeyVersion: the seed's key is not the registry's then, and the
-// command is not yet built for a key service (ADR-0050).
-func refuseUnderKeyService(cfg engineConfig, command string) error {
-	if cfg.signingKeyVersion == "" {
+// commandSigner is what an operator command run with the gateway stopped
+// signs through (ADR-0050): the key service's key version the configuration
+// names, held to signingPublicKey where it is named, or else the seed's key.
+func commandSigner(version, expected string, seed []byte) (signer, error) {
+	if version == "" {
+		return newSeedSigner(seed), nil
+	}
+	k, _, err := newKeyServiceSignerPinned(version, expected)
+	if err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
+// heldUnderAnotherKey refuses a registry, and the store beside it, holding
+// history under a key id the registry's walk did not reach (ADR-0050): a
+// record of the registry other than a rotation, or the store's first
+// receipt, under a key no rotation leads from to own. A gateway moved from
+// its seed to a key service, or to another key version, signs once a
+// rotation to its key is recorded, and not before. receipts may be nil.
+func heldUnderAnotherKey(registry []byte, keys []reachedKey, own ed25519.PublicKey, receipts indexedSpace) error {
+	reached := func(keyID string) bool {
+		for _, k := range keys {
+			if k.keyID == keyID {
+				return true
+			}
+		}
+		return false
+	}
+	refuse := func(what, keyID string) error {
+		return fmt.Errorf("the %s is under key id %s, and no rotation in the registry leads from it to this gateway's key %s: a gateway moved to a key service, or to another key version, starts once a rotation to its key is recorded (ADR-0050)", what, keyID, keyIDFor(own))
+	}
+	for _, line := range bytes.Split(registry, []byte("\n")) {
+		if kind, _ := rotationKindOf(string(line)); kind != "" || len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		v, err := parseJSON(line)
+		obj, ok := v.(*vObject)
+		if err != nil || !ok {
+			continue
+		}
+		if keyID, _ := memberString(obj, "keyId"); keyID != "" && !reached(keyID) {
+			return refuse("registry holds a record that", keyID)
+		}
+	}
+	if receipts == nil {
 		return nil
 	}
-	return fmt.Errorf("%s signs with the seed, and the configuration names signingKeyVersion, whose key in the key service signs this gateway's records; the command is not yet built for a key service (ADR-0050)", command)
+	series, err := receipts.listSeries()
+	if err != nil || len(series) == 0 {
+		return err
+	}
+	entries, err := receipts.listEntries(series[0])
+	if err != nil || len(entries) == 0 {
+		return err
+	}
+	data, err := receipts.getEntry(series[0], entries[0])
+	if err != nil {
+		return err
+	}
+	v, err := parseJSON(data)
+	if obj, ok := v.(*vObject); err == nil && ok {
+		if keyID, _ := memberString(obj, "keyId"); keyID != "" && !reached(keyID) {
+			return refuse("store holds a receipt that", keyID)
+		}
+	}
+	return nil
 }

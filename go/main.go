@@ -371,7 +371,7 @@ func buildServiceOn(kind storeKind, seed []byte, authority string, opts serveOpt
 	if err := holdServedWitnesses(seed, opts); err != nil {
 		return nil, err
 	}
-	service, err := newGatewayServiceOn(kind, seed, authority, opts.sources)
+	service, err := newGatewayServiceOnSigned(kind, seed, opts.signer, authority, opts.sources)
 	if err != nil {
 		return nil, err
 	}
@@ -522,7 +522,7 @@ func cmdServeEngine(args []string) int {
 	// end at it below, as at the seed's
 	var keyService signer
 	if cfg.signingKeyVersion != "" {
-		ks, line, err := newKeyServiceSigner(cfg.signingKeyVersion)
+		ks, line, err := newKeyServiceSignerPinned(cfg.signingKeyVersion, cfg.signingPublicKey)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "start:", err)
 			return 1
@@ -531,7 +531,7 @@ func cmdServeEngine(args []string) int {
 		keyService = ks
 	}
 	if cfg.storage != nil {
-		return serveEngineOnKind(cfg, seed, sources, identity, delegation)
+		return serveEngineOnKind(cfg, seed, sources, identity, delegation, keyService)
 	}
 	// A witness is opened before the store and the registry are made: its
 	// start-up checks refuse a start that a repair, a log copy or a new key
@@ -583,6 +583,12 @@ func cmdServeEngine(args []string) int {
 		}
 	}
 	service.witness = witness
+	// SIGHUP: the configuration's signingKeyVersion read again, and the
+	// gateway's key rotated to it while it serves (rotate_serving.go)
+	service.rereadConfig = func() (engineConfig, error) {
+		again, _, err := loadEngineConfig(args[0], host.account)
+		return again, err
+	}
 	return serveEngineService(service, cfg, delegation, nil)
 }
 
@@ -634,6 +640,7 @@ func serveUntilStopped(service *gatewayService, cfg engineConfig, delegation *de
 	// the signer's admission gate, for the rotation contract: SIGUSR1
 	// closes it, SIGUSR2 reopens it
 	installOperatorControls(service.ctx, service)
+	installRotationOnHangup(service.ctx, service, said0(s.said))
 	// Every gcp-asset source's read-only check, before anything is served:
 	// a refusal, or a check that did not complete, refuses the start
 	// (gcp_asset_binding.go).
@@ -705,12 +712,13 @@ func rotationPendingAtStart(cfg engineConfig, seedNames []string) error {
 // PostgreSQL kind (storage_kind.go), served until a signal stops it or the
 // start lease is lost; a stop drains and releases the lease, and a start
 // configured to wait for the lease waits (handover.go).
-func serveEngineOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, identity *identityConfig, delegation *delegationService) int {
+func serveEngineOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, identity *identityConfig, delegation *delegationService, keyService signer) int {
 	stopped, restore := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer restore()
 	return runOnKind(cfg, seed, sources, identity, delegation, kindRun{
 		period: pgStartLeasePeriod, every: pgStartLeaseRenewal,
 		stopped: stopped, restore: restore, bind: listenForConfig, said: os.Stderr,
+		signer: keyService,
 	})
 }
 
@@ -790,6 +798,11 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 		return nil, err
 	}
 	kind.instance = instanceFor(cfg.storage, seed, cfg.authority)
+	if r.signer != nil {
+		// the lease names the key the instance signs under: every instance
+		// on one database signs under one key version (admitBeside)
+		kind.instance = instanceForKey(cfg.storage, r.signer.publicKey(), cfg.authority)
+	}
 	holder, err := newStartLeaseHolder()
 	if err != nil {
 		kind.close()
@@ -811,7 +824,9 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 	}
 	var service *gatewayService
 	if err == nil {
-		service, err = buildServiceOn(kind, seed, cfg.authority, engineServeOptions(cfg, sources, identity))
+		served := engineServeOptions(cfg, sources, identity)
+		served.signer = r.signer
+		service, err = buildServiceOn(kind, seed, cfg.authority, served)
 	}
 	if err == nil {
 		_, err = service.kindRegistryWalk()

@@ -330,7 +330,12 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 	if err != nil {
 		return nil, nil, err
 	}
-	kind.instance = instanceFor(&spec, seed, o.authority)
+	sig, err := commandSigner(o.keyVersion, o.keyPublic, seed)
+	if err != nil {
+		kind.close()
+		return nil, nil, err
+	}
+	kind.instance = instanceForKey(&spec, sig.publicKey(), o.authority)
 	holder, err := newStartLeaseHolder()
 	if err != nil {
 		kind.close()
@@ -353,7 +358,7 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 	// a registry that is not there is never made here (the store's history
 	// is taken as held), and one whose walk does not end at the seed's key
 	// is refused
-	writer, err := newRegistryWriterOn(kind.registry(), pgRegistryName, seed, func() (bool, error) { return true, nil })
+	writer, err := newRegistryWriterOnWith(kind.registry(), pgRegistryName, seed, newSignerHolder(sig), func() (bool, error) { return true, nil })
 	if err != nil {
 		return nil, nil, err
 	}

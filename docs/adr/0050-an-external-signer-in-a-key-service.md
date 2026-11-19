@@ -26,7 +26,9 @@ The gateway signs with a seed file on disk, and `gateway rotate-key` needs the g
 
 ## Decision outcome
 
-Chosen option: Ed25519 at the software protection level, because it needs no specification change, and because the key is still created in the service, cannot be exported, and every signing is an access-checked, audited call. The trade-off is stated: the key is held by the service's software (Level 1), not by a hardware module (Level 3). ECDSA P-256 at Level 3 is left for a later ADR.
+Chosen option: Ed25519 at the software protection level, because it needs no specification change, and because the key is still created in the service, cannot be exported, and every signing is an access-checked, audited call.
+
+**The protection level is stated plainly: the key is at Cloud KMS's software protection level, FIPS 140-2 Level 1.** It is held by the service's software, not by a hardware security module. Level 3 (an HSM key) is available in Cloud KMS only for ECDSA P-256 and the other elliptic curves named above, not for Ed25519. Moving to it is a later change: it needs a specification change and a second receipt signature algorithm in every verifier.
 
 ### The signer
 
@@ -44,8 +46,10 @@ Every signature is held to the signer's key (`signingKey.signVerified`) before a
 | Descriptor statement at the serving start (`store.retainDescriptorCapture`) | either kind |
 | Rotation statements while serving (`rotationRecordSigned`, `registryWriter.rotateTo`) | either kind, forward by the current key and reverse by the next |
 | `gateway rotate-key`, the gateway stopped | seed only. With a key service, the registry's walk ends at the service's key, so the command refuses (`engineWalk`). A key-service rotation is `rotateTo`. |
-| `gateway remove-artifact`, `remove-scope`, `seal-open`, `export`, and `connect`'s descriptor capture, the gateway stopped | seed only. They refuse a configuration naming `signingKeyVersion` with a fixed sentence (`refuseUnderKeyService`) until each is built for a key service. |
-| Witness checkpoints; the PostgreSQL kind (its start lease and instances name the seed's key) | refused beside `signingKeyVersion` at configuration |
+| `gateway remove-artifact`, `remove-scope`, `seal-open` (both kinds), `export`, and `connect`'s descriptor capture, the gateway stopped | either kind. Given `--config`, each builds the signer from the configuration (`commandSigner`) and signs through it; `export` names its key. Given `--store`/`--seed`/`--registry`, the seed signs, and history under a key the registry's walk did not reach is refused (`heldUnderAnotherKey`), so the seed never signs over a store a key service signs for. |
+| `gateway store remove-scope` (PostgreSQL, flags only) | seed only, and refused over a registry holding records under a key its walk did not reach |
+| The PostgreSQL kind | either kind. The start lease and the instances' rows name the signer's key (`instanceForKey`). |
+| Witness checkpoints | refused beside `signingKeyVersion` at configuration |
 
 The seed stays required when a key service signs. It keys the arguments commitment (`argumentsKey`, SPEC.md §1.2) and signs nothing.
 
@@ -59,6 +63,8 @@ projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>/cryptoK
 
 Under an earlier version the member is refused by name. Out of form, it is refused before the service is asked.
 
+`signingPublicKey`, also a version-36 member, pins the key version's public key beside its name, as the runtime pins a seed's expected public key: 64 lowercase hexadecimal characters, given only beside `signingKeyVersion`. A key version that answers another public key signs nothing, at the start, at a rotation and in every command, and the refusal names neither key.
+
 ### At start
 
 The public key is read once (`GET /v1/<version>/publicKey`) and checked:
@@ -68,7 +74,9 @@ The public key is read once (`GET /v1/<version>/publicKey`) and checked:
 - the PEM's CRC32C is the one answered;
 - the PEM holds one SubjectPublicKeyInfo of an Ed25519 key.
 
-Anything else is a fixed sentence, and the gateway does not start. The `keyId` is derived from that key. As at the seed's key, the registry's walk must end at it, so a key version the registry rotated from refuses the start. The start line names the version, the protection level and the `keyId`.
+Anything else is a fixed sentence, and the gateway does not start. The `keyId` is derived from that key, and held to `signingPublicKey` where it is named. As at the seed's key, the registry's walk must end at it, so a key version the registry rotated from refuses the start.
+
+The key is also held to the history (`heldUnderAnotherKey`). A registry record other than a rotation, or the store's first receipt, under a `keyId` the walk did not reach refuses the start. A seed-signed store restarted with `signingKeyVersion`, or a mistyped version naming another key in the ring, therefore does not start; the move is a rotation (below). The start line names the version, the protection level and the `keyId`.
 
 ### The calls
 
@@ -94,7 +102,9 @@ Anything else is a fixed sentence, and the gateway does not start. The `keyId` i
 ### Latency and deadlines
 
 - **Calls.** Each receipt and each seal is one `asymmetricSign` call. The metadata server is asked about once an hour.
-- **Deadline.** One signing, with the token request when one is needed, is bounded by 5 seconds.
+- **Deadline.** One signing, with the token request when one is needed, is bounded by 5 seconds, and derives from the service's lifetime: a stop cancels a signing that waits.
+- **Latch.** After a signing fails, every signing fails at once with the same sentence for 2 seconds, asking the service nothing. A service that is down costs one deadline, not one for each acquisition queued on the lock, so a stop is not starved behind them.
+- **The access token.** It is at most 16 KiB, of the RFC 6750 token form, and its answered life is at most 86400 seconds.
 - **Effect on the acquisition.** Signing follows the source's answer, so an acquisition takes at most the source's own deadline plus 5 seconds. The source's deadline is unchanged.
 - **Effect on other calls.** Signing runs under the service's lock, which orders a session's receipts. Other acquisitions and seals wait while a signing waits, so throughput under a key service is bounded by the service's latency. Moving the signing out of the lock needs ordering for each session, which is a later change.
 
@@ -116,13 +126,11 @@ Anything else is a fixed sentence, and the gateway does not start. The `keyId` i
 - An append that fails after a byte may be written does not switch. The gateway is then to be stopped and the registry settled as `gateway rotate-key --resume` settles a torn append.
 - On a log that several instances append to, `rotateTo` refuses.
 
-**Not built here (#431 remains open for it):** the operator's trigger. The plan:
+**Decision 3(a): the trigger.**
 
-1. The operator writes the next version into `signingKeyVersion`.
-2. A signal makes the gateway re-read that one member under the configuration's own trust checks, read and check the next public key, and call `rotateTo`.
-3. A restart then starts under the next version.
-
-The same path moves a gateway from its seed to the service: the forward statement is signed by the seed and the reverse by the service.
+- **File kind: a rotation without stopping, at SIGHUP.** The operator writes the next version into `signingKeyVersion` (and `signingPublicKey`, where it is pinned) and sends SIGHUP. The gateway reads the configuration again under its own checks, takes those two members only, reads and checks the next public key as at the start, and calls `rotateTo`. The outcome is one line on the standard error. A refusal changes nothing, and a restart afterwards starts under the next version. The same path moves a gateway from its seed to the key service: the forward statement is signed by the seed and the reverse by the service.
+- **PostgreSQL kind: stop every instance, rotate, start.** SIGHUP rotation is refused there with a fixed sentence, because instances on one database must sign under one key version, and an instance whose key version differs from the instances serving is refused at start by name; the sentence names the rolling-deploy case. A coordinated live rotation across instances is #537.
+- **What a verifier does across the rotation.** Receipts and seals before the rotation record verify under the old key, and those after it under the new. The record is signed forward by the old key (the key-rotation statement) and in reverse by the new (the key-continuation statement), so a verifier that pinned the first key follows it from the registry alone.
 
 ### Old keys
 
@@ -135,6 +143,6 @@ The same path moves a gateway from its seed to the service: the forward statemen
 - **Good:** the private key never reaches the gateway's host; every signing is access-checked and audited by the service, and removing the gateway identity's permission stops signing at once.
 - **Good:** receipts, seals and verifiers are unchanged, and the seed kind signs byte for byte as before.
 - **Bad:** whoever controls the compute's identity can ask the service to sign as the gateway, as ADR-0043 and ADR-0045 already state for their calls.
-- **Bad:** the key is protected at Level 1, not Level 3.
+- **Bad:** the key is at the software protection level, FIPS 140-2 Level 1, not Level 3. Level 3 / HSM (ECDSA P-256) is a later change needing a spec change and a second receipt algorithm in the verifiers.
 - **Bad:** a key service's latency is added to every acquisition and seal, and while one signing waits, the others wait for it.
-- **Bad:** the operator commands that run with the gateway stopped, the PostgreSQL kind and the witness are not yet built for a key service, and they refuse.
+- **Bad:** the witness is not yet built for a key service, and refuses beside it; on the PostgreSQL kind a rotation stops every instance (#537).

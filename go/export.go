@@ -142,14 +142,17 @@ func exportEngine(configPath, out string, observations []string, scope string) (
 		}
 		cfg.storage.file = resolved
 	}
-	if err := refuseUnderKeyService(cfg, "gateway export"); err != nil {
-		return nil, err
-	}
 	seed, err := loadSeed(cfg.seed)
 	if err != nil {
 		return nil, fmt.Errorf("seed: %v", err)
 	}
-	publicKey := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+	// the gateway's key: the key service's key version where the
+	// configuration names one (ADR-0050), else the seed's
+	sig, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, seed)
+	if err != nil {
+		return nil, err
+	}
+	publicKey := sig.publicKey()
 	keyID := keyIDFor(publicKey)
 	// the PostgreSQL kind's "" names no directory, and exportOutside
 	// judges none for it
