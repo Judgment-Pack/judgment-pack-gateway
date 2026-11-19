@@ -2365,6 +2365,9 @@ status:
   caller. `endpointStatus` is the endpoint's status. `endpointCode` is the endpoint's error
   code when the source's binding lists it under `errorCodes.accessRefused`, the binding's own
   copy of it, and `unlisted` otherwise, including where the body could not be read for a code.
+  An answer past the source's output bound is classed by its status all the same, as a `401`,
+  `403`, `410` and `429` are above, and no code is read from it; only a success past the bound
+  is a failed source for that reason.
   The answer is `403` for an endpoint's `401` too, since a `401` of the gateway's is the
   caller's own credential refused. It is not receipted and takes no `callIndex`, and the session
   is left open. A source's `401` to a token its token step obtained is the token refused,

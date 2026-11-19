@@ -5,6 +5,17 @@ The bindings the engine ships: one file per platform, `<platform>.json`, in the 
 pins the file it uses by digest — `gateway connect` computes the pin when it writes the
 platform entry — so a catalog update never silently changes what a running engine reaches.
 
+These files are reference bindings. An operator who wants a binding that no release changes
+copies it into a catalog directory of their own, names that directory in the configuration's
+`catalog` member, and owns the copy from then on. `gateway connect` pins whatever file it finds
+in the directory named. A shipped binding whose bytes change in a release (as `microsoft-graph`
+does in v0.35.0) then changes nothing for that operator until they edit their copy and run
+`connect --replace`.
+
+The `catalog` member names one directory for every binding, with no fallback to the shipped one.
+An operator who keeps their own copy of one binding therefore copies every binding their
+configuration pins into that directory.
+
 Every image is pinned by the digest of its manifest index, as the registry served it on
 the date recorded here; every licence is copied from the artifact's own statement for that
 version, never assumed. `go test ./...` in `go/` holds each file to its shape and to its
