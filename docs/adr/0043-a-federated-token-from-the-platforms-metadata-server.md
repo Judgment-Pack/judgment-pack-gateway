@@ -51,7 +51,7 @@ resolver, so a hosts file, a search domain, a resolver on the network or a spoof
 could steer the request. On the platform the name resolves to the same link-local address, so it
 gains nothing but reach on IPv6-only compute (below).
 
-1. **The configuration.** The engine configuration version after the path-template change adds
+1. **The configuration.** Engine configuration version 32, the version after the path-template change adds
    `credentials.live.tokenStep.federatedToken`, an object of exactly `kind` and `audience`.
    `kind` is `"metadata"` and no other value is taken. A token step has exactly one of
    `privateKey`, `federatedTokenFile` and `federatedToken`. `x5t` and `x5t#S256` stay beside

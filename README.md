@@ -489,7 +489,10 @@ the engine ships, with their pins and licences, are in [catalog/](catalog/README
 may also name a plain HTTP API as a platform's `live` operation, of the `http` shape: the engine
 runs `adapter-http` for it as the platform's user with the platform's credential, at the endpoint
 and paths the binding fixes, and its receipt is the one `--source-shape NAME=http` gives
-([ADR-0024](docs/adr/0024-an-http-source-in-the-engine.md)). For a provider that issues
+([ADR-0024](docs/adr/0024-an-http-source-in-the-engine.md)); a path may be a template a GUID
+fills, and a caller pages by the next or delta links the endpoint hands out, each held to the
+endpoint and the paths (engine configuration version 31,
+[ADR-0040](docs/adr/0040-path-templates-and-links-on-an-http-source.md)). For a provider that issues
 short-lived access tokens against a certificate or a federated identity, the platform's
 `credentials.live.tokenStep` (engine configuration version 21) has `adapter-http` obtain the token
 by a client assertion, with a key held in that credentials file or a federated token read from a
@@ -537,7 +540,9 @@ options: under an engine configuration the derived sources keep the thirty-secon
 `/acquire` keeps one mebibyte, and a source's stdout keeps its own mebibyte. An `/acquire` body's arguments are refused past 524,288 JSON values, a count a
 one-mebibyte body cannot reach, and raising the bound does not raise it.
 On Unix, `serve` refuses a seed file that is not a regular file
-owned by the gateway's own user and readable by it alone, says which `chmod` to run,
+owned by the gateway's own user and readable by it alone (a seed on a read-only secret
+mount is copied to a private file at start: [docs/seed-from-a-secret-mount.md](docs/seed-from-a-secret-mount.md)),
+says which `chmod` to run,
 and marks every descriptor its launcher left open close-on-exec so none reaches a
 source; on Windows it checks that the seed is a regular file and says the rest is the
 filesystem's. What this does not give: a source that runs as the gateway's own user can

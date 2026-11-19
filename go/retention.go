@@ -57,6 +57,13 @@ var (
 		"finalCount": true, "keyId": true, "kind": true, "removedAt": true, "removedBy": true,
 		"scope": true, "sealSignature": true, "sessionId": true, "signature": true,
 	}
+	// sessionRemovalSaltedMembers are a session-removal record's of a session
+	// sealed with a seal of version 3: the nine, and the scope salt its
+	// receipts carried, which the seal's digest is taken over (ADR-0042).
+	sessionRemovalSaltedMembers = map[string]bool{
+		"finalCount": true, "keyId": true, "kind": true, "removedAt": true, "removedBy": true,
+		"scope": true, "scopeSalt": true, "sealSignature": true, "sessionId": true, "signature": true,
+	}
 	scopeRemovalMembers = map[string]bool{
 		"keyId": true, "kind": true, "openSessions": true, "payloads": true, "receipts": true,
 		"removedAt": true, "removedBy": true, "scope": true, "sealedSessions": true, "signature": true,
@@ -75,6 +82,8 @@ type sessionRemoval struct {
 	removedBy     string
 	keyID         string
 	keyPos        int
+	// scopeSalt is the record's scope salt, "" for a record holding none.
+	scopeSalt string
 }
 
 // scopeRemoval is a scope-removal record that loaded: what one call removed
@@ -202,7 +211,15 @@ func recordCount(obj *vObject, name string) (int64, bool) {
 // sessionRemovalOf holds a record to a session-removal's form (SPEC.md
 // §1.3a, "A removed session") and loads it under the keys the walk reached.
 func sessionRemovalOf(obj *vObject, keys []reachedKey) (sessionRemoval, bool) {
-	if !exactMembers(obj, sessionRemovalMembers) {
+	scopeSalt, salted := memberString(obj, "scopeSalt")
+	if _, present := obj.get("scopeSalt"); present && (!salted || !isScopeSalt(scopeSalt)) {
+		return sessionRemoval{}, false
+	}
+	members := sessionRemovalMembers
+	if salted {
+		members = sessionRemovalSaltedMembers
+	}
+	if !exactMembers(obj, members) {
 		return sessionRemoval{}, false
 	}
 	kind, _ := memberString(obj, "kind")
@@ -231,7 +248,7 @@ func sessionRemovalOf(obj *vObject, keys []reachedKey) (sessionRemoval, bool) {
 		return sessionRemoval{}, false
 	}
 	return sessionRemoval{
-		sessionID: sessionID, sealSignature: sealSignature, finalCount: int64(count), scope: scope,
+		sessionID: sessionID, sealSignature: sealSignature, finalCount: int64(count), scope: scope, scopeSalt: scopeSalt,
 		removedAt: removedAt, removedBy: removedBy, keyID: keyID, keyPos: keyPos,
 	}, true
 }
@@ -318,16 +335,18 @@ func keepSessionRemoval(sessions map[string][]sessionRemoval, rec sessionRemoval
 // sealed session (SPEC.md §1.3a, "A removed session"): its id, the signature
 // of its first seal that loaded as the registry holds it, and that seal's
 // count, under the key the seal loaded under or one the walk reached after
-// it; and, where the seal is of version 2, the scope it names: the record's
-// scope identifier, digested in the session, is the seal's scopeDigest
-// (ADR-0036), so a record of another scope excuses no such session.
+// it; and, where the seal is of version 2 or 3, the scope it names: the
+// record's scope identifier, digested in the session (ADR-0036) -- for a
+// seal of version 3 over the record's scope salt (ADR-0042) -- is the seal's
+// scopeDigest, so a record of another scope, or of none of the salt,
+// excuses no such session.
 func (ret *retention) sessionRemoved(sessionID string, s seal) bool {
 	if ret == nil {
 		return false
 	}
 	for _, rec := range ret.sessions[sessionID] {
 		if rec.sealSignature == s.signature && rec.finalCount == s.finalCount && rec.keyPos >= s.keyPos &&
-			(s.scopeDigest == "" || sealScopeDigest(sessionID, rec.scope) == s.scopeDigest) {
+			(s.scopeDigest == "" || s.namesScope(sessionID, rec.scope, rec.scopeSalt)) {
 			return true
 		}
 	}

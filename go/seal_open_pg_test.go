@@ -128,16 +128,23 @@ func sealOpenPgHeads(t *testing.T, db *pgTestDB, sessions map[string]string) map
 		if !ok {
 			t.Fatalf("session %s's last receipt names no signature", session)
 		}
-		heads[session] = sealOpenTarget{sessionID: session, count: int64(len(entries)), head: signature, scope: scope}
+		var salt string
+		if v, err := parseJSON(data); err == nil {
+			if obj, ok := v.(*vObject); ok {
+				salt, _ = memberString(obj, "scopeSalt")
+			}
+		}
+		heads[session] = sealOpenTarget{sessionID: session, count: int64(len(entries)), head: signature, scope: scope, salt: salt}
 	}
 	return heads
 }
 
 // sealOpenPgSeals reads the seals of lines, each after prefix, and holds
 // each to §3c's form, sealedVia via, and to heads: a session of a scope
-// identifier's seal names it by its digest in the session, of ten members
-// (ADR-0036, decision 3), and never by the identifier, and a
-// session of none's is §3c's eight; it answers the sessions sealed, in order.
+// identifier's seal names it by its digest in the session, over the scope
+// salt its receipts carry (ADR-0042), of ten members (ADR-0036, decision 3),
+// and never by the identifier or the salt, and a session of none's is §3c's
+// eight; it answers the sessions sealed, in order.
 func sealOpenPgSeals(t *testing.T, lines []string, prefix, via string, heads map[string]sealOpenTarget) []string {
 	t.Helper()
 	var sessions []string
@@ -155,12 +162,12 @@ func sealOpenPgSeals(t *testing.T, lines []string, prefix, via string, heads map
 		count, _ := record["finalCount"].(float64)
 		members, scope := 8, any(nil)
 		if want.scope != "" {
-			members, scope = 10, sealScopeDigest(want.sessionID, want.scope)
-			if strings.Contains(text, want.scope) {
-				t.Fatalf("a seal %s names the scope identifier", text)
+			members, scope = 10, saltedScopeDigest(want.sessionID, want.scope, want.salt)
+			if strings.Contains(text, want.scope) || !isScopeSalt(want.salt) || strings.Contains(text, want.salt) {
+				t.Fatalf("a seal %s names the scope identifier or its salt, or the receipts carry no salt (%q)", text, want.salt)
 			}
-			if record["sealVersion"] != sealVersionScoped {
-				t.Fatalf("a seal %s of a session of a scope identifier, of no version 2", text)
+			if record["sealVersion"] != sealVersionSalted {
+				t.Fatalf("a seal %s of a session of a scope identifier, of no version 3", text)
 			}
 		}
 		if !known || record["kind"] != sealKindInterruption || record["sealedVia"] != via || int64(count) != want.count || record["headSignature"] != want.head || record["scopeDigest"] != scope || len(record) != members {

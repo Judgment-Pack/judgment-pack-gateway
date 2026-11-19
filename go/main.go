@@ -387,6 +387,12 @@ func applyServeOptions(service *gatewayService, opts serveOptions) {
 // come the seed and whether the switching the configuration needs is
 // available. Nothing is made or started here.
 func engineStart(cfg *engineConfig, bindings map[string]binding, host engineHost) ([]string, map[string]sourceSpec, error) {
+	// The MCP server's own rule, applied at the signer's start too, so a
+	// configuration gateway mcp would refuse does not start serve
+	// (ADR-0044).
+	if err := scopedFrontReads(*cfg, bindings); err != nil {
+		return nil, nil, err
+	}
 	if err := currentBindingOwners(*cfg, bindings); err != nil {
 		return nil, nil, err
 	}

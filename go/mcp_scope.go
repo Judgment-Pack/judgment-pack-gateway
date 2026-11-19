@@ -19,8 +19,13 @@ package main
 // In both, a caller is listed, and may call, the platform tools of the
 // sources its verified token reaches, by the rule and the function the
 // signer applies (ADR-0037, caller_scopes.go); the seal tool is listed to
-// every caller, since the signer holds its /seal to the caller itself. Over
-// stdio the token is given at start, and its reach is read there once.
+// every caller, since the signer holds its /seal to the caller itself, and a
+// server fixed to a scope identifier names it on every seal it forwards, so
+// it seals that identifier's sessions alone (ADR-0041). A server taking its
+// callers' scope identifiers bounds each one's listing on its own, and each
+// caller's within the bound, so what one scope's platforms hold changes
+// nothing another's caller is listed (ADR-0041). Over stdio the token is
+// given at start, and its reach is read there once.
 //
 // A scope identifier never comes from the client: no tool's input schema
 // gains a member, and a call's arguments are the platform tool's own,
@@ -124,6 +129,41 @@ func servedPlatforms(cfg engineConfig) ([]platformConfig, error) {
 	return served, nil
 }
 
+// scopedFrontReads holds a server that names scope or scopeFrom to reads by
+// declaration (ADR-0044): each live tool of each platform it serves -- those
+// fixed to its scope identifier, or in the caller form every platform, those
+// of none included -- declares effect read-external, or the start is refused
+// naming the platform and the tool. No decision policy holds a live tool's
+// call, and a platform fixed to a scope identifier enables no write
+// operation to carry one (ADR-0026, decision 4), so a propose or an act
+// tool, and a tool with no declaration, is refused rather than served or
+// left out. A configuration with no mcp member, or one of neither form, is
+// not read here. Both starts apply it, serve's and gateway mcp's, and
+// connect holds the configuration it would write to it.
+func scopedFrontReads(cfg engineConfig, bindings map[string]binding) error {
+	if cfg.mcp == nil || !cfg.mcp.scoped() {
+		return nil
+	}
+	for _, p := range cfg.platforms {
+		// a platform of another scope identifier is served by no server of
+		// this configuration
+		if cfg.mcp.scope != "" && p.scope != cfg.mcp.scope {
+			continue
+		}
+		b, ok := bindings[p.name]
+		if !ok || b.live == nil {
+			continue
+		}
+		for _, tool := range b.live.tools {
+			owner, declared := b.live.taxonomies[tool]
+			if !declared || !owner.Valid() || owner.Effect != "read-external" {
+				return fmt.Errorf("platform %s: tool %q is not declared effect read-external, and an MCP server that names scope or scopeFrom serves no other live tool, since no decision policy holds a live tool's call (ADR-0044); declare the tool read-external if it only reads, or serve it from a platform of no scope identifier behind an mcp that names neither", p.name, requestText(tool))
+			}
+		}
+	}
+	return nil
+}
+
 // forwardScope is the scope identifier an acquisition of the tool names, and
 // whether it names one: the server's, where it is fixed to one; the tool's
 // platform's, where it takes its callers', none for a platform of none; and
@@ -194,18 +234,21 @@ func (s *mcpServer) callReach(sess *mcpSession, token string) func() scopeReach 
 }
 
 // toolList is what tools/list answers a message of the transport session
-// under its token: one page, no cursor, rendered at start, of the tools the
-// caller is served.
+// under its token: one page, no cursor, of the tools the caller is served,
+// their entries rendered at start. A scoped server's caller's listing is
+// assembled from the tools it reaches alone, within the listing's bound
+// (heldListing.assemble), so it is the same whatever the platforms of a
+// scope identifier it does not reach hold (ADR-0041).
 func (s *mcpServer) toolList(sess *mcpSession, token string) []json.RawMessage {
 	if !s.cfg.mcp.scoped() {
 		return s.listing
 	}
 	reach := s.callReach(sess, token)
-	list := []json.RawMessage{}
-	for i, name := range s.order {
+	names := []string{}
+	for _, name := range s.order {
 		if s.reachable(s.tools[name], reach) {
-			list = append(list, s.listing[i])
+			names = append(names, name)
 		}
 	}
-	return list
+	return s.held.assemble(names)
 }

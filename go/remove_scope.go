@@ -287,6 +287,10 @@ func removeScopeFrom(storeRoot, authority string, priv ed25519.PrivateKey, walk 
 
 	// Every record first, each read back as a verifier reads it, then
 	// appended and made durable.
+	held := map[string][]*storedReceipt{}
+	for _, s := range plan.receipts {
+		held[s.sessionID] = append(held[s.sessionID], s)
+	}
 	var lines []byte
 	for _, session := range plan.sessions {
 		s, sealed := walk.seals[session]
@@ -297,7 +301,7 @@ func removeScopeFrom(storeRoot, authority string, priv ed25519.PrivateKey, walk 
 			out.notes = append(out.notes, fmt.Sprintf("session %s was recorded as removed already; its files, still there, are removed now", session))
 			continue
 		}
-		record, line, err := signedSessionRemoval(priv, keys, session, s, o.scope, o.by, stamp())
+		record, line, err := signedSessionRemoval(priv, keys, session, s, o.scope, carriedSalt(held[session]), o.by, stamp())
 		if err != nil {
 			return out, fmt.Errorf("%v, and nothing was removed", err)
 		}
@@ -363,11 +367,30 @@ func removeScopeFrom(storeRoot, authority string, priv ed25519.PrivateKey, walk 
 	return out, nil
 }
 
+// carriedSalt is the scope salt the session's receipts carry (ADR-0042), as
+// the first of them that passed the signed orders gives it, "" where none
+// does. A salt that is not the seal's is not looked past: the record made
+// over it would not name the session, and the call is refused.
+func carriedSalt(receipts []*storedReceipt) string {
+	for _, s := range receipts {
+		if !passesSignedOrders(s) {
+			continue
+		}
+		if salt, ok := memberString(s.r.obj, "scopeSalt"); ok {
+			return salt
+		}
+	}
+	return ""
+}
+
 // signedSessionRemoval is the session-removal record of a sealed session,
 // signed by priv, the key the registry's walk ends at, and its line, read
 // back as a verifier reads the removal file before it is kept: it names the
-// session and its seal, or it is refused. Both kinds' commands make it.
-func signedSessionRemoval(priv ed25519.PrivateKey, keys []reachedKey, session string, s seal, scope, by, at string) (*vObject, []byte, error) {
+// session and its seal, or it is refused. Both kinds' commands make it. A
+// seal of version 3 is named over the scope salt salt, which the record
+// carries (ADR-0042); a seal of another form is named as before, and the
+// record carries no salt.
+func signedSessionRemoval(priv ed25519.PrivateKey, keys []reachedKey, session string, s seal, scope, salt, by, at string) (*vObject, []byte, error) {
 	record := newObject()
 	record.set("finalCount", vInt(s.finalCount))
 	record.set("keyId", vString(keys[len(keys)-1].keyID))
@@ -375,6 +398,9 @@ func signedSessionRemoval(priv ed25519.PrivateKey, keys []reachedKey, session st
 	record.set("removedAt", vString(at))
 	record.set("removedBy", vString(by))
 	record.set("scope", vString(scope))
+	if s.salted {
+		record.set("scopeSalt", vString(salt))
+	}
 	record.set("sealSignature", vString(s.signature))
 	record.set("sessionId", vString(session))
 	record.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, recordSigningInput(sessionRemovalContext, record)))))

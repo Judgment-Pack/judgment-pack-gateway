@@ -285,13 +285,13 @@ func TestUncheckedCallerScopesServeAsBeforeAndAreReported(t *testing.T) {
 	if line := callerScopesStartLine(&checked, plain); !strings.Contains(line, "are checked") || !strings.Contains(line, "refused 401") {
 		t.Fatalf("checked, no source scoped: the start line is %q", line)
 	}
-	if lines := callerScopesLine("checked", plain); len(lines) != 1 || lines[0].state != postureEnforced || !strings.Contains(lines[0].reason, "refused 401") {
+	if lines := callerScopesLine("checked", plain, false); len(lines) != 1 || lines[0].state != postureEnforced || !strings.Contains(lines[0].reason, "refused 401") {
 		t.Fatalf("checked, no source scoped: the posture line is %+v", lines)
 	}
-	if callerScopesStartLine(&unchecked, plain) == "" || callerScopesLine("unchecked", plain) == nil {
+	if callerScopesStartLine(&unchecked, plain) == "" || callerScopesLine("unchecked", plain, false) == nil {
 		t.Fatal("unchecked, no source scoped: no line")
 	}
-	if callerScopesStartLine(nil, plain) != "" || callerScopesLine("no-identity", plain) != nil {
+	if callerScopesStartLine(nil, plain) != "" || callerScopesLine("no-identity", plain, false) != nil {
 		t.Fatal("a line where there is no identity and no source is scoped")
 	}
 }

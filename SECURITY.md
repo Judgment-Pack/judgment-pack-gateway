@@ -282,7 +282,10 @@ at mode `0600` under a path the signer walked and resolved, sends the one member
 of the endpoint form above — under a path and by a method the binding names, follows no redirect,
 and refuses an answer that repeats a credential. No request steers the host: the endpoint, the
 paths, the methods and the headers are the binding's, a path carrying a comma is refused since the
-command line would read it as two, a credential may not be sent under `Proxy-Authorization`,
+command line would read it as two, a template's `{id}` (engine version 31) admits a GUID in that
+one segment and nothing else, a link a caller follows is sent only when its scheme, host and port
+are the endpoint's and its path is one the binding admits, as written
+([ADR-0040](docs/adr/0040-path-templates-and-links-on-an-http-source.md)), a credential may not be sent under `Proxy-Authorization`,
 which a proxy reads, and the platform may name no endpoint, parameter or grant beside the binding.
 The signer never reads the credential: it reads the envelope from the adapter's stdout, within the
 engine's one mebibyte and thirty seconds, and signs what it attests. This is stricter than the
@@ -333,7 +336,7 @@ source that hangs. A request naming a path or a method the operation does not al
 before a token is requested for it. The token step does not establish which identity the token was issued to, or
 that the token endpoint is the one the source trusts; it changes how the credential is obtained,
 not what the receipt says. A token step whose federated token is asked of the platform's metadata
-server (`federatedToken`, the engine configuration version after the path-template change; gateway
+server (`federatedToken`, engine configuration version 32, the version after the path-template change; gateway
 #502; [ADR-0043](docs/adr/0043-a-federated-token-from-the-platforms-metadata-server.md)) presents
 the compute's own identity, not a file the platform's user holds, so every process on that compute
 can ask for an identity token and the separation by the platform's user above does not hold for
@@ -757,11 +760,16 @@ It does not establish:
   credential, so any caller the gateway admits that names it is served;
 - that no other source or gateway uses it. A gateway holds a session to one identifier, or to
   none ([ADR-0036](docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md)),
-  and the seal of a session of an identifier names it under the signature by its digest in the
-  session, never by the identifier, so no registry line carries one, which a verifier of
-  this version holds the session's accepted receipts to (`seal-scope-mismatch`); a seal of the
-  earlier forms, every seal an earlier gateway wrote among them, names none, so of such a
-  session only its receipts say which identifiers it holds;
+  and the seal of a session of an identifier names it under the signature by its digest over a
+  salt the session's receipts carry (a seal of version 3,
+  [ADR-0042](docs/adr/0042-a-seal-names-its-scope-over-a-salt-the-registry-does-not-hold.md)),
+  never by the identifier or the salt, so no registry line carries one and a reader of the open
+  registry cannot test a guessed identifier against it, which a verifier of this version holds
+  the session's accepted receipts to (`seal-scope-mismatch`); a seal of version 2, which v0.31.0
+  and v0.32.0 wrote, names it by an unkeyed digest in the session, which a guess can test, so for
+  such seals an identifier stays hidden only where it cannot be guessed; a seal of the earlier
+  forms, every seal a gateway before v0.31.0 wrote among them, names none, so of such a session
+  only its receipts say which identifiers it holds;
 - anything kept apart by it: every scope identifier shares the gateway's one key, store and
   registry.
 
@@ -769,6 +777,21 @@ A verifier written before the member holds it to no form, and answers `ok` for a
 whose `scope` a verifier of this version reports `malformed`. Which sources are fixed to a scope
 identifier can be learned by an admitted caller from how the gateway answers a request that
 leaves `scope` out; which identifier, never.
+
+What a caller held to scope identifiers learns of another scope identifier through the gateway
+they share is bounded too ([ADR-0041](docs/adr/0041-what-one-scope-learns-of-another-through-a-shared-gateway.md)).
+`/posture` is judged over the sources the caller reaches alone. The MCP front that takes each
+caller's scope identifiers bounds each one's listing on its own, and a front fixed to one
+scope identifier seals that identifier's sessions alone. So none of those answers changes with
+another scope's sources, platforms or sessions. One disclosure is left: the session namespace
+is the gateway's. A caller that names a session another scope identifier (or none) uses is
+refused, where an unused name is accepted, so it learns the name is in use, though not by which
+scope, nor anything the session holds. `/seal` tells the same by its time even where its answer
+is the same bytes: a session this process holds is answered without a read, and an unused name
+after reading the registry and the store. Session ids that must not be guessed carry at least 128
+bits of randomness. One `/seal` answer is shared by every scope: a session another process
+sealed in the registry is said to be sealed to any caller, a front fixed to another scope
+identifier included, since `/registry` shows that seal to anyone.
 
 **A checkpoint witness is reached from other hosts by other parties** ([ADR-0013](docs/adr/0013-checkpoint-witness.md);
 [`SPEC.md`](SPEC.md) §6, "Witness endpoints"). It is the first surface of this reference meant

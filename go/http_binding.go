@@ -29,7 +29,9 @@ type httpOperation struct {
 	// as one.
 	endpoint string
 	// paths are the only request paths an acquisition may name, each
-	// exactly as it is sent under the endpoint.
+	// exactly as it is sent under the endpoint, or, from engine version 31,
+	// a template whose one {id} segment a GUID fills
+	// (http_request_target.go).
 	paths []string
 	// methods are the methods an acquisition may name, GET and POST; POST
 	// alone when the binding names none, as the adapter's own default.
@@ -42,8 +44,8 @@ type httpOperation struct {
 	// instead. Exactly one is set.
 	bearer, credentialHeader string
 	// checkPath is the path a check of the source GETs, or "": one of
-	// paths, with GET among methods, so a check asks for nothing an
-	// acquisition could not.
+	// paths and not a template, with GET among methods, so a check asks for
+	// nothing an acquisition could not.
 	checkPath string
 }
 
@@ -78,15 +80,17 @@ var httpOperationMembers = map[string]bool{
 // parseHTTPOperation holds an http operation to its shape: exactly the
 // members above; an endpoint of the endpoint form, with no placeholder,
 // since no platform parameter fills one here, and a path the adapter sends
-// as written; paths each as adapter-http accepts a path and none with a
-// comma, which would split into two on the adapter's command line, or a
-// percent sign or any other character it would send escaped, and all of
-// them within the
-// one word of that command line they are passed in; methods GET and POST;
-// headers an operator may fix; exactly one of bearer and credentialHeader,
-// since the platform's credentials file for live is required and is read
-// for that member alone; and a check path among the paths, by GET. A
-// refusal names the member by its place and repeats no value.
+// as written; paths each as adapter-http accepts a path -- fixed, or a
+// template whose one {id} is a whole segment -- and none with a comma,
+// which would split into two on the adapter's command line, or a percent
+// sign or any other character it would send escaped, and all of them
+// within the one word of that command line they are passed in; methods GET
+// and POST; headers an operator may fix; exactly one of bearer and
+// credentialHeader, since the platform's credentials file for live is
+// required and is read for that member alone; and a check path among the
+// paths and not a template, by GET. A refusal names the member by its
+// place and repeats no value. Whether the configuration's version admits a
+// template is held where the binding is resolved (httpTemplatesMatch).
 func parseHTTPOperation(op *vObject, name string, o *operation) error {
 	if err := exactlyMembers(op, httpOperationMembers, "operation "+name); err != nil {
 		return err
@@ -183,6 +187,9 @@ func parseHTTPOperation(op *vObject, name string, o *operation) error {
 		if h.checkPath, err = requireString(op, "checkPath"); err != nil || !contains(h.paths, h.checkPath) {
 			return fmt.Errorf("operation %s: checkPath, when present, is one of the operation's paths", name)
 		}
+		if httpTemplated(h.checkPath) {
+			return fmt.Errorf("operation %s: checkPath is a template, and a check names no GUID to fill it with; name a fixed path", name)
+		}
 		if !contains(h.methods, "GET") {
 			return fmt.Errorf("operation %s: checkPath is requested by GET, which methods does not name", name)
 		}
@@ -212,12 +219,13 @@ func httpStrings(op *vObject, member, name string, limit int) ([]string, error) 
 
 // httpPathProblem holds a path to what adapter-http accepts as one -- it
 // begins with "/", carries no query, fragment, backslash, dot segment or
-// empty segment -- and to what the engine's command line carries as one:
-// printable ASCII without a space, a comma or a percent sign, and no
-// brace, which reads as a placeholder no parameter fills; and to what the
-// adapter sends as written: no character its URL escaping would send
-// percent-escaped (httpSentAsWritten). httpStrings has held it to be
-// non-empty and bounded.
+// empty segment, and is fixed or a template whose one {id} is a whole
+// segment (httpTemplateProblem) -- and to what the engine's command line
+// carries as one: printable ASCII without a space, a comma or a percent
+// sign, and no brace but the placeholder's; and to what the adapter sends
+// as written, a GUID in place of {id}: no character its URL escaping would
+// send percent-escaped (httpSentAsWritten). httpStrings has held it to be
+// non-empty and bounded, as written.
 func httpPathProblem(path string) error {
 	switch {
 	case path[0] != '/':
@@ -226,9 +234,14 @@ func httpPathProblem(path string) error {
 		return errors.New("must be printable ASCII without spaces")
 	case strings.ContainsAny(path, `?#\`):
 		return errors.New("carries a query, a fragment or a backslash")
-	case strings.ContainsAny(path, ",%{}"):
-		return errors.New("carries a comma, a percent sign or a brace")
-	case !httpSentAsWritten(path):
+	case strings.ContainsAny(path, ",%"):
+		return errors.New("carries a comma or a percent sign")
+	}
+	path, err := httpTemplateProblem(path)
+	if err != nil {
+		return err
+	}
+	if !httpSentAsWritten(path) {
 		return errors.New(errHTTPEscapedPath)
 	}
 	for _, segment := range strings.Split(path[1:], "/") {

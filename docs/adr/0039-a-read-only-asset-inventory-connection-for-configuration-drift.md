@@ -527,7 +527,9 @@ name or email, nor a member.
 - It is `"unchecked"` too where `resourceBindings` is `"unchecked"` (no `IAM_POLICY` served).
 - The `read-only-credentials` line's state is `partial`, not `enforced`, while any source it is
   judged over has `groupBindings` unchecked; `"off"` changes nothing. This changes the state's
-  input only: which sources the state is judged over stays gateway #494's. Its text adds how many
+  input only: which sources the state is judged over stays gateway #494's (decided by
+  [ADR-0041](0041-what-one-scope-learns-of-another-through-a-shared-gateway.md): those the
+  caller reaches). Its text adds how many
   of the sources the caller reaches resolve groups, and how many of those report `unchecked`,
   counted over the reached sources only.
 - The start report says, per source, whether groups are resolved, with its bounds and its
