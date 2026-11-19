@@ -101,6 +101,11 @@ scopes in one session is refused) falls on a use that ADR-0026 recorded as a gap
    `keyId` as §3c's), its `keyId` is the current key's at its line and its signature verifies; a
    line of any other `sealVersion` loads nothing.
 
+   *Superseded in form by ADR-0042 (#518):* a session whose receipts carry `scopeSalt` is sealed
+   by a seal of version 3, which names its scope over that salt and not by its identifier. A seal
+   of version 2 is written only after an interruption of receipts carrying no salt, and seals of
+   version 2 already written verify as before.
+
 3. **A seal after an interruption names the scope too.** `gateway seal-open` and the start's
    switch (§3c) seal a session every receipt of which carries one scope identifier with §3c's
    eight members and `scopeDigest` and `sealVersion: "2"`, signed under
@@ -145,6 +150,10 @@ scopes in one session is refused) falls on a use that ADR-0026 recorded as a gap
    the corpus, and is left to its own issue. Until then a consumer of one scope verifies the
    whole store, or an export of it, and may take a session-scoped verdict (§5a.1) for each of the
    scope's sessions, whose seal now names the scope.
+
+   *Amended by ADR-0042, decisions 6 to 9 (#478):* `gateway verify --scope` and `gateway export
+   --scope` cut by one scope identifier, attributing sessions by what their receipts and seals
+   sign, and name the sessions they cannot attribute rather than leaving them out.
 
 8. **Versions.** No engine configuration version and no receipt version are added: no
    configuration member is added, and a receipt is unchanged. The seal gains a version member;

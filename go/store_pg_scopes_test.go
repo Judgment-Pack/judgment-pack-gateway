@@ -488,7 +488,7 @@ func TestThePostgresKindServesScopedPlatformsAndExportsWhatTheFilesystemKindWoul
 
 	t.Chdir(dir)
 	pgOut := filepath.Join(dir, "export-postgresql")
-	if _, err := exportEngine(config, pgOut, nil); err != nil {
+	if _, err := exportEngine(config, pgOut, nil, ""); err != nil {
 		t.Fatalf("export: %v", err)
 	}
 	requireExportChecks(t, pgOut)
@@ -570,7 +570,7 @@ func TestThePostgresKindServesScopedPlatformsAndExportsWhatTheFilesystemKindWoul
 		t.Fatal(err)
 	}
 	fsOut := filepath.Join(dir, "export-filesystem")
-	if _, err := exportEngine(fsConfig, fsOut, nil); err != nil {
+	if _, err := exportEngine(fsConfig, fsOut, nil, ""); err != nil {
 		t.Fatalf("export of the filesystem kind: %v", err)
 	}
 	want := readTreeBytes(t, fsOut)

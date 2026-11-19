@@ -18,13 +18,16 @@ Run it in the container's entrypoint, as the gateway's own user, before `serve`:
 #!/bin/sh
 set -eu
 umask 077
-install -d -m 0700 /run/gateway                      # a memory-backed directory (tmpfs)
+install -d -m 0700 /run/gateway                      # on an in-memory volume (see below)
 install -m 0600 /secrets/gateway.seed /run/gateway/gateway.seed
 exec gateway serve --config /etc/gateway/engine.json # "seed": "/run/gateway/gateway.seed"
 ```
 
 - **Where the copy goes.** Put it in a directory on a memory-backed filesystem that only the
   gateway's user can enter, so the seed is never written to the image or to a persistent disk.
+  `/run/gateway` is an example: use an in-memory volume the platform provides, mounted there and
+  writable by the gateway's user. `/run` itself may be neither memory-backed nor writable by that
+  user, so check both before relying on it.
   `umask 077` makes every file the script creates private from the moment it exists, so the copy
   is never readable by others, even briefly, and `install -m 0600` states the final mode.
 - **Who runs the step.** The gateway's user runs it, so the copy is owned by that user without a

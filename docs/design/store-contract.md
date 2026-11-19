@@ -191,6 +191,29 @@ no `firstKeyId`, and the manifest is the one it was before the member existed. T
 manifest is not signed; receipts and seals carry their own signatures, and the manifest is the
 transport's check.
 
+`gateway export --config <engine.json> --out <dir> --scope <identifier>` (`go/export_scope.go`)
+writes the cut by one scope identifier in the same layout (SPEC.md §4, "A verdict by scope", and
+§5a, "An export by scope"; ADR-0042, decisions 6 to 9). Before it writes a file, it attributes
+every session of the cut, and every sealed session the cut does not hold, by the rule of SPEC.md
+§4. It reads the receipts' bytes through the ladder's first six orders, the registry by the walk
+the gateway reads its own by, and the removal records as they are then. It refuses, naming the
+sessions, a walk that finds anything, a session it cannot attribute, and a session of the scope
+holding a signed receipt of another scope or none; `--out` is then left as it was. What it writes:
+
+- `registry`: the rotation statements, and the lines naming a session of the scope, in order and
+  byte for byte;
+- `store/receipts/`: the scope's sessions, as held, damage included;
+- `store/artifacts/`: the artifacts those receipts name;
+- `store/artifact-removals.jsonl`: the records naming those sessions, and the scope's
+  scope-removal records;
+- the manifest: the member `scope`, and in `sessions` the scope's sessions alone.
+
+It takes no `--observations` (a journal is of the custody, of no scope), writes no decision
+records (an action receipt carries no scope), and no descriptor snapshots (a platform's pins are
+of the configuration). It carries nothing of another scope beyond the key's rotations. A reader
+verifies it, whole or by its scope, against its own registry. Its completeness is the exporter's
+attribution (SPEC.md §5a).
+
 `gateway export --check <dir>` holds an export, or a restore of one, to its manifest: every file it
 names there, of its size and digesting to its digest; nothing there it does not name; every
 session it names a directory, and no other; the decision-record directory there exactly when it

@@ -813,6 +813,25 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   that answers 429 or 503 is a throttled answer (below), exit 7; no diagnostic
   carries the key, the federated token, the assertion, the token or the token endpoint's answer.
   `--check` obtains a token as an acquisition does.
+- `--federated-token-metadata-audience AUDIENCE`, in place of `--assertion-key` and
+  `--federated-token-file`, has the token step ask the Google Cloud metadata server
+  (`Metadata-Flavor: Google`, `/computeMetadata/v1`) of the compute it runs on for the
+  identity token it presents, at each token request
+  ([ADR-0043](../docs/adr/0043-a-federated-token-from-the-platforms-metadata-server.md)):
+  `GET http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/identity?audience=…&format=full`
+  with `Metadata-Flavor: Google`. The address is built in as an IP literal. No flag or
+  environment variable names another, no resolver or proxy is used, and the connection is dialed
+  to that address alone. The audience is 1 to 256 ASCII letters, digits and `.` `_` `~` `:` `/`
+  `@` `-`, percent-encoded in the query. It is not secret, and it reaches whatever answers at
+  that address. The answer must carry `Metadata-Flavor: Google`; a redirect is not followed;
+  the request is bounded to five seconds, the answer's header to 64 KiB and its body to 16 KiB. It
+  must be a compact JWS whose `aud` is the audience and whose `exp` is more than 60 seconds
+  ahead; the claims are read, not verified, since the token endpoint verifies the token. The
+  token is held in the process's memory for the one token request, and nothing writes or quotes
+  it. Any other answer, an unreachable server among them, exits 3 and no token is requested. A
+  429 or 503 carrying the header is a throttled answer, exit 7. The credentials file holds
+  `sealKey`, a string of at least 32 bytes, the key the token is sealed under: an acquisition
+  handed a sealed token asks the metadata server nothing.
 - `--header NAME=VALUE` is sent on every request as written and may be given more than once;
   an `Accept`, a format selector. `Authorization`, `Proxy-Authorization` and `Cookie` are
   refused here: a credential's place is the credentials file, not a command line a process

@@ -435,7 +435,8 @@ func credentialMembers(path string) (map[string]string, []string, error) {
 
 // tokenCredentials holds a token step to its rules and reads its
 // credential: the key member of the credentials file, which is then
-// required, or the federated token file, beside which a credentials file
+// required, or a metadata step's sealKey there, which requires it too, or
+// the federated token file, beside which a credentials file
 // given is read for its values to be kept out of every diagnostic. A
 // static credential named beside the step is refused, since the step's
 // token is what is sent.
@@ -455,6 +456,8 @@ func tokenCredentials(cfg Config) (*tokenSigner, []string, error) {
 		}
 	} else if cfg.Token.KeyMember != "" {
 		return nil, nil, tokenFailure(TokenNoCredential, "the token step's key is a credentials member, and no --credentials file is given")
+	} else if cfg.Token.MetadataAudience != "" {
+		return nil, nil, tokenFailure(TokenNoCredential, "a metadata token step's seal key is the credentials member sealKey, and no --credentials file is given")
 	}
 	signer, err := readTokenCredential(cfg.Token, members)
 	if err != nil {

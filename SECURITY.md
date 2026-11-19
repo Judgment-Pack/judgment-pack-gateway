@@ -335,7 +335,13 @@ token request included, so a token endpoint that hangs holds an acquisition no l
 source that hangs. A request naming a path or a method the operation does not allow is refused
 before a token is requested for it. The token step does not establish which identity the token was issued to, or
 that the token endpoint is the one the source trusts; it changes how the credential is obtained,
-not what the receipt says.
+not what the receipt says. A token step whose federated token is asked of the platform's metadata
+server (`federatedToken`, engine configuration version 32, the version after the path-template change; gateway
+#502; [ADR-0043](docs/adr/0043-a-federated-token-from-the-platforms-metadata-server.md)) presents
+the compute's own identity, not a file the platform's user holds, so every process on that compute
+can ask for an identity token and the separation by the platform's user above does not hold for
+that credential; its access token is sealed under the credentials file's `sealKey` instead,
+which the adapter checks at the source's first acquisition, not the engine at load.
 
 **A read-only asset inventory source is one more program that holds a credential, with the
 platform's user; the signer holds its list token sealed** (engine configuration version 29;
@@ -742,7 +748,7 @@ ties a host to an issuer, so an entry admits any chain a configured issuing host
 that `sub`. Which tools a platform
 offers is not hidden, since the session, platform and tool steps answer every requester alike.
 
-**A platform's `scope` labels its receipts, and authorizes nothing.** The member (engine
+**A platform's `scope` labels its receipts, and authorizes a caller only where callers' scopes are checked.** The member (engine
 configuration version 20; [ADR-0026](docs/adr/0026-a-scope-identifier-fixed-on-a-platform.md);
 [`SPEC.md`](SPEC.md) §1.2a, `scope`) fixes the platform's sources to a scope identifier that each
 `/acquire` to them must repeat, byte for byte, and that their receipts carry under the signature.
@@ -750,8 +756,16 @@ A request naming none or another is refused `400` before the source runs, with o
 that names no scope identifier, and no line is written for it. What a verifying receipt
 establishes is that the operator held the source to that identifier and the request named it.
 It does not establish:
-- that the caller was entitled to the identifier: it is a label a request repeats, not a
-  credential, so any caller the gateway admits that names it is served;
+- that the caller was entitled to the identifier, unless the configuration checks it. Without
+  `identity.callerScopes`, or with it `"unchecked"`, the identifier is a label a request repeats,
+  not a credential, so any caller the gateway admits that names it is served. With it checked
+  (engine configuration version 27;
+  [ADR-0037](docs/adr/0037-a-caller-is-held-to-the-scope-identifiers-its-token-and-the-configuration-allow.md)),
+  a caller reaches only the identifiers its token's `scope_ids` claims and the configuration
+  grants its subject, a wider claim is refused `401` before any route, and the receipt records
+  the caller (issuer, subject and token digest) under the signature. Even then the check is as
+  strong as the issuer and the grants: a receipt does not establish that the issuer was right
+  to mint the token;
 - that no other source or gateway uses it. A gateway holds a session to one identifier, or to
   none ([ADR-0036](docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md)),
   and the seal of a session of an identifier names it under the signature by its digest over a
@@ -786,6 +800,57 @@ after reading the registry and the store. Session ids that must not be guessed c
 bits of randomness. One `/seal` answer is shared by every scope: a session another process
 sealed in the registry is said to be sealed to any caller, a front fixed to another scope
 identifier included, since `/registry` shows that seal to anyone.
+
+**A verdict or an export by scope holds what the signatures show of the scope.** `gateway verify
+--scope` and `gateway export --scope` ([`SPEC.md`](SPEC.md) §4, "A verdict by scope", and §5a;
+[ADR-0042](docs/adr/0042-a-seal-names-its-scope-over-a-salt-the-registry-does-not-hold.md),
+decisions 6 to 9) attribute a session to a scope identifier only by what the gateway signed: a
+receipt carrying the identifier, a seal of version 2 naming it, or a seal of version 3 matched
+through the salt its receipts carry. A session they cannot attribute is named, and the verdict
+is not `ok`. The export refuses it. Neither leaves it out. An open session of no scope carries
+no salt, so until it is sealed it is unattributed for every scope identifier: one caller's
+abandoned session blocks another scope's export, and that scope's verdict is not `ok`, until the
+session is sealed by `/seal`, or by `gateway seal-open` or `sealOpenAtStart` for a session this
+process does not hold. An export by scope carries nothing of
+another scope beyond the key's rotations. It does not establish that the store held no other
+session of the scope: that is the exporter's attribution over the whole store. A reader of the
+export alone cannot repeat it, since a seal of version 3 that is left out names its scope only
+over a salt carried in receipts the export does not hold. A reader holding the gateway's
+registry bounds it, but cannot close it.
+
+**What holds between scope identifiers on one gateway, and what does not.** This summarizes the
+paragraphs above for a gateway that several scope identifiers share, with `identity.callerScopes`
+checked. What holds:
+- a caller reaches the sources of the identifiers it is granted, and no others. `/acquire` gives
+  the wrong-scope refusal for any other identifier; the MCP front lists and calls only the tools
+  of the sources the caller reaches; `/seal` answers another identifier's session `no such
+  session`, but for one already sealed in the open registry, which it says is sealed (above); a
+  delegated request reaches no identifier; `/act` is refused to a caller that does not reach the
+  unscoped sources (those of no identifier), and `/verify`, whose verdict is of the whole store, to
+  one that does not reach every source (ADR-0037 gives the one exception, where nothing is scoped);
+- `/posture` and the MCP listing answer the same whatever another identifier holds
+  ([ADR-0041](docs/adr/0041-what-one-scope-learns-of-another-through-a-shared-gateway.md));
+- a seal of version 3 names its identifier over a salt the registry does not hold
+  ([ADR-0042](docs/adr/0042-a-seal-names-its-scope-over-a-salt-the-registry-does-not-hold.md));
+  a seal of version 2 already in a registry stays testable against a guessed identifier;
+- a verdict or an export by scope attributes a session only by what the gateway signed, names
+  the sessions it cannot attribute, and an export carries nothing of another scope beyond the
+  key's rotations (above);
+- an MCP front that names `mcp.scope` or `mcp.scopeFrom` serves no write tool, and serves only
+  live tools declared effect `read-external`: a configuration under which it would serve another
+  refuses both starts, and `connect` refuses to write it
+  ([ADR-0044](docs/adr/0044-a-scoped-mcp-front-serves-only-live-tools-declared-read-external.md)).
+
+What does not hold:
+- every identifier shares the gateway's one process, signing key, store and registry, so a
+  compromise of the host or of the seed is every identifier's;
+- `/registry` is an open route, and the session namespace is shared (above);
+- no rate or connection limit is per identifier, so one identifier's load is every
+  identifier's;
+- in a configuration with no `mcp`, a caller can still `/acquire` a scoped platform's live tool
+  that is not declared `read-external`: ADR-0044 is the front's rule, not the signer's;
+- identifiers that can be guessed can be told apart where the disclosures above allow, so give
+  each one at least 128 bits of randomness.
 
 **A checkpoint witness is reached from other hosts by other parties** ([ADR-0013](docs/adr/0013-checkpoint-witness.md);
 [`SPEC.md`](SPEC.md) §6, "Witness endpoints"). It is the first surface of this reference meant

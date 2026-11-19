@@ -341,16 +341,23 @@ func keepSessionRemoval(sessions map[string][]sessionRemoval, rec sessionRemoval
 // scopeDigest, so a record of another scope, or of none of the salt,
 // excuses no such session.
 func (ret *retention) sessionRemoved(sessionID string, s seal) bool {
+	_, named := ret.removalOf(sessionID, s)
+	return named
+}
+
+// removalOf is the first session-removal record that names the sealed
+// session (sessionRemoved), and whether one does.
+func (ret *retention) removalOf(sessionID string, s seal) (sessionRemoval, bool) {
 	if ret == nil {
-		return false
+		return sessionRemoval{}, false
 	}
 	for _, rec := range ret.sessions[sessionID] {
 		if rec.sealSignature == s.signature && rec.finalCount == s.finalCount && rec.keyPos >= s.keyPos &&
 			(s.scopeDigest == "" || s.namesScope(sessionID, rec.scope, rec.scopeSalt)) {
-			return true
+			return rec, true
 		}
 	}
-	return false
+	return sessionRemoval{}, false
 }
 
 // removalTimeLayout is removedAt's form: UTC, to the second.
