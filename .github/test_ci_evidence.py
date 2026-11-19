@@ -726,9 +726,13 @@ class ConfigurationTest(unittest.TestCase):
         toolchains = json.loads(read('dev.json'))['toolchains']
         pins = self.config['profiles']['check']['pins']
         self.assertRegex(toolchains['node']['version'], r'^\d+\.\d+\.\d+$')
-        self.assertRegex(toolchains['python']['version'], r'^\d+\.\d+\.\d+$')
+        # check.sh (the kit's) finds python<version> on PATH, so the version stays major.minor and
+        # the workflows set up the exact one.
+        self.assertRegex(toolchains['python']['version'], r'^\d+\.\d+$')
+        self.assertRegex(toolchains['python']['exact'], r'^\d+\.\d+\.\d+$')
+        self.assertTrue(toolchains['python']['exact'].startswith(toolchains['python']['version'] + '.'))
         self.assertEqual(pins['node'], 'v' + toolchains['node']['version'])
-        self.assertEqual(pins['python'], 'Python ' + toolchains['python']['version'])
+        self.assertEqual(pins['python'], 'Python ' + toolchains['python']['exact'])
 
     def test_every_input_is_tracked_and_its_change_runs_this_test(self):
         files = tracked()

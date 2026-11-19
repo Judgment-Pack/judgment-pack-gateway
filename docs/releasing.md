@@ -256,7 +256,7 @@ the evidence only when all of this holds, and refuses otherwise:
   across the two lanes, each passed, with none left out and none run twice;
 - each job's evidence names the commit and the inputs the release's checkout holds; the Go of each
   leg and of the check jobs is the one `release.yml` names (`1.26.5`); the Node and Python of the
-  check jobs are the exact versions `dev.json` names (`22.23.4`, `3.12.16`), held to the pins of
+  check jobs are the exact versions `dev.json` names (Node `22.23.4`, and Python's `exact`, `3.12.16`), held to the pins of
   `.github/ci-evidence.json`; the Linux jobs ran on Linux `X64`, the macOS leg on macOS `ARM64` and the
   Windows leg on Windows `X64`. Every runner's image version is recorded and not compared: GitHub
   serves several builds of one image at once, so a release could not match it;
