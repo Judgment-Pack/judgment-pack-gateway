@@ -852,7 +852,11 @@ checked. What holds:
 - an MCP front that names `mcp.scope` or `mcp.scopeFrom` serves no write tool, and serves only
   live tools declared effect `read-external`: a configuration under which it would serve another
   refuses both starts, and `connect` refuses to write it
-  ([ADR-0044](docs/adr/0044-a-scoped-mcp-front-serves-only-live-tools-declared-read-external.md)).
+  ([ADR-0044](docs/adr/0044-a-scoped-mcp-front-serves-only-live-tools-declared-read-external.md));
+- a platform fixed to a scope identifier takes only live tools declared effect `read-external`,
+  whatever the front, a configuration with no `mcp` included: one with another refuses `serve`
+  and `gateway mcp` at start, and `connect` refuses to write it, so no `/acquire` of such a tool
+  reaches its adapter ([ADR-0046](docs/adr/0046-a-scoped-platforms-live-tools-are-declared-read-external-whatever-the-front.md)).
 
 What does not hold:
 - every identifier shares the gateway's one process, signing key, store and registry, so a
@@ -860,8 +864,11 @@ What does not hold:
 - `/registry` is an open route, and the session namespace is shared (above);
 - no rate or connection limit is per identifier, so one identifier's load is every
   identifier's;
-- in a configuration with no `mcp`, a caller can still `/acquire` a scoped platform's live tool
-  that is not declared `read-external`: ADR-0044 is the front's rule, not the signer's;
+- the rule on live tools holds a declaration, not a behaviour: a scoped platform's tool declared
+  `read-external` that writes is run, and what keeps it to reading is the credential the
+  operator gives it; a platform of no scope identifier, outside a front that names `scopeFrom`,
+  still runs a live tool declared `act` for any caller that reaches the sources of none
+  (ADR-0044, ADR-0046);
 - identifiers that can be guessed can be told apart where the disclosures above allow, so give
   each one at least 128 bits of randomness.
 

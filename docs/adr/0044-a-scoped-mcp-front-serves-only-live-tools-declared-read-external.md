@@ -95,6 +95,12 @@ refusal at start is where the operator can fix it.
    A shipped binding whose live operation names an act (the postgres binding's `execute_sql`)
    is therefore not served by a scoped front at all.
 
+   *Narrowed by ADR-0046 (#519), for decisions 1, 4 and 5 and the consequence on the signer:*
+   each live tool of a platform fixed to a scope identifier is declared `read-external`
+   whatever the configuration's `mcp` member, a configuration with no `mcp` included, and
+   under `mcp.scope` the platforms of another scope identifier are held too. The function is
+   renamed `scopedLiveReads`, and its sentence keeps this decision's first clause.
+
 ### Consequences
 
 - Good, because every tool a scoped front lists is declared a read of a system outside the

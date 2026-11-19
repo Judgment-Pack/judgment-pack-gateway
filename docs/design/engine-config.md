@@ -1710,6 +1710,21 @@ of one operator's sources can be told apart by the party each serves.
   and writes no line on stderr. So is a request that names a scope for a source of a platform
   without one. A gateway whose platforms give no `scope` refuses the request member as unknown,
   as it did before.
+- **Live tools are reads.** Each tool of the platform's live operation is declared effect
+  `read-external` in its binding's `toolTaxonomies`, whatever the configuration's `mcp` member,
+  none included ([ADR-0046](../adr/0046-a-scoped-platforms-live-tools-are-declared-read-external-whatever-the-front.md)):
+  no decision policy holds a live tool's call, and the platform enables no write operation.
+  A tool declared `propose` or `act`, or one with no declaration, refuses `serve` and `gateway
+  mcp` at start, and `connect` refuses to write the platform, with `platform <name>: tool
+  "<tool>" is not declared effect read-external, ...`, naming no scope identifier; the tool is
+  never left out of a source that starts. The shipped postgres binding's `execute_sql` is an
+  act, so a platform of it, like the one above, starts only with a binding that declares it
+  `read-external` (under a role that only reads) or names `search_objects` alone.
+  **Upgrading:** this holds a file of any version from 20, with no version to raise. A file
+  that started before and breaks here either declares the tool `read-external` (for instance
+  `{"operation": "read", "effect": "read-external"}`) and approves the binding again with
+  `connect --replace`, if the tool only reads, or takes it off the scoped platform: a binding
+  whose live operation names reading tools alone, or the platform without `scope`.
 - **The receipt** of such a source carries the identifier as its top-level `scope`. A platform
   without the member mints the receipts it minted before, byte for byte.
 - **A session is of one scope**, on either storage kind
@@ -2364,7 +2379,8 @@ Refused by name, `engine configuration: …`, quoting nothing of the value:
 `gateway mcp` and `serve` both refuse to start, and `connect` refuses to write the platform,
 where a server of either form would serve a live tool declared `propose` or `act`, or one with
 no declaration: `platform <name>: tool "<tool>" is not declared effect read-external`, naming
-no scope identifier.
+no scope identifier. `serve` refuses the same of a platform fixed to a scope identifier with no
+`mcp` at all ("A platform's scope (engine version 20)", "Live tools are reads"; ADR-0046).
 
 **Upgrading.** A file of version 27 or earlier loads as before, and an MCP server without
 either member serves as before, with one change in a file of any version: under `identity`

@@ -709,3 +709,52 @@ func TestMCPFrontRefusesLiveActToolOfScopedPlatform(t *testing.T) {
 		t.Fatalf("the server was called %+v", calls)
 	}
 }
+
+// The direct /acquire path (ADR-0046, #519): the same scoped platform, its
+// live operation naming an act tool, in the file connect wrote with the mcp
+// member taken out, so nothing serves it over MCP and a caller that reaches
+// its scope identifier would name the tool to the signer itself. The file
+// loads, and serve's start refuses it with the one sentence, naming no scope
+// identifier, before any source is derived: no signer starts to take the
+// /acquire, and the platform's server, which the built adapter would reach,
+// is never called.
+func TestADirectAcquireOfAScopedPlatformsActToolNeverReachesItsServer(t *testing.T) {
+	server := newRecordsStandIn(t, "server-a")
+	g, _ := recordsConfiguration(t, []recordsPlatform{
+		{name: "records-a", scope: callerScopeA, user: "engine-warehouse", uid: 1001, binding: recordsServerBinding(t, "records-a", server.URL, []string{"list_records"}, []string{recordsActTool}, nil)},
+	})
+	raw, err := os.ReadFile(g.connect.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file map[string]any
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatal(err)
+	}
+	delete(file, "mcp")
+	encoded, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(g.connect.config, encoded, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	cfg, bindings, err := loadEngineConfig(g.connect.config, stubAccounts(stubUsers))
+	if err != nil {
+		t.Fatalf("the file with no mcp member: %v", err)
+	}
+	if cfg.mcp != nil || cfg.platforms[0].scope != callerScopeA {
+		t.Fatalf("the file loaded is not the one meant: %+v", cfg.mcp)
+	}
+	asked := g.asked
+	_, sources, err := engineStart(&cfg, bindings, engineHost{})
+	if want := readsSentence("records-a", recordsActTool); err == nil || err.Error() != want || strings.Contains(err.Error(), callerScopeA) {
+		t.Fatalf("serve: want %q, got %v", want, err)
+	}
+	if sources != nil {
+		t.Fatalf("serve derived the sources of a file it refuses: %v", sources)
+	}
+	if calls := server.called(); len(calls) != 0 || g.asked != asked {
+		t.Fatalf("the server was called %+v, or an adapter asked", calls)
+	}
+}
