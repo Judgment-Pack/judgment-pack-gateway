@@ -299,20 +299,21 @@ func httpQueryObject(request *vObject) bool {
 // {id} before httpTemplatesVersion, {numericId} and {alnumId} before
 // delegatedTokenVersion. The version a file states is the reading of it its
 // author reviewed, and a path that admits every value of a form is not a
-// path an earlier reading admitted.
-func httpTemplatesMatch(b binding, ref, version string) error {
+// path an earlier reading admitted. It answers, beside the refusal, the
+// version the refused placeholder needs, which connect names.
+func httpTemplatesMatch(b binding, ref, version string) (string, error) {
 	if b.live == nil || b.live.http == nil {
-		return nil
+		return "", nil
 	}
 	for i, path := range b.live.http.paths {
 		p := httpPlaceholderOf(path)
 		switch {
 		case p == nil || versionAtLeast(version, p.version):
 		case p.name == httpIDPlaceholder:
-			return fmt.Errorf("binding %s's live operation names a path template, paths[%d], a version-%s member; engineVersion %s has none", ref, i, httpTemplatesVersion, version)
+			return p.version, fmt.Errorf("binding %s's live operation names a path template, paths[%d], a version-%s member; engineVersion %s has none", ref, i, httpTemplatesVersion, version)
 		default:
-			return fmt.Errorf("binding %s's live operation names a path template of %s, paths[%d], a version-%s member; engineVersion %s has none", ref, p.name, i, p.version, version)
+			return p.version, fmt.Errorf("binding %s's live operation names a path template of %s, paths[%d], a version-%s member; engineVersion %s has none", ref, p.name, i, p.version, version)
 		}
 	}
-	return nil
+	return "", nil
 }

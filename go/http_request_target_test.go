@@ -155,4 +155,14 @@ func TestHTTPPathTemplatesAreAVersion31Member(t *testing.T) {
 	if f.fileText(t) != before {
 		t.Fatal("a refused connect wrote the file")
 	}
+	// A {numericId} template names its own version, 33, not {id}'s.
+	numeric := strings.Replace(templatedBinding, `"/groups/{id}/members"`, `"/groups/{numericId}/members"`, 1)
+	g := newConnectFixture(t, numeric, ``)
+	g.reports["http"] = f.reports["http"]
+	req = g.request()
+	req.credentials = map[string]string{"live": g.credentials}
+	req.endpoint = ""
+	if _, err := connect(context.Background(), req, g.host, g.check); err == nil || !strings.Contains(err.Error(), "a path template of {numericId}, paths[1], a version-33 member; engineVersion 1 has none; raise engineVersion to \"33\" first") || len(g.asked) != 0 {
+		t.Fatalf("connect of a {numericId} template under version 1: %v, asked %d", err, len(g.asked))
+	}
 }

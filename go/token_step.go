@@ -56,8 +56,7 @@ var tokenStepMembers = map[string]bool{
 
 // metadataTokenVersion is the engine configuration version that admits
 // tokenStep.federatedToken (ADR-0043): 32, the version after the
-// path-template change (31, ADR-0040).
-// engine.go reads this constant as the newest version and lists it in
+// path-template change (31, ADR-0040). engine.go lists it in
 // engineVersions, so a merge that keeps both changes' versions without
 // renumbering it does not compile (a duplicate key in that map).
 const metadataTokenVersion = "32"
@@ -65,8 +64,7 @@ const metadataTokenVersion = "32"
 // delegatedTokenVersion is the engine configuration version that admits
 // tokenStep.signedBy and tokenStep.subject (ADR-0045), and a binding path's
 // {numericId} and {alnumId} placeholders: 33, the version after the
-// metadata token (32, ADR-0043). engine.go reads this constant as the
-// newest version.
+// metadata token (32, ADR-0043). engine.go lists it in engineVersions.
 const delegatedTokenVersion = "33"
 
 // assertionAlgorithmVersion is the engine configuration version that admits

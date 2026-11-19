@@ -6,6 +6,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -276,8 +277,8 @@ func TestTokenStepPS256ReachesTheEndpoint(t *testing.T) {
 
 // An algorithm is asked of an RSA key alone: beside a P-256 key, RS256 and
 // PS256 are each refused as no credential in a sentence naming the one
-// asked, and no token request is sent; an Ed25519 key's refusal names the
-// one asked too. An unknown algorithm, or one beside
+// asked, and no token request is sent; a P-384 key's and an Ed25519
+// key's refusals name the one asked too. An unknown algorithm, or one beside
 // a federated token, is refused before any credential is read, and the
 // refusal repeats no value; and ES256 a P-256 key still signs when none is
 // asked.
@@ -299,6 +300,20 @@ func TestTokenStepRefusesAnAlgorithmTheKeyDoesNotSign(t *testing.T) {
 	_, edKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
+	}
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, algorithm := range []string{"PS256", "RS256", ""} {
+		_, err := readTokenCredential(&TokenStep{KeyMember: "K", Algorithm: algorithm}, map[string]string{"K": pkcs8PEM(t, p384)})
+		want := "the token step's EC key is not on P-256"
+		if algorithm != "" {
+			want += "; --assertion-alg=" + algorithm + " is for an RSA key"
+		}
+		if failureKind(err) != TokenNoCredential || err.Error() != want {
+			t.Fatalf("%q beside a P-384 key: %v", algorithm, err)
+		}
 	}
 	for _, algorithm := range []string{"PS256", "RS256", ""} {
 		_, err := readTokenCredential(&TokenStep{KeyMember: "K", Algorithm: algorithm}, map[string]string{"K": pkcs8PEM(t, edKey)})

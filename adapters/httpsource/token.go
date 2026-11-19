@@ -324,6 +324,9 @@ func readTokenCredential(t *TokenStep, members map[string]string) (*tokenSigner,
 		}
 	case *ecdsa.PrivateKey:
 		if key.Curve != elliptic.P256() {
+			if t.Algorithm != "" {
+				return nil, tokenFailure(TokenNoCredential, "the token step's EC key is not on P-256; --assertion-alg=%s is for an RSA key", t.Algorithm)
+			}
 			return nil, tokenFailure(TokenNoCredential, "the token step's EC key is not on P-256")
 		}
 		if t.Algorithm != "" {
