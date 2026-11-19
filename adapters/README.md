@@ -769,7 +769,11 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   the endpoint; a request outside them is refused before any connection is made. A path, here,
   in `--check-path` or in a request, that carries a query, a fragment, a backslash, a dot or empty
   segment, or a character Go's URL escaping would send percent-escaped (a `%` among them) is
-  refused, so no path is sent as other bytes than were written. `--methods`
+  refused, so no path is sent as other bytes than were written. A path of `--paths` may be a
+  template: one `{id}`, a whole segment, which a request's path fills with a GUID — 36
+  characters, hex digits of either case with hyphens at the 8-4-4-4-12 places, nothing else —
+  and every other segment as written; two placeholders, one within a segment, or any other
+  brace are refused, and `--check-path` is a fixed path. `--methods`
   names the methods, `GET` and `POST`, and is `POST` alone by default.
 - `--credentials` is a JSON object of strings, a file the adapter's identity can read and the
   signer's cannot ([SECURITY.md](../SECURITY.md)); it is at most 1 MiB and held to exact member
@@ -809,6 +813,25 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   that answers 429 or 503 is a throttled answer (below), exit 7; no diagnostic
   carries the key, the federated token, the assertion, the token or the token endpoint's answer.
   `--check` obtains a token as an acquisition does.
+- `--federated-token-metadata-audience AUDIENCE`, in place of `--assertion-key` and
+  `--federated-token-file`, has the token step ask the Google Cloud metadata server
+  (`Metadata-Flavor: Google`, `/computeMetadata/v1`) of the compute it runs on for the
+  identity token it presents, at each token request
+  ([ADR-0043](../docs/adr/0043-a-federated-token-from-the-platforms-metadata-server.md)):
+  `GET http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/identity?audience=…&format=full`
+  with `Metadata-Flavor: Google`. The address is built in as an IP literal. No flag or
+  environment variable names another, no resolver or proxy is used, and the connection is dialed
+  to that address alone. The audience is 1 to 256 ASCII letters, digits and `.` `_` `~` `:` `/`
+  `@` `-`, percent-encoded in the query. It is not secret, and it reaches whatever answers at
+  that address. The answer must carry `Metadata-Flavor: Google`; a redirect is not followed;
+  the request is bounded to five seconds, the answer's header to 64 KiB and its body to 16 KiB. It
+  must be a compact JWS whose `aud` is the audience and whose `exp` is more than 60 seconds
+  ahead; the claims are read, not verified, since the token endpoint verifies the token. The
+  token is held in the process's memory for the one token request, and nothing writes or quotes
+  it. Any other answer, an unreachable server among them, exits 3 and no token is requested. A
+  429 or 503 carrying the header is a throttled answer, exit 7. The credentials file holds
+  `sealKey`, a string of at least 32 bytes, the key the token is sealed under: an acquisition
+  handed a sealed token asks the metadata server nothing.
 - `--header NAME=VALUE` is sent on every request as written and may be given more than once;
   an `Accept`, a format selector. `Authorization`, `Proxy-Authorization` and `Cookie` are
   refused here: a credential's place is the credentials file, not a command line a process
@@ -875,12 +898,34 @@ The request, as canonical arguments on stdin:
 {"path": "/search", "method": "POST", "query": {"lang": "en"}, "body": {"query": "federal skilled worker eligibility", "max_results": 5}}
 ```
 
-`path` is required and names a resource under the endpoint — it begins with `/`, and carries
+`path` names a resource under the endpoint — it begins with `/`, and carries
 no query, no fragment, no dot segment and no empty segment; `method` is `POST` when absent;
-`query` is an object of strings, encoded onto the URL with its names sorted; `body`, any JSON
-value, is sent as `application/json` and refused beside a `GET`. The request is read by its
-members' exact names with a duplicate refused and held to the canonical domain first, so the
-body sent and the statement committed to are one spelling whoever wrote the request.
+`query` is an object of strings, form-encoded onto the URL with its names sorted, but for `$`,
+sent as written, since an OData endpoint reads its system options as `$select`, `$top` and
+`$filter`; `body`, any JSON value, is sent as `application/json` and refused beside a `GET`.
+The request is read by its members' exact names with a duplicate refused and held to the
+canonical domain first, so the body sent and the statement committed to are one spelling
+whoever wrote the request.
+
+In place of `path` and `query`, a request may name a `link`: an absolute URL the endpoint
+handed out, a next page's or a delta round's, followed as written
+([ADR-0040](../docs/adr/0040-path-templates-and-links-on-an-http-source.md)):
+
+```json
+{"link": "https://graph.example/v1.0/users?$top=100&$skiptoken=RFNwdAIAAQ%3d%3d", "method": "GET"}
+```
+
+Exactly one of `path` and `link` is given, and `query` is not given beside a link. The link is
+at most 16 KiB of visible ASCII, and is admitted only when its scheme and host are the
+endpoint's, compared without regard to case, its port is the endpoint's, the scheme's default
+standing for an absent one, it carries no user and no fragment, its path is the endpoint's path
+followed by one `--paths` admits — a template's with a GUID — with no percent sign, backslash,
+dot segment or empty segment, and its query, when it has one, holds only the characters RFC 3986
+gives a query, a `%` only before two hex digits. The request then sent is the endpoint's, as
+`--endpoint` names it, with the link's path and query byte for byte: nothing is decoded,
+resolved or re-encoded. Each refusal is one fixed sentence naming the rule broken and nothing
+of the link, which carries the endpoint's paging token; a transport error's diagnostic names
+no URL either.
 
 What the envelope carries, and so what the receipt records:
 
@@ -888,7 +933,7 @@ What the envelope carries, and so what the receipt records:
 |---|---|
 | `adapter` | this adapter: its name, its version, and the digest of its own executable, which is what pins it |
 | `endpoint` | the URL the request was sent to, without its query |
-| `statement` | the request — method, path, query and body — as sent, which the gateway commits to under a salt: a search query or a page URL is in the receipt as a commitment, and in the clear only where the answer repeats it |
+| `statement` | the request — method, path, query and body — as sent, which the gateway commits to under a salt: a search query or a page URL is in the receipt as a commitment, and in the clear only where the answer repeats it. It is `{"method", "path", "query"?, "body"?}` for a request that named a path, the path a template's with its GUID, and `{"method", "path", "rawQuery"?, "body"?}` for one that named a link: the path sent under the endpoint and the link's query, byte for byte as sent — not the link, whose scheme, host and port are the endpoint's, which `endpoint` names |
 | `snapshot` | the answer's `ETag`, or its `Last-Modified` when there is no `ETag`, or `null`: the endpoint's claim about currency, which for a reader service is the service's and not the page's |
 | `peerIdentity` | `tls:sha256:` the digest of the peer's leaf certificate; `null` over plaintext loopback |
 | `schema` | `null`: an HTTP answer declares none |
@@ -919,13 +964,18 @@ and an optional `checkPath`; the engine passes them as `--endpoint=`, `--paths=`
 credentials file and `--check-path=` for a check, and starts the adapter as the platform's OS
 user under the source sandbox, as every engine source. It passes no `--ca-file`, `--max-output`
 or `--timeout`: the endpoint chains to the system's roots, and the adapter's own bounds lie
-inside the engine's. The envelope and the receipt are the ones above.
+inside the engine's. The envelope and the receipt are the ones above. A binding's path may be
+a template from engine configuration version 31; for a source with a token step, the engine
+holds a request's path or link to the same rules before it obtains a token for it.
 
 Tests run the adapter against a TLS server in the test process, with its certificate as the
 adapter's `--ca-file`, so no network is needed and none is used in CI; the gateway's own
 end-to-end tests spawn the built adapter as a declared source (`go/adapter_http_test.go`) and as
 the engine's source of an `http` binding (`go/http_binding_e2e_test.go`, against a plaintext
-loopback stand-in) and verify the store that results.
+loopback stand-in; `go/graph_binding_e2e_test.go`, the shipped `microsoft-graph` binding
+against an invented directory paged by its links) and verify the store that results. The
+requests a link or a template admits are one table, `testdata/http-requests/cases.json`, that
+this adapter's tests and the engine's both read.
 
 ## adapter-gcp-asset
 

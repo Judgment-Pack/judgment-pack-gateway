@@ -2616,7 +2616,15 @@ contract whichever form declared it: the envelope of an `http` source in the eng
 plain form's and is refused as any other departs, and the receipt minted from it is the
 plain form's, member for member. The binding fixes the endpoint and the paths, each sent
 as written: a gateway refuses, when it loads the binding, a path or an endpoint's path that
-holds a character the adapter would send percent-escaped. A platform whose `live` is of
+holds a character the adapter would send percent-escaped. From engine configuration version 31
+a path may be a template whose one placeholder, `{id}`, is a whole segment that a request's path
+fills with a GUID and nothing else; and a request may name, in place of a path and a query, a
+`link`: an absolute URL the endpoint handed out, sent as written only when its scheme, host and
+port are the endpoint's, it carries no user and no fragment, and its path, which carries no
+percent sign, is the endpoint's path followed by one the binding admits
+(`docs/adr/0040-path-templates-and-links-on-an-http-source.md`). The statement such a request
+commits to is of the request as sent: the path under the endpoint and the link's query as
+`rawQuery`, not the link. A platform whose `live` is of
 shape `http` names no connection grant, so a call under a delegation, with a delegation
 credential presented or not, is refused `grant-unknown` (§10, rule 3) before the scope
 check or the source; a grant would admit nothing, since an `http` acquisition names no tool and the scope check (§11.5)

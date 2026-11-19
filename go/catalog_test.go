@@ -34,6 +34,14 @@ func TestShippedCatalogHoldsItsShape(t *testing.T) {
 			t.Fatalf("catalog/%s names platform %q", e.Name(), b.platform)
 		}
 		for _, op := range []*operation{b.history, b.live} {
+			// An http operation runs no image: the engine's own adapter-http
+			// reaches the endpoint the binding fixes, under its licence.
+			if op != nil && op.http != nil {
+				if op.licence == "" {
+					t.Fatalf("catalog/%s: an http operation states its licence: %+v", e.Name(), op)
+				}
+				continue
+			}
 			if op != nil && (!isPinnedImage(op.image) || op.licence == "" || !strings.Contains(op.image, ":")) {
 				t.Fatalf("catalog/%s: %+v is not a versioned, pinned, licensed image", e.Name(), op)
 			}
@@ -61,6 +69,31 @@ func TestShippedCatalogHoldsItsShape(t *testing.T) {
 			if b.history != nil || b.live != nil || b.write == nil || b.write.url != "https://mcp.dev.azure.com/{organization}" || b.write.bearer != "token" || len(b.write.headers) != 0 ||
 				strings.Join(b.write.tools, ",") != "wit_work_item_write,wit_work_item_comment_write,wit_work_item_link_write" {
 				t.Fatalf("catalog/azure-devops.json: the remote server's work-item write tools: %+v", b.write)
+			}
+		case "microsoft-graph":
+			// The directory service's read-only API (catalog/README.md): live
+			// alone, by GET alone, under the service's own host, every path
+			// of version 1.0, the check a fixed path, and {id} only where a
+			// collection hangs under one object.
+			h := b.live
+			if b.history != nil || b.write != nil || h == nil || h.http == nil {
+				t.Fatalf("catalog/microsoft-graph.json: one http live operation: %+v", b)
+			}
+			if h.http.endpoint != "https://graph.microsoft.com" || strings.Join(h.http.methods, ",") != "GET" || h.http.bearer != "token" ||
+				len(h.http.headers) != 0 || h.http.checkPath != "/v1.0/organization" || len(h.http.paths) != 24 {
+				t.Fatalf("catalog/microsoft-graph.json: the endpoint, GET alone, the bearer, the check path, the paths: %+v", h.http)
+			}
+			var templates []string
+			for _, path := range h.http.paths {
+				if !strings.HasPrefix(path, "/v1.0/") {
+					t.Fatalf("catalog/microsoft-graph.json: %s is not a version 1.0 path", path)
+				}
+				if httpTemplated(path) {
+					templates = append(templates, path)
+				}
+			}
+			if strings.Join(templates, ",") != "/v1.0/groups/{id}/members,/v1.0/directoryRoles/{id}/members,/v1.0/servicePrincipals/{id}/appRoleAssignedTo,/v1.0/servicePrincipals/{id}/owners" {
+				t.Fatalf("catalog/microsoft-graph.json: the templates: %v", templates)
 			}
 		case "databricks":
 			// A Unity Catalog function's managed MCP server, for writes alone:
