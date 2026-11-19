@@ -383,9 +383,11 @@ type obtainedToken struct {
 	expiresIn int
 }
 
-// tokenClient is the client a token request is made with: TLS 1.2 or
-// later to the system's roots, no redirect followed -- a redirect would
-// carry the assertion elsewhere -- and the request bounded in time.
+// tokenClient is the client a token request, and a credentials API call, is
+// made with: TLS 1.2 or later to the system's roots, no redirect followed --
+// a redirect would carry the assertion elsewhere -- and the request bounded
+// in time. It goes through the proxy HTTPS_PROXY names, when the
+// environment sets one; TLS is still to the request's own host.
 func tokenClient() *http.Client {
 	return &http.Client{
 		Timeout: tokenRequestTimeout,

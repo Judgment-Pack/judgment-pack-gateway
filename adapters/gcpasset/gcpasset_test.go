@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -560,7 +561,7 @@ func TestSealedToken(t *testing.T) {
 		t.Fatalf("sealed under other parents: %v", err)
 	}
 	altered := cfg
-	altered.SealedToken = answer.Sealed[:len(answer.Sealed)-2] + "AA"
+	altered.SealedToken = alteredSeal(t, answer.Sealed)
 	if _, err := Acquire(ctx, altered, resourceRequest()); !errors.As(err, &failure) || failure.Kind != StatusSealUnusable {
 		t.Fatalf("an altered seal: %v", err)
 	}
@@ -1030,4 +1031,17 @@ func TestParseRequest(t *testing.T) {
 			t.Errorf("read: %s", bad)
 		}
 	}
+}
+
+// alteredSeal is the seal with one byte in the middle of its decoded bytes
+// changed and re-encoded. Overwriting the last base64 characters is not an
+// alteration when they differ only in the last character's unused bits.
+func alteredSeal(t *testing.T, seal string) string {
+	t.Helper()
+	raw, err := base64.RawURLEncoding.DecodeString(seal)
+	if err != nil || len(raw) == 0 {
+		t.Fatalf("the seal does not decode: %v", err)
+	}
+	raw[len(raw)/2] ^= 0x01
+	return base64.RawURLEncoding.EncodeToString(raw)
 }

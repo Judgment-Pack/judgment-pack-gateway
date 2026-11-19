@@ -69,10 +69,12 @@ const delegatedTokenVersion = "33"
 const signedByCredentialsAPI = "credentials-api"
 
 var (
-	// serviceAccountForm is a user-managed service account's address: a
-	// name and a project of 6 to 30 lowercase letters, digits and hyphens,
-	// each starting with a letter and not ending with a hyphen. It enters
-	// the credentials API's path, and admits no / % ? # or :.
+	// serviceAccountForm is a service account's address under a project's
+	// iam.gserviceaccount.com domain: a name and a project of 6 to 30 lowercase letters, digits and hyphens,
+	// each starting with a letter and not ending with a hyphen. It refuses
+	// the default compute and App Engine accounts, whose addresses are of
+	// other forms. It enters the credentials API's path, and admits no
+	// / % ? # or :.
 	serviceAccountForm = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$`)
 	// subjectForm is the delegated subject's address: a local part of 1 to
 	// 64 letters, digits and . _ + -, and a domain of dot-separated labels

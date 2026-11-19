@@ -278,6 +278,21 @@ func TestDelegatedFailuresAreNoCredentialAndSendNoTokenRequest(t *testing.T) {
 			answer, _ := json.Marshal(map[string]string{"keyId": "k", "signedJwt": signedBy(strings.Replace(payload, ".readonly", ".security", 1))})
 			w.Write(answer)
 		}, false, sign + "answered with a signed JWT of other claims than were asked for"},
+		{"signJwt of a claim named in another case", nil, func(w http.ResponseWriter, r *http.Request, payload string) {
+			w.Header().Set("Content-Type", "application/json")
+			answer, _ := json.Marshal(map[string]string{"keyId": "k", "signedJwt": signedBy(strings.Replace(payload, `"iss":`, `"ISS":`, 1))})
+			w.Write(answer)
+		}, false, sign + "answered with a signed JWT of other claims than were asked for"},
+		{"signJwt of a claim named twice, the asked value last", nil, func(w http.ResponseWriter, r *http.Request, payload string) {
+			w.Header().Set("Content-Type", "application/json")
+			answer, _ := json.Marshal(map[string]string{"keyId": "k", "signedJwt": signedBy(`{"sub":"another-admin@example.com",` + payload[1:])})
+			w.Write(answer)
+		}, false, sign + "answered with a signed JWT of other claims than were asked for"},
+		{"signJwt of one claim more", nil, func(w http.ResponseWriter, r *http.Request, payload string) {
+			w.Header().Set("Content-Type", "application/json")
+			answer, _ := json.Marshal(map[string]string{"keyId": "k", "signedJwt": signedBy(payload[:len(payload)-1] + `,"act":"x"}`)})
+			w.Write(answer)
+		}, false, sign + "answered with a signed JWT of other claims than were asked for"},
 		{"signJwt with another member", nil, func(w http.ResponseWriter, r *http.Request, payload string) {
 			w.Header().Set("Content-Type", "application/json")
 			answer, _ := json.Marshal(map[string]string{"keyId": "k", "signedJwt": signedBy(payload), "extra": "x"})
