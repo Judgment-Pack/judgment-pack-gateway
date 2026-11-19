@@ -88,6 +88,8 @@ type fake struct {
 	// metadataFlavor is the header the metadata server answers with;
 	// listType, when set, the list call's content type.
 	metadataFlavor, listType string
+	// metadataFlavorTwice answers the metadata server's header twice.
+	metadataFlavorTwice bool
 	// refuseScope are scopes the token endpoint and the metadata server
 	// refuse to mint.
 	refuseScope map[string]bool
@@ -377,6 +379,9 @@ func (f *fake) serveMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Metadata-Flavor", flavor)
+	if f.metadataFlavorTwice {
+		w.Header().Add("Metadata-Flavor", flavor)
+	}
 	switch r.URL.Path {
 	case "/computeMetadata/v1/instance/service-accounts/default/email":
 		w.Header().Set("Content-Type", "application/text")

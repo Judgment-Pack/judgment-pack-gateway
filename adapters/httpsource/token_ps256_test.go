@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -75,20 +77,21 @@ func fixedRS256Pair(t *testing.T, algorithm string) (*rsa.PrivateKey, [2]string)
 
 // An RSA key's RS256 assertion is, byte for byte, what it was before PS256
 // existed: with no algorithm asked and with RS256 asked, the same key,
-// claims and clock give main's bytes. Each is also rebuilt here from the
-// header and claims written by hand and PKCS #1 v1.5 over them.
+// claims and clock give main's bytes. Each is first rebuilt here from the
+// header and claims written by hand, with the jti read from the assertion
+// itself (32 hex characters, the one random member), and PKCS #1 v1.5 over
+// them, so the hand check holds whatever key the seed gives; the capture is
+// compared after it.
 func TestTokenStepRS256IsByteForByteAsBefore(t *testing.T) {
 	for _, algorithm := range []string{"", "RS256"} {
 		t.Run("asked "+algorithm, func(t *testing.T) {
 			key, got := fixedRS256Pair(t, algorithm)
-			if got[0] != mainRS256 || got[1] != mainRS256Thumbprint {
-				t.Fatalf("the RS256 assertion changed:\n%s\n%s", got[0], got[1])
-			}
 			for i, c := range []struct{ header, claims string }{
-				{`{"alg":"RS256","typ":"JWT"}`, `{"iss":"client-1","sub":"client-1","aud":"https://login.example/token","jti":"4ef06108e01691963210313ed692ea28","iat":1767225600,"nbf":1767225600,"exp":1767225900}`},
-				{`{"alg":"RS256","typ":"JWT","x5t#S256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`, `{"iss":"client-1","sub":"client-1","aud":"https://login.example/token","jti":"e37a64a99d15fa3cd277eefcf6027302","iat":1767225600,"nbf":1767225600,"exp":1767225900}`},
+				{`{"alg":"RS256","typ":"JWT"}`, `{"iss":"client-1","sub":"client-1","aud":"https://login.example/token","jti":"%s","iat":1767225600,"nbf":1767225600,"exp":1767225900}`},
+				{`{"alg":"RS256","typ":"JWT","x5t#S256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`, `{"iss":"client-1","sub":"client-1","aud":"https://login.example/token","jti":"%s","iat":1767225600,"nbf":1767225600,"exp":1767225900}`},
 			} {
-				input := base64.RawURLEncoding.EncodeToString([]byte(c.header)) + "." + base64.RawURLEncoding.EncodeToString([]byte(c.claims))
+				claims := fmt.Sprintf(c.claims, jtiOf(t, got[i]))
+				input := base64.RawURLEncoding.EncodeToString([]byte(c.header)) + "." + base64.RawURLEncoding.EncodeToString([]byte(claims))
 				digest := sha256.Sum256([]byte(input))
 				signature, err := rsa.SignPKCS1v15(nil, key, crypto.SHA256, digest[:])
 				if err != nil {
@@ -98,8 +101,34 @@ func TestTokenStepRS256IsByteForByteAsBefore(t *testing.T) {
 					t.Fatalf("assertion %d is not the one written by hand:\n%s\n%s", i, got[i], want)
 				}
 			}
+			if got[0] != mainRS256 || got[1] != mainRS256Thumbprint {
+				t.Fatalf("the RS256 assertion changed:\n%s\n%s", got[0], got[1])
+			}
 		})
 	}
+}
+
+// jtiOf reads an assertion's jti, which must be 32 lowercase hex characters.
+func jtiOf(t *testing.T, assertion string) string {
+	t.Helper()
+	parts := strings.Split(assertion, ".")
+	if len(parts) != 3 {
+		t.Fatalf("not a compact JWS: %s", assertion)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims struct {
+		JTI string `json:"jti"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatal(err)
+	}
+	if len(claims.JTI) != 32 || strings.Trim(claims.JTI, "0123456789abcdef") != "" {
+		t.Fatalf("jti %q is not 32 hex characters", claims.JTI)
+	}
+	return claims.JTI
 }
 
 // pssSaltOf is an EMSA-PSS decoding (RFC 8017 sections 8.1.2 and 9.1.2)
@@ -247,7 +276,8 @@ func TestTokenStepPS256ReachesTheEndpoint(t *testing.T) {
 
 // An algorithm is asked of an RSA key alone: beside a P-256 key, RS256 and
 // PS256 are each refused as no credential in a sentence naming the one
-// asked, and no token request is sent. An unknown algorithm, or one beside
+// asked, and no token request is sent; an Ed25519 key's refusal names the
+// one asked too. An unknown algorithm, or one beside
 // a federated token, is refused before any credential is read, and the
 // refusal repeats no value; and ES256 a P-256 key still signs when none is
 // asked.
@@ -264,6 +294,20 @@ func TestTokenStepRefusesAnAlgorithmTheKeyDoesNotSign(t *testing.T) {
 		}
 		if stub.tokenHits.Load() != 0 || stub.sourceHits.Load() != 0 {
 			t.Fatalf("%s beside a P-256 key sent a request", algorithm)
+		}
+	}
+	_, edKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, algorithm := range []string{"PS256", "RS256", ""} {
+		_, err := readTokenCredential(&TokenStep{KeyMember: "K", Algorithm: algorithm}, map[string]string{"K": pkcs8PEM(t, edKey)})
+		want := "the token step's key is neither RSA nor EC P-256"
+		if algorithm != "" {
+			want += "; --assertion-alg=" + algorithm + " is for an RSA key"
+		}
+		if failureKind(err) != TokenNoCredential || err.Error() != want {
+			t.Fatalf("%q beside an Ed25519 key: %v", algorithm, err)
 		}
 	}
 	signer, err := readTokenCredential(&TokenStep{KeyMember: "K"}, map[string]string{"K": pkcs8PEM(t, ecKey)})

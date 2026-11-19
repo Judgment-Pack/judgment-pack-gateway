@@ -117,6 +117,14 @@ func TestMetadataTokenSource(t *testing.T) {
 	if !errors.As(err, &failure) || failure.Kind != StatusTokenRefused || len(g.callsTo("/asset/")) != 0 {
 		t.Fatalf("an answer without the flavor header: %v", err)
 	}
+	// Nor is an answer carrying the header twice, even as Google both times:
+	// it is refused as one without it.
+	h := newFake(t)
+	h.metadataFlavorTwice = true
+	_, err = Acquire(ctx, cfg, resourceRequest())
+	if !errors.As(err, &failure) || failure.Kind != StatusTokenRefused || err.Error() != "the metadata server's answer does not carry Metadata-Flavor: Google" || len(h.callsTo("/asset/")) != 0 {
+		t.Fatalf("an answer with the flavor header twice: %v", err)
+	}
 	// A metadata platform's credentials file holds a sealKey of 32 bytes.
 	short := filepath.Join(t.TempDir(), "short.json")
 	os.WriteFile(short, []byte(`{"sealKey":"too-short"}`), 0o600)

@@ -137,8 +137,9 @@ func TestAPostgresExportByScopeHoldsItsSessionsAlone(t *testing.T) {
 	}
 	artifacts, _ := os.ReadDir(filepath.Join(out, "store", "artifacts"))
 	wholeArtifacts, _ := os.ReadDir(filepath.Join(whole, "store", "artifacts"))
-	if len(artifacts) != 2 || len(wholeArtifacts) <= len(artifacts) {
-		t.Fatalf("the export holds %d artifacts, the whole export %d", len(artifacts), len(wholeArtifacts))
+	// as many artifacts as b1's receipts name, however many distinct digests that is
+	if len(artifacts) != len(named) || len(wholeArtifacts) <= len(artifacts) {
+		t.Fatalf("the export holds %d artifacts, its receipts name %d, the whole export holds %d", len(artifacts), len(named), len(wholeArtifacts))
 	}
 	for _, a := range artifacts {
 		if !named[a.Name()] {
@@ -152,8 +153,14 @@ func TestAPostgresExportByScopeHoldsItsSessionsAlone(t *testing.T) {
 	if lines := strings.Split(strings.TrimSuffix(registry, "\n"), "\n"); len(lines) != 1 || sessionIDOfLine(lines[0]) != "b1" {
 		t.Fatalf("the export's registry: %q", registry)
 	}
-	if !strings.Contains(readFile(t, filepath.Join(whole, "registry")), registry) {
-		t.Fatal("the export's registry line is not the whole export's, byte for byte")
+	var wholeB1 []string
+	for _, line := range strings.Split(strings.TrimSuffix(readFile(t, filepath.Join(whole, "registry")), "\n"), "\n") {
+		if sessionIDOfLine(line) == "b1" {
+			wholeB1 = append(wholeB1, line)
+		}
+	}
+	if len(wholeB1) != 1 || registry != wholeB1[0]+"\n" {
+		t.Fatalf("the export's registry line is not the whole export's b1 line, byte for byte: %q", wholeB1)
 	}
 	manifest := readFile(t, filepath.Join(out, exportManifestName))
 	if !strings.Contains(manifest, `"scope":`+jsonText(t, pgExportScopeB)) {
@@ -266,7 +273,7 @@ func TestAPostgresExportByScopeRestoreVerifiesByItsScopeAsTheStoreDoes(t *testin
 	whole := filepath.Join(t.TempDir(), "restored-whole")
 	restoreTree(t, wholeOut, whole)
 	requireExportChecks(t, whole)
-	for scope, session := range map[string]string{pgExportScopeA: "a1", pgExportScopeB: "b1"} {
+	for scope, sessions := range map[string][]string{pgExportScopeA: {"a1", "a2"}, pgExportScopeB: {"b1"}} {
 		out, err := s.export(t, scope)
 		if err != nil {
 			t.Fatalf("export by %s: %v", scope, err)
@@ -276,7 +283,7 @@ func TestAPostgresExportByScopeRestoreVerifiesByItsScopeAsTheStoreDoes(t *testin
 		requireExportChecks(t, restored)
 		live := cutVerdict(t, filepath.Join(whole, "store"), filepath.Join(whole, "registry"), "gateway:test", scope)
 		got := cutVerdict(t, filepath.Join(restored, "store"), filepath.Join(restored, "registry"), "gateway:test", scope)
-		if !slices.Contains(got.Cut.Sessions, session) || len(got.Cut.Unattributed) != 0 {
+		if !slices.Equal(slices.Sorted(slices.Values(got.Cut.Sessions)), sessions) || len(got.Cut.Unattributed) != 0 {
 			t.Fatalf("the restored export's cut by %s: %+v", scope, got.Cut)
 		}
 		wantBytes, err := live.marshal()

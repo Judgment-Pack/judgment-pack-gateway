@@ -333,6 +333,9 @@ func readTokenCredential(t *TokenStep, members map[string]string) (*tokenSigner,
 		}
 		signer.key, signer.alg = key, "ES256"
 	default:
+		if t.Algorithm != "" {
+			return nil, tokenFailure(TokenNoCredential, "the token step's key is neither RSA nor EC P-256; --assertion-alg=%s is for an RSA key", t.Algorithm)
+		}
 		return nil, tokenFailure(TokenNoCredential, "the token step's key is neither RSA nor EC P-256")
 	}
 	return signer, nil
