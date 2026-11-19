@@ -91,12 +91,19 @@ import (
 // IAM_POLICY page makes through a group are resolved with a third,
 // read-only token, opt-in and bounded (ADR-0039, Amendment (gateway #496);
 // gcp_asset_groups.go): a binding with the member is refused under an
-// earlier version, and a source without it serves as before. connect raises a file to
+// earlier version, and a source without it serves as before, and the
+// version after the path-template change (metadataTokenVersion, provisional
+// until that change has merged) a token step's optional `federatedToken`,
+// by which adapter-http asks the platform's metadata server, at the address
+// it has built in, for the identity token it presents
+// (docs/adr/0043-a-federated-token-from-the-platforms-metadata-server.md;
+// token_step.go): a file with the member is refused under an earlier
+// version, and the other forms are unchanged. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version.
-const engineVersion = "30"
+const engineVersion = metadataTokenVersion
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, metadataTokenVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.

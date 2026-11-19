@@ -1871,6 +1871,30 @@ assertion (RFC 7523).
 http source a token step, raise `engineVersion` to `"21"` and add `tokenStep` to the platform's
 `credentials.live`; a gateway older than this one refuses a version-21 file by its version.
 
+**A federated token from the platform's metadata server** (the engine version after the
+path-template change; [ADR-0043](../adr/0043-a-federated-token-from-the-platforms-metadata-server.md),
+gateway #502). In place of `privateKey` and `federatedTokenFile`, a token step may name
+`federatedToken`: `{"kind": "metadata", "audience": "api://records-reader"}`. It has exactly
+those two members, `kind` is `"metadata"` alone, and `audience` is 1 to 256 bytes of ASCII
+letters, digits and `.` `_` `~` `:` `/` `@` `-`. Exactly one of the three is the assertion's
+credential, and `x5t` and `x5t#S256` stay beside `privateKey`. No member names an address.
+`adapter-http`, handed `--federated-token-metadata-audience`, asks the metadata server at the
+link-local IP literal `169.254.169.254` built into it:
+`GET /computeMetadata/v1/instance/service-accounts/default/identity?audience=…&format=full`, the
+audience percent-encoded, with `Metadata-Flavor: Google`, within five seconds. No resolver, proxy
+or environment variable is consulted. An answer is taken only when it carries
+`Metadata-Flavor: Google`, is not a redirect, has status 200 and is at most 16 KiB. It must be a
+compact JWS whose `aud` is the audience asked and whose `exp` is more than 60 seconds ahead. The
+run that sends the token request asks for the token, holds it in its memory for that request,
+and writes it nowhere. Any other answer, and a server that is not reached, is the no-credential
+sentence above, and no token is requested. A 429 or 503 carrying the header is a throttled answer,
+as the token endpoint's is. The live credentials file holds `sealKey`, a string of at least 32
+bytes that the sealed token's key is derived from, since the identity token changes at the
+metadata server's will. The identity token is the compute's: every process on it can ask for
+one, so this form does not hold platforms apart by their users as the file form does. Under an
+earlier version `federatedToken` is refused by name, and a file without it loads and derives its
+sources as before.
+
 ## A platform that keeps no payload (engine version 22)
 
 Version 22 adds a platform's optional `artifact` member

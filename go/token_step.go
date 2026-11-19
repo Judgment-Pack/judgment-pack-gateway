@@ -5,7 +5,9 @@ package main
 // an http live source whose credential is an access token adapter-http
 // obtains from a token endpoint fixed here, by a client assertion it signs
 // with a key held as a member of the platform's live credentials file, or
-// by a federated identity token it reads from a file fixed here. The signer
+// by a federated identity token it reads from a file fixed here, or, from
+// metadataTokenVersion, asks of the platform's metadata server for an
+// audience fixed here (ADR-0043). The signer
 // reads neither, nor the access token: it holds, per source, the token as
 // adapter-http sealed it under a key only the platform's credential
 // derives, hands it to the next acquisition, and drops it when the source
@@ -25,10 +27,11 @@ import (
 
 // tokenStepConfig is credentials.live.tokenStep as written: nothing here is
 // a secret. Exactly one of privateKey, the member of the live credentials
-// file holding the key, and federatedTokenFile is set; x5t and x5tS256, at
-// most one, only beside privateKey.
+// file holding the key, federatedTokenFile, and metadataAudience, the
+// audience of federatedToken {"kind": "metadata"}, is set; x5t and x5tS256,
+// at most one, only beside privateKey.
 type tokenStepConfig struct {
-	endpoint, clientID, privateKey, federatedTokenFile, x5t, x5tS256, requestScope string
+	endpoint, clientID, privateKey, federatedTokenFile, metadataAudience, x5t, x5tS256, requestScope string
 	// federatedTokenDir is not written: it is the directory federatedTokenFile
 	// is named in, as engineRefusals resolved it, which the adapter finds
 	// the file again under at each token request.
@@ -37,8 +40,26 @@ type tokenStepConfig struct {
 
 var tokenStepMembers = map[string]bool{
 	"endpoint": true, "clientId": true,
-	"privateKey": false, "federatedTokenFile": false, "x5t": false, "x5t#S256": false, "requestScope": false,
+	"privateKey": false, "federatedTokenFile": false, "federatedToken": false, "x5t": false, "x5t#S256": false, "requestScope": false,
 }
+
+// metadataTokenVersion is the engine configuration version that admits
+// tokenStep.federatedToken (ADR-0043): the version after the path-template
+// change. TODO(#502): the number is provisional, one past the newest on the
+// branch this was built from, and is set when that change has merged.
+// engine.go reads this constant as the newest version and lists it in
+// engineVersions, so a merge that keeps both changes' versions without
+// renumbering it does not compile (a duplicate key in that map).
+const metadataTokenVersion = "31"
+
+// federatedTokenMetadata is federatedToken's one kind: the platform's
+// metadata server, at the address adapter-http has built in.
+const federatedTokenMetadata = "metadata"
+
+// audienceForm is a metadata identity token's audience: 1 to 256 ASCII
+// letters, digits and . _ ~ : / @ -, as adapter-http holds it, so it can
+// add no query member to the request it is sent in.
+var audienceForm = regexp.MustCompile(`^[A-Za-z0-9._~:/@-]{1,256}$`)
 
 var (
 	// scopeTokenForm is RFC 6749 section 3.3's scope-token.
@@ -53,7 +74,8 @@ var (
 // shape; an endpoint of the endpoint form (https, or http at a loopback
 // address written as one) with no placeholder; a client identifier of 1 to
 // 256 printable ASCII characters without spaces; exactly one of privateKey,
-// a credentials member's name, and federatedTokenFile, an absolute path; at
+// a credentials member's name, federatedTokenFile, an absolute path, and,
+// from metadataTokenVersion, federatedToken (parseFederatedToken); at
 // most one of x5t (a SHA-1 thumbprint, base64url) and x5t#S256 (a SHA-256
 // one), beside privateKey only; and requestScope, scope tokens separated by
 // single spaces. A refusal names the member and repeats no value.
@@ -81,7 +103,17 @@ func parseTokenStep(v value, name, op, version string) (*tokenStepConfig, error)
 	}
 	_, hasKey := obj.get("privateKey")
 	_, hasFederated := obj.get("federatedTokenFile")
+	metadata, hasMetadata := obj.get("federatedToken")
+	if hasMetadata && !versionAtLeast(version, metadataTokenVersion) {
+		return nil, fmt.Errorf("%s.federatedToken is a version-%s member; engineVersion %s has no federatedToken", where, metadataTokenVersion, version)
+	}
 	switch {
+	case hasMetadata && (hasKey || hasFederated), !hasMetadata && !hasKey && !hasFederated && versionAtLeast(version, metadataTokenVersion):
+		return nil, fmt.Errorf("%s: exactly one of privateKey, federatedTokenFile and federatedToken is the assertion's credential", where)
+	case hasMetadata:
+		if t.metadataAudience, err = parseFederatedToken(metadata, where); err != nil {
+			return nil, err
+		}
 	case hasKey == hasFederated:
 		return nil, fmt.Errorf("%s: exactly one of privateKey and federatedTokenFile is the assertion's credential", where)
 	case hasKey:
@@ -127,6 +159,28 @@ func parseTokenStep(v value, name, op, version string) (*tokenStepConfig, error)
 	return t, nil
 }
 
+// parseFederatedToken reads tokenStep.federatedToken: an object of exactly
+// kind, "metadata" alone, and audience, in audienceForm. No member names an
+// address: adapter-http has the metadata server's built in. A refusal
+// names the member and repeats no value.
+func parseFederatedToken(v value, where string) (string, error) {
+	where += ".federatedToken"
+	obj, err := requireObject(v, "federatedToken")
+	if err != nil {
+		return "", fmt.Errorf("%s: %v", where, err)
+	}
+	if err := exactlyMembers(obj, map[string]bool{"kind": true, "audience": true}, where); err != nil {
+		return "", err
+	}
+	if kind, ok := memberString(obj, "kind"); !ok || kind != federatedTokenMetadata {
+		return "", fmt.Errorf("%s: kind is %q, the platform's metadata server, at the address adapter-http has built in", where, federatedTokenMetadata)
+	}
+	if audience, ok := memberString(obj, "audience"); ok && audienceForm.MatchString(audience) {
+		return audience, nil
+	}
+	return "", fmt.Errorf("%s: audience is 1 to 256 ASCII letters, digits and the characters . _ ~ : / @ -", where)
+}
+
 // tokenStepMatch holds a platform's token step to its binding: the binding's
 // live operation is of the http shape, and sends its credential as the
 // bearer, which is how an access token is sent; credentialHeader names a
@@ -152,6 +206,8 @@ func tokenStepArgv(t *tokenStepConfig) []string {
 	argv := []string{"--token-endpoint=" + t.endpoint, "--client-id=" + t.clientID}
 	if t.privateKey != "" {
 		argv = append(argv, "--assertion-key="+t.privateKey)
+	} else if t.metadataAudience != "" {
+		argv = append(argv, "--federated-token-metadata-audience="+t.metadataAudience)
 	} else {
 		argv = append(argv, "--federated-token-file="+t.federatedTokenFile)
 		if t.federatedTokenDir != "" {
