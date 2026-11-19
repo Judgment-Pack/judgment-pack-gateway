@@ -1,0 +1,20 @@
+{
+  "name": "v3-scope-salt-valid",
+  "note": "An acquisition carrying the scope identifier \"scope-a\" and a scope salt of its form, 64 lowercase hexadecimal characters (SPEC.md §1.2a, scopeSalt), in a session sealed in §3's form: ok. A verifier holds the salt to its form and to a seal of version 3 that names the session's scope, and to nothing else.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+    "receipts/s2/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"scope\":\"scope-a\",\"scopeSalt\":\"6d88bffd12059d7b737f0ac69c72478ee534f807c1d57705574b1ea969e32b63\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"4fd3733949f4652c9e22f598ef1951047e10eeaf329a5da1c6afa23ec70b42d9424c37c6fb14348dc9a30adba15b521be0d05227324984432f9238358cea9c05\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-11-18T00:00:02Z\",\"sessionId\":\"s2\",\"signature\":\"53052f0e64fa44fd2241100a8ea68586a4306519aaaf265a86fd49639c68ff48a5e1f2353a87122a02f12b6477d953c0b54e6d3b35b19e398b082c13fb75820a\"}\n",
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s2",
+        "status": "ok"
+      }
+    ]
+  }
+}

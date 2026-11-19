@@ -92,8 +92,10 @@ type Judged = {
   // step says of it (§1.3a), artifact-not-retained or artifact-removed.
   readonly observation?: string;
   // For a receipt that passed: its top-level scope, absent for none, which a
-  // seal naming a scope is held to (ADR-0036).
+  // seal naming a scope is held to (ADR-0036), and its scopeSalt, which one
+  // of version 3 is taken over (ADR-0042).
   readonly scope?: string;
+  readonly scopeSalt?: string;
   // For a receipt that passed: what the chain walk reads of it, its key's
   // place among the keys the registry's walk reached among it (§3b).
   readonly chain?: { readonly version: string; readonly signature: string; readonly prev: Prev; readonly keyPos: number };
@@ -191,6 +193,49 @@ const interruptionPrefix2 = "judgment-pack-gateway/seal-after-interruption/2:";
 const sealScopeDigestPrefix = "judgment-pack-gateway/seal-scope/1:";
 const scopedSealMembers = ["finalCount", "keyId", "scopeDigest", "sealVersion", "sealedAt", "sessionId", "signature"];
 const digestForm = /^sha256:[0-9a-f]{64}$/;
+// A seal of version 3 (§3, "A seal of version 3"; ADR-0042): version 2's
+// form, of either kind, whose scopeDigest is taken over the session's scope
+// salt beside the identifier and the session's id. The salt is in every
+// receipt of the session (scopeSalt) and in no registry line, so the registry
+// alone tests no guessed identifier against the seal.
+const saltedSealPrefix = "judgment-pack-gateway/seal-version/3:";
+const interruptionPrefix3 = "judgment-pack-gateway/seal-after-interruption/3:";
+const sealScopeSaltedDigestPrefix = "judgment-pack-gateway/seal-scope/2:";
+const scopeSaltForm = /^[0-9a-f]{64}$/;
+
+// saltedScopeDigest is what a seal of version 3 names a session's scope by:
+// "sha256:" and the lowercase hex of SHA-256 over the prefix and the
+// canonical form of {"salt", "scope", "sessionId"}.
+function saltedScopeDigest(sessionId: string, scope: string, salt: string): string {
+  const named: ObjectValue = {
+    type: "object",
+    members: [
+      { name: "salt", value: { type: "string", value: salt } },
+      { name: "scope", value: { type: "string", value: scope } },
+      { name: "sessionId", value: { type: "string", value: sessionId } },
+    ],
+  };
+  const body = canonical(named);
+  if (body === null) {
+    return "";
+  }
+  return "sha256:" + sha256Hex(Buffer.concat([Buffer.from(sealScopeSaltedDigestPrefix, "utf8"), body]));
+}
+
+// namesScope is whether a seal names the scope identifier scope, carried with
+// the scope salt salt (undefined for none): a seal of version 3 by the digest
+// over the salt, which must be there and of its form; one of version 2 by
+// the digest in the session, whatever salt is carried; a seal of a form that
+// names no scope names none.
+function namesScope(seal: Seal, sessionId: string, scope: string, salt: string | undefined): boolean {
+  if (seal.scopeDigest === undefined) {
+    return false;
+  }
+  if (seal.salted === true) {
+    return salt !== undefined && scopeSaltForm.test(salt) && saltedScopeDigest(sessionId, scope, salt) === seal.scopeDigest;
+  }
+  return sealScopeDigest(sessionId, scope) === seal.scopeDigest;
+}
 
 // sealScopeDigest is what a seal of version 2 names a session's scope by:
 // "sha256:" and the lowercase hex of SHA-256 over the prefix and the
@@ -350,10 +395,12 @@ type Retention = { readonly removals: ReadonlyMap<string, readonly Removal[]>; r
 // names a sealed session by its id, its seal's signature and its seal's
 // count; kept by the session it names.
 // scope is the scope identifier the record names, which a seal of version 2
-// is held to (§1.3a, "A removed session").
-type SessionRemoval = { readonly sealSignature: string; readonly finalCount: bigint; readonly scope: string; readonly keyPos: number };
+// or 3 is held to (§1.3a, "A removed session"), and scopeSalt the scope salt
+// a record of a session sealed with a seal of version 3 carries.
+type SessionRemoval = { readonly sealSignature: string; readonly finalCount: bigint; readonly scope: string; readonly scopeSalt?: string; readonly keyPos: number };
 const sessionRemovalPrefix = "judgment-pack-gateway/session-removal/1:";
 const sessionRemovalMembers = ["finalCount", "keyId", "kind", "removedAt", "removedBy", "scope", "sealSignature", "sessionId", "signature"];
+const sessionRemovalSaltedMembers = [...sessionRemovalMembers, "scopeSalt"];
 
 // removalOf is a line of the removal file, read, as a record when it holds
 // exactly its nine members, no name twice, each of its form, its key id
@@ -420,13 +467,21 @@ function sessionRemovalOf(v: Value | null, keys: readonly ReachedKey[]): (Sessio
   if (v === null || v.type !== "object" || hasDuplicate(v)) {
     return null;
   }
-  if (v.members.length !== sessionRemovalMembers.length || !v.members.every((m) => sessionRemovalMembers.includes(m.name))) {
+  // the nine members, or the ten of a record of a session sealed with a
+  // seal of version 3, its scope salt among them (ADR-0042)
+  const salted = member(v, "scopeSalt") !== undefined;
+  const members = salted ? sessionRemovalSaltedMembers : sessionRemovalMembers;
+  if (v.members.length !== members.length || !v.members.every((m) => members.includes(m.name))) {
     return null;
   }
   const of = (name: string, form: RegExp): string | undefined => {
     const s = str(member(v, name));
     return s !== undefined && form.test(s) ? s : undefined;
   };
+  const scopeSalt = salted ? of("scopeSalt", scopeSaltForm) : undefined;
+  if (salted && scopeSalt === undefined) {
+    return null;
+  }
   const kind = of("kind", /^session-removal$/);
   const sessionId = of("sessionId", /^[A-Za-z0-9._-]{1,128}$/);
   const finalCount = member(v, "finalCount");
@@ -463,7 +518,7 @@ function sessionRemovalOf(v: Value | null, keys: readonly ReachedKey[]): (Sessio
   if (!signed(keys[keyPos]!.key, sessionRemovalPrefix, payload, signature)) {
     return null;
   }
-  return { sessionId: own(sessionId), sealSignature: own(sealSignature), finalCount: finalCount.integer, scope: own(scope), keyPos };
+  return { sessionId: own(sessionId), sealSignature: own(sealSignature), finalCount: finalCount.integer, scope: own(scope), ...(scopeSalt !== undefined && { scopeSalt: own(scopeSalt) }), keyPos };
 }
 
 // loadRemovals is the store's removal records (§1.3a, "Loading"; §4.1),
@@ -678,6 +733,7 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
     callIndex,
     ...(observation !== undefined && { observation }),
     ...(str(member(receipt, "scope")) !== undefined && { scope: own(str(member(receipt, "scope"))!) }),
+    ...(str(member(receipt, "scopeSalt")) !== undefined && { scopeSalt: own(str(member(receipt, "scopeSalt"))!) }),
     chain: { version: own(version), signature: own(signature), prev, keyPos },
     ...(action && { action }),
     ...(delivery && {delivery}),
@@ -693,8 +749,10 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
 // the place among the keys the walk reached of the key it loaded under:
 // what a session-removal record names it by (§1.3a).
 // scopeDigest is the digest of the scope identifier a seal of version 2
-// names (sealScopeDigest); undefined for a seal of a form that names none.
-type Seal = { readonly sessionId: string; readonly finalCount: bigint; readonly head?: string; readonly signature: string; readonly keyPos: number; readonly scopeDigest?: string };
+// names (sealScopeDigest), or one of version 3 over the session's scope salt
+// (saltedScopeDigest, salted true); undefined for a seal of a form that
+// names none.
+type Seal = { readonly sessionId: string; readonly finalCount: bigint; readonly head?: string; readonly signature: string; readonly keyPos: number; readonly scopeDigest?: string; readonly salted?: boolean };
 
 // sealOf is a registry line, read, as a seal, when it is one whose key id
 // is the current key's at its line (§3b, §4 step 2) and whose signature
@@ -743,7 +801,7 @@ function isVersioned(v: Value | null): v is ObjectValue {
   return v !== null && v.type === "object" && member(v, "sealVersion") !== undefined && member(v, "kind") === undefined;
 }
 
-// scopedSealOf is such a line, read, as a seal of version 2 when it holds its
+// scopedSealOf is such a line, read, as a seal of version 2 or 3 when it holds its
 // form -- exactly its members, no name given twice, each of its form -- its
 // key id is the current key's at its line and its signature verifies under
 // that key, over the prefix and the canonical form of everything but the
@@ -762,8 +820,9 @@ function scopedSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string, keyP
   const sealedAt = of("sealedAt", /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
   const signature = of("signature", /^[0-9a-f]{128}$/);
   const scopeDigest = of("scopeDigest", digestForm);
+  const version = str(member(v, "sealVersion"));
   if (
-    str(member(v, "sealVersion")) !== "2" ||
+    (version !== "2" && version !== "3") ||
     sessionId === undefined ||
     sessionId === "." ||
     sessionId === ".." ||
@@ -781,10 +840,10 @@ function scopedSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string, keyP
     return null;
   }
   const payload: ObjectValue = { type: "object", members: v.members.filter((m) => m.name !== "signature") };
-  if (!signed(key, scopedSealPrefix, payload, signature)) {
+  if (!signed(key, version === "3" ? saltedSealPrefix : scopedSealPrefix, payload, signature)) {
     return null;
   }
-  return { sessionId: own(sessionId), finalCount: finalCount.integer, signature: own(signature), keyPos, scopeDigest: own(scopeDigest) };
+  return { sessionId: own(sessionId), finalCount: finalCount.integer, signature: own(signature), keyPos, scopeDigest: own(scopeDigest), ...(version === "3" && { salted: true }) };
 }
 
 // isInterruption is whether a registry line is to be read as a seal made
@@ -801,15 +860,17 @@ function isInterruption(v: Value | null): v is ObjectValue {
 // key, over the prefix and the canonical form of everything but the
 // signature; any other such line is no seal of either kind.
 function interruptionSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string, keyPos: number): Seal | null {
-  // one of version 2 holds sealVersion "2" and a scopeDigest beside its own
-  // members, and is signed under a prefix of its own (ADR-0036)
+  // one of version 2 or 3 holds sealVersion "2" or "3" and a scopeDigest
+  // beside its own members, and is signed under a prefix of its own
+  // (ADR-0036, ADR-0042)
   const versioned = member(v, "sealVersion") !== undefined;
   const allowed = versioned ? [...interruptionMembers, "scopeDigest", "sealVersion"] : interruptionMembers;
   if (hasDuplicate(v) || !v.members.every((m) => allowed.includes(m.name))) {
     return null;
   }
   const scopeDigest = versioned ? str(member(v, "scopeDigest")) : undefined;
-  if (versioned && (str(member(v, "sealVersion")) !== "2" || scopeDigest === undefined || !digestForm.test(scopeDigest))) {
+  const version = versioned ? str(member(v, "sealVersion")) : undefined;
+  if (versioned && ((version !== "2" && version !== "3") || scopeDigest === undefined || !digestForm.test(scopeDigest))) {
     return null;
   }
   const of = (name: string, form: RegExp): string | undefined => {
@@ -842,10 +903,10 @@ function interruptionSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string
     return null;
   }
   const payload: ObjectValue = { type: "object", members: v.members.filter((m) => m.name !== "signature") };
-  if (!signed(key, versioned ? interruptionPrefix2 : interruptionPrefix, payload, signature)) {
+  if (!signed(key, version === "3" ? interruptionPrefix3 : versioned ? interruptionPrefix2 : interruptionPrefix, payload, signature)) {
     return null;
   }
-  return { sessionId: own(sessionId), finalCount: finalCount.integer, head: own(head), signature: own(signature), keyPos, ...(scopeDigest !== undefined && { scopeDigest: own(scopeDigest) }) };
+  return { sessionId: own(sessionId), finalCount: finalCount.integer, head: own(head), signature: own(signature), keyPos, ...(scopeDigest !== undefined && { scopeDigest: own(scopeDigest) }), ...(version === "3" && { salted: true }) };
 }
 
 // verifyStore is the verdict of §4 over the store at root, against the
@@ -940,8 +1001,9 @@ export function verifyStore(
   const retention: Retention = { removals: loaded.removals, supplied: options.artifacts };
   // §4 step 4: a sealed session a session-removal record names, by its id,
   // its seal's signature and count, under the seal's key or one the walk
-  // reached after it, and, for a seal of version 2, by the scope it names:
-  // the record's scope digested in the session is the seal's scopeDigest.
+  // reached after it, and, for a seal of version 2 or 3, by the scope it
+  // names: the record's scope digested in the session -- over the record's
+  // scope salt, for version 3 -- is the seal's scopeDigest.
   const removedSession = (sessionId: string): boolean => {
     const seal = seals.get(sessionId)!;
     return (loaded.sessions.get(sessionId) ?? []).some(
@@ -949,7 +1011,7 @@ export function verifyStore(
         r.sealSignature === seal.signature &&
         r.finalCount === seal.finalCount &&
         r.keyPos >= seal.keyPos &&
-        (seal.scopeDigest === undefined || sealScopeDigest(sessionId, r.scope) === seal.scopeDigest),
+        (seal.scopeDigest === undefined || namesScope(seal, sessionId, r.scope, r.scopeSalt)),
     );
   };
 
@@ -1154,10 +1216,10 @@ export function verifyStore(
         ];
       }
       // ADR-0036: a seal naming a scope identifier says every receipt it
-      // counts is of that scope; an accepted receipt of another, or of none,
-      // is found once, beside whatever else the session finds.
-      const scopeDigest = seal?.scopeDigest;
-      if (scopeDigest !== undefined && judged.some((j) => j.status === "ok" && (j.scope === undefined || sealScopeDigest(session, j.scope) !== scopeDigest))) {
+      // counts is of that scope -- for a seal of version 3, under the salt
+      // it is taken over (ADR-0042); an accepted receipt of another, or of
+      // none, is found once, beside whatever else the session finds.
+      if (seal?.scopeDigest !== undefined && judged.some((j) => j.status === "ok" && (j.scope === undefined || !namesScope(seal, session, j.scope, j.scopeSalt)))) {
         yield [
           ["sessionId", session],
           ["status", "seal-scope-mismatch"],

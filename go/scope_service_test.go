@@ -75,8 +75,9 @@ func TestAScopedSourcesReceiptCarriesItsScopeAndVerifies(t *testing.T) {
 		t.Fatalf("a scoped acquisition: %d %v", code, first)
 	}
 	receipt := first["receipt"].(map[string]any)
-	if receipt["scope"] != testScope || len(receipt) != 15 {
-		t.Fatalf("the receipt of a scoped source carries its scope beside the members it carried before: %v", receipt)
+	// and the session's scope salt beside it (ADR-0042)
+	if salt, _ := receipt["scopeSalt"].(string); receipt["scope"] != testScope || !isScopeSalt(salt) || len(receipt) != 16 {
+		t.Fatalf("the receipt of a scoped source carries its scope and scope salt beside the members it carried before: %v", receipt)
 	}
 	// a session's receipts are of one scope (ADR-0036): the source fixed to
 	// none acquires into a session of its own
@@ -110,9 +111,14 @@ func TestAScopedSourcesReceiptCarriesItsScopeAndVerifies(t *testing.T) {
 		t.Fatal(err)
 	}
 	member := `"scope":` + jsonText(t, testScope)
-	for _, tc := range []struct{ name, from, to string }{
-		{"another scope", member, `"scope":` + jsonText(t, "équipe-b")},
-		{"the member taken out", member + ",", ""},
+	salt := `"scopeSalt":"` + service.sessions["scope-1"].scopeSalt + `"`
+	for _, tc := range []struct{ name, from, to, status string }{
+		{"another scope", member, `"scope":` + jsonText(t, "équipe-b"), "signature-mismatch"},
+		// the salt is with a scope alone (ADR-0042), so the member taken out
+		// leaves a receipt out of form; the two taken out, one whose
+		// signature does not verify
+		{"the member taken out", member + ",", "", "malformed"},
+		{"the member and its salt taken out", member + "," + salt + ",", "", "signature-mismatch"},
 	} {
 		if !strings.Contains(string(minted), tc.from) {
 			t.Fatalf("%s: the receipt holds no %s: %s", tc.name, tc.from, minted)
@@ -120,7 +126,7 @@ func TestAScopedSourcesReceiptCarriesItsScopeAndVerifies(t *testing.T) {
 		if err := os.WriteFile(path, []byte(strings.Replace(string(minted), tc.from, tc.to, 1)), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if ok, status := verdict(); ok || status != "signature-mismatch" {
+		if ok, status := verdict(); ok || status != tc.status {
 			t.Errorf("%s: ok %v, %s", tc.name, ok, status)
 		}
 	}

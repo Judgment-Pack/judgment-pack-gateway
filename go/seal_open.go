@@ -62,6 +62,9 @@ type sealOpenTarget struct {
 	// one an earlier release left holding receipts of several scopes, or of
 	// a scope and none, which is sealed in §3c's form as before.
 	scope string
+	// salt is the scope salt every receipt of the session carries beside
+	// scope (ADR-0042); "" for receipts an earlier release minted.
+	salt string
 }
 
 // sealOpenRead is a session that could not be read: no answer, so nothing is
@@ -169,15 +172,18 @@ func sealOpenJudge(st sealOpenStore, authority string, walk *registryWalk, ret *
 	// a receipt the ladder passes holds its signature as 128 lowercase
 	// hexadecimal characters, which is what the seal names
 	head := result.signatures[strconv.FormatInt(result.count-1, 10)]
-	var scope string
-	// one scope identifier and no receipt of none: a session an earlier
-	// release left mixed is sealed in §3c's form, as before
+	var scope, salt string
+	// one scope identifier with one scope salt, or with none, and no receipt
+	// of none: a session an earlier release left mixed is sealed in §3c's
+	// form, as before. Receipts that carry the salt are sealed over it
+	// (version 3, ADR-0042); ones an earlier release minted, carrying none,
+	// in version 2's form, the only one their receipts can be held to.
 	if len(result.scopes) == 1 && !result.noScope {
 		for held := range result.scopes {
-			scope = held
+			scope, salt = held.scope, held.salt
 		}
 	}
-	return &sealOpenTarget{sessionID: sessionID, count: result.count, head: head, scope: scope}, "", nil
+	return &sealOpenTarget{sessionID: sessionID, count: result.count, head: head, scope: scope, salt: salt}, "", nil
 }
 
 // sealOpenUnder seals what may be sealed -- the session named, or with ""
@@ -223,7 +229,7 @@ func sealOpenUnder(st sealOpenStore, authority string, writer *registryWriter, d
 	}
 	var sealed []*vObject
 	for _, t := range targets {
-		record, err := writer.sealAfterInterruptionOfScope(t.sessionID, t.count, t.head, stamp(), via, t.scope)
+		record, err := writer.sealAfterInterruptionOfScope(t.sessionID, t.count, t.head, stamp(), via, t.scope, t.salt)
 		if errors.Is(err, errSessionAlreadySealed) {
 			// sealed since it was judged: on the PostgreSQL kind, where
 			// instances serve beside one another, by another instance's

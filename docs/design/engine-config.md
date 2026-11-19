@@ -1700,18 +1700,25 @@ of one operator's sources can be told apart by the party each serves.
   Use one session per scope identifier. A gateway before this one let a session of the
   filesystem kind mix them; such sessions in an existing store verify as they did.
 - **Registry lines.** A seal is of one session. The seal of a session of a scope identifier is a
-  seal of version 2 that names it under the signature by its digest in the session, never by the
-  identifier (`sealVersion` `"2"`, `scopeDigest`; SPEC.md §3, "A seal of version 2"), and so is the seal `gateway seal-open`, or the start's switch, makes
-  after an interruption of such a session (SPEC.md §3c, "Naming the scope"); a verifier of this
-  version reports the session `seal-scope-mismatch` where an accepted receipt in it carries
-  another scope or none. The seal of a session of no scope is the form it was before, byte for
+  seal of version 3 that names it under the signature by its digest over the session's scope
+  salt, never by the identifier or the salt (`sealVersion` `"3"`, `scopeDigest`; SPEC.md §3, "A
+  seal of version 3"; ADR-0042), and so is the seal `gateway seal-open`, or the start's switch,
+  makes after an interruption of such a session (SPEC.md §3c, "Naming the scope"). The salt is
+  32 random bytes the gateway draws for the session and writes into each of its receipts
+  (`scopeSalt`) and into no registry line. A session whose receipts v0.31.0 or v0.32.0 minted,
+  carrying no salt, is sealed after an interruption with a seal of version 2, by its digest in
+  the session, as those releases sealed it; a session that holds no receipt is sealed in the
+  form of a session of no scope. A verifier of this version reports the session
+  `seal-scope-mismatch` where an accepted receipt in it carries another scope, none, or another
+  salt or none under a seal of version 3. The seal of a session of no scope is the form it was before, byte for
   byte, as are the seals an earlier gateway wrote, which name no scope whatever their sessions
   held. A rotation statement (SPEC.md §3b) is of the key and of no source, and names no scope.
-  So the lines that concern a scoped source are the seals of version 2, each naming by its digest
-  the scope identifier of the one session it seals; no line carries a scope identifier, so a
-  registry, an export's or a copy, lists none, and on the PostgreSQL kind a gateway of one scope
-  reads none of another's from it (ADR-0036, decision 9). The digest is not a secret: one who
-  guesses an identifier can digest it in a session's id and test it.
+  So the lines that concern a scoped source are the seals of version 3 or 2, each naming by its
+  digest the scope identifier of the one session it seals; no line carries a scope identifier, so
+  a registry, an export's or a copy, lists none, and on the PostgreSQL kind a gateway of one scope
+  reads none of another's from it (ADR-0036, decision 9). A digest of version 3 tests no guess
+  without the session's salt, which only its receipts hold; a digest of version 2 is not a
+  secret: one who guesses an identifier can digest it in a session's id and test it.
 - **`/seal` answers with the seal.** Any caller the gateway admits that names a session this
   process holds may seal it, whatever its scope (ADR-0033, decision 5), and the response is the
   seal's record, so a caller that knows or guesses another scope's session id learns that the
@@ -1719,10 +1726,11 @@ of one operator's sources can be told apart by the party each serves.
   identifier. The refusals name no scope. Where caller scope identifiers are checked ("Caller
   scope identifiers (engine version 27)", below) a caller that does not reach the session's
   scope is answered `no such session`, as for a session the gateway does not hold, and learns
-  neither; with `"unchecked"`, or without `identity`, the disclosure stands. A verifier
-  written before this gateway reads a seal of version 2 as a seal it cannot verify and reports
-  the session `unregistered-session`: readers of a store with scoped sessions need a verifier of
-  this version.
+  neither; with `"unchecked"`, or without `identity`, the disclosure stands (a seal of version
+  3 tests no guess without the receipts' salt, which the answer does not carry). A verifier
+  written before v0.31.0 reads a seal of version 2, and one written before this release a seal
+  of version 3, as a seal it cannot verify and reports the session `unregistered-session`:
+  readers of a store with scoped sessions need a verifier of this version.
 - **The upgrade is one-way once a seal of version 2 is written.** A gateway written before this
   one does not read a seal of version 2, so it finds the session open: its `gateway seal-open`
   (`--all`, or the session named), or its start with `sealOpenAtStart`, seals the session again
@@ -1730,7 +1738,9 @@ of one operator's sources can be told apart by the party each serves.
   `seal-conflict`. Nothing refuses the older gateway on the store, on either kind. So stop every
   instance of v0.30.0 or earlier before one of this version serves the store, and once a seal of
   version 2 is in the registry never run an older instance, or an older `gateway seal-open`, on
-  it (postgresql-store.md, "Several instances on one database").
+  it (postgresql-store.md, "Several instances on one database"). The same holds again for a seal
+  of version 3: v0.31.0 and v0.32.0 do not read it, so stop every instance of them before one of
+  this release serves the store, and never run them on it afterwards.
 - **`gateway verify` and `gateway export` do not select by scope**: each reads the whole store
   and the whole registry. The registry is one chain that a verifier needs whole to walk from the
   key it pins (SPEC.md §3b), and a verifier reports every sealed session a store does not hold

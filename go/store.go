@@ -406,30 +406,50 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 	})
 }
 
-// sealOfScope seals a session of a scope identifier with a seal of version 2,
-// which names it under the signature by its digest in the session
-// (sealScopeDigest), so the registry line carries no scope identifier
-// (ADR-0036; SPEC.md §3, "A seal of version 2"), and a session of no scope ("") with seal, in §3's form, the
-// bytes such a seal always had.
-func (w *registryWriter) sealOfScope(sessionID string, finalCount int64, sealedAt, scope string) (*vObject, error) {
-	if scope == "" {
+// sealOfScope seals a session of a scope identifier with a seal of version 3,
+// which names it under the signature by its digest over the session's scope
+// salt (saltedScopeDigest), so the registry line carries neither the scope
+// identifier nor anything a guessed one could be tested against (ADR-0036,
+// ADR-0042; SPEC.md §3, "A seal of version 3"), and a session of no scope
+// ("") with seal, in §3's form, the bytes such a seal always had. A session
+// that holds no receipt is sealed in §3's form too: no receipt carries a salt
+// for a digest to be taken over, and none for the digest to be held to, so
+// such a seal would name the scope to no reader, a session-removal record
+// among them. A scope with no salt of its form is refused: every new seal
+// naming a scope is of version 3.
+func (w *registryWriter) sealOfScope(sessionID string, finalCount int64, sealedAt, scope, salt string) (*vObject, error) {
+	if scope == "" || finalCount == 0 {
 		return w.seal(sessionID, finalCount, sealedAt)
 	}
 	// what a reader would not load is not written
-	if !isScopeIdentifier(scope) || finalCount < 0 || finalCount > maxSafeInteger || !witnessTimeForm.MatchString(sealedAt) {
-		return nil, fmt.Errorf("a seal of version 2 names a scope identifier of its form, counts from 0 to 2^53-1 receipts and is stamped YYYY-MM-DDThh:mm:ssZ")
+	if !isScopeIdentifier(scope) || !isScopeSalt(salt) || finalCount < 1 || finalCount > maxSafeInteger || !witnessTimeForm.MatchString(sealedAt) {
+		return nil, fmt.Errorf("a seal of version 3 names a scope identifier of its form over a scope salt of 64 lowercase hexadecimal characters, counts from 1 to 2^53-1 receipts and is stamped YYYY-MM-DDThh:mm:ssZ")
 	}
 	return w.appendSeal(sessionID, func() *vObject {
 		record := newObject()
 		record.set("finalCount", vInt(finalCount))
 		record.set("keyId", vString(w.keyID))
-		record.set("scopeDigest", vString(sealScopeDigest(sessionID, scope)))
-		record.set("sealVersion", vString(sealVersionScoped))
+		setScopeNaming(record, sessionID, scope, salt)
 		record.set("sealedAt", vString(sealedAt))
 		record.set("sessionId", vString(sessionID))
-		record.set("signature", vString(hex.EncodeToString(ed25519.Sign(w.priv, signedOver(scopedSealContext, record)))))
+		record.set("signature", vString(hex.EncodeToString(ed25519.Sign(w.priv, signedOver(versionedSealContext(record), record)))))
 		return record
 	})
+}
+
+// setScopeNaming sets the members by which a seal names scope: with a salt,
+// the digest over it and sealVersion "3" (ADR-0042); with none, the digest
+// of version 2 and sealVersion "2" (ADR-0036), which only a seal after an
+// interruption of receipts an earlier release minted, carrying no salt, is
+// written in.
+func setScopeNaming(record *vObject, sessionID, scope, salt string) {
+	if salt != "" {
+		record.set("scopeDigest", vString(saltedScopeDigest(sessionID, scope, salt)))
+		record.set("sealVersion", vString(sealVersionSalted))
+		return
+	}
+	record.set("scopeDigest", vString(sealScopeDigest(sessionID, scope)))
+	record.set("sealVersion", vString(sealVersionScoped))
 }
 
 // sealAfterInterruption appends a seal made after an interruption (SPEC.md
@@ -439,15 +459,17 @@ func (w *registryWriter) sealOfScope(sessionID string, finalCount int64, sealedA
 // seal refuses, for a session the registry holds a seal of either kind for;
 // what it seals, its caller has found whole.
 func (w *registryWriter) sealAfterInterruption(sessionID string, finalCount int64, head, sealedAt, via string) (*vObject, error) {
-	return w.sealAfterInterruptionOfScope(sessionID, finalCount, head, sealedAt, via, "")
+	return w.sealAfterInterruptionOfScope(sessionID, finalCount, head, sealedAt, via, "", "")
 }
 
 // sealAfterInterruptionOfScope is sealAfterInterruption of a session every
-// receipt of which carries the scope identifier scope: the seal carries its
-// digest in the session (sealScopeDigest), never the identifier, and
-// sealVersion "2", under its own prefix (ADR-0036); "" is the eight
-// members of §3c, as before.
-func (w *registryWriter) sealAfterInterruptionOfScope(sessionID string, finalCount int64, head, sealedAt, via, scope string) (*vObject, error) {
+// receipt of which carries the scope identifier scope and the scope salt salt:
+// the seal carries the digest over the salt (saltedScopeDigest), never the
+// identifier, and sealVersion "3", under its own prefix (ADR-0042); with no
+// salt -- receipts an earlier release minted -- the digest of version 2 and
+// sealVersion "2" (ADR-0036); scope "" is the eight members of §3c, as
+// before.
+func (w *registryWriter) sealAfterInterruptionOfScope(sessionID string, finalCount int64, head, sealedAt, via, scope, salt string) (*vObject, error) {
 	// what a reader would not load is not written (SPEC.md §3c)
 	if finalCount < 1 || finalCount > maxSafeInteger || !isLowerHexOfLen(head, 128) ||
 		!witnessTimeForm.MatchString(sealedAt) || (via != sealedViaCommand && via != sealedViaStart) {
@@ -456,6 +478,9 @@ func (w *registryWriter) sealAfterInterruptionOfScope(sessionID string, finalCou
 	if scope != "" && !isScopeIdentifier(scope) {
 		return nil, fmt.Errorf("a seal after an interruption names a scope identifier of its form (%s), or none", scopeForm)
 	}
+	if salt != "" && (scope == "" || !isScopeSalt(salt)) {
+		return nil, fmt.Errorf("a seal after an interruption names a scope salt of 64 lowercase hexadecimal characters with a scope identifier, or none")
+	}
 	return w.appendSeal(sessionID, func() *vObject {
 		record := newObject()
 		record.set("finalCount", vInt(finalCount))
@@ -463,8 +488,7 @@ func (w *registryWriter) sealAfterInterruptionOfScope(sessionID string, finalCou
 		record.set("keyId", vString(w.keyID))
 		record.set("kind", vString(sealKindInterruption))
 		if scope != "" {
-			record.set("scopeDigest", vString(sealScopeDigest(sessionID, scope)))
-			record.set("sealVersion", vString(sealVersionScoped))
+			setScopeNaming(record, sessionID, scope, salt)
 		}
 		record.set("sealedAt", vString(sealedAt))
 		record.set("sealedVia", vString(via))

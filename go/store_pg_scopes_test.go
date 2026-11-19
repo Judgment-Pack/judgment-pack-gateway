@@ -425,9 +425,10 @@ func TestThePostgresKindServesScopedPlatformsAndExportsWhatTheFilesystemKindWoul
 		}
 	}
 	// each session's seal loads, and names the scope identifier of the
-	// session's series by its digest in the session, s-none's (of no scope)
-	// being §3's form (ADR-0036, decision 2); no registry row, which every
-	// scope's view reads, holds a scope identifier (ADR-0033, decision 5)
+	// session's series by its digest over the session's scope salt
+	// (ADR-0042), s-none's (of no scope) being §3's form (ADR-0036, decision
+	// 2); no registry row, which every scope's view reads, holds a scope
+	// identifier (ADR-0033, decision 5) or a scope salt
 	data, err := db.open(t, nil).registry().readLog(0)
 	if err != nil {
 		t.Fatal(err)
@@ -439,7 +440,11 @@ func TestThePostgresKindServesScopedPlatformsAndExportsWhatTheFilesystemKindWoul
 	for session, scope := range map[string]string{"s-a": "scope-a", "s-b": "scope-b", "s-none": ""} {
 		want := ""
 		if scope != "" {
-			want = sealScopeDigest(session, scope)
+			salt := started.service.sessions[session].scopeSalt
+			want = saltedScopeDigest(session, scope, salt)
+			if !isScopeSalt(salt) || bytes.Contains(data, []byte(salt)) {
+				t.Fatalf("session %s's scope salt %q, in the registry:\n%s", session, salt, data)
+			}
 		}
 		if got := walk.seals[session].scopeDigest; got != want {
 			t.Errorf("the seal of %s names the scope digest %q, want %q (of %q)", session, got, want, scope)
@@ -448,8 +453,8 @@ func TestThePostgresKindServesScopedPlatformsAndExportsWhatTheFilesystemKindWoul
 	if bytes.Contains(data, []byte("scope-a")) || bytes.Contains(data, []byte("scope-b")) {
 		t.Fatalf("the registry holds a scope identifier:\n%s", data)
 	}
-	if bytes.Count(data, []byte(`"sealVersion":"2"`)) != 2 {
-		t.Fatalf("the registry holds other than two seals of version 2:\n%s", data)
+	if bytes.Count(data, []byte(`"sealVersion":"3"`)) != 2 {
+		t.Fatalf("the registry holds other than two seals of version 3:\n%s", data)
 	}
 	// a sealed session is refused as sealed, whatever the scope asking
 	if code, got := post(t, server, "/acquire", `{"session":"s-a","source":"never","arguments":{"q":"acme"}}`); code != http.StatusBadRequest || fmt.Sprint(got["error"]) != "session is sealed: s-a" {

@@ -232,9 +232,11 @@ type seal struct {
 	signature string
 	keyPos    int
 	// scopeDigest is the digest of the scope identifier a seal of version 2
-	// names (ADR-0036; sealScopeDigest), of either kind; "" for a seal of a
-	// form that names none.
+	// names (ADR-0036; sealScopeDigest), or one of version 3 names over the
+	// session's scope salt besides (ADR-0042; saltedScopeDigest, salted), of
+	// either kind; "" for a seal of a form that names none.
 	scopeDigest string
+	salted      bool
 }
 
 // sealSigningInput is spelled out by SPEC.md §3: the seal context prefix, then
@@ -816,7 +818,7 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 		// it counts is of that scope, so an accepted receipt of another, or
 		// of none, is found, once, beside whatever else the session finds. A
 		// seal of a form that names none asks nothing of the receipts.
-		if sealed && s.scopeDigest != "" && results[sessionID].offScope(sessionID, s.scopeDigest) {
+		if sealed && s.scopeDigest != "" && results[sessionID].offScope(sessionID, s) {
 			rep.Findings = append(rep.Findings, finding{
 				"sessionId": sessionID, "status": statusSealScopeMismatch,
 			})
@@ -1055,25 +1057,31 @@ type sessionResult struct {
 	// the ladder with no bytes re-digested (SPEC.md §1.3a).
 	observations []finding
 	// scopes are the top-level scope members of the receipts that passed
-	// the ladder, once each, and noScope whether one of them holds none (or
-	// one that is no string): what a seal naming a scope is held to
-	// (ADR-0036).
-	scopes  map[string]bool
+	// the ladder, each with the receipt's scopeSalt ("" for none; ADR-0042),
+	// once each pair, and noScope whether one of them holds no scope (or one
+	// that is no string): what a seal naming a scope is held to (ADR-0036).
+	scopes  map[scopeNaming]bool
 	noScope bool
 	// scoped is whether any receipt of the session, whatever its status,
 	// holds a scope member: one that reads as a JSON object (report.scoped).
 	scoped bool
 }
 
+// scopeNaming is a receipt's scope identifier and its scope salt, "" for a
+// receipt holding none (SPEC.md §1.2a).
+type scopeNaming struct{ scope, salt string }
+
 // offScope is whether a receipt that passed the ladder holds no scope member,
-// or one whose digest in the session (sealScopeDigest) is not digest, byte
-// for byte.
-func (r *sessionResult) offScope(sessionID, digest string) bool {
+// or one the seal s does not name (seal.namesScope): for a seal of version 2
+// one whose digest in the session (sealScopeDigest) is not s's, byte for
+// byte; for one of version 3 one held with no scope salt, or whose digest
+// over its salt (saltedScopeDigest) is not s's.
+func (r *sessionResult) offScope(sessionID string, s seal) bool {
 	if r.noScope {
 		return true
 	}
 	for held := range r.scopes {
-		if sealScopeDigest(sessionID, held) != digest {
+		if !s.namesScope(sessionID, held.scope, held.salt) {
 			return true
 		}
 	}
@@ -1166,7 +1174,7 @@ func fsSessionReading(storeRoot, sessionID string) (sessionReading, error) {
 
 // verifySessionRead is verifySessionWith of a session as reading holds it.
 func verifySessionRead(sessionID, authority string, keys []reachedKey, ret *retention, reading sessionReading) (*sessionResult, error) {
-	result := &sessionResult{signatures: map[string]string{}, scopes: map[string]bool{}}
+	result := &sessionResult{signatures: map[string]string{}, scopes: map[scopeNaming]bool{}}
 	names := slices.Clone(reading.names)
 	// Filename string order. SPEC.md does not make finding order normative;
 	// corpus/README.md records that as an open question.
@@ -1212,7 +1220,8 @@ func verifySessionRead(sessionID, authority string, keys []reachedKey, ret *rete
 		if status == "ok" {
 			valid = append(valid, r)
 			if scope, held := memberString(r.obj, "scope"); held {
-				result.scopes[scope] = true
+				salt, _ := memberString(r.obj, "scopeSalt")
+				result.scopes[scopeNaming{scope: scope, salt: salt}] = true
 			} else {
 				result.noScope = true
 			}

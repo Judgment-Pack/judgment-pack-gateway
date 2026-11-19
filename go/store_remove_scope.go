@@ -308,7 +308,16 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv ed25519.PrivateK
 				continue
 			}
 			sealed++
-			record, line, err := signedSessionRemoval(priv, walk.keys, session, s, o.scope, o.by, stamp())
+			// a seal of version 3 is named over the scope salt the
+			// session's receipts carry (ADR-0042); one that is not the
+			// seal's makes a record that does not name it, refused below
+			var salt string
+			if s.salted {
+				if salt, err = pgSeriesSalt(tx, row, session); err != nil {
+					return failed(err)
+				}
+			}
+			record, line, err := signedSessionRemoval(priv, walk.keys, session, s, o.scope, salt, o.by, stamp())
 			if err != nil {
 				return failed(err)
 			}
@@ -369,6 +378,30 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv ed25519.PrivateK
 	}
 	out.notes = notes
 	return out, nil
+}
+
+// pgSeriesSalt is the scope salt the first receipt of the session carries
+// (ADR-0042), "" where it carries none or the session holds no receipt. It
+// is not judged here: the record made over it is read back as a verifier
+// reads it, and one that does not name the seal is refused.
+func pgSeriesSalt(tx pgTx, row, session string) (string, error) {
+	rows, err := tx.exec(`SELECT data FROM gateway.entries WHERE scope = $1 AND series = $2 ORDER BY name LIMIT 1`, row, session)
+	if err != nil {
+		return "", err
+	}
+	if len(rows.rows) != 1 {
+		return "", nil
+	}
+	v, err := parseJSON(rows.rows[0][0])
+	if err != nil {
+		return "", nil
+	}
+	obj, isObject := v.(*vObject)
+	if !isObject {
+		return "", nil
+	}
+	salt, _ := memberString(obj, "scopeSalt")
+	return salt, nil
 }
 
 // pgScopeHeld reads, with gateway.scope set to row, the scope's series and
