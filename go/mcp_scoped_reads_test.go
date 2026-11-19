@@ -288,3 +288,54 @@ func TestConnectRefusesAnActLiveToolBehindAScopedFront(t *testing.T) {
 		t.Fatal("connect asked an adapter or wrote the file for a platform both starts would refuse")
 	}
 }
+
+// So does connect under the fixed form: a platform fixed to the server's
+// scope identifier, replaced with a binding whose live tools hold an act,
+// is refused before an adapter is asked, and the file is unchanged.
+func TestConnectRefusesAnActLiveToolBehindAFrontFixedToAScope(t *testing.T) {
+	f := newConnectFixture(t, currentPolicyBinding, ``)
+	catalogFile := filepath.Join(f.catalog, "records.json")
+	if err := os.WriteFile(catalogFile, []byte(readsBindingText(t, map[string]ToolTaxonomy{readsReadTool: readsRead})), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req := f.request()
+	req.platform, req.binding = "records", "records"
+	req.credentials = map[string]string{"live": f.credentials}
+	if _, err := connect(context.Background(), req, f.host, f.check); err != nil {
+		t.Fatalf("the read-only binding: %v", err)
+	}
+	keys := abs(t, t.TempDir(), "keys.json")
+	var file map[string]any
+	if err := json.Unmarshal([]byte(f.fileText(t)), &file); err != nil {
+		t.Fatal(err)
+	}
+	platform, ok := file["platforms"].(map[string]any)["records"].(map[string]any)
+	if !ok {
+		t.Fatalf("connect wrote no platform records: %v", file)
+	}
+	platform["scope"] = callerScopeA
+	file["engineVersion"], file["listen"] = "28", "127.0.0.1:8787"
+	file["identity"] = map[string]any{"issuer": "https://login.example", "audience": "gateway:acme", "keys": keys}
+	file["mcp"] = map[string]any{"listen": "127.0.0.1:8788", "resource": "https://engine.test/mcp", "scope": callerScopeA}
+	encoded, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := string(encoded)
+	if err := os.WriteFile(f.config, []byte(config), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadEngineConfig(f.config, stubAccounts(stubUsers)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(catalogFile, []byte(readsBindingText(t, map[string]ToolTaxonomy{readsActTool: readsAct, readsReadTool: readsRead})), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	asked := len(f.asked)
+	req.replace = true
+	_, err = connect(context.Background(), req, f.host, f.check)
+	holdReadsRefusal(t, "connect --replace", err)
+	if len(f.asked) != asked || f.fileText(t) != config {
+		t.Fatal("connect asked an adapter or wrote the file for a platform both starts would refuse")
+	}
+}
