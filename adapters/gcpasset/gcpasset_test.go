@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"adapters/internal/canon"
+	"adapters/internal/metadataclient"
 )
 
 var ctx = context.Background()
@@ -121,6 +122,32 @@ func TestMetadataTokenSource(t *testing.T) {
 	cfg2.Credentials = short
 	if _, err := Acquire(ctx, cfg2, resourceRequest()); !errors.As(err, &failure) || failure.Kind != StatusNoCredential {
 		t.Fatalf("a short sealKey: %v", err)
+	}
+}
+
+// gateway #510: the metadata server is asked with the adapters' shared
+// metadata client, at the link-local IP literal built in, as adapter-http's
+// metadata token step asks it. A metadata server given by a name is refused
+// before anything is dialed or resolved: no request reaches the stand-in,
+// and no token is obtained.
+func TestMetadataServerIsReachedByItsPinnedAddress(t *testing.T) {
+	if endpoints.Metadata != metadataclient.Address {
+		t.Fatalf("the metadata server is %q, not the pinned address", endpoints.Metadata)
+	}
+	f := newFake(t)
+	cfg := f.config(t)
+	cfg.TokenSource, cfg.Credentials = TokenSourceMetadata, sealKeyFile(t)
+	if !strings.HasPrefix(f.metadata.URL, "http://127.0.0.1:") {
+		t.Skipf("the stand-in is not on 127.0.0.1: %s", f.metadata.URL)
+	}
+	endpoints.Metadata = "http://localhost:" + strings.TrimPrefix(f.metadata.URL, "http://127.0.0.1:")
+	_, err := ObtainSealed(ctx, cfg)
+	var failure *TokenFailure
+	if !errors.As(err, &failure) || failure.Kind != StatusNoCredential || err.Error() != "the metadata server could not be reached: no token was obtained" {
+		t.Fatalf("a metadata server given by a name: %v", err)
+	}
+	if got := f.callsTo("/metadata/"); len(got) != 0 {
+		t.Fatalf("a request reached the metadata server by its name: %+v", got)
 	}
 }
 

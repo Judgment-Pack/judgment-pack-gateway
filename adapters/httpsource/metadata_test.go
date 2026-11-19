@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"adapters/internal/metadataclient"
 )
 
 // metadataRequest is what the stand-in metadata server was asked.
@@ -469,7 +471,7 @@ func TestMetadataAddressIsReachedFromNothingTheAdapterIsGiven(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Get(other.URL + metadataIdentityPath); !errors.Is(err, errMetadataAddress) {
+	if _, err := client.Get(other.URL + metadataIdentityPath); !errors.Is(err, metadataclient.ErrAddress) {
 		t.Fatalf("a request to another address: %v", err)
 	}
 	// The step names the audience, and no member names an address.
