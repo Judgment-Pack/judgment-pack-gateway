@@ -32,7 +32,6 @@ package main
 // lock, and the sessions are read from the kind (seal_open_pg.go).
 
 import (
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io"
@@ -193,7 +192,7 @@ func sealOpenJudge(st sealOpenStore, authority string, walk *registryWalk, ret *
 // seals appended, in order, and the refusals; a seal whose append fails ends
 // it, the seals before it standing.
 func sealOpenUnder(st sealOpenStore, authority string, writer *registryWriter, data []byte, session, via string, stamp func() string) ([]*vObject, []string, error) {
-	walk, err := engineWalk(data, writer.priv.Public().(ed25519.PublicKey))
+	walk, err := engineWalk(data, writer.signing.key().public)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -347,6 +346,9 @@ func parseSealOpen(args []string) (sealOpenOptions, string) {
 		}
 		// with the PostgreSQL kind, store and registry are "" and storage
 		// names the kind (seal_open_pg.go)
+		if err := refuseUnderKeyService(cfg, "gateway seal-open"); err != nil {
+			return sealOpenOptions{}, err.Error()
+		}
 		o.store, o.registry, o.authority, o.seedNames, o.storage = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}, cfg.storage
 		// the seed by the name it resolves to as well, as serve --config
 		// looks for a rotation under way beside both

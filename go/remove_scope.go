@@ -111,6 +111,9 @@ func parseRemoveScope(args []string) (removeScopeOptions, string) {
 		if cfg.storage != nil {
 			return removeScopeOptions{}, fmt.Errorf("%w: gateway remove-scope removes the files of a store on disk; on the PostgreSQL kind, gateway store remove-scope removes a scope identifier's rows", errStorageKindUnsupported).Error()
 		}
+		if err := refuseUnderKeyService(cfg, "gateway remove-scope"); err != nil {
+			return removeScopeOptions{}, err.Error()
+		}
 		o.store, o.registry, o.authority, o.seedNames = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}
 		if resolved, err := filepath.EvalSymlinks(cfg.seed); err == nil && resolved != cfg.seed {
 			o.seedNames = append(o.seedNames, resolved)

@@ -358,6 +358,18 @@ var startHook = func() {}
 
 func newGatewayService(storeRoot string, seed []byte, authority, registryPath string,
 	sources map[string]sourceSpec) (*gatewayService, error) {
+	return newGatewayServiceSigned(storeRoot, seed, nil, authority, registryPath, sources)
+}
+
+// newGatewayServiceSigned is newGatewayService signing through sig, the
+// seed's key where it is nil (ADR-0050): the store and the registry share
+// one signer, switched whole by a rotation (registryWriter.rotateTo).
+func newGatewayServiceSigned(storeRoot string, seed []byte, sig signer, authority, registryPath string,
+	sources map[string]sourceSpec) (*gatewayService, error) {
+	var signing *signerHolder
+	if sig != nil {
+		signing = newSignerHolder(sig)
+	}
 	if err := holdSourceForms(sources); err != nil {
 		return nil, err
 	}
@@ -366,7 +378,7 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 	if err := requirePlainSpelling(registryPath, true); err != nil {
 		return nil, err
 	}
-	st, err := newStore(storeRoot, seed, authority)
+	st, err := newStoreWith(storeRoot, seed, signing, authority)
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +386,7 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 	// A registry that is not there is made at start only for a store with
 	// no history (SPEC.md §3), decided by the writer on its own read of the
 	// registry, with the store asked after that read.
-	reg, err := newRegistryWriter(registryPath, seed, func() (bool, error) {
+	reg, err := newRegistryWriterWith(registryPath, seed, st.signing, func() (bool, error) {
 		held, err := os.ReadDir(filepath.Join(storeRoot, "receipts"))
 		if err != nil && !absent(err) {
 			return false, err
@@ -578,7 +590,7 @@ func newServiceAround(st *store, reg *registryWriter, storeRoot, registryPath, a
 // the kind keeps.
 func (g *gatewayService) engineSeals() (map[string]seal, error) {
 	if g.kind == nil {
-		return loadEngineSeals(g.regPath, g.publicKey)
+		return loadEngineSeals(g.regPath, g.ownKey())
 	}
 	w, err := g.kindRegistryWalk()
 	if err != nil {
@@ -598,7 +610,7 @@ func (g *gatewayService) kindRegistryWalk() (*registryWalk, error) {
 	if err != nil {
 		return nil, err
 	}
-	return engineWalk(data, g.publicKey)
+	return engineWalk(data, g.ownKey())
 }
 
 // provenanceKeys is the registry's reached keys for descriptor provenance,
@@ -1406,11 +1418,25 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	// of the bytes returned, and the receipt says nothing was kept (SPEC.md
 	// §1.3a), which only a version 3 receipt can (refused above, before the
 	// source ran).
-	var resultDigest string
-	if spec.notRetained {
-		resultDigest = "sha256:" + digestOfBytes(canon(result))
-	} else if resultDigest, err = st.retain(canon(result)); err != nil {
-		return nil, err
+	//
+	// The digest is of the bytes returned, kept or not, and a payload kept
+	// is retained once the receipt's signature verifies and before the
+	// receipt is written (stampOwningAfter): a receipt the signer does not
+	// sign leaves nothing in the store (ADR-0050).
+	payload := canon(result)
+	resultDigest := "sha256:" + digestOfBytes(payload)
+	retainPayload := func() error {
+		if spec.notRetained {
+			return nil
+		}
+		kept, err := st.retain(payload)
+		if err != nil {
+			return err
+		}
+		if kept != resultDigest {
+			return errors.New("the payload was kept under a digest other than the one its receipt names")
+		}
+		return nil
 	}
 
 	// Keep time and salt draws here, in their original order: the builder
@@ -1468,7 +1494,7 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	if g.beforeStamp != nil {
 		g.beforeStamp()
 	}
-	stored, signature, made, err := st.stampOwning(core)
+	stored, signature, made, err := st.stampOwningAfter(core, retainPayload)
 	if err != nil {
 		return nil, err
 	}
@@ -2205,7 +2231,7 @@ func (g *gatewayService) verifyReport() (*report, error) {
 	if g.kind != nil {
 		return nil, storageUnsupported("/verify, which verifies the store on disk; export the store and verify the export,")
 	}
-	return verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
+	return verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.ownKey())
 }
 
 // verdictMap is a verdict as the JSON object /verify answers.
@@ -2223,8 +2249,8 @@ func verdictMap(rep *report) (map[string]any, error) {
 // auditing this same gateway proves consistency, not authenticity (SPEC.md §5).
 func (g *gatewayService) publicKeyDocument() map[string]any {
 	return map[string]any{
-		"algorithm": "ed25519", "keyId": g.keyID,
-		"publicKey": hex.EncodeToString(g.publicKey), "authority": g.authority,
+		"algorithm": "ed25519", "keyId": g.ownKeyID(),
+		"publicKey": hex.EncodeToString(g.ownKey()), "authority": g.authority,
 	}
 }
 

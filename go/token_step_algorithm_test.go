@@ -27,8 +27,8 @@ func TestTokenStepAssertionAlgorithmIsAVersion34Member(t *testing.T) {
 	head := `"endpoint":"https://login.example/token","clientId":"client-7"`
 	keyed := head + `,"privateKey":"SIGNING_KEY","x5t#S256":"` + s256 + `"`
 
-	if assertionAlgorithmVersion != "34" || engineVersion != assertionAlgorithmVersion {
-		t.Fatalf("assertionAlgorithm is version 34's member, the newest: %q, engine %q", assertionAlgorithmVersion, engineVersion)
+	if assertionAlgorithmVersion != "34" || !versionAtLeast(engineVersion, assertionAlgorithmVersion) {
+		t.Fatalf("assertionAlgorithm is version 34's member: %q, engine %q", assertionAlgorithmVersion, engineVersion)
 	}
 	for _, algorithm := range []string{"RS256", "PS256"} {
 		_, sources, err := load(t, atVersion(t, assertionAlgorithmVersion, catalog, adapters, step(keyed+`,"assertionAlgorithm":"`+algorithm+`"`)))

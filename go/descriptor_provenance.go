@@ -72,11 +72,15 @@ func (s *store) retainDescriptorCapture(data []byte, operation string) (descript
 	if err != nil {
 		return p, err
 	}
+	key := s.signing.key()
 	o := newObject()
-	for k, v := range map[string]string{"statementVersion": "1", "authority": s.authority, "keyId": s.keyID, "source": snap.platform + "/" + operation, "binding": snap.binding, "snapshot": p.snapshot, "endpoint": snap.endpoint, "capturedAt": snap.capturedAt} {
+	for k, v := range map[string]string{"statementVersion": "1", "authority": s.authority, "keyId": key.keyID, "source": snap.platform + "/" + operation, "binding": snap.binding, "snapshot": p.snapshot, "endpoint": snap.endpoint, "capturedAt": snap.capturedAt} {
 		o.set(k, vString(v))
 	}
-	sig := ed25519.Sign(s.private, append([]byte(descriptorStatementContext), canon(o)...))
+	sig, err := key.signVerified(append([]byte(descriptorStatementContext), canon(o)...))
+	if err != nil {
+		return p, err
+	}
 	o.set("signature", vString(hex.EncodeToString(sig)))
 	raw := canon(o)
 	if len(raw) > maxDescriptorStatementBytes {
@@ -155,6 +159,9 @@ func retainConnectedCapture(cfg engineConfig, data []byte, operation string) (de
 	// the capture is retained in the store on disk, which another kind
 	// keeping the store has none of: never in a directory "" names
 	if err := refuseUnderPostgreSQL(cfg, connectCaptureUnsupported); err != nil {
+		return descriptorProvenance{}, err
+	}
+	if err := refuseUnderKeyService(cfg, "gateway connect's descriptor capture"); err != nil {
 		return descriptorProvenance{}, err
 	}
 	seed, err := loadSeed(cfg.seed)

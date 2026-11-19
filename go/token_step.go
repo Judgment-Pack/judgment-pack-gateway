@@ -69,9 +69,20 @@ const delegatedTokenVersion = "33"
 
 // assertionAlgorithmVersion is the engine configuration version that admits
 // tokenStep.assertionAlgorithm (ADR-0027, amendment #513): 34, the version
-// after the delegated subject (33, ADR-0045). engine.go reads this constant
-// as the newest version.
+// after the delegated subject (33, ADR-0045).
 const assertionAlgorithmVersion = "34"
+
+// keyServiceSignerVersion is the engine configuration version that admits
+// signingKeyVersion (ADR-0050): 36. Version 35 is reserved
+// (reservedEngineVersions) for the receipt forwarding hook (#505,
+// ADR-0049), built beside this change: whichever merges second is
+// renumbered here alone. engine.go reads this constant as the newest
+// version.
+const keyServiceSignerVersion = "36"
+
+// reservedEngineVersions are versions a change not yet merged takes: none
+// is read, and the newest version counts them.
+var reservedEngineVersions = map[string]string{"35": "the receipt forwarding hook (#505, ADR-0049)"}
 
 // assertionAlgorithms are tokenStep.assertionAlgorithm's values: the two an
 // RSA key signs. ES256 is not one: a P-256 key gives it, and nothing else

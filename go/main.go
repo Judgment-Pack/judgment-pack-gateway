@@ -357,7 +357,7 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 	if err := holdServedWitnesses(seed, opts); err != nil {
 		return nil, err
 	}
-	service, err := newGatewayService(storeRoot, seed, authority, registryPath, opts.sources)
+	service, err := newGatewayServiceSigned(storeRoot, seed, opts.signer, authority, registryPath, opts.sources)
 	if err != nil {
 		return nil, err
 	}
@@ -388,6 +388,9 @@ func holdServedWitnesses(seed []byte, opts serveOptions) error {
 			return fmt.Errorf("seed is not %d bytes", ed25519.SeedSize)
 		}
 		own := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+		if opts.signer != nil {
+			own = opts.signer.publicKey()
+		}
 		if err := holdWitnessedBy(opts.witnessedBy, own, opts.receiptVersion); err != nil {
 			return err
 		}
@@ -514,6 +517,19 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	// signingKeyVersion (ADR-0050): the key service's public key read once,
+	// and checked, before anything is made; the registry's walk is held to
+	// end at it below, as at the seed's
+	var keyService signer
+	if cfg.signingKeyVersion != "" {
+		ks, line, err := newKeyServiceSigner(cfg.signingKeyVersion)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "start:", err)
+			return 1
+		}
+		fmt.Fprintln(os.Stderr, "start:", line)
+		keyService = ks
+	}
 	if cfg.storage != nil {
 		return serveEngineOnKind(cfg, seed, sources, identity, delegation)
 	}
@@ -540,7 +556,9 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	defer storeHold.Close()
-	service, err := buildService(cfg.store, seed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources, identity))
+	served := engineServeOptions(cfg, sources, identity)
+	served.signer = keyService
+	service, err := buildService(cfg.store, seed, cfg.authority, cfg.registry, served)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
@@ -551,7 +569,7 @@ func cmdServeEngine(args []string) int {
 	}
 	// held while the engine runs, so gateway rotate-key refuses; a rotation
 	// begun since the check above is refused under it (SPEC.md §3b)
-	registryHold, err := holdEngineRegistry(seedNames, cfg.registry, seed)
+	registryHold, err := holdEngineRegistryKey(seedNames, cfg.registry, service.store.publicKey)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
@@ -878,6 +896,8 @@ func readSeedFile(path string) ([]byte, error) {
 }
 
 type serveOptions struct {
+	// signer signs in place of the seed's key where it is not nil (ADR-0050)
+	signer           signer
 	requireActionKey bool
 	sources          map[string]sourceSpec
 	port             string

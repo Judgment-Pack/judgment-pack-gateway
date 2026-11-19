@@ -142,6 +142,9 @@ func exportEngine(configPath, out string, observations []string, scope string) (
 		}
 		cfg.storage.file = resolved
 	}
+	if err := refuseUnderKeyService(cfg, "gateway export"); err != nil {
+		return nil, err
+	}
 	seed, err := loadSeed(cfg.seed)
 	if err != nil {
 		return nil, fmt.Errorf("seed: %v", err)

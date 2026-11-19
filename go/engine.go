@@ -113,9 +113,9 @@ import (
 // earlier version, and a file without it signs as before. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
 // were; it never lowers a configuration version, and it raises none to 31, 32, 33 or 34.
-const engineVersion = assertionAlgorithmVersion
+const engineVersion = keyServiceSignerVersion
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, keyServiceSignerVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -139,21 +139,24 @@ type engineConfig struct {
 	configPath string // internal path for approval-bound adapter snapshot arguments
 	sandbox    *engineSandbox
 
-	authority       string
-	seed            string
-	store           string
-	registry        string
-	decisionRecords string
-	listen          string
-	catalog         string
-	runtime         string
-	adapters        string
-	rootSigner      bool
-	hostRuntime     bool
-	identity        *identitySpec    // who may call; nil records caller null
-	platforms       []platformConfig // in name order
-	version         string
-	mcp             *mcpConfig // the MCP server's own settings; nil when the configuration has none
+	authority string
+	seed      string
+	// signingKeyVersion names the key service's key version that signs in
+	// place of the seed's key (ADR-0050); "" where the seed signs
+	signingKeyVersion string
+	store             string
+	registry          string
+	decisionRecords   string
+	listen            string
+	catalog           string
+	runtime           string
+	adapters          string
+	rootSigner        bool
+	hostRuntime       bool
+	identity          *identitySpec    // who may call; nil records caller null
+	platforms         []platformConfig // in name order
+	version           string
+	mcp               *mcpConfig // the MCP server's own settings; nil when the configuration has none
 	// witness makes the signer a checkpoint witness (ADR-0013); nil when the
 	// configuration has none.
 	witness *witnessSpec
@@ -403,7 +406,7 @@ var engineMembers = map[string]bool{
 	"decisionRecords": true, "listen": true, "catalog": true, "platforms": true,
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
 	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
-	"sealOpenAtStart": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
+	"sealOpenAtStart": false, "signingKeyVersion": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
 }
 
 var platformMembers = map[string]bool{
@@ -837,6 +840,25 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	}
 	if err := storageRefusals(&cfg); err != nil {
 		return engineConfig{}, fmt.Errorf("engine configuration: %w", err)
+	}
+	// signingKeyVersion (ADR-0050): one key version's resource name, of its
+	// closed form, from keyServiceSignerVersion; not yet beside storage or a
+	// witness, which sign or name the seed's key
+	if keyValue, present := obj.get("signingKeyVersion"); present {
+		if !versionAtLeast(version, keyServiceSignerVersion) {
+			return engineConfig{}, fmt.Errorf("engine configuration: signingKeyVersion is a version-%s member; engineVersion %s has no signingKeyVersion", keyServiceSignerVersion, version)
+		}
+		named, ok := keyValue.(vString)
+		if !ok || !keyVersionForm.MatchString(string(named)) {
+			return engineConfig{}, fmt.Errorf("engine configuration: signingKeyVersion is one key version's resource name, %s", keyVersionFormText)
+		}
+		if cfg.storage != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: signingKeyVersion is not yet taken beside storage: on the %s kind the start lease names the seed's key (ADR-0050)", storagePostgreSQL)
+		}
+		if cfg.witness != nil {
+			return engineConfig{}, errors.New("engine configuration: signingKeyVersion is not yet taken beside witness, whose checkpoints the seed's key signs (ADR-0050)")
+		}
+		cfg.signingKeyVersion = string(named)
 	}
 	return cfg, nil
 }
