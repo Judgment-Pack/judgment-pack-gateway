@@ -304,7 +304,8 @@ func TestConnectRefusesAnActLiveToolBehindAFrontFixedToAScope(t *testing.T) {
 	if _, err := connect(context.Background(), req, f.host, f.check); err != nil {
 		t.Fatalf("the read-only binding: %v", err)
 	}
-	keys := abs(t, t.TempDir(), "keys.json")
+	// json.Marshal escapes the path itself: abs's doubled backslashes are for text.
+	keys := filepath.Join(t.TempDir(), "keys.json")
 	var file map[string]any
 	if err := json.Unmarshal([]byte(f.fileText(t)), &file); err != nil {
 		t.Fatal(err)
