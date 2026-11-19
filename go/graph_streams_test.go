@@ -82,10 +82,16 @@ func TestGraphStreamsFixturesAreReadThroughTheShippedBinding(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		status := http.StatusOK
 		if st, err := os.ReadFile(filepath.Join("..", "testdata", "microsoft-graph-streams", strings.TrimSuffix(file, ".json")+".status")); err == nil {
+			// a checkout may end each line with CRLF: trim every line
 			lines := strings.Split(strings.TrimSpace(string(st)), "\n")
-			status, _ = strconv.Atoi(lines[0])
+			code, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+			if err != nil || code < 100 || code > 599 {
+				http.Error(w, "fixture status unreadable: "+file, http.StatusTeapot)
+				return
+			}
+			status = code
 			for _, l := range lines[1:] {
-				k, v, _ := strings.Cut(l, ": ")
+				k, v, _ := strings.Cut(strings.TrimSpace(l), ": ")
 				w.Header().Set(k, v)
 			}
 		}
