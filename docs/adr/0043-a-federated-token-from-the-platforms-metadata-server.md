@@ -66,7 +66,9 @@ gains nothing but reach on IPv6-only compute (below).
    identifiers, and excludes `&`, `=`, `?`, `#`, `%`, a space and every control character. The
    engine holds it at load and the adapter holds it again. The query is then built by form
    encoding, so the audience is percent-encoded whatever it holds. A refusal repeats no value.
-3. **The address.** `GET http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/identity?audience=<encoded>&format=full`
+3. **The address.** The metadata server asked is the Google Cloud metadata server
+   (`Metadata-Flavor: Google`, `/computeMetadata/v1`):
+   `GET http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/identity?audience=<encoded>&format=full`
    with `Metadata-Flavor: Google`. The address is the IP literal, so no resolver is asked. It is
    link-local (RFC 3927): a router does not forward it, so the request does not leave the host's
    link. The platform documents it as fixed on its compute and serverless runtimes. No proxy from
@@ -74,7 +76,9 @@ gains nothing but reach on IPv6-only compute (below).
    variable is read: the platform's client libraries take one that names another host, and this
    path takes none. The connection is dialed to that address and port alone. It is plain http,
    as the platform serves it. What holds the answer to the platform is the address and the
-   flavor header, not TLS. The address is a variable of the adapter's package that only that
+   flavor header, not TLS. Off a cloud host, anything on the link can answer at that address
+   with the header and a well-formed token. Only the token endpoint's verification of that
+   token stops it. The audience, which is not secret, reaches whatever answers there. The address is a variable of the adapter's package that only that
    package's tests set, to a local stand-in. No configuration, flag or environment variable
    reaches it.
 4. **The answer.** It must carry `Metadata-Flavor: Google`, exactly once. That is checked before

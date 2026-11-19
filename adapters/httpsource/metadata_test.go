@@ -288,6 +288,31 @@ func TestMetadataAnswerIsBoundedTo16KiB(t *testing.T) {
 	}
 }
 
+// The answer's header block is bounded to 64 KiB, as a source's answer is.
+// An answer whose header exceeds it fails the request before its flavor,
+// status or body is read, even though it carries the flavor header and an
+// identity token of the audience. It is refused as not reached, and no
+// token is requested.
+func TestMetadataAnswerHeaderIsBoundedTo64KiB(t *testing.T) {
+	const audience = "api://records-reader"
+	stub := newTokenStub(t, nil)
+	identity := identityFor(t, audience, time.Now().Add(time.Hour), "s")
+	stub.federated = func() string { return identity }
+	meta := newMetadataStub(t, func() string { return identity })
+	meta.answerWith(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Metadata-Flavor", "Google")
+		w.Header().Set("X-Padding", strings.Repeat("p", maxHeaderBytes))
+		io.WriteString(w, identity)
+	})
+	cfg := metadataConfig(t, stub, audience)
+	if _, err := ObtainSealed(context.Background(), cfg); !refusedWith(err, "could not be reached in time") {
+		t.Fatalf("an answer whose header exceeds 64 KiB: %v", err)
+	}
+	if meta.hits.Load() != 1 || stub.tokenHits.Load() != 0 {
+		t.Fatalf("an answer whose header exceeds 64 KiB: %d metadata requests, %d token requests", meta.hits.Load(), stub.tokenHits.Load())
+	}
+}
+
 // Each token request asks the metadata server anew, and an identity token
 // is presented only while more than 60 seconds remain before its exp: one
 // that lapses within them is refused, and the renewed one is the next
