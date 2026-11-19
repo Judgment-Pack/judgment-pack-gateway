@@ -772,8 +772,12 @@ scope identifier seals that identifier's sessions alone. So none of those answer
 another scope's sources, platforms or sessions. One disclosure is left: the session namespace
 is the gateway's. A caller that names a session another scope identifier (or none) uses is
 refused, where an unused name is accepted, so it learns the name is in use, though not by which
-scope, nor anything the session holds. Session ids that must not be guessed carry at least 128
-bits of randomness.
+scope, nor anything the session holds. `/seal` tells the same by its time even where its answer
+is the same bytes: a session this process holds is answered without a read, and an unused name
+after reading the registry and the store. Session ids that must not be guessed carry at least 128
+bits of randomness. One `/seal` answer is shared by every scope: a session another process
+sealed in the registry is said to be sealed to any caller, a front fixed to another scope
+identifier included, since `/registry` shows that seal to anyone.
 
 **A checkpoint witness is reached from other hosts by other parties** ([ADR-0013](docs/adr/0013-checkpoint-witness.md);
 [`SPEC.md`](SPEC.md) §6, "Witness endpoints"). It is the first surface of this reference meant

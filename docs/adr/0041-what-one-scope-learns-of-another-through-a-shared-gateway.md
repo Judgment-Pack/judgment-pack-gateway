@@ -99,9 +99,10 @@ The session namespace:
      whole bound is (a)'s start step. Without (a)'s per-caller step, a caller reaching two scopes
      could be sent more than 8 MiB.
    - **Why not (c).** It leaves the disclosure.
-   - **What a caller is listed.** A caller of one scope identifier is listed what a server fixed
-     to it lists. Of a group's every tool, the listing is the group's own, since a group keeps
-     the longest run from its start that fits.
+   - **What a caller is listed.** Of a group's every tool, and no other, the listing is the
+     group's own, since a group keeps the longest run from its start that fits.
+   - **Memory.** The server holds each group's described entries, up to 8 MiB a group: up to
+     (the number of scope identifiers + 1) × 8 MiB in all, with no cap of its own.
    - **Other forms.** The fixed form and a server with no scoped platform have one group, so
      their listing is the one they had.
 
@@ -116,6 +117,14 @@ The session namespace:
    A front fixed to a scope identifier names it on every seal it forwards. The caller form names
    none, since its seal tool takes a session and no platform. Option (b) is not taken, because a
    front restart would leave sessions it opened unsealable through it.
+
+   One answer stays as it was, by SPEC §6 and ADR-0037 (decision 3): a session this process
+   does not hold that is sealed in the registry is said to be sealed (`session is sealed in the
+   registry: <id>`) to every caller, whatever scope the request names, a front fixed to another
+   scope identifier included. The registry is read before the reach is checked. `/registry`
+   serves that seal to anyone, so the answer tells B nothing it cannot read there: that the id
+   is sealed, not of which scope. It is the one `/seal` answer a session of another scope does
+   not share with an unused name.
 
 3. **`/posture`: judged over the sources the caller reaches.** Served to a caller that does not
    reach every source, `hostPosture` takes the configured sources cut to that reach, once, and
@@ -154,6 +163,13 @@ The session namespace:
    asks of scope identifiers that must not be guessed. The MCP front's own session names
    (`randomSessionName`) already carry 128.
 
+   The time of an answer tells the same, and no more. `/seal` answers a session of another scope
+   that this process holds from its map, under the lock, with no read. For a name it does not
+   hold, it reads the registry and the store first. So a caller can tell the two by timing even
+   where the bytes are the same. Equal reads are not taken here: a name in use and an unused one
+   read different things from the store whatever is done, and the disclosure is the one above,
+   which `/acquire` already gives.
+
 ## Consequences
 
 - Good, because a caller of B gets the same listing bytes, `/seal` answers and `/posture` report
@@ -162,13 +178,15 @@ The session namespace:
   sealing only that scope's sessions, with no state of its own to lose on a restart.
 - Good, because the installation's caller and the unscoped forms are answered as before.
 - Bad, because a server in the caller form holds up to 8 MiB of described entries per group,
-  not 8 MiB in all, so its memory grows with the number of scope identifiers that pin snapshots.
+  up to (the number of scope identifiers + 1) × 8 MiB in all, with no cap of its own.
 - Bad, because a caller reaching several scopes can be listed fewer descriptions than each scope
   alone is. The start names only what each group dropped, not what a caller of several is not
   served.
 - Bad, because one `/posture` no longer shows a scoped caller the state of the whole gateway.
   The installation's caller, or `gateway posture` on the host, reads that.
-- Bad, because a session name in use by another scope is still told apart from an unused one.
+- Bad, because a session name in use by another scope is still told apart from an unused one,
+  by `/acquire`'s refusal and by the time `/seal` takes; and a session of another scope sealed in
+  the registry by another process is said to be sealed, as `/registry` shows anyone.
 - Revisit when per-scope seals and verification (#478) land: the session namespace can then be
   made per scope, with the store layout and its upgrade.
 

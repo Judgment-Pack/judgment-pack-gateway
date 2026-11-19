@@ -2190,7 +2190,9 @@ scope identifier ([ADR-0038](../adr/0038-the-mcp-server-on-platforms-fixed-to-a-
   `--stdio`.
 - `scopeFrom`, the string `"caller"`: the server serves every platform, and each forward names
   its tool's platform's scope identifier, or none for a platform of none. It needs `identity`
-  with `callerScopes` checked, and runs over `--http` alone.
+  with `callerScopes` checked, and runs over `--http` alone. Its listing is bounded per scope
+  identifier (ADR-0041), so it holds up to (the number of scope identifiers + 1) × 8 MiB of
+  described tool entries, with no cap of its own.
 
 In both, a caller is listed, and may call, only the tools of the sources its token reaches
 ("Caller scope identifiers (engine version 27)", above); any other tool is answered as one the

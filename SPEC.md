@@ -2064,7 +2064,8 @@ not granted is still refused `401`, and the start and `/posture` say so.
   session of that scope identifier, and only where the caller reaches it: a session of another
   scope identifier, or of none, is answered `no such session: <id>` in the same way, whoever
   asks (`docs/adr/0041-what-one-scope-learns-of-another-through-a-shared-gateway.md`). A
-  session sealed in the registry is said to be so, as `/registry` serves its seal to anyone.
+  session this process does not hold that is sealed in the registry is said to be so to every
+  caller, whatever scope the request names, as `/registry` serves its seal to anyone.
   An `/acquire` into a session whose receipts are of a scope other than the source's is
   refused `400` with that refusal's sentence, whatever else the session holds.
 - `/verify`: served to a caller that reaches every source, and, where no source is fixed to a

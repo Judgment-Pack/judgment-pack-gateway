@@ -2097,8 +2097,9 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 // where the store cannot say the session's scope. A request that names a
 // scope identifier comes here with the reach narrowed to it (narrowedTo), so
 // a session of another scope, or of none, is answered so too, whoever asks.
-// A seal in the registry is said to be one: /registry serves every seal to
-// anyone.
+// A seal in the registry of a session this process does not hold is said to
+// be one to every caller, whatever scope the request names: /registry serves
+// every seal to anyone (SPEC.md §6; ADR-0037, decision 3; kept by ADR-0041).
 func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err}
