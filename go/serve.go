@@ -2713,9 +2713,10 @@ func (g *gatewayService) handler() http.Handler {
 		in := postureInput{configured: true, seed: g.seedPath, sources: g.sources, public: true,
 			listener:     listenerReach{loopback: boundToLoopback(g.listening), authenticated: g.identity != nil},
 			callerScopes: callerScopesMode(g.identity)}
-		// With caller scopes checked, programs names only the sources the
-		// caller reaches (ADR-0037); the installation's caller, "unchecked"
-		// and no identity reach every source and read every one, as before.
+		// With caller scopes checked, the report is of the sources the
+		// caller reaches alone, every line judged over them (ADR-0037,
+		// ADR-0041); the installation's caller, "unchecked" and no identity
+		// reach every source and read every one, as before.
 		if reach := g.reachOf(who); !reach.every {
 			in.reach = &reach
 		}

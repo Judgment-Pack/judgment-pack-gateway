@@ -744,9 +744,12 @@ func describeGCPAssetCheck(report []byte, spec sourceSpec) (string, error) {
 // "What the engine reports: /posture").
 const protectionReadOnlyCredentials = "read-only-credentials"
 
-// readOnlyCredentialsLines is the line a configuration with some gcp-asset
-// source adds, its state judged over all of them, as every protection
-// line is, and naming none: enforced where every one serves IAM_POLICY, so
+// readOnlyCredentialsLines is the line the gcp-asset sources add, where
+// there is one, its state judged over all of them and naming none -- in a
+// report served to a caller held to scope identifiers, the sources are the
+// ones its token reaches (hostPosture, ADR-0041), so neither the state nor a
+// count changes with another scope identifier's sources, nor with whether one
+// of them was refused: enforced where every one serves IAM_POLICY, so
 // the bindings of its own principal at a resource are checked on every
 // IAM_POLICY page read; partial where some serve none, whose resource
 // bindings are unchecked. Every one is checked at the start and with every
@@ -755,13 +758,11 @@ const protectionReadOnlyCredentials = "read-only-credentials"
 // allAuthenticatedUsers, not one through a group, whose membership no
 // read-only call resolves -- unless the source opts in to groups
 // (gcp_asset_groups.go): the state is partial too while any source has
-// groupBindings "unchecked", and "off" changes nothing. Its counts -- the
-// sources, those serving IAM_POLICY, those resolving groups and of those
-// the ones unchecked, those closed -- are of the sources the reach takes,
-// every one where it is nil: how many sources other scopes hold, and
-// whether one was refused, is not the caller's to learn. Where no source
-// it reaches resolves groups its text is as before.
-func readOnlyCredentialsLines(sources map[string]sourceSpec, reach *scopeReach) []postureLine {
+// groupBindings "unchecked", and "off" changes nothing. Its counts are the
+// sources, those serving IAM_POLICY, those resolving groups and of those the
+// ones unchecked, and those closed. Where no source resolves groups its text
+// is as before.
+func readOnlyCredentialsLines(sources map[string]sourceSpec) []postureLine {
 	names := gcpAssetSourceNames(sources)
 	if len(names) == 0 {
 		return nil
@@ -774,9 +775,6 @@ func readOnlyCredentialsLines(sources map[string]sourceSpec, reach *scopeReach) 
 		servingAll = servingAll && iamPolicy
 		groups, _, _ := s.groupBindings()
 		groupsChecked = groupsChecked && groups != groupBindingsUnchecked
-		if reach != nil && !reach.holds(sources[name].scope) {
-			continue
-		}
 		reached++
 		if iamPolicy {
 			checked++
@@ -822,15 +820,13 @@ type readOnlySourcePosture struct {
 	groupsUnresolved                                                   int
 }
 
-// readOnlySourcePostures are the gcp-asset sources the reach takes, every
-// one where it is nil, in name order.
-func readOnlySourcePostures(sources map[string]sourceSpec, reach *scopeReach) []readOnlySourcePosture {
+// readOnlySourcePostures are the gcp-asset sources, in name order -- in a
+// report served to a caller held to scope identifiers, those its token
+// reaches (hostPosture).
+func readOnlySourcePostures(sources map[string]sourceSpec) []readOnlySourcePosture {
 	var out []readOnlySourcePosture
 	for _, name := range gcpAssetSourceNames(sources) {
 		spec := sources[name]
-		if reach != nil && !reach.holds(spec.scope) {
-			continue
-		}
 		s := spec.gcpAsset
 		p := readOnlySourcePosture{source: name, tokenSource: s.tokenSource, writeCheck: "not-run", state: "not-started",
 			artifact: artifactNotRetained, resourceBindings: "unchecked"}

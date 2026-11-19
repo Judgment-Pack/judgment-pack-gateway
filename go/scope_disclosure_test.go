@@ -98,3 +98,50 @@ func TestASealNamingAScopeIsRefusedWhereNoSourceIsScoped(t *testing.T) {
 		t.Fatalf("%d %s", code, raw)
 	}
 }
+
+// /posture served to a caller of scope B is judged over B's sources alone
+// (ADR-0041): with scope A's sources -- a platform a delegated call reaches
+// that names no grant, a write tool no writeRequesters list holds, a
+// read-only source closed on a refusal and serving no IAM_POLICY, a program
+// run as the signer's own user -- or without them, every line, every count,
+// programs and readOnlySources are the same bytes. The installation's report
+// changes with them, so A's sources are ones a line is judged over.
+func TestPostureOfOneScopeIsTheSameWhateverAnotherScopeHolds(t *testing.T) {
+	closed := newGCPAssetSource(gcpStandInOp, gcpAssetTokenMetadata, false)
+	closed.closed = &readOnlyRefusal{reason: refusalCredentialCanWrite, on: "refresh"}
+	iamOp := gcpStandInOp
+	iamOp.contentTypes = []string{"RESOURCE", "IAM_POLICY"}
+	gate := &grantGate{provider: "azure-devops", connection: "boards"}
+	ofB := map[string]sourceSpec{
+		"b-crm/live":     {shape: "mcp", scope: callerScopeB, tools: []string{"query"}, grant: gate},
+		"b-crm/write":    {shape: "mcp", scope: callerScopeB, tools: []string{"update"}, grant: gate, requesters: &writeRequesters{platform: map[requesterRef]bool{}}},
+		"b-assets/live":  {shape: "http", scope: callerScopeB, gcpAsset: newGCPAssetSource(iamOp, gcpAssetTokenMetadata, false)},
+		"b-program/live": {argv: []string{"/nonexistent/b-program"}, user: "engine-b", scope: callerScopeB},
+	}
+	withA := map[string]sourceSpec{
+		"a-crm/live":     {shape: "mcp", scope: callerScopeA, tools: []string{"query"}},
+		"a-crm/write":    {shape: "mcp", scope: callerScopeA, tools: []string{"update", "close"}, requesters: &writeRequesters{}},
+		"a-assets/live":  {shape: "http", scope: callerScopeA, gcpAsset: closed},
+		"a-program/live": {argv: []string{"/nonexistent/a-program"}, scope: callerScopeA},
+	}
+	for name, spec := range ofB {
+		withA[name] = spec
+	}
+	report := func(sources map[string]sourceSpec, reach *scopeReach) []byte {
+		return hostPosture(postureInput{configured: true, sources: sources, reach: reach,
+			delegation: &delegationPosture{}, callerScopes: "checked"}).canonical()
+	}
+	b := &scopeReach{ids: map[string]bool{callerScopeB: true}}
+	got, alone := report(withA, b), report(ofB, b)
+	if !bytes.Equal(got, alone) {
+		t.Fatalf("B's report changes with A's sources:\n%s\n%s", got, alone)
+	}
+	for _, name := range []string{"a-crm", "a-assets", "a-program"} {
+		if bytes.Contains(got, []byte(name)) {
+			t.Errorf("B's report names %s: %s", name, got)
+		}
+	}
+	if bytes.Equal(report(withA, nil), report(ofB, nil)) {
+		t.Fatal("the installation's report is the same with and without A's sources, so the test shows nothing")
+	}
+}

@@ -2082,6 +2082,18 @@ not granted is still refused `401`, and the start and `/posture` say so.
   hidden, scope identifiers are chosen with at least 128 bits of entropy (for instance 22 or
   more characters drawn at random from a 64-character alphabet), and a name a person reads is
   kept outside the identifier.
+- `/posture`: served to a caller that does not reach every source, the report is of the sources
+  it reaches alone: `programs` and `readOnlySources` list only them, and every protection line is
+  judged over them, its state, its counts and the sources or platforms it names, so the report
+  is the same, byte for byte, whether or not the sources of a scope identifier the caller does
+  not reach exist, and whatever they hold
+  (`docs/adr/0041-what-one-scope-learns-of-another-through-a-shared-gateway.md`). Where the
+  caller reaches no source, the line of who runs the sources says the caller's token reaches
+  none, and where it reaches none fixed to a scope identifier, `caller-scope-identifiers` says
+  so of the sources it reaches. The lines that are not of the sources (the seed, custody, the
+  listener, the descendants' probe, the delegation's narrowing and sender constraint) are the
+  same for every caller. The installation's caller, `"unchecked"` and a gateway without
+  `identity` are given the report of every source.
 
 The receipt's `caller` is the caller as before; the claim is not recorded, the receipt's
 `scope` being the identifier the request was held to. A scoped caller's subject and issuer are
@@ -3836,7 +3848,9 @@ shape, the calls that name a tool; a platform's other sources are not counted. T
 that do; `not-applicable` when none does, or none is reached, since the delegation then serves no
 call. Its reason names each platform reached that names no grant, sorted, at most five and the
 rest counted, as refusing every delegated call `grant-unknown` until it names one: such a
-platform is refused, never open, so the line is never `not-enforced`. A gateway without
+platform is refused, never open, so the line is never `not-enforced`. Served to a caller that
+does not reach every source, the line is judged over the sources it reaches (§6, `/posture`), so
+a platform of another scope identifier is neither counted nor named. A gateway without
 `delegation` reports none of the three lines, and its posture is the one it was.
 
 ### 11.10 Definitions and departures
