@@ -96,7 +96,7 @@ func TestExportHoldsTheConnectionFileThroughALink(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Chdir(base)
-	_, err = exportEngine(config, filepath.Join(base, "export"), nil)
+	_, err = exportEngine(config, filepath.Join(base, "export"), nil, "")
 	if err == nil || !strings.HasPrefix(err.Error(), "storage.connection.file: ") || strings.Contains(err.Error(), "synthetic") {
 		t.Fatalf("a connection file linked into a directory others may write in: %v", err)
 	}

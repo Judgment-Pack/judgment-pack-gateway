@@ -1,0 +1,53 @@
+{
+  "name": "v3-cut-a-salted-seal-no-receipt-matches",
+  "note": "s1 of scope-a, sealed by a seal of version 3; s2, its receipts carrying scope-b over one salt, sealed by a seal of version 3 taken over another salt. A seal of version 3 is attributed to another scope only where a receipt's scope and salt digest to it; none of s2's does, so its seal may name scope-a: the cut by --scope scope-a names s2 unattributed, reports its findings, seal-scope-mismatch among them, and is not ok.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+    "receipts/s1/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"scope\":\"scope-a\",\"scopeSalt\":\"6d88bffd12059d7b737f0ac69c72478ee534f807c1d57705574b1ea969e32b63\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"2c03d83c5c1b583e1ab5ee005f84199d2fe9debf77f2be67d7a0b92fc541986193c19661aaa8c771624cc32ea66a08ab98c3e405058b9c0dd58fdbe2252fc90c\",\"source\":\"corpus\"}\n",
+    "receipts/s1/1.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":\"2c03d83c5c1b583e1ab5ee005f84199d2fe9debf77f2be67d7a0b92fc541986193c19661aaa8c771624cc32ea66a08ab98c3e405058b9c0dd58fdbe2252fc90c\",\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"scope\":\"scope-a\",\"scopeSalt\":\"6d88bffd12059d7b737f0ac69c72478ee534f807c1d57705574b1ea969e32b63\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"33db539f02e9909648d46da7066dfc2412dd22c51ead5cc6f7684f641ea38e1ad5a9581c5efdecd52c4904b0fb24b6da2a94ec226af6fd835d36bf010418fd0d\",\"source\":\"corpus\"}\n",
+    "receipts/s2/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"scope\":\"scope-b\",\"scopeSalt\":\"62261c0bc74e002706c4a1c21f13a89ef2ccf4f718a66d28ef9b16b42325a513\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"e0b887fa86b65e8336fbc6b4eb7953c75849aa6eb2304c0ebd24d6a7a315b20b41fb29e4f368b712fa444f1e2b6d159381bb1f9a7f9eb678baba6081e7e1ec06\",\"source\":\"corpus\"}\n",
+    "receipts/s2/1.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":\"e0b887fa86b65e8336fbc6b4eb7953c75849aa6eb2304c0ebd24d6a7a315b20b41fb29e4f368b712fa444f1e2b6d159381bb1f9a7f9eb678baba6081e7e1ec06\",\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"scope\":\"scope-b\",\"scopeSalt\":\"62261c0bc74e002706c4a1c21f13a89ef2ccf4f718a66d28ef9b16b42325a513\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"6b4987abc35d777a7c4fe1b49e342f37c76ebba17c1a619f65803078f6382b293256a4fd53a677b5a20f978ceb270daae36a3f58a41c2d7080e1ea368537e70b\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"scopeDigest\":\"sha256:b3fc80f054d33c995d825b71c562fa16387085919a72c710cce56ad26960d4c0\",\"sealVersion\":\"3\",\"sealedAt\":\"2026-11-18T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"b02a0ca41853297cea3cbf021e81cc66838a84c0269fdf61257574446ae86a06df087f2fb2fe24b92f19e6825b61ab650dc0b6931cf1d203f65b755253992e08\"}\n{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"scopeDigest\":\"sha256:c9589903947ed1612cc96621214c47f4233ae3ea8d3b4c6fd8d6594e46773102\",\"sealVersion\":\"3\",\"sealedAt\":\"2026-11-18T00:00:01Z\",\"sessionId\":\"s2\",\"signature\":\"b928a58f0638a49cc50eef6c100393bd1e849f42549466054a159898af83f097ff9f48b4c26612d9c8d2946ed5fa2192a86b36f72425b25c3069c094ff92d305\"}\n",
+  "scope": "scope-a",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s1",
+        "status": "ok"
+      },
+      {
+        "callIndex": 1,
+        "sessionId": "s1",
+        "status": "ok"
+      },
+      {
+        "callIndex": 0,
+        "sessionId": "s2",
+        "status": "ok"
+      },
+      {
+        "callIndex": 1,
+        "sessionId": "s2",
+        "status": "ok"
+      },
+      {
+        "sessionId": "s2",
+        "status": "seal-scope-mismatch"
+      }
+    ],
+    "observations": [],
+    "cut": {
+      "scope": "scope-a",
+      "sessions": [
+        "s1"
+      ],
+      "unattributed": [
+        "s2"
+      ]
+    }
+  }
+}

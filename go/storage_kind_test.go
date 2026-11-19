@@ -711,7 +711,7 @@ func TestThePostgresKindServesAndExportsWithTheConnectionStringInNoOutput(t *tes
 	// directory an export could be inside of, and "" is never taken for one
 	t.Chdir(dir)
 	out := filepath.Join(dir, "export")
-	summary, err := exportEngine(config, out, nil)
+	summary, err := exportEngine(config, out, nil, "")
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}

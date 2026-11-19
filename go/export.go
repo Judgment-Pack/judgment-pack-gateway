@@ -35,9 +35,14 @@ import (
 
 const exportUsage = `usage:
   gateway export --config <engine.json> --out <dir> [--observations <file>]...
+  gateway export --config <engine.json> --out <dir> --scope <identifier>
   gateway export --check <dir>
 --out is a directory that is not there yet; --observations names a journal
 the connection custody exported (gateway-connections --export-observations).
+--scope cuts the export by one scope identifier: the sessions shown to be of
+it, the registry's rotations and their seals, and the removal records of
+them; it is refused, by name, where a session cannot be attributed or
+holds receipts of another scope or of none.
 --check holds an export, or a restore of one, to its manifest.`
 
 const (
@@ -53,7 +58,7 @@ const (
 var maxExportManifestBytes = 1 << 30
 
 func cmdExport(args []string, stdout, stderr io.Writer) int {
-	var config, out, check string
+	var config, out, check, scope string
 	var observations []string
 	for rest := args; len(rest) > 0; rest = rest[2:] {
 		if len(rest) < 2 || rest[1] == "" {
@@ -68,6 +73,8 @@ func cmdExport(args []string, stdout, stderr io.Writer) int {
 			into = &out
 		case "--check":
 			into = &check
+		case "--scope":
+			into = &scope
 		case "--observations":
 			observations = append(observations, rest[1])
 			continue
@@ -82,7 +89,7 @@ func cmdExport(args []string, stdout, stderr io.Writer) int {
 		*into = rest[1]
 	}
 	if check != "" {
-		if config != "" || out != "" || len(observations) > 0 {
+		if config != "" || out != "" || scope != "" || len(observations) > 0 {
 			fmt.Fprintln(stderr, exportUsage)
 			return 2
 		}
@@ -99,7 +106,13 @@ func cmdExport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, exportUsage)
 		return 2
 	}
-	summary, err := exportEngine(config, out, observations)
+	// a cut by scope takes no journal, which is of the custody and of no
+	// scope, and names a scope identifier of its form
+	if scope != "" && (len(observations) > 0 || !isScopeIdentifier(scope)) {
+		fmt.Fprintf(stderr, "--scope names a scope identifier (%s) and takes no --observations\n%s\n", scopeForm, exportUsage)
+		return 2
+	}
+	summary, err := exportEngine(config, out, observations, scope)
 	if err != nil {
 		fmt.Fprintln(stderr, "export:", err)
 		return 1
@@ -109,7 +122,7 @@ func cmdExport(args []string, stdout, stderr io.Writer) int {
 }
 
 // exportEngine exports the durable state an engine configuration names.
-func exportEngine(configPath, out string, observations []string) (*vObject, error) {
+func exportEngine(configPath, out string, observations []string, scope string) (*vObject, error) {
 	data, err := readBounded(configPath, maxEngineConfigBytes)
 	if err != nil {
 		return nil, fmt.Errorf("engine configuration: %v", err)
@@ -167,10 +180,17 @@ func exportEngine(configPath, out string, observations []string) (*vObject, erro
 		defer pg.close()
 		kind = pgEveryScope{pg}
 	}
-	return writeExport(exportInputs{
+	in := exportInputs{
 		authority: cfg.authority, keyID: keyID, publicKey: publicKey, kind: kind, storeRoot: cfg.store,
 		decisionRecords: cfg.decisionRecords, pins: pins, observations: journals,
-	}, out)
+	}
+	if scope != "" {
+		// a cut by scope holds neither the decision records nor the
+		// descriptor snapshots: an action receipt carries no scope, and a
+		// platform's pins are of the configuration (SPEC.md §5a)
+		in.scope, in.decisionRecords, in.pins = scope, "", nil
+	}
+	return writeExport(in, out)
 }
 
 // exportRemovals is the store's removal file's bytes, and whether it is
@@ -316,6 +336,9 @@ type exportInputs struct {
 	decisionRecords string
 	pins            []exportPin
 	observations    [][]byte
+	// scope is the scope identifier the export is cut by (SPEC.md §5a, "An
+	// export by scope"); "" for the whole store.
+	scope string
 }
 
 // exportWriter writes an export's files, each made once, synced, and named
@@ -384,8 +407,28 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the store's cut: %w", err)
 	}
+	// An export by scope attributes the cut before it writes a file, from
+	// the removal records as they are now; they are read again after the
+	// artifacts, as every export reads them, for what it writes.
+	var sel *scopeCut
+	if in.scope != "" {
+		data, present, err := exportRemovalRecords(in, cut)
+		if err == nil {
+			sel, err = exportSelection(in, cut, data, present)
+		}
+		if err != nil {
+			// the directory made, and nothing in it
+			os.Remove(out)
+			return nil, err
+		}
+	}
+	held := func(series string) bool { return sel == nil || sel.kept[series] }
 	if cut.logPresent {
-		if err := w.put("registry", cut.log); err != nil {
+		log := cut.log
+		if sel != nil {
+			log = registryOfCut(cut.log, sel)
+		}
+		if err := w.put("registry", log); err != nil {
 			return nil, err
 		}
 	}
@@ -395,9 +438,14 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 		}
 	}
 	sessions := vArray{}
+	// named are the artifacts the receipts of a cut by scope name
+	named := map[string]bool{}
 	for _, series := range cut.series {
 		if series == "" || strings.ContainsAny(series, `/\`) || series == "." || series == ".." {
 			return nil, fmt.Errorf("session %q cannot be named in an export", series)
+		}
+		if !held(series) {
+			continue
 		}
 		if err := w.dir("store/receipts/" + series); err != nil {
 			return nil, err
@@ -411,9 +459,15 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 			if err := w.put("store/receipts/"+series+"/"+entry+".json", data); err != nil {
 				return nil, err
 			}
+			if sel != nil {
+				digestsNamed(data, named)
+			}
 		}
 	}
 	for _, name := range cut.blobs {
+		if hexSum, _ := blobHex(name); sel != nil && !named[hexSum] {
+			continue
+		}
 		data, err := cut.blob(name)
 		switch faultOf(err) {
 		case "":
@@ -450,24 +504,14 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 	// read here as well; a kind that holds some beside a store directory
 	// whose removal file is there is refused, as the export could take
 	// neither for the other.
-	var data []byte
-	present := false
-	if cut.removals != nil {
-		if data, present, err = cut.removals(); err != nil {
-			return nil, err
-		}
+	data, present, err := exportRemovalRecords(in, cut)
+	if err != nil {
+		return nil, err
 	}
-	if in.storeRoot != "" {
-		file, there, err := exportRemovals(in.storeRoot)
-		if err != nil {
-			return nil, err
-		}
-		if there && present {
-			return nil, errors.New("removal records: the kind keeps some, and the store directory named beside it holds a removal file; the export takes neither for the other")
-		}
-		if there {
-			data, present = file, true
-		}
+	// a cut by scope keeps the records of its sessions and of its scope
+	if present && sel != nil {
+		data = removalsOfCut(data, sel)
+		present = len(data) > 0
 	}
 	if present {
 		if err := w.put("store/"+removalsFile, data); err != nil {
@@ -538,6 +582,9 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 	}
 	manifest.set("keyId", vString(in.keyID))
 	manifest.set("registry", vBool(cut.logPresent))
+	if sel != nil {
+		manifest.set("scope", vString(in.scope))
+	}
 	manifest.set("sessions", sessions)
 	// the manifest last: an export without one is an export that stopped
 	if err := w.writeManifest(append(canon(manifest), '\n')); err != nil {
@@ -548,6 +595,36 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 	summary.set("keyId", vString(in.keyID))
 	summary.set("sessions", vInt(len(sessions)))
 	return summary, nil
+}
+
+// exportRemovalRecords is the store's removal records as the export reads
+// them: from the kind that keeps them itself (storeCut.removals), or from
+// the removal file of the store directory named beside it, and whether
+// there are any; a kind that holds some beside a store directory whose
+// removal file is there is refused, as the export could take neither for
+// the other.
+func exportRemovalRecords(in exportInputs, cut *storeCut) ([]byte, bool, error) {
+	var data []byte
+	present := false
+	if cut.removals != nil {
+		var err error
+		if data, present, err = cut.removals(); err != nil {
+			return nil, false, err
+		}
+	}
+	if in.storeRoot != "" {
+		file, there, err := exportRemovals(in.storeRoot)
+		if err != nil {
+			return nil, false, err
+		}
+		if there && present {
+			return nil, false, errors.New("removal records: the kind keeps some, and the store directory named beside it holds a removal file; the export takes neither for the other")
+		}
+		if there {
+			data, present = file, true
+		}
+	}
+	return data, present, nil
 }
 
 func filePath(v value) string {
@@ -636,8 +713,15 @@ func readExportManifest(dir string) (*exportManifest, error) {
 	if err := exactlyMembers(obj, map[string]bool{
 		"authority": true, "decisionRecords": true, "descriptors": true, "exportVersion": true,
 		"files": true, "keyId": true, "registry": true, "sessions": true, "firstKeyId": false,
+		"scope": false,
 	}, "manifest"); err != nil {
 		return nil, err
+	}
+	// an export by scope names its scope identifier (SPEC.md §5a)
+	if raw, given := obj.get("scope"); given {
+		if s, ok := raw.(vString); !ok || !isScopeIdentifier(string(s)) {
+			return nil, errors.New("manifest: scope is not a scope identifier")
+		}
 	}
 	if version, _ := memberString(obj, "exportVersion"); version != exportVersion {
 		return nil, fmt.Errorf("the manifest's exportVersion is not %q", exportVersion)

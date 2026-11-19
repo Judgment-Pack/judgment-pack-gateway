@@ -72,7 +72,7 @@ test("every store vector", () => {
   assert.ok(vectors.length >= 39);
   for (const v of vectors) {
     const { root, registry, decisionRecords, artifacts } = materialize(v);
-    const options = { ordinarySealsOnly: v.ordinarySealsOnly === true, ...(artifacts !== undefined && { artifacts }) };
+    const options = { ordinarySealsOnly: v.ordinarySealsOnly === true, ...(artifacts !== undefined && { artifacts }), ...(v.scope !== undefined && { scope: v.scope }) };
     const verdict = JSON.parse(verdictText(verifyStore(root, registry, v.authority, decisionRecords, publicKey, options)));
     assert.equal(verdict.ok, v.expected.ok, v.name);
     assert.deepEqual(multiset(verdict.findings), multiset(v.expected.findings), v.name);
@@ -83,6 +83,9 @@ test("every store vector", () => {
     }
     // the witnesses the receipts name, as a set (ADR-0014); absent is none
     assert.deepEqual([...new Set(multiset(verdict.witnesses ?? []))], [...new Set(multiset(v.expected.witnesses ?? []))], v.name);
+    // a verdict by scope's cut, whole (§4, "A verdict by scope"); absent is
+    // a verdict of the whole store
+    assert.deepEqual(verdict.cut, v.expected.cut, v.name);
   }
 });
 

@@ -227,7 +227,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 188 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 202 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -450,6 +450,28 @@ seal of version 3 and removed is observed `session-removed` where its session-re
 carries the salt (ten members), and is `sealed-session-missing` where the record carries none or
 another. By §3, a verifier that knows no version 3 loads none of these seals.
 
+Fourteen are of a verdict by scope (§4, "A verdict by scope";
+`docs/adr/0042-a-seal-names-its-scope-over-a-salt-the-registry-does-not-hold.md`, decisions 6
+to 9), named `v3-cut-*` and signed by a second signer written for them as the first was and not
+kept here. Each gives `"scope"` beside `registry`, which the runner passes as `--scope <identifier>`
+first (the process contract, below), and states `cut` in `expected`, `{"scope", "sessions",
+"unattributed"}`, which the runner compares whole; a vector without `scope` expects no `cut`. Over
+`s1` of `scope-a` and `s2` of `scope-b`, each sealed by a seal of version 3, and `s3` of no scope
+sealed in §3's form, the cut by `scope-a` is `s1`, by `scope-b` `s2`, and by `scope-c` none, each
+`ok` and reporting the findings of its sessions alone. Sessions sealed by seals of version 2 are
+cut by the scope those name. A session no seal closes whose receipts carry another scope and a
+salt is of another, its `session-open` observation not reported; one whose receipts carry no salt
+is named unattributed, its findings reported, and the verdict is not `ok`; so is a session sealed
+in §3's form at a count the store does not hold (`tail-rollback`), and a sealed session of version 3
+the store does not hold that no record names (`sealed-session-missing`). A session holding no
+receipt under a seal of version 3 is named unattributed with no finding naming it, and the verdict is
+not `ok` by the cut alone; one sealed by a seal of version 3 that no receipt's scope and salt digest
+to is named unattributed too, beside its `seal-scope-mismatch`. A removed session is cut
+by the scope its record names, observed `session-removed` in that cut alone. A session whose
+receipts carry `scope-a` is of `scope-a` whatever its seal names (`seal-scope-mismatch`) and
+whatever the artifact step finds of them (`artifact-mismatch`). A verifier written before the
+option refuses it, which disagrees with each of these vectors.
+
 **`witnesses`.** A vector whose report names witnesses gives them in `expected`
 as `witnesses`, each `{"trail", "origin", "keyId"}`, and a runner compares them
 with the implementation's as a **set**, order and repetition aside; a vector
@@ -647,7 +669,7 @@ this one:
 - `CMD canon` — stdin: one JSON document (the *text*). stdout: the canonical
   bytes, exactly, no trailing newline. Exit 0 if inside the domain, non-zero if
   refused.
-- `CMD verify [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>]`
+- `CMD verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>]`
   — stdin: the 32-byte Ed25519 **public** key, raw bytes, never a secret.
   stdout: `{"ok": bool, "findings": [...]}`, and optionally the
   `observations` member of `SPEC.md` §4, which the runner compares as a multiset
@@ -675,6 +697,12 @@ this one:
   that file's bytes, and nothing in its place otherwise. No verdict for a vector run
   with it disagrees with that vector, `store <name>: no verdict under --artifacts:`, and
   the run goes on, as under `--ordinary-seals-only`.
+  `--scope <identifier>` is the verdict by scope of `SPEC.md` §4, given first, before every
+  other option, and never with a decision-record directory; the runner passes it exactly when
+  the vector gives `scope`, and nothing in its place otherwise. Its verdict gives the `cut`
+  member, `{"scope", "sessions", "unattributed"}`, which the runner compares whole, and a
+  verdict without the option gives none. No verdict for a vector run with it disagrees with
+  that vector, `store <name>: no verdict under --scope:`, and the run goes on.
 - `CMD witness --trail <hex> --witness-key <file>... [--witness <file>]...
   [--witness-head <file>]` — the flags of the runtime's `audit verify`: the trail being
   verified; each key a file holding its 64 lowercase hexadecimal characters and a
@@ -685,7 +713,7 @@ this one:
 
 Findings are compared as a **multiset**: order is not normative. Observations are
 compared as a multiset too, and only for a vector that states them; witnesses are
-compared as a set, and rotations whole.
+compared as a set, and rotations and a cut whole.
 
 An answer, a verdict or a witness answer, is read by its members' exact names, as decoded
 (`SPEC.md` §7). A member whose name differs from one the runner reads, if only in case, is not read:
