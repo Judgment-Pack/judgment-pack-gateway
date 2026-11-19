@@ -25,6 +25,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -148,14 +151,20 @@ type heldReceipt struct {
 
 // forwardQueue is a session's receipts held for the sink, in index order.
 // They are added under the gateway's lock in the same hold that stamps
-// them, so the order is the stamp's. send is held for the whole of a
-// delivery, so one delivery at a time goes to the sink for the session,
-// oldest first; mu guards held alone. The lock order is the gateway's, then
-// mu; send is never held beside the gateway's lock.
+// them, so the order is the stamp's. send is a one-place semaphore held for
+// the whole of a delivery, so one delivery at a time goes to the sink for the
+// session, oldest first; it is waited for under the context and one
+// attempt's deadline, never without bound (see deliver). mu guards held
+// alone. The lock order is the gateway's, then mu; send is never held beside
+// the gateway's lock.
 type forwardQueue struct {
-	send sync.Mutex
+	send chan struct{} // a token in it is a delivery in flight
 	mu   sync.Mutex
 	held []heldReceipt
+}
+
+func newForwardQueue() *forwardQueue {
+	return &forwardQueue{send: make(chan struct{}, 1)}
 }
 
 func (q *forwardQueue) add(r heldReceipt) {
@@ -251,13 +260,24 @@ func (f *receiptForwarder) held(index int64, stored *vObject, payloadDigest stri
 // the one at index upTo, and drops each once it is acknowledged. It stops
 // at the first that is not, which stays held with every one after it, and
 // is refused. A receipt another delivery has sent already is not sent
-// again.
+// again. A delivery already in flight for the session is waited for under
+// ctx and for at most one attempt's deadline: past that the caller is
+// refused with the fixed sentence, so requests queued behind a sink that is
+// down end together, not one after another.
 func (f *receiptForwarder) deliver(ctx context.Context, q *forwardQueue, upTo int64) error {
 	if q == nil {
 		return nil
 	}
-	q.send.Lock()
-	defer q.send.Unlock()
+	wait := time.NewTimer(f.attemptTimeout)
+	defer wait.Stop()
+	select {
+	case q.send <- struct{}{}:
+	case <-ctx.Done():
+		return receiptNotForwarded{}
+	case <-wait.C:
+		return receiptNotForwarded{}
+	}
+	defer func() { <-q.send }()
 	for {
 		q.mu.Lock()
 		if len(q.held) == 0 || q.held[0].index > upTo {
@@ -366,4 +386,80 @@ func (g *gatewayService) redeliverReached(sessionID string, reach scopeReach) er
 	}
 	g.mu.Unlock()
 	return g.forwarder.deliver(g.forwardingContext(), q, math.MaxInt64)
+}
+
+// --- a session left open ----------------------------------------------------
+
+// sealOpenSink is the receipt sink a seal after an interruption (seal-open,
+// and the start's sealOpenAtStart) delivers to before it seals a session:
+// a receipt held in a stopped or crashed process's memory is gone with it,
+// but every receipt is in the store, so each one the store holds is
+// delivered again, oldest first, and the sink, which keeps one receipt once
+// per digest, takes one it has acknowledged before as it did.
+type sealOpenSink struct {
+	forwarder *receiptForwarder
+	ctx       context.Context
+}
+
+// deliver sends every receipt the store holds of the session t names,
+// oldest first, and reports whether the sink acknowledged them all. A
+// receipt that cannot be read back is no acknowledgment either. The
+// payload goes where the configuration asks for it and the store keeps one.
+func (s *sealOpenSink) deliver(st sealOpenStore, t sealOpenTarget) bool {
+	reading, refusal, err := st.reading(t.sessionID)
+	if err != nil || refusal != "" {
+		return false
+	}
+	type stored struct {
+		index int64
+		bytes []byte
+	}
+	var all []stored
+	for _, name := range reading.names {
+		index, err := strconv.ParseInt(strings.TrimSuffix(name, ".json"), 10, 64)
+		if err != nil {
+			return false
+		}
+		data, err := reading.read(name)
+		if err != nil {
+			return false
+		}
+		all = append(all, stored{index, data})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].index < all[j].index })
+	queue := newForwardQueue()
+	for _, r := range all {
+		parsed, err := parseJSON(r.bytes)
+		if err != nil {
+			return false
+		}
+		receipt, ok := parsed.(*vObject)
+		if !ok {
+			return false
+		}
+		digest, ok := memberString(receipt, "resultDigest")
+		if !ok {
+			return false
+		}
+		notRetained := false
+		if artifact, present := memberString(receipt, "artifact"); present && artifact == artifactNotRetained {
+			notRetained = true
+		}
+		var payload value
+		if s.forwarder.payload && !notRetained {
+			if hexSum, ok := strings.CutPrefix(digest, "sha256:"); ok {
+				if data, found, err := st.payload(t.sessionID, hexSum); err != nil {
+					return false
+				} else if found {
+					if payload, err = parseJSON(data); err != nil {
+						return false
+					}
+				}
+			}
+		}
+		// a payload the store no longer holds (a removal, SPEC.md §1.3a) is
+		// carried as the one a source that keeps none is: not at all
+		queue.add(s.forwarder.held(r.index, receipt, digest, payload, notRetained || payload == nil))
+	}
+	return s.forwarder.deliver(s.ctx, queue, math.MaxInt64) == nil
 }

@@ -3065,14 +3065,18 @@ The receipt is in the store at its `callIndex`, and the session is begun. The re
 held, and is delivered again, oldest first with any other held receipt of the session:
 - before the session's next acquisition proceeds: before a delegation counts it, the grant is
   asked or the source runs;
+- before an action (`/act`) of the session runs its executor;
 - before the session is sealed, for a caller that reaches the session's scope identifier.
 
-While a held receipt is not acknowledged, both are answered with the same `503`. The
-acquisition runs nothing and mints nothing, and the session is not sealed. A held receipt is
-never answered to any caller.
+While a held receipt is not acknowledged, all three are answered with the same `503`. The
+acquisition and the action run nothing and mint nothing, and the session is not sealed. A held
+receipt is never answered to any caller.
 
-Held receipts are kept in the serving process's memory. A receipt held when the process stops
-is in the store and is not delivered again by the next start (ADR-0049, consequences).
+Held receipts are kept in the serving process's memory, and each is in the store. A session
+left open by a stop or a crash is sealed after the interruption (§3c, by `seal-open` or at the
+start) only once each receipt the store holds of it, oldest first, has been delivered and
+acknowledged; one whose receipts are not all acknowledged is left open and named (ADR-0049,
+consequences).
 
 **What is not forwarded.** These are unchanged:
 - an action's receipt minted by `/act`;

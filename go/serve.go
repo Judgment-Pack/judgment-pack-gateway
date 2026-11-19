@@ -1501,7 +1501,7 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	minted := state.index
 	if g.forwarder != nil {
 		if state.forward == nil {
-			state.forward = &forwardQueue{}
+			state.forward = newForwardQueue()
 		}
 		state.forward.add(g.forwarder.held(minted, stored, resultDigest, result, spec.notRetained))
 		forwarding = state.forward

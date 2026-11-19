@@ -123,6 +123,8 @@ Chosen: option 1 and K1.
    reaches the session's scope (ADR-0037). While one is not acknowledged:
    - the acquisition is refused with the sentence, its source is not run, and nothing is
      minted;
+   - `/act` is refused with the sentence, its executor is not started, and nothing is
+     minted;
    - the seal is refused with the sentence. The seal also checks, under its own hold of the
      lock, that nothing is held, so a receipt minted after its delivery refuses it too.
 
@@ -133,6 +135,10 @@ Chosen: option 1 and K1.
    - The waits between sends are 250 ms, then 500 ms.
    - Each send is bounded as a whole by 5 seconds: the connection, TLS, the request, the
      answer's headers and its body.
+
+   A call that finds another delivery of the session in flight waits for it for at most one
+   send's deadline (5 seconds), or until its context ends, and is then refused with the
+   sentence; the requests queued behind a failing sink therefore end together.
 
    A call stops at the first receipt that is not acknowledged. A failing sink therefore costs
    one call at most 15.75 seconds. A working sink costs up to 5 seconds for each receipt the
@@ -162,12 +168,21 @@ Chosen: option 1 and K1.
   sign.
 - Bad: an unavailable sink stops every acquisition of every session. That is the ask, and a
   lever on availability for whoever controls the sink.
-- Bad: a held receipt lives in the process's memory. A receipt held when the process stops is
-  in the store, was never answered, and is not delivered again by the next start. The session
-  it is in is left open as any session is at a stop (`sealOpenAtStart` seals it if set).
-  "At least once" therefore covers every receipt answered, and every receipt of a session the
-  same process sealed. A receipt held across a stop is found by the operator's reconciliation:
-  the store's export, sent to the sink, which deduplicates by digest.
+- Neutral: a held receipt lives in the process's memory, and is in the store as well. A
+  session left open by a stop or a crash is not sealed past it: when `receiptSink` is
+  configured, `gateway seal-open` and the start's `sealOpenAtStart` first deliver each
+  receipt the store holds of the session, oldest first, and seal it only when the sink has
+  acknowledged them all. The sink deduplicates by digest, so receipts it had acknowledged are
+  acknowledged again. A session whose receipts are not all acknowledged stays open and is
+  named, with the fixed sentence; once one delivery fails the sink is not asked about the
+  sessions after it, which are named as well. A stored receipt is delivered with its payload
+  where the configuration asks for it and the store still holds one. The command reads the
+  sink from `--config`; one given with `--store` and the other flags names none. A session
+  is held by one live instance (ADR-0035), so a held receipt is never in the memory of an
+  instance that does not serve the session, and the instance that finds it open after the
+  holder has stopped delivers from the store.
+- Later change: forwarding action receipts and seals. Neither is forwarded in this version;
+  doing so is a new `deliveryVersion`, and a follow-up issue.
 - Bad: the acknowledgment is the sink's word. A sink that acknowledges and then drops a
   receipt loses it, and the gateway cannot tell.
 - Bad: one sink serves every scope identifier. It learns every scope's receipts and, with
