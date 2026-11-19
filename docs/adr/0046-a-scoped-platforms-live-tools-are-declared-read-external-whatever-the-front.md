@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted (autopilot; maintainer may revise)
 date: 2026-11-19
 deciders: maintainer
 ---
@@ -107,7 +107,8 @@ decision holds, and the start is where the operator can fix a declaration.
 7. **ADR-0044 narrowed.** Its decision 5 sentence "A configuration with no `mcp` member is not
    read by this rule", its decision 5 sentence on a front fixed to a scope identifier not
    holding another identifier's platforms, and its consequence "not decided here" are
-   superseded by decisions 1 and 3. Its decisions 1 to 4 and 6 stand, widened as above.
+   superseded by decisions 1 and 3. Its decisions 1, 2 and 4 (the rule, the sentence and the
+   function) are widened as above, and its decisions 3 and 6 stand.
 
 ### Consequences
 

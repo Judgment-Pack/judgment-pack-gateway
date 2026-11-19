@@ -324,6 +324,9 @@ func readTokenCredential(t *TokenStep, members map[string]string) (*tokenSigner,
 		}
 	case *ecdsa.PrivateKey:
 		if key.Curve != elliptic.P256() {
+			if t.Algorithm != "" {
+				return nil, tokenFailure(TokenNoCredential, "the token step's EC key is not on P-256; --assertion-alg=%s is for an RSA key", t.Algorithm)
+			}
 			return nil, tokenFailure(TokenNoCredential, "the token step's EC key is not on P-256")
 		}
 		if t.Algorithm != "" {
@@ -333,6 +336,9 @@ func readTokenCredential(t *TokenStep, members map[string]string) (*tokenSigner,
 		}
 		signer.key, signer.alg = key, "ES256"
 	default:
+		if t.Algorithm != "" {
+			return nil, tokenFailure(TokenNoCredential, "the token step's key is neither RSA nor EC P-256; --assertion-alg=%s is for an RSA key", t.Algorithm)
+		}
 		return nil, tokenFailure(TokenNoCredential, "the token step's key is neither RSA nor EC P-256")
 	}
 	return signer, nil
@@ -411,9 +417,11 @@ type obtainedToken struct {
 	expiresIn int
 }
 
-// tokenClient is the client a token request is made with: TLS 1.2 or
-// later to the system's roots, no redirect followed -- a redirect would
-// carry the assertion elsewhere -- and the request bounded in time.
+// tokenClient is the client a token request, and a credentials API call, is
+// made with: TLS 1.2 or later to the system's roots, no redirect followed --
+// a redirect would carry the assertion elsewhere -- and the request bounded
+// in time. It goes through the proxy HTTPS_PROXY names, when the
+// environment sets one; TLS is still to the request's own host.
 func tokenClient() *http.Client {
 	return &http.Client{
 		Timeout: tokenRequestTimeout,

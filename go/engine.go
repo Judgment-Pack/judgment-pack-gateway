@@ -2755,7 +2755,7 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		if err := httpPlatformMatch(*p, b); err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
-		if err := httpTemplatesMatch(b, p.binding, cfg.version); err != nil {
+		if _, err := httpTemplatesMatch(b, p.binding, cfg.version); err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
 		if err := tokenStepMatch(*p, b); err != nil {

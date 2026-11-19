@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -115,6 +116,14 @@ func TestMetadataTokenSource(t *testing.T) {
 	var failure *TokenFailure
 	if !errors.As(err, &failure) || failure.Kind != StatusTokenRefused || len(g.callsTo("/asset/")) != 0 {
 		t.Fatalf("an answer without the flavor header: %v", err)
+	}
+	// Nor is an answer carrying the header twice, even as Google both times:
+	// it is refused as one without it.
+	h := newFake(t)
+	h.metadataFlavorTwice = true
+	_, err = Acquire(ctx, cfg, resourceRequest())
+	if !errors.As(err, &failure) || failure.Kind != StatusTokenRefused || err.Error() != "the metadata server's answer does not carry Metadata-Flavor: Google" || len(h.callsTo("/asset/")) != 0 {
+		t.Fatalf("an answer with the flavor header twice: %v", err)
 	}
 	// A metadata platform's credentials file holds a sealKey of 32 bytes.
 	short := filepath.Join(t.TempDir(), "short.json")
@@ -587,7 +596,7 @@ func TestSealedToken(t *testing.T) {
 		t.Fatalf("sealed under other parents: %v", err)
 	}
 	altered := cfg
-	altered.SealedToken = answer.Sealed[:len(answer.Sealed)-2] + "AA"
+	altered.SealedToken = alteredSeal(t, answer.Sealed)
 	if _, err := Acquire(ctx, altered, resourceRequest()); !errors.As(err, &failure) || failure.Kind != StatusSealUnusable {
 		t.Fatalf("an altered seal: %v", err)
 	}
@@ -1057,4 +1066,17 @@ func TestParseRequest(t *testing.T) {
 			t.Errorf("read: %s", bad)
 		}
 	}
+}
+
+// alteredSeal is the seal with one byte in the middle of its decoded bytes
+// changed and re-encoded. Overwriting the last base64 characters is not an
+// alteration when they differ only in the last character's unused bits.
+func alteredSeal(t *testing.T, seal string) string {
+	t.Helper()
+	raw, err := base64.RawURLEncoding.DecodeString(seal)
+	if err != nil || len(raw) == 0 {
+		t.Fatalf("the seal does not decode: %v", err)
+	}
+	raw[len(raw)/2] ^= 0x01
+	return base64.RawURLEncoding.EncodeToString(raw)
 }

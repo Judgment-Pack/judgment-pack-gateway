@@ -49,9 +49,11 @@ const (
 )
 
 var (
-	// serviceAccountForm is a user-managed service account's address, as
-	// the engine holds it (go/token_step.go): the one value that enters the
-	// credentials API's path, and it admits no / % ? # or :.
+	// serviceAccountForm is a service account's address under a project's
+	// iam.gserviceaccount.com domain, as the engine holds it
+	// (go/token_step.go); it refuses the default compute and App Engine
+	// accounts. It is the one value that enters the credentials API's path,
+	// and it admits no / % ? # or :.
 	serviceAccountForm = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$`)
 	// subjectForm is the delegated subject's address, at most 254 bytes.
 	subjectForm = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$`)
@@ -249,20 +251,31 @@ func signedJWTOf(raw []byte) (string, bool) {
 	return signed, true
 }
 
-// signedClaimsAre is whether the signed JWT's payload names the iss, sub,
-// scope, aud and exp asked for. The signature is the token endpoint's to
-// verify; the adapter reads the claims only so an assertion of other claims
-// is not sent.
+// signedClaimsAre is whether the signed JWT's payload is exactly the iss,
+// sub, scope, aud, iat and exp asked for: each member once, by its exact
+// name, and no other. The signature is the token endpoint's to verify; the
+// adapter reads the claims only so an assertion of other claims is not sent.
+// The payload is read by exactMembers, since a decoder into a struct takes
+// ISS for iss and keeps the last of two members of one name.
 func signedClaimsAre(signed string, want delegatedClaims) bool {
 	payload, err := base64.RawURLEncoding.DecodeString(strings.Split(signed, ".")[1])
 	if err != nil {
 		return false
 	}
+	members, err := exactMembers(payload)
+	if err != nil || len(members) != 6 {
+		return false
+	}
+	for _, name := range []string{"iss", "sub", "scope", "aud", "iat", "exp"} {
+		if _, ok := members[name]; !ok {
+			return false
+		}
+	}
 	var got delegatedClaims
 	if json.Unmarshal(payload, &got) != nil {
 		return false
 	}
-	return got.Iss == want.Iss && got.Sub == want.Sub && got.Scope == want.Scope && got.Aud == want.Aud && got.Exp == want.Exp
+	return got == want
 }
 
 // delegatedAssertion is the assertion of a step of this form: the metadata

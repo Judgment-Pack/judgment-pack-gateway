@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted (autopilot; maintainer may revise)
 date: 2026-11-19
 deciders: maintainer
 ---
@@ -68,7 +68,7 @@ Option 4 adds an exchange the platform's compute does not need: it already has a
    the other forms already send as `scope`. The engine passes the step to `adapter-http` as
    `--token-endpoint=E --signed-by-service-account=SA --token-subject=S --token-scope=SCOPES`,
    with no `--client-id`.
-2. **The forms.** `serviceAccount` is a user-managed service account's address:
+2. **The forms.** `serviceAccount` is a service account's address under a project's domain, which refuses the default compute and App Engine accounts:
    `NAME@PROJECT.iam.gserviceaccount.com`, `NAME` and `PROJECT` each 6 to 30 lowercase letters,
    digits and hyphens, starting with a letter and not ending with a hyphen. It is the one value
    that enters the credentials API's path, and the form admits no `/`, `%`, `?`, `#` or `:`.
@@ -117,8 +117,10 @@ Option 4 adds an exchange the platform's compute does not need: it already has a
    service account and the subject; the other forms' bindings are unchanged.
 6. **The endpoints.** The metadata server's address and path are fixed in code (ADR-0043). The
    credentials API's base, `https://iamcredentials.googleapis.com`, is fixed in code: the
-   metadata token is the compute's bearer for every API its scopes reach, and no configuration,
-   flag or environment variable sends it elsewhere. Each is a variable of the adapter's package
+   metadata token is the compute's bearer for every API its scopes reach, and no configuration
+   or flag names another host for it. The call, like every token request, goes through the
+   proxy `HTTPS_PROXY` names when the environment sets one, with TLS still to that host, so a
+   proxy sees which host is called and when, never the token. Each is a variable of the adapter's package
    that only that package's tests set, to a local stand-in. The token endpoint is the
    configuration's `endpoint`, under the endpoint rule every token step has: `https`, or `http` at
    a loopback address written as one. It may come from configuration because what is sent there,

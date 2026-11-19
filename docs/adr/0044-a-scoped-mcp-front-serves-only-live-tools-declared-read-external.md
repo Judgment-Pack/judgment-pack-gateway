@@ -95,7 +95,9 @@ refusal at start is where the operator can fix it.
    A shipped binding whose live operation names an act (the postgres binding's `execute_sql`)
    is therefore not served by a scoped front at all.
 
-   *Narrowed by ADR-0046 (#519), for decisions 1, 4 and 5 and the consequence on the signer:*
+   *Narrowed by ADR-0046 (#519), its decision 7: this decision's sentences on a configuration
+   with no `mcp` and on another scope identifier's platforms, and the consequence on the
+   signer, are superseded; decisions 1, 2 and 4 are widened; decisions 3 and 6 stand:*
    each live tool of a platform fixed to a scope identifier is declared `read-external`
    whatever the configuration's `mcp` member, a configuration with no `mcp` included, and
    under `mcp.scope` the platforms of another scope identifier are held too. The function is
