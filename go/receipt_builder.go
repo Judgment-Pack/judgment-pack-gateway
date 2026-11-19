@@ -28,6 +28,10 @@ type receiptInput struct {
 	// for a source fixed to none, whose receipt is then the one it was
 	// before the member existed.
 	scope string
+	// scopeSalt is the session's scope salt (ADR-0042), carried beside a
+	// scope identifier: "" for none, whose receipt is then the one it was
+	// before the member existed.
+	scopeSalt string
 	// notRetained is whether the call kept no payload (SPEC.md §1.3a): the
 	// acquisition then carries artifact "not-retained"; false for a kept
 	// one, whose receipt is the one it was before the member existed.
@@ -70,6 +74,9 @@ func buildReceipt(in receiptInput) *vObject {
 		}
 		if in.scope != "" {
 			core.set("scope", vString(in.scope))
+			if in.scopeSalt != "" {
+				core.set("scopeSalt", vString(in.scopeSalt))
+			}
 		}
 		if in.notRetained {
 			core.set("artifact", vString(artifactNotRetained))

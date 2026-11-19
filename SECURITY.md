@@ -282,7 +282,10 @@ at mode `0600` under a path the signer walked and resolved, sends the one member
 of the endpoint form above — under a path and by a method the binding names, follows no redirect,
 and refuses an answer that repeats a credential. No request steers the host: the endpoint, the
 paths, the methods and the headers are the binding's, a path carrying a comma is refused since the
-command line would read it as two, a credential may not be sent under `Proxy-Authorization`,
+command line would read it as two, a template's `{id}` (engine version 31) admits a GUID in that
+one segment and nothing else, a link a caller follows is sent only when its scheme, host and port
+are the endpoint's and its path is one the binding admits, as written
+([ADR-0040](docs/adr/0040-path-templates-and-links-on-an-http-source.md)), a credential may not be sent under `Proxy-Authorization`,
 which a proxy reads, and the platform may name no endpoint, parameter or grant beside the binding.
 The signer never reads the credential: it reads the envelope from the adapter's stdout, within the
 engine's one mebibyte and thirty seconds, and signs what it attests. This is stricter than the
@@ -751,11 +754,16 @@ It does not establish:
   credential, so any caller the gateway admits that names it is served;
 - that no other source or gateway uses it. A gateway holds a session to one identifier, or to
   none ([ADR-0036](docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md)),
-  and the seal of a session of an identifier names it under the signature by its digest in the
-  session, never by the identifier, so no registry line carries one, which a verifier of
-  this version holds the session's accepted receipts to (`seal-scope-mismatch`); a seal of the
-  earlier forms, every seal an earlier gateway wrote among them, names none, so of such a
-  session only its receipts say which identifiers it holds;
+  and the seal of a session of an identifier names it under the signature by its digest over a
+  salt the session's receipts carry (a seal of version 3,
+  [ADR-0042](docs/adr/0042-a-seal-names-its-scope-over-a-salt-the-registry-does-not-hold.md)),
+  never by the identifier or the salt, so no registry line carries one and a reader of the open
+  registry cannot test a guessed identifier against it, which a verifier of this version holds
+  the session's accepted receipts to (`seal-scope-mismatch`); a seal of version 2, which v0.31.0
+  and v0.32.0 wrote, names it by an unkeyed digest in the session, which a guess can test, so for
+  such seals an identifier stays hidden only where it cannot be guessed; a seal of the earlier
+  forms, every seal a gateway before v0.31.0 wrote among them, names none, so of such a session
+  only its receipts say which identifiers it holds;
 - anything kept apart by it: every scope identifier shares the gateway's one key, store and
   registry.
 

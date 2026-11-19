@@ -192,6 +192,120 @@ statement it is given is raw SQL by another name, and its author is the one to r
 `postgres` binding holds to the same rule: it predated it, and its `write` operation, which
 named `execute_sql`, was removed on 2026-10-14 (#260).
 
+## microsoft-graph
+
+| Operation | Artifact | Pinned | Licence | Where the licence is stated |
+|---|---|---|---|---|
+| `live` | the Microsoft Graph v1.0 API, `https://graph.microsoft.com`, read by `adapter-http` | the endpoint, the 24 paths, `GET` alone and the bearer, by the file's digest; there is no image | hosted service: the operator's own service terms | the engine pulls and runs nothing of the service; its use is under the terms of the operator's own tenant |
+
+A read-only directory source: the binding's one operation is `live` of the `http` shape
+([engine-config.md](../docs/design/engine-config.md#an-http-api-as-a-platforms-live-operation)),
+whose method is `GET` alone, so no request through it is a write. What it may read beyond that
+is the operator's to grant: the application permissions given the app registration the token
+step signs in as. The binding names none and grants none. Four of its paths are templates,
+so a configuration that pins it is of engine version 31 or later ("Path templates and links on
+an http source (engine version 31)" in engine-config.md); under an earlier one it is refused by
+name.
+
+| Paths | What they read |
+|---|---|
+| `/v1.0/users`, `/v1.0/users/delta` | users, and their changes |
+| `/v1.0/groups`, `/v1.0/groups/delta`, `/v1.0/groups/{id}/members` | groups, their changes, and one group's members |
+| `/v1.0/directoryRoles`, `/v1.0/directoryRoles/{id}/members` | directory roles, and one role's members |
+| `/v1.0/roleManagement/directory/roleDefinitions`, `/v1.0/roleManagement/directory/roleAssignments` | role definitions and assignments |
+| `/v1.0/identityGovernance/privilegedAccess/group/eligibilityScheduleInstances`, `…/assignmentScheduleInstances` | privileged access for groups: eligible and active instances |
+| `/v1.0/oauth2PermissionGrants` | delegated permission grants |
+| `/v1.0/applications`, `/v1.0/servicePrincipals`, `/v1.0/servicePrincipals/{id}/appRoleAssignedTo`, `/v1.0/servicePrincipals/{id}/owners` | applications, service principals, the app roles assigned to one, and its owners |
+| `/v1.0/auditLogs/directoryAudits`, `/v1.0/auditLogs/signIns` | directory audit events and sign-ins |
+| `/v1.0/identityProtection/riskDetections`, `/v1.0/identityProtection/riskyUsers` | risk detections and risky users |
+| `/v1.0/reports/authenticationMethods/userRegistrationDetails` | each user's registered authentication methods |
+| `/v1.0/devices` | devices |
+| `/v1.0/identity/conditionalAccess/policies` | conditional access policies |
+| `/v1.0/organization` | the tenant's organization, which `checkPath` GETs |
+
+A template's `{id}` is filled by a GUID alone, an object id, so a request names one group's,
+role's or service principal's members and no other resource. A request the service refuses,
+for want of a permission or for any other reason, is a failed source, and nothing is minted.
+
+**The token.** The service takes an access token the identity platform issues by the
+client-credentials grant, so the platform names a token step (engine-config.md, "A live
+operation's token step (engine version 21)"):
+
+```json
+"directory": {
+  "binding": "microsoft-graph@sha256:…",
+  "credentials": {"live": {
+    "file": "/run/secrets/directory-live",
+    "tokenStep": {
+      "endpoint": "https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token",
+      "clientId": "<the app registration's application id>",
+      "federatedTokenFile": "/var/run/secrets/tokens/directory",
+      "requestScope": "https://graph.microsoft.com/.default"
+    }
+  }},
+  "user": "engine-directory"
+}
+```
+
+- `endpoint` is the tenant's token endpoint, `<tenant>` its directory id, written out: a token
+  step's endpoint takes no placeholder.
+- `requestScope` `https://graph.microsoft.com/.default` asks for the application permissions
+  granted to the app, all of them.
+- `federatedTokenFile` is a token the workload's platform issues it, a projected service account
+  token say, which the app registration trusts by a federated identity credential: nothing
+  secret is kept on the host. In its place, `privateKey` names the PKCS #8 key of a certificate
+  registered on the app, with `x5t#S256` its thumbprint. The identity platform asks of such an
+  assertion a header whose "`alg` Should be **PS256**", a `x5t#S256`, and an `aud` of the token
+  endpoint ([certificate credentials](https://learn.microsoft.com/en-us/entra/identity-platform/certificate-credentials),
+  dated 2025-01-04, updated 2026-06-15); `adapter-http` signs RS256 for an RSA key and ES256 for a
+  P-256 key, and no PS256, so whether the token endpoint takes its assertion is not established
+  here. The federated form is the one this binding is tested in, against a stand-in.
+- The live credentials file is still required, and nothing of it is sent: with a token step the
+  binding's `bearer` member, `token`, is not read.
+
+**Paging.** A collection is answered a page at a time, the next named by `@odata.nextLink`, an
+absolute URL with `$skiptoken`; the last page of a delta round names `@odata.deltaLink`, with
+`$deltatoken`, instead ([delta query overview](https://learn.microsoft.com/en-us/graph/delta-query-overview),
+dated 2025-01-15, updated 2026-05-14). A caller sends the first page by `path` and `query` and
+each next one by its link, as written, in the same session:
+
+```json
+{"session": "directory-users-1", "source": "directory/live",
+ "arguments": {"path": "/v1.0/users", "method": "GET", "query": {"$select": "id,displayName,accountEnabled", "$top": "100"}}}
+{"session": "directory-users-1", "source": "directory/live",
+ "arguments": {"link": "https://graph.microsoft.com/v1.0/users?$select=id,displayName,accountEnabled&$top=100&$skiptoken=…", "method": "GET"}}
+```
+
+`$` is sent as written: "On the v1.0 endpoint, the $ prefix is optional for only a subset of
+APIs. For simplicity, always include $" ([query parameters](https://learn.microsoft.com/en-us/graph/query-parameters),
+dated 2025-07-02, updated 2026-03-07). Each page is its own receipt, whose statement commits to
+the path and query sent; a link's commits to its query as `rawQuery`, byte for byte. Every page
+must fit the adapter's 1 MiB envelope, and one past it is refused, not cut: `$select` narrows a
+page, and `$top` shortens one where the path takes it, which a user or group delta does not
+(delta query overview).
+
+**An expired delta token.** "Delta query can return a response code of `410 Gone` and a
+**Location** header containing a request URL with an empty `$deltatoken`", after which the
+round starts again from the delta path; a delta token of a directory object is held "seven days"
+(delta query overview). `/acquire` answers such a `410` with `source_reference_expired` and
+nothing of the answer, the `Location` among it; the caller drops the delta link and sends the
+delta path again. The same page says that "In case the token expires, the service should respond
+with a 40X-series error with error codes such as `syncStateNotFound`": a `400` or a `404` so
+answered is a failed source, as any other, and not `source_reference_expired`, so a caller that
+kept a delta link past seven days reads again from the delta path either way. Which status the
+service gives an expired directory delta token has not been observed here.
+
+**Throttling.** A request the service throttles is answered `429 Too Many Requests` with a
+`Retry-After` of seconds ([throttling](https://learn.microsoft.com/en-us/graph/throttling),
+dated 2025-01-14, updated 2025-08-06); `/acquire` answers a `429` or a `503` with its class and
+the wait, at most 3600 seconds, and does not retry: the caller waits and asks for the same page
+again in the same session (engine-config.md, "A throttled answer").
+
+The binding sets no header, so a request the service answers only beside a header of the
+caller's choosing cannot be made through it; a header is a change to the binding, and so to its
+digest. Every request in this binding's tests went to an invented stand-in on loopback
+(`go/graph_binding_e2e_test.go`); none reached the service.
+
 ## Action recovery
 
 The write catalogs use bindingVersion 3. Each listed tool explicitly declares

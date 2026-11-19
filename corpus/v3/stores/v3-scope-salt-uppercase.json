@@ -1,0 +1,20 @@
+{
+  "name": "v3-scope-salt-uppercase",
+  "note": "A scope salt in uppercase hexadecimal, signed with it: not of its form, so the receipt is malformed at order 1.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+    "receipts/s2/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"scope\":\"scope-a\",\"scopeSalt\":\"6D88BFFD12059D7B737F0AC69C72478EE534F807C1D57705574B1EA969E32B63\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"b020768ab70cb8fa6f3ba9a5d806869bf7339b69c30064c02e6a0330ae4f092b65fd71e0a9a86e362fe5e09fbc706fee2b6deff4a21d8002005f8edb188ebe0c\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-11-18T00:00:02Z\",\"sessionId\":\"s2\",\"signature\":\"53052f0e64fa44fd2241100a8ea68586a4306519aaaf265a86fd49639c68ff48a5e1f2353a87122a02f12b6477d953c0b54e6d3b35b19e398b082c13fb75820a\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "file": "0.json",
+        "sessionId": "s2",
+        "status": "malformed"
+      }
+    ]
+  }
+}

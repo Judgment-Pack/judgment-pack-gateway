@@ -1,0 +1,42 @@
+{
+  "bindingVersion": "1",
+  "platform": "microsoft-graph",
+  "operations": {
+    "live": {
+      "shape": "http",
+      "endpoint": "https://graph.microsoft.com",
+      "paths": [
+        "/v1.0/users",
+        "/v1.0/users/delta",
+        "/v1.0/groups",
+        "/v1.0/groups/delta",
+        "/v1.0/groups/{id}/members",
+        "/v1.0/directoryRoles",
+        "/v1.0/directoryRoles/{id}/members",
+        "/v1.0/roleManagement/directory/roleDefinitions",
+        "/v1.0/roleManagement/directory/roleAssignments",
+        "/v1.0/identityGovernance/privilegedAccess/group/eligibilityScheduleInstances",
+        "/v1.0/identityGovernance/privilegedAccess/group/assignmentScheduleInstances",
+        "/v1.0/oauth2PermissionGrants",
+        "/v1.0/applications",
+        "/v1.0/servicePrincipals",
+        "/v1.0/servicePrincipals/{id}/appRoleAssignedTo",
+        "/v1.0/servicePrincipals/{id}/owners",
+        "/v1.0/auditLogs/directoryAudits",
+        "/v1.0/auditLogs/signIns",
+        "/v1.0/identityProtection/riskDetections",
+        "/v1.0/identityProtection/riskyUsers",
+        "/v1.0/reports/authenticationMethods/userRegistrationDetails",
+        "/v1.0/devices",
+        "/v1.0/identity/conditionalAccess/policies",
+        "/v1.0/organization"
+      ],
+      "methods": [
+        "GET"
+      ],
+      "bearer": "token",
+      "checkPath": "/v1.0/organization",
+      "licence": "hosted service: the operator's own service terms"
+    }
+  }
+}

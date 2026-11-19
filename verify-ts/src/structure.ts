@@ -558,6 +558,7 @@ export function structureV3(r: ObjectValue): boolean {
   const action = member(r, "action");
   const witness = member(r, "witness");
   const scope = member(r, "scope");
+  const scopeSalt = member(r, "scopeSalt");
   const artifact = member(r, "artifact");
   if (
     !isString(sessionId) ||
@@ -581,6 +582,9 @@ export function structureV3(r: ObjectValue): boolean {
     // the scope identifier the source was fixed to: optional, on either
     // kind, of its form when present
     (scope !== undefined && !(isString(scope) && isScopeIdentifier(scope.value))) ||
+    // the session's scope salt (ADR-0042): optional, with a scope alone, 64
+    // lowercase hexadecimal characters when present
+    (scopeSalt !== undefined && !(scope !== undefined && isString(scopeSalt) && /^[0-9a-f]{64}$/.test(scopeSalt.value))) ||
     !isString(kind) ||
     // that the call kept no payload (§1.3a): optional, on an acquisition
     // alone, and the one string when present

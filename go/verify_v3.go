@@ -130,9 +130,21 @@ func validateVersion3(obj *vObject, r *receipt) error {
 	// The scope identifier the configuration fixed the source to (ADR-0026):
 	// optional, on either kind, and of its form when present. Nothing else of
 	// it is checked: no receipt's scope is compared with another's.
+	_, scoped := obj.get("scope")
 	if v, present := obj.get("scope"); present {
 		if s, ok := stringOf(v); !ok || !isScopeIdentifier(s) {
 			return errors.New("scope is not a scope identifier: " + scopeForm)
+		}
+	}
+	// The session's scope salt (ADR-0042): optional, with a scope alone, and
+	// 64 lowercase hexadecimal characters when present. What it is checked
+	// against is the seal's digest (SPEC.md §4 step 3), not another receipt.
+	if v, present := obj.get("scopeSalt"); present {
+		if s, ok := stringOf(v); !ok || !isScopeSalt(s) {
+			return errors.New("scopeSalt is not 64 lowercase hexadecimal characters")
+		}
+		if !scoped {
+			return errors.New("scopeSalt is with a scope alone")
 		}
 	}
 	// That the call kept no payload (SPEC.md §1.3a; ADR-0028): optional, on

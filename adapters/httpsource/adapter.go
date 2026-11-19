@@ -64,7 +64,8 @@ type Config struct {
 	// Accept, a format selector. A credential is not one of them.
 	Headers []string
 	// Paths are the only request paths this source may be asked for,
-	// each exactly as it will be sent under the endpoint.
+	// each exactly as it will be sent under the endpoint, or a template
+	// whose one {id} segment a GUID fills (target.go).
 	Paths []string
 	// Methods are the methods a request may name; POST alone when empty.
 	Methods []string
@@ -87,9 +88,12 @@ type Config struct {
 }
 
 // Request is the canonical arguments the gateway hands the adapter on
-// stdin: which path, by which method, with what query and body.
+// stdin: which path, by which method, with what query and body -- or, in
+// place of the path and the query, a link the endpoint handed out, which
+// names both (target.go).
 type Request struct {
 	Path   string
+	Link   string
 	Method string
 	Query  map[string]string
 	Body   json.RawMessage
@@ -117,7 +121,7 @@ const (
 )
 
 var (
-	requestMembers = map[string]bool{"path": true, "method": true, "query": true, "body": true}
+	requestMembers = map[string]bool{"path": true, "link": true, "method": true, "query": true, "body": true}
 	// carriedHeaders are the response headers the result carries, by
 	// their lowercase names: what says how the answer is encoded and
 	// what the endpoint said about its currency, and nothing that could
@@ -137,10 +141,12 @@ var (
 )
 
 // ParseRequest reads the request strictly: one JSON object in the
-// canonical domain, its members among path, method, query and body by
-// their exact names, a path that begins at the endpoint, a method among
-// GET and POST, a query of strings, and a body only where a POST carries
-// one.
+// canonical domain, its members among path, link, method, query and body
+// by their exact names; exactly one of a path that begins at the endpoint
+// and a link, which carries its own query, so no query beside it; a method
+// among GET and POST, a query of strings, and a body only where a POST
+// carries one. A link is held here to its form alone, and to the endpoint
+// and the paths where the request is admitted (linkTarget).
 func ParseRequest(r io.Reader) (Request, error) {
 	raw, err := io.ReadAll(io.LimitReader(r, maxRequestBytes+1))
 	if err != nil {
@@ -169,15 +175,30 @@ func ParseRequest(r io.Reader) (Request, error) {
 		}
 	}
 	var req Request
-	pathRaw, ok := members["path"]
-	if !ok {
-		return Request{}, errors.New(`request: "path" is required`)
-	}
-	if err := json.Unmarshal(pathRaw, &req.Path); err != nil || !json.Valid(pathRaw) || pathRaw[0] != '"' {
-		return Request{}, errors.New(`request: "path" must be a string`)
-	}
-	if err := pathProblem(req.Path); err != nil {
-		return Request{}, fmt.Errorf("request: %v", err)
+	pathRaw, hasPath := members["path"]
+	linkRaw, hasLink := members["link"]
+	switch {
+	case hasPath && hasLink:
+		return Request{}, errors.New(`request: "path" and "link" each name what is requested; give one`)
+	case hasLink:
+		if err := json.Unmarshal(linkRaw, &req.Link); err != nil || linkRaw[0] != '"' {
+			return Request{}, errors.New(`request: "link" must be a string`)
+		}
+		if err := linkFormProblem(req.Link); err != nil {
+			return Request{}, err
+		}
+		if _, hasQuery := members["query"]; hasQuery {
+			return Request{}, errors.New(`request: a "link" carries its own query, and "query" is not given beside it`)
+		}
+	case hasPath:
+		if err := json.Unmarshal(pathRaw, &req.Path); err != nil || !json.Valid(pathRaw) || pathRaw[0] != '"' {
+			return Request{}, errors.New(`request: "path" must be a string`)
+		}
+		if err := pathProblem(req.Path); err != nil {
+			return Request{}, fmt.Errorf("request: %v", err)
+		}
+	default:
+		return Request{}, errors.New(`request: "path" or "link" is required`)
 	}
 	req.Method = http.MethodPost
 	if methodRaw, ok := members["method"]; ok {
@@ -497,7 +518,7 @@ func prepare(cfg Config) (*prepared, error) {
 		return nil, errors.New("--paths must name at least one path this source may request")
 	}
 	for _, p := range cfg.Paths {
-		if err := pathProblem(p); err != nil {
+		if err := configuredPathProblem(p); err != nil {
 			return nil, fmt.Errorf("--paths %q: %v", p, err)
 		}
 	}
@@ -588,39 +609,57 @@ func ownIdentity() (adapterIdentity, error) {
 	return adapterIdentity{Name: adapterName, Version: Version, Digest: "sha256:" + hex.EncodeToString(h.Sum(nil))}, nil
 }
 
+// requestTarget is what a request names under the endpoint, whichever
+// form named it: the path, and the query as it is sent.
+type requestTarget struct {
+	path, rawQuery string
+	// link is whether a link named it, so the statement records the query
+	// as sent rather than as an object.
+	link bool
+}
+
 // admits holds a request to the paths and the methods the configuration
-// names.
-func (p *prepared) admits(cfg Config, req Request) error {
-	if !contains(cfg.Paths, req.Path) {
-		return fmt.Errorf("path %q is not one this source may request: %v", req.Path, cfg.Paths)
+// names, and returns its target: a path that is one of the paths, or a
+// link linkTarget admits.
+func (p *prepared) admits(cfg Config, req Request) (requestTarget, error) {
+	var t requestTarget
+	if req.Link != "" {
+		path, rawQuery, err := linkTarget(p.base, cfg.Paths, req.Link)
+		if err != nil {
+			return t, err
+		}
+		t = requestTarget{path: path, rawQuery: rawQuery, link: true}
+	} else {
+		if !pathAdmitted(cfg.Paths, req.Path) {
+			return t, fmt.Errorf("path %q is not one this source may request: %v", req.Path, cfg.Paths)
+		}
+		t.path = req.Path
+		if len(req.Query) > 0 {
+			t.rawQuery = formQuery(req.Query)
+		}
 	}
 	methods := cfg.Methods
 	if len(methods) == 0 {
 		methods = []string{http.MethodPost}
 	}
 	if !contains(methods, req.Method) {
-		return fmt.Errorf("method %s is not one this source may use: %v", req.Method, methods)
+		return t, fmt.Errorf("method %s is not one this source may use: %v", req.Method, methods)
 	}
-	return nil
+	return t, nil
 }
 
 // build is the request as it will be sent: the path under the endpoint,
-// the query sorted, the fixed headers, a JSON body, and the credential
-// last.
+// the query -- an object's sorted, a link's as written -- the fixed
+// headers, a JSON body, and the credential last.
 func (p *prepared) build(ctx context.Context, cfg Config, req Request) (*http.Request, error) {
-	if err := p.admits(cfg, req); err != nil {
+	t, err := p.admits(cfg, req)
+	if err != nil {
 		return nil, err
 	}
 	target := *p.base
-	target.Path = strings.TrimSuffix(p.base.Path, "/") + req.Path
+	target.Path = strings.TrimSuffix(p.base.Path, "/") + t.path
 	target.RawPath = ""
-	if len(req.Query) > 0 {
-		values := url.Values{}
-		for name, value := range req.Query {
-			values.Set(name, value)
-		}
-		target.RawQuery = values.Encode()
-	}
+	target.RawQuery = t.rawQuery
 	var body io.Reader
 	if req.Body != nil {
 		body = bytes.NewReader(req.Body)
@@ -671,6 +710,12 @@ func (p *prepared) send(ctx context.Context, cfg Config, req *http.Request) (*an
 			}
 			return nil, fmt.Errorf("%v%s", errRedirect, location)
 		}
+		// Said without the URL the client quotes: it carries the request's
+		// query, or the link's, which a diagnostic has no need of.
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			err = uerr.Err
+		}
 		return nil, fmt.Errorf("the endpoint could not be reached: %v", err)
 	}
 	defer resp.Body.Close()
@@ -715,7 +760,8 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	}
 	// The request is held to the binding before any token is obtained, so
 	// a request that would be refused costs the token endpoint nothing.
-	if err := p.admits(cfg, req); err != nil {
+	t, err := p.admits(cfg, req)
+	if err != nil {
 		return finish(nil, err)
 	}
 	if err := p.useToken(ctx, cfg); err != nil {
@@ -771,7 +817,7 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if repeatsCredential(a, result, p.secrets, p.credValue) {
 		return finish(nil, errors.New("the endpoint's answer repeats a credential, so nothing of it is carried and nothing is minted"))
 	}
-	return finish(buildEnvelope(cfg, p, httpReq, req, a, result))
+	return finish(buildEnvelope(cfg, p, httpReq, req, t, a, result))
 }
 
 // repeatsCredential reports whether the answer -- its body as sent, the
@@ -885,12 +931,18 @@ type envelope struct {
 // statement is the request as the receipt commits to it: method, path,
 // the query and the body as sent. It is the one member of the acquisition
 // the gateway commits under a salt, so a search query or a page URL in
-// it is in the receipt only as a commitment.
+// it is in the receipt only as a commitment. The path is the one sent
+// under the endpoint, a template's {id} filled, whichever form named it;
+// the query is the object a path request gave, or the query a link
+// carried, as rawQuery, byte for byte as sent. A link's scheme, host and
+// port are not in it: they are the endpoint's, which the acquisition's
+// endpoint names as the request was sent.
 type statement struct {
-	Method string            `json:"method"`
-	Path   string            `json:"path"`
-	Query  map[string]string `json:"query,omitempty"`
-	Body   json.RawMessage   `json:"body,omitempty"`
+	Method   string            `json:"method"`
+	Path     string            `json:"path"`
+	Query    map[string]string `json:"query,omitempty"`
+	RawQuery string            `json:"rawQuery,omitempty"`
+	Body     json.RawMessage   `json:"body,omitempty"`
 }
 
 // buildEnvelope is the envelope of SPEC.md §6 for one request: the answer
@@ -900,8 +952,12 @@ type statement struct {
 // answer's ETag or, failing that, its Last-Modified as the snapshot, the
 // TLS peer's certificate as the peer identity, and null for what an HTTP
 // answer does not carry: a schema, an integrity token of the upstream's.
-func buildEnvelope(cfg Config, p *prepared, sent *http.Request, req Request, a *answer, result []byte) ([]byte, error) {
-	encoded, err := canon.EncodeJSON(statement{Method: req.Method, Path: req.Path, Query: req.Query, Body: req.Body})
+func buildEnvelope(cfg Config, p *prepared, sent *http.Request, req Request, t requestTarget, a *answer, result []byte) ([]byte, error) {
+	said := statement{Method: req.Method, Path: t.path, Query: req.Query, Body: req.Body}
+	if t.link {
+		said.Query, said.RawQuery = nil, t.rawQuery
+	}
+	encoded, err := canon.EncodeJSON(said)
 	if err != nil {
 		return nil, err
 	}
@@ -979,6 +1035,8 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		return finish(err)
 	}
 	if cfg.CheckPath != "" {
+		// A fixed path: a template's {id} is a brace pathProblem refuses,
+		// and a check names no GUID to fill it with.
 		if err := pathProblem(cfg.CheckPath); err != nil {
 			return finish(fmt.Errorf("--check-path: %v", err))
 		}
