@@ -85,6 +85,11 @@ type Config struct {
 	// (ObtainSealed), which an acquisition opens and sends instead of
 	// obtaining one; empty, it obtains one for its one request.
 	SealedToken string
+	// ErrorCodes, when given, is the binding's declaration of the
+	// endpoint's error codes (error_code.go, ADR-0047): the pairs that
+	// mean an expired reference, and the codes an access refusal passes
+	// on. nil declares none.
+	ErrorCodes *ErrorCodes
 }
 
 // Request is the canonical arguments the gateway hands the adapter on
@@ -809,6 +814,16 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 			// The same diagnostic, said by its kind beside it: the class,
 			// and nothing else of the answer.
 			return nil, &ReferenceExpired{text: strings.TrimSpace(redacted)}
+		}
+		if code, ok := cfg.ErrorCodes.expiredPair(a.status, a.body); ok {
+			// A pair the binding declares an expired reference: the
+			// class, and the pair as the binding states it.
+			return nil, &ReferenceExpired{Status: a.status, Code: code, text: strings.TrimSpace(redacted)}
+		}
+		if refusesAccess(a.status) {
+			// The same diagnostic, said by its kind beside it: the status,
+			// and the code when the binding lists it, never the body.
+			return nil, &AccessRefused{Status: a.status, Code: cfg.ErrorCodes.accessCode(a.body), text: strings.TrimSpace(redacted)}
 		}
 		return nil, errors.New(strings.TrimSpace(redacted))
 	}

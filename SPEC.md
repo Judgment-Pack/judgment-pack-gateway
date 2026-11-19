@@ -2346,6 +2346,30 @@ status:
   is counted as any failed call. The status is the endpoint's class, as a throttled answer's is. A token step's
   token endpoint that answers `410` is a refused token request, answered `400` as before, since
   a token request sends no reference. The text begins as a failed source's does.
+  A source whose binding declares, under `errorCodes.referenceExpired`, a pair of a status and
+  the endpoint's error code (`docs/design/engine-config.md`; ADR-0047) is answered the same
+  for an answer of that status whose error code is that code: `410`, the same `code`, nothing
+  of the endpoint's answer, the sentence naming the status the endpoint gave, for `400`
+
+  `{"code":"source_reference_expired","error":"source failed: the source's endpoint answered 400 Bad Request with an error code its binding declares an expired reference: the reference the request sent has expired; nothing was retained or minted"}`
+
+  An undeclared pair is a failed source, `400`, as before.
+- **`403`** with the code `source_access_refused`, for a source of shape `http` whose adapter
+  reported an access refusal ("Adapter sources", below): its endpoint answered `403`, or `401`
+  to a request that carried no token a token step obtained. The body is exactly, for `403`,
+
+  `{"code":"source_access_refused","endpointCode":"unlisted","endpointStatus":403,"error":"source failed: the source's endpoint answered 403 Forbidden: it refused this read to the source's credential; nothing was retained or minted"}`
+
+  and for `401` the same with `401` and `401 Unauthorized`, whatever the endpoint's answer
+  held: nothing of its body or its headers, and nothing of the adapter's stderr, reaches the
+  caller. `endpointStatus` is the endpoint's status. `endpointCode` is the endpoint's error
+  code when the source's binding lists it under `errorCodes.accessRefused`, the binding's own
+  copy of it, and `unlisted` otherwise, including where the body could not be read for a code.
+  The answer is `403` for an endpoint's `401` too, since a `401` of the gateway's is the
+  caller's own credential refused. It is not receipted and takes no `callIndex`, and the session
+  is left open. A source's `401` to a token its token step obtained is the token refused,
+  answered `400` with the token step's fixed sentence as before, and a token endpoint's `401` is
+  a refused token request. The text begins as a failed source's does.
 - **`503`** with `{"error":"admission is closed for maintenance; nothing was admitted"}` while
   the gateway's admission is closed (`docs/design/mcp-server.md`, "Rotation"). It carries no
   `Retry-After`: the closure ends when its operator reopens admission, which the gateway does
@@ -2692,6 +2716,36 @@ beside any other status are a failed source, answered `400` with the stderr text
 the report existed. `adapter-http` reports a `410` from the source's endpoint so, and a `410`
 from its token endpoint as a refused token request (status 4), as before; its stderr for the
 answer is the diagnostic it wrote for any refusing answer, unchanged.
+
+A source of a binding that declares `errorCodes.referenceExpired` may also exit with status
+**8** and write `{"referenceExpired": {"code": "syncStateNotFound", "status": 400}}`: exactly
+`status` and `code`, held as above, and read only when the two are a pair the source's binding
+declares. A pair it does not declare, or this form from a source whose binding declares none, is
+a failed source as before. `adapter-http` reports so an answer whose status and error code, read
+from at most 4 KiB of its body (ADR-0047), are a declared pair.
+
+**An access refusal, shape `http`.** An adapter of a source declared `http` whose endpoint
+answered `403`, or `401` to a request that carried no token a token step obtained, may exit with
+status **10** and write on stdout exactly
+
+```json
+{"accessRefused": {"code": "unlisted", "status": 403}}
+```
+
+— one member, `accessRefused`, an object of exactly `status`, `401` or `403`, and `code`, the
+string `unlisted` or a code of 1 to 64 ASCII letters, digits, `_`, `.` and `-`; each member once,
+held as the reports above are. The gateway reads stdout beside status 10 from a source declared
+`http` and from no other, from no token step's token request, and a `401` from no source with a
+token step, and answers the acquisition `403` with the code `source_access_refused` ("When an
+acquisition does not happen", above). It passes on the reported code only when the source's
+binding lists it under `errorCodes.accessRefused`, and `unlisted` otherwise. Status 10 from a
+source of another shape, or from a bare command, status 10 beside anything else on stdout, and
+the report beside any other status are a failed source, answered `400` with the stderr text, as
+before the report existed. `adapter-http` reads the error code at `errorCodes.at` from at most
+4 KiB of the body: exactly one JSON value, no member name repeated in any object, a string of
+the code form. It reports that code only when it is on the access list, and `unlisted` for any
+other body. Its stderr for the answer is the diagnostic it wrote for any refusing answer,
+unchanged.
 
 **A read-only refusal, shape `gcp-asset`.** The engine's source of a `gcp-asset` binding (above)
 refuses a credential it cannot show to be read-only by exiting with status **9** and writing on

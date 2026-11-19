@@ -1612,7 +1612,8 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.live.http.checkPath != "" {
 				check = []string{"--check-path=" + b.live.http.checkPath}
 			}
-			spec := sourceSpec{argv: httpSourceArgv(adapter("adapter-http"), *b.live.http, p.credentials["live"], p.tokenStep), env: env, user: p.user, shape: "http", binding: p.binding, check: check, scope: p.scope, tokenStep: p.tokenStep != nil, notRetained: p.notRetained}
+			spec := sourceSpec{argv: httpSourceArgv(adapter("adapter-http"), *b.live.http, p.credentials["live"], p.tokenStep), env: env, user: p.user, shape: "http", binding: p.binding, check: check, scope: p.scope, tokenStep: p.tokenStep != nil, notRetained: p.notRetained,
+				errorCodes: b.live.http.errorCodes}
 			if spec.tokenStep {
 				spec.requestEndpoint = b.live.http.endpoint
 				spec.requestPaths = append([]string(nil), b.live.http.paths...)
