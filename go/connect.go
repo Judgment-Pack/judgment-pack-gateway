@@ -398,10 +398,11 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	candidate.platforms = append(append([]platformConfig(nil), cfg.platforms...), entry)
 	sort.Slice(candidate.platforms, func(i, j int) bool { return candidate.platforms[i].name < candidate.platforms[j].name })
 	bindings[req.platform] = b
-	// An MCP server that names scope or scopeFrom serves live tools
-	// declared read-external alone, and both starts refuse another
-	// (ADR-0044): so is a configuration connect would write.
-	if err := scopedFrontReads(candidate, bindings); err != nil {
+	// A platform fixed to a scope identifier, and one an MCP server that
+	// names scopeFrom serves, takes live tools declared read-external
+	// alone, and both starts refuse another (ADR-0044, ADR-0046): so is a
+	// configuration connect would write.
+	if err := scopedLiveReads(candidate, bindings); err != nil {
 		return out, err
 	}
 	// The described operation's check captures descriptors unless the

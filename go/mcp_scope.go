@@ -129,25 +129,29 @@ func servedPlatforms(cfg engineConfig) ([]platformConfig, error) {
 	return served, nil
 }
 
-// scopedFrontReads holds a server that names scope or scopeFrom to reads by
-// declaration (ADR-0044): each live tool of each platform it serves -- those
-// fixed to its scope identifier, or in the caller form every platform, those
-// of none included -- declares effect read-external, or the start is refused
+// scopedLiveReadsRefusal is the one sentence of scopedLiveReads, naming the
+// platform and the tool and nothing else (ADR-0044, decision 2; ADR-0046,
+// decision 2).
+const scopedLiveReadsRefusal = "platform %s: tool %q is not declared effect read-external, and a platform fixed to a scope identifier, or one an MCP server that names scopeFrom serves, takes no other live tool, since no decision policy holds a live tool's call (ADR-0044, ADR-0046); declare the tool read-external if it only reads, or move it to a platform of no scope identifier, with no mcp or an mcp that names neither scope nor scopeFrom"
+
+// scopedLiveReads holds live tools to reads by declaration where no
+// decision can hold their call: each live tool of each platform fixed to a
+// scope identifier, whatever the configuration's mcp member, none included
+// (ADR-0046), and behind a server that takes its callers' scope identifiers
+// each live tool of every platform, those of none included (ADR-0044,
+// decision 3), declares effect read-external, or the start is refused
 // naming the platform and the tool. No decision policy holds a live tool's
 // call, and a platform fixed to a scope identifier enables no write
 // operation to carry one (ADR-0026, decision 4), so a propose or an act
-// tool, and a tool with no declaration, is refused rather than served or
-// left out. A configuration with no mcp member, or one of neither form, is
-// not read here. Both starts apply it, serve's and gateway mcp's, and
-// connect holds the configuration it would write to it.
-func scopedFrontReads(cfg engineConfig, bindings map[string]binding) error {
-	if cfg.mcp == nil || !cfg.mcp.scoped() {
-		return nil
-	}
+// tool, and a tool with no declaration, is refused rather than run, served
+// or left out. A platform of no scope identifier is read only behind the
+// caller form. Both starts apply it, serve's and gateway mcp's, and connect
+// holds the configuration it would write to it, so no /acquire of such a
+// tool reaches its adapter.
+func scopedLiveReads(cfg engineConfig, bindings map[string]binding) error {
+	callerForm := cfg.mcp != nil && cfg.mcp.scopeFromCaller
 	for _, p := range cfg.platforms {
-		// a platform of another scope identifier is served by no server of
-		// this configuration
-		if cfg.mcp.scope != "" && p.scope != cfg.mcp.scope {
+		if p.scope == "" && !callerForm {
 			continue
 		}
 		b, ok := bindings[p.name]
@@ -157,7 +161,7 @@ func scopedFrontReads(cfg engineConfig, bindings map[string]binding) error {
 		for _, tool := range b.live.tools {
 			owner, declared := b.live.taxonomies[tool]
 			if !declared || !owner.Valid() || owner.Effect != "read-external" {
-				return fmt.Errorf("platform %s: tool %q is not declared effect read-external, and an MCP server that names scope or scopeFrom serves no other live tool, since no decision policy holds a live tool's call (ADR-0044); declare the tool read-external if it only reads, or serve it from a platform of no scope identifier behind an mcp that names neither", p.name, requestText(tool))
+				return fmt.Errorf(scopedLiveReadsRefusal, p.name, requestText(tool))
 			}
 		}
 	}
