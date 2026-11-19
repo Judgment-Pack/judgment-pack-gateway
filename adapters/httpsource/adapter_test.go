@@ -335,7 +335,7 @@ func TestParseRequestIsStrict(t *testing.T) {
 		`{"path":"/search","body":{}} trailing`:      "trailing content",
 		`{"path":"/search","extra":1}`:               `unknown member "extra"`,
 		`{"path":"/search","PATH":"/x"}`:             `unknown member "PATH"`,
-		`{"body":{}}`:                                `"path" is required`,
+		`{"body":{}}`:                                `"path" or "link" is required`,
 		`{"path":"search"}`:                          `"path" must begin with "/"`,
 		`{"path":"/search?x=1"}`:                     `carries a query`,
 		`{"path":"/a//b"}`:                           `empty segment`,
