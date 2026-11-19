@@ -1031,7 +1031,15 @@ func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessag
 	var body []byte
 	if tool.seal {
 		path = "/seal"
-		body, _ = json.Marshal(map[string]string{"session": session})
+		// a server fixed to a scope identifier names it on every seal, so the
+		// signer seals that identifier's sessions alone and answers any other
+		// as one it does not hold (ADR-0041); the caller's token still holds
+		// the seal to the caller's reach
+		seal := map[string]string{"session": session}
+		if scope := s.cfg.mcp.scope; scope != "" {
+			seal["scope"] = scope
+		}
+		body, _ = json.Marshal(seal)
 	} else {
 		path = "/acquire"
 		if len(bytes.TrimSpace(arguments)) == 0 {

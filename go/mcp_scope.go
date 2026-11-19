@@ -19,8 +19,10 @@ package main
 // In both, a caller is listed, and may call, the platform tools of the
 // sources its verified token reaches, by the rule and the function the
 // signer applies (ADR-0037, caller_scopes.go); the seal tool is listed to
-// every caller, since the signer holds its /seal to the caller itself. Over
-// stdio the token is given at start, and its reach is read there once.
+// every caller, since the signer holds its /seal to the caller itself, and a
+// server fixed to a scope identifier names it on every seal it forwards, so
+// it seals that identifier's sessions alone (ADR-0041). Over stdio the token
+// is given at start, and its reach is read there once.
 //
 // A scope identifier never comes from the client: no tool's input schema
 // gains a member, and a call's arguments are the platform tool's own,

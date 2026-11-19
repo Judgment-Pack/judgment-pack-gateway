@@ -157,6 +157,23 @@ func (r scopeReach) holds(scope string) bool {
 	return r.ids[scope]
 }
 
+// narrowedTo is the reach held to the scope identifier a /seal request names
+// (ADR-0041): where it names one, the reach takes that identifier alone, and
+// only where it took it already; where it names none, the reach is as it
+// was. A request naming a scope reaches no session of none, so a front fixed
+// to one scope identifier, which names it on every seal, seals that
+// identifier's sessions and no other: one of another scope, or of none, is
+// answered as one the gateway does not hold (sealFor).
+func (r scopeReach) narrowedTo(asked requestedScope) scopeReach {
+	if !asked.named {
+		return r
+	}
+	if asked.value == "" || !r.holds(asked.value) {
+		return scopeReach{}
+	}
+	return scopeReach{ids: map[string]bool{asked.value: true}}
+}
+
 // reachOf is what a caller reaches under the configured identity (ADR-0037,
 // decision 3), or the 401 refusal of a token its subject's entry does not
 // grant. With no identity there is no caller to hold, and with "unchecked"

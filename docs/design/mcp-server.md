@@ -301,7 +301,12 @@ In both forms a caller is listed, and may call, only the platform tools of the s
 token reaches. The rule is ADR-0037's, computed by the signer's own function. Any
 other tool is answered `unknown tool: <name>`, exactly as a name the table does not hold, and
 nothing is forwarded. `engine.seal` is listed to every caller, because the signer holds
-`/seal` to the caller itself. Over HTTP the reach is read from each request's token. Over
+`/seal` to the caller itself. A server fixed to a scope identifier names it in every `/seal`
+it forwards (`{"scope": ..., "session": ...}`), and the signer answers a session of another
+scope identifier, or of none, `no such session`, as it answers a name it does not hold, so
+the fixed form seals its own scope's sessions alone whatever else the caller's token reaches
+([ADR-0041](../adr/0041-what-one-scope-learns-of-another-through-a-shared-gateway.md)); the
+caller form names no scope on a seal. Over HTTP the reach is read from each request's token. Over
 stdio it is read once at start, with `ENGINE_TOKEN`, and holds until the next start: after the
 token expires, or the subject's grant is narrowed, `tools/list` still lists the tools of the
 start, and the signer refuses each call of them (`401`, or the scope refusal). A token the signer refuses `401` (a
