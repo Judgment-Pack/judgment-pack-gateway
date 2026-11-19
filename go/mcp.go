@@ -157,11 +157,14 @@ type mcpServer struct {
 	// reports is the diagnostics stream: one writer of its own, which no
 	// lock and no call waits for
 	reports *diagnosticStream
-	// listing is what tools/list answers, each tool's entry serialized
-	// once at start from the table and its platform's verified snapshot;
-	// dropped names the platforms whose snapshots the listing's bound left
-	// out.
+	// listing is what tools/list answers a caller listed every tool, each
+	// tool's entry serialized once at start from the table and its
+	// platform's verified snapshot; held is what it is assembled from, and a
+	// scoped server's caller's listing too (toolList); dropped names the
+	// platforms whose snapshots the listing's bound left out, each of its
+	// group (buildListing).
 	listing []json.RawMessage
+	held    *heldListing
 	dropped []string
 }
 
@@ -259,9 +262,17 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		return nil, err
 	}
 	defer dir.Close()
-	if s.listing, s.dropped, err = buildListing(s.order, s.tools, count, served, bindings, dir); err != nil {
+	// A server that takes each caller's scope identifiers bounds each scope
+	// identifier's listing, and that of the platforms of none, on its own
+	// (ADR-0041): which snapshots one serves never turns on another's.
+	group := func(platformConfig) string { return "" }
+	if cfg.mcp.scopeFromCaller {
+		group = func(p platformConfig) string { return p.scope }
+	}
+	if s.held, s.dropped, err = buildListing(s.order, s.tools, count, served, bindings, dir, group); err != nil {
 		return nil, err
 	}
+	s.listing = s.held.assemble(s.order)
 	return s, nil
 }
 
@@ -1031,7 +1042,15 @@ func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessag
 	var body []byte
 	if tool.seal {
 		path = "/seal"
-		body, _ = json.Marshal(map[string]string{"session": session})
+		// a server fixed to a scope identifier names it on every seal, so the
+		// signer seals that identifier's sessions alone and answers any other
+		// as one it does not hold (ADR-0041); the caller's token still holds
+		// the seal to the caller's reach
+		seal := map[string]string{"session": session}
+		if scope := s.cfg.mcp.scope; scope != "" {
+			seal["scope"] = scope
+		}
+		body, _ = json.Marshal(seal)
 	} else {
 		path = "/acquire"
 		if len(bytes.TrimSpace(arguments)) == 0 {

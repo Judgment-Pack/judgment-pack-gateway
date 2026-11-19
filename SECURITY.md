@@ -764,6 +764,21 @@ whose `scope` a verifier of this version reports `malformed`. Which sources are 
 identifier can be learned by an admitted caller from how the gateway answers a request that
 leaves `scope` out; which identifier, never.
 
+What a caller held to scope identifiers learns of another scope identifier through the gateway
+they share is bounded too ([ADR-0041](docs/adr/0041-what-one-scope-learns-of-another-through-a-shared-gateway.md)).
+`/posture` is judged over the sources the caller reaches alone. The MCP front that takes each
+caller's scope identifiers bounds each one's listing on its own, and a front fixed to one
+scope identifier seals that identifier's sessions alone. So none of those answers changes with
+another scope's sources, platforms or sessions. One disclosure is left: the session namespace
+is the gateway's. A caller that names a session another scope identifier (or none) uses is
+refused, where an unused name is accepted, so it learns the name is in use, though not by which
+scope, nor anything the session holds. `/seal` tells the same by its time even where its answer
+is the same bytes: a session this process holds is answered without a read, and an unused name
+after reading the registry and the store. Session ids that must not be guessed carry at least 128
+bits of randomness. One `/seal` answer is shared by every scope: a session another process
+sealed in the registry is said to be sealed to any caller, a front fixed to another scope
+identifier included, since `/registry` shows that seal to anyone.
+
 **A checkpoint witness is reached from other hosts by other parties** ([ADR-0013](docs/adr/0013-checkpoint-witness.md);
 [`SPEC.md`](SPEC.md) §6, "Witness endpoints"). It is the first surface of this reference meant
 for that, and what the reference does for it is narrow. A submission carries a bearer token of

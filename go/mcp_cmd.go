@@ -102,7 +102,11 @@ func runMCP(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	}
 	server.log = stderr
 	if len(server.dropped) > 0 {
-		server.reports.controlf("mcp: the tool listing would pass %d bytes; the snapshots of %s are not served, and their tools are described as if nothing were captured", listingBound, strings.Join(server.dropped, ", "))
+		listing := "the tool listing"
+		if cfg.mcp.scopeFromCaller {
+			listing = "the tool listing of their scope identifier's platforms, or of the platforms of none,"
+		}
+		server.reports.controlf("mcp: %s would pass %d bytes; the snapshots of %s are not served, and their tools are described as if nothing were captured", listing, listingBound, strings.Join(server.dropped, ", "))
 	}
 	defer server.reports.flush(time.Second)
 	server.operatorControls(ctx)

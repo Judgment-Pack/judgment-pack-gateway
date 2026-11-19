@@ -2094,8 +2094,12 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 // session this process holds, and of one it does not -- left open by another
 // process, held by another instance, or unreadable -- whose scope the store
 // gives (storedScope); a caller held to scope identifiers is answered so too
-// where the store cannot say the session's scope. A seal in the registry is
-// said to be one: /registry serves every seal to anyone.
+// where the store cannot say the session's scope. A request that names a
+// scope identifier comes here with the reach narrowed to it (narrowedTo), so
+// a session of another scope, or of none, is answered so too, whoever asks.
+// A seal in the registry of a session this process does not hold is said to
+// be one to every caller, whatever scope the request names: /registry serves
+// every seal to anyone (SPEC.md §6; ADR-0037, decision 3; kept by ADR-0041).
 func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err}
@@ -2595,7 +2599,13 @@ func (g *gatewayService) handler() http.Handler {
 			return
 		}
 		limitBody(w, r)
-		body, err := requestMembers(r.Body, sealRequestMembers)
+		// /seal reads a scope member where /acquire does: only where the
+		// configuration fixes some source to a scope identifier (ADR-0041)
+		allowed := sealRequestMembers
+		if scoped {
+			allowed = withMember(allowed, "scope")
+		}
+		body, err := requestMembers(r.Body, allowed)
 		if err != nil {
 			fail(w, badRequest{err})
 			return
@@ -2605,7 +2615,12 @@ func (g *gatewayService) handler() http.Handler {
 			fail(w, badRequest{err})
 			return
 		}
-		out, err := g.sealFor(session, g.reachOf(who))
+		asked, err := requestScope(body)
+		if err != nil {
+			fail(w, badRequest{errors.New("scope must be a string, the scope identifier of the session to seal")})
+			return
+		}
+		out, err := g.sealFor(session, g.reachOf(who).narrowedTo(asked))
 		if err != nil {
 			fail(w, err)
 			return
@@ -2699,9 +2714,10 @@ func (g *gatewayService) handler() http.Handler {
 		in := postureInput{configured: true, seed: g.seedPath, sources: g.sources, public: true,
 			listener:     listenerReach{loopback: boundToLoopback(g.listening), authenticated: g.identity != nil},
 			callerScopes: callerScopesMode(g.identity)}
-		// With caller scopes checked, programs names only the sources the
-		// caller reaches (ADR-0037); the installation's caller, "unchecked"
-		// and no identity reach every source and read every one, as before.
+		// With caller scopes checked, the report is of the sources the
+		// caller reaches alone, every line judged over them (ADR-0037,
+		// ADR-0041); the installation's caller, "unchecked" and no identity
+		// reach every source and read every one, as before.
 		if reach := g.reachOf(who); !reach.every {
 			in.reach = &reach
 		}

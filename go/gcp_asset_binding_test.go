@@ -345,13 +345,13 @@ func TestAGCPAssetRefusalClosesTheSource(t *testing.T) {
 	if runs := gcpStandInRuns(dir); !reflect.DeepEqual(runs, []string{"TOKEN:false"}) {
 		t.Fatalf("the start's runs: %v", runs)
 	}
-	if lines := readOnlyCredentialsLines(service.sources, nil); len(lines) != 1 || lines[0].state != posturePartial {
+	if lines := readOnlyCredentialsLines(service.sources); len(lines) != 1 || lines[0].state != posturePartial {
 		t.Fatalf("the posture line: %+v", lines)
 	}
-	if p := readOnlySourcePostures(service.sources, nil); len(p) != 1 || p[0].state != "serving" || p[0].writeCheck != "passed" || p[0].refusal != nil {
+	if p := readOnlySourcePostures(service.sources); len(p) != 1 || p[0].state != "serving" || p[0].writeCheck != "passed" || p[0].refusal != nil {
 		t.Fatalf("serving: %+v", p)
 	}
-	if p := readOnlySourcePostures(service.sources, &scopeReach{none: false}); len(p) != 0 {
+	if p := hostPosture(postureInput{configured: true, sources: service.sources, reach: &scopeReach{}}).readOnly; len(p) != 0 {
 		t.Fatalf("a reach that takes no unscoped source lists it: %+v", p)
 	}
 
@@ -384,12 +384,12 @@ func TestAGCPAssetRefusalClosesTheSource(t *testing.T) {
 	if !strings.Contains(log.String(), "serve: source inventory/live closed on a page") || strings.Count(log.String(), "closed on a") != 1 {
 		t.Fatalf("the closure is not said once:\n%s", log.String())
 	}
-	p := readOnlySourcePostures(service.sources, nil)
+	p := readOnlySourcePostures(service.sources)
 	if len(p) != 1 || p[0].state != "closed" || p[0].refusal == nil || p[0].refusal.reason != "" || p[0].refusal.on != "page" ||
 		!strings.Contains(p[0].text(), "refusal=unstated on page") {
 		t.Fatalf("closed on a page: %+v", p)
 	}
-	if lines := readOnlyCredentialsLines(service.sources, nil); !strings.HasSuffix(lines[0].reason, "; 1 of them closed") {
+	if lines := readOnlyCredentialsLines(service.sources); !strings.HasSuffix(lines[0].reason, "; 1 of them closed") {
 		t.Fatalf("the posture line counts no closure: %+v", lines)
 	}
 	for _, text := range []string{said.String(), got.body, log.String(), p[0].text()} {
@@ -419,7 +419,7 @@ func TestAGCPAssetRefusalClosesTheSource(t *testing.T) {
 	if !strings.Contains(log.String(), "serve: source inventory/live closed on a refresh: credential-can-write") {
 		t.Fatalf("the refresh's closure is not said:\n%s", log.String())
 	}
-	if p := readOnlySourcePostures(service.sources, nil); p[0].state != "closed" || p[0].writeCheck != "refused" || p[0].refusal.on != "refresh" {
+	if p := readOnlySourcePostures(service.sources); p[0].state != "closed" || p[0].writeCheck != "refused" || p[0].refusal.on != "refresh" {
 		t.Fatalf("closed on a refresh: %+v", p)
 	}
 }
@@ -435,7 +435,7 @@ func TestTheStartRefusesAGCPAssetSourceNotShownReadOnly(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "credential-scope-unknown") || !strings.Contains(err.Error(), "does not start") {
 		t.Fatalf("a scope refused at the start: %v", err)
 	}
-	if p := readOnlySourcePostures(service.sources, nil); p[0].state != "closed" || p[0].refusal.on != "start" || p[0].writeCheck != "refused" {
+	if p := readOnlySourcePostures(service.sources); p[0].state != "closed" || p[0].refusal.on != "start" || p[0].writeCheck != "refused" {
 		t.Fatalf("closed at the start: %+v", p)
 	}
 	service.sources = map[string]sourceSpec{"inventory/live": gcpStandIn(dir, gcpStandInOp, `{"sealed":`, 1, ``, 0)}
@@ -443,7 +443,7 @@ func TestTheStartRefusesAGCPAssetSourceNotShownReadOnly(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "the read-only check did not complete") {
 		t.Fatalf("a check that did not complete: %v", err)
 	}
-	if p := readOnlySourcePostures(service.sources, nil); p[0].state != "not-started" || p[0].refusal != nil {
+	if p := readOnlySourcePostures(service.sources); p[0].state != "not-started" || p[0].refusal != nil {
 		t.Fatalf("not started: %+v", p)
 	}
 }
@@ -498,7 +498,7 @@ func TestAGCPAssetCheckTheTimeEndedClosesNothing(t *testing.T) {
 	if runs := gcpStandInRuns(dir); !reflect.DeepEqual(runs, []string{"TOKEN:false", "TOKEN:false"}) {
 		t.Fatalf("the page ran on a token that was not obtained: %v", runs)
 	}
-	if p := readOnlySourcePostures(service.sources, nil); p[0].state != "serving" || p[0].refusal != nil {
+	if p := readOnlySourcePostures(service.sources); p[0].state != "serving" || p[0].refusal != nil {
 		t.Fatalf("a check that did not complete closed the source: %+v", p)
 	}
 
@@ -530,9 +530,23 @@ func TestGCPAssetTimed(t *testing.T) {
 	}
 }
 
-// The posture line's count of closed sources is of the sources the
-// caller reaches; its state is judged over every source, as every line's
-// is; and what "checked" covers is said with it.
+// postureLinesOf are the lines of the protection in the report served to a
+// caller of the reach, nil the installation's, as hostPosture judges it.
+func postureLinesOf(sources map[string]sourceSpec, reach *scopeReach, protection string) []postureLine {
+	var lines []postureLine
+	for _, l := range hostPosture(postureInput{configured: true, sources: sources, reach: reach}).lines {
+		if l.name == protection {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+// The posture line is of the sources the caller reaches (ADR-0041): its
+// state and every count, the closed among them, so a source of a scope the
+// caller does not reach, closed or held less, changes none of it; a caller
+// reaching no read-only source is given no line; and what "checked" covers
+// is said with it.
 func TestReadOnlyCredentialsCountsTheClosedTheCallerReaches(t *testing.T) {
 	iamOp := gcpStandInOp
 	iamOp.contentTypes = []string{"RESOURCE", "IAM_POLICY"}
@@ -544,27 +558,28 @@ func TestReadOnlyCredentialsCountsTheClosedTheCallerReaches(t *testing.T) {
 		"b/iam":   {shape: "http", scope: "scope-b", gcpAsset: newGCPAssetSource(iamOp, gcpAssetTokenMetadata, false)},
 		"b/other": {shape: "http", scope: "scope-b", gcpAsset: newGCPAssetSource(gcpStandInOp, gcpAssetTokenMetadata, false)},
 	}
-	// Every count is of the sources the caller reaches; the state, as
-	// every protection line's, is judged over every source.
 	for _, c := range []struct {
 		name  string
 		reach *scopeReach
+		state string
 		want  string
 	}{
-		{"every source", nil, "2 of the 4 read-only sources this caller reaches serve IAM_POLICY"},
-		{"scope A's caller", &scopeReach{ids: map[string]bool{"scope-a": true}}, "1 of the 1 read-only sources this caller reaches serve IAM_POLICY"},
-		{"scope B's caller", &scopeReach{ids: map[string]bool{"scope-b": true}}, "1 of the 3 read-only sources this caller reaches serve IAM_POLICY"},
-		{"a caller reaching none", &scopeReach{ids: map[string]bool{"scope-c": true}}, "0 of the 0 read-only sources this caller reaches serve IAM_POLICY"},
+		{"every source", nil, posturePartial, "2 of the 4 read-only sources this caller reaches serve IAM_POLICY"},
+		{"scope A's caller", &scopeReach{ids: map[string]bool{"scope-a": true}}, postureEnforced, "1 of the 1 read-only sources this caller reaches serve IAM_POLICY"},
+		{"scope B's caller", &scopeReach{ids: map[string]bool{"scope-b": true}}, posturePartial, "1 of the 3 read-only sources this caller reaches serve IAM_POLICY"},
 	} {
 		closedWant := "; 0 of them closed"
 		if c.reach == nil || c.reach.ids["scope-a"] {
 			closedWant = "; 1 of them closed"
 		}
-		lines := readOnlyCredentialsLines(sources, c.reach)
-		if len(lines) != 1 || lines[0].state != posturePartial || !strings.Contains(lines[0].reason, c.want) ||
+		lines := postureLinesOf(sources, c.reach, protectionReadOnlyCredentials)
+		if len(lines) != 1 || lines[0].state != c.state || !strings.Contains(lines[0].reason, c.want) ||
 			!strings.HasSuffix(lines[0].reason, closedWant) || !strings.Contains(lines[0].reason, "not a grant through a group") {
 			t.Errorf("%s: %+v", c.name, lines)
 		}
+	}
+	if lines := postureLinesOf(sources, &scopeReach{ids: map[string]bool{"scope-c": true}}, protectionReadOnlyCredentials); lines != nil {
+		t.Errorf("a caller reaching no read-only source: %+v", lines)
 	}
 	if s := (readOnlyRefusal{reason: refusalCredentialBoundAtRsrc, subject: "//storage.googleapis.com/b"}).sentence(); !strings.Contains(s, "or allUsers or allAuthenticatedUsers") {
 		t.Fatalf("the refusal's sentence: %s", s)

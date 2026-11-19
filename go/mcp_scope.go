@@ -19,8 +19,13 @@ package main
 // In both, a caller is listed, and may call, the platform tools of the
 // sources its verified token reaches, by the rule and the function the
 // signer applies (ADR-0037, caller_scopes.go); the seal tool is listed to
-// every caller, since the signer holds its /seal to the caller itself. Over
-// stdio the token is given at start, and its reach is read there once.
+// every caller, since the signer holds its /seal to the caller itself, and a
+// server fixed to a scope identifier names it on every seal it forwards, so
+// it seals that identifier's sessions alone (ADR-0041). A server taking its
+// callers' scope identifiers bounds each one's listing on its own, and each
+// caller's within the bound, so what one scope's platforms hold changes
+// nothing another's caller is listed (ADR-0041). Over stdio the token is
+// given at start, and its reach is read there once.
 //
 // A scope identifier never comes from the client: no tool's input schema
 // gains a member, and a call's arguments are the platform tool's own,
@@ -194,18 +199,21 @@ func (s *mcpServer) callReach(sess *mcpSession, token string) func() scopeReach 
 }
 
 // toolList is what tools/list answers a message of the transport session
-// under its token: one page, no cursor, rendered at start, of the tools the
-// caller is served.
+// under its token: one page, no cursor, of the tools the caller is served,
+// their entries rendered at start. A scoped server's caller's listing is
+// assembled from the tools it reaches alone, within the listing's bound
+// (heldListing.assemble), so it is the same whatever the platforms of a
+// scope identifier it does not reach hold (ADR-0041).
 func (s *mcpServer) toolList(sess *mcpSession, token string) []json.RawMessage {
 	if !s.cfg.mcp.scoped() {
 		return s.listing
 	}
 	reach := s.callReach(sess, token)
-	list := []json.RawMessage{}
-	for i, name := range s.order {
+	names := []string{}
+	for _, name := range s.order {
 		if s.reachable(s.tools[name], reach) {
-			list = append(list, s.listing[i])
+			names = append(names, name)
 		}
 	}
-	return list
+	return s.held.assemble(names)
 }

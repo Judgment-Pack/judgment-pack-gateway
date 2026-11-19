@@ -157,6 +157,23 @@ func (r scopeReach) holds(scope string) bool {
 	return r.ids[scope]
 }
 
+// narrowedTo is the reach held to the scope identifier a /seal request names
+// (ADR-0041): where it names one, the reach takes that identifier alone, and
+// only where it took it already; where it names none, the reach is as it
+// was. A request naming a scope reaches no session of none, so a front fixed
+// to one scope identifier, which names it on every seal, seals that
+// identifier's sessions and no other: one of another scope, or of none, is
+// answered as one the gateway does not hold (sealFor).
+func (r scopeReach) narrowedTo(asked requestedScope) scopeReach {
+	if !asked.named {
+		return r
+	}
+	if asked.value == "" || !r.holds(asked.value) {
+		return scopeReach{}
+	}
+	return scopeReach{ids: map[string]bool{asked.value: true}}
+}
+
 // reachOf is what a caller reaches under the configured identity (ADR-0037,
 // decision 3), or the 401 refusal of a token its subject's entry does not
 // grant. With no identity there is no caller to hold, and with "unchecked"
@@ -254,14 +271,22 @@ func callerScopesStartLine(id *identityConfig, sources map[string]sourceSpec) st
 }
 
 // callerScopesLine is /posture's line, given wherever an identity is
-// configured or some source is fixed to a scope identifier.
-func callerScopesLine(mode string, sources map[string]sourceSpec) []postureLine {
+// configured or some source is fixed to a scope identifier. cut is whether
+// the report is served to a caller held to scope identifiers and the sources
+// are the ones its token reaches (hostPosture, ADR-0041): where none of them
+// is fixed to a scope identifier the line says so of them alone, and says
+// nothing of whether another scope identifier's sources exist.
+func callerScopesLine(mode string, sources map[string]sourceSpec, cut bool) []postureLine {
 	scoped := anyScoped(sources)
 	if mode == "" || mode == "no-identity" && !scoped {
 		return nil
 	}
 	switch mode {
 	case "checked":
+		if !scoped && cut {
+			return []postureLine{{protectionCallerScopes, postureEnforced,
+				"no source this caller's token reaches is fixed to a scope identifier; a token whose " + scopeClaimName + " names one the configuration does not grant its subject is refused 401"}}
+		}
 		if !scoped {
 			return []postureLine{{protectionCallerScopes, postureEnforced,
 				"no source is fixed to a scope identifier; a token whose " + scopeClaimName + " names one the configuration does not grant its subject is refused 401"}}
