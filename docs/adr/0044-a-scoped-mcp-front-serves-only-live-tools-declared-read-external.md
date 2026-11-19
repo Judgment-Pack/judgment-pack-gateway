@@ -114,7 +114,7 @@ refusal at start is where the operator can fix it.
 - Bad, because this is the front's rule. A caller that sends `/acquire` to the signer itself
   can still name a scoped platform's act live tool. Beside `mcp` the signer listens on loopback
   alone, but a configuration without `mcp` may listen off loopback. Holding the signer's live
-  sources of a scoped platform to reads is not decided here.
+  sources of a scoped platform to reads is not decided here; #519 tracks it.
 - Revisit when a decision policy can hold a live tool's call, when `/act` takes a scope, or when
   the signer's own live sources of a scoped platform are held to reads.
 
