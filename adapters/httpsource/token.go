@@ -7,7 +7,8 @@ package httpsource
 // section 2.2, RFC 7521 section 4.2), and sends that token as the bearer.
 // The assertion is either a JWT this adapter signs with a private key held
 // as a member of its credentials file, or a federated identity token read
-// from a file at each token request. The key, the federated token, the
+// from a file at each token request, or asked of the platform's metadata
+// server at each token request (metadata.go). The key, the federated token, the
 // assertion and the access token are this process's alone: none is written
 // on stdout but sealed, and none appears in a diagnostic.
 
@@ -50,7 +51,9 @@ import (
 // assertion with, and FederatedTokenFile, a file whose content is the
 // assertion, found again at each token request under FederatedTokenDir,
 // its directory as resolved when the step was configured (the file's own
-// directory as written when empty; federated.go). X5T and X5TS256 are a fixed certificate thumbprint for the
+// directory as written when empty; federated.go), and MetadataAudience,
+// the audience of an identity token asked of the platform's metadata server
+// at each token request (metadata.go). X5T and X5TS256 are a fixed certificate thumbprint for the
 // assertion's header, at most one, beside KeyMember only. Scope, when
 // given, is sent as the request's scope.
 type TokenStep struct {
@@ -59,6 +62,7 @@ type TokenStep struct {
 	KeyMember          string
 	FederatedTokenFile string
 	FederatedTokenDir  string
+	MetadataAudience   string
 	X5T                string
 	X5TS256            string
 	Scope              string
@@ -156,9 +160,17 @@ func holdTokenStep(t *TokenStep) (*url.URL, error) {
 	if t.ClientID == "" || len(t.ClientID) > 256 || !visible(t.ClientID) {
 		return nil, errors.New("--client-id is 1 to 256 printable ASCII characters without spaces")
 	}
+	kinds := 0
+	for _, given := range []bool{t.KeyMember != "", t.FederatedTokenFile != "", t.MetadataAudience != ""} {
+		if given {
+			kinds++
+		}
+	}
 	switch {
-	case (t.KeyMember == "") == (t.FederatedTokenFile == ""):
-		return nil, errors.New("a token step takes exactly one of --assertion-key and --federated-token-file")
+	case kinds != 1:
+		return nil, errors.New("a token step takes exactly one of --assertion-key, --federated-token-file and --federated-token-metadata-audience")
+	case t.MetadataAudience != "" && !audienceForm.MatchString(t.MetadataAudience):
+		return nil, errors.New("--federated-token-metadata-audience is 1 to 256 ASCII letters, digits and the characters . _ ~ : / @ -")
 	case t.FederatedTokenFile == "" && t.FederatedTokenDir != "":
 		return nil, errors.New("--federated-token-dir is the directory of --federated-token-file, and only beside it")
 	case t.FederatedTokenFile != "" && (!filepath.IsAbs(t.FederatedTokenFile) || filepath.Clean(t.FederatedTokenFile) != t.FederatedTokenFile):
@@ -207,12 +219,14 @@ func visible(s string) bool {
 }
 
 // tokenSigner is the step's credential, read: the key and the algorithm
-// its type gives, or the federated token; and the material the seal's key
-// is derived from.
+// its type gives, or the federated token, or the audience an identity token
+// is asked of the metadata server for when a token is requested; and the
+// material the seal's key is derived from.
 type tokenSigner struct {
 	key       crypto.Signer
 	alg       string
 	federated string
+	metadata  string
 	material  []byte
 }
 
@@ -221,8 +235,17 @@ type tokenSigner struct {
 // P-256 key (ES256); or the federated token, the file's content without
 // the white space around it, of at most 16 KiB of printable ASCII. A
 // credential that is not there, or is not one of these, is
-// TokenNoCredential, and the refusal quotes nothing of it.
+// TokenNoCredential, and the refusal quotes nothing of it. A metadata step
+// reads no token here -- it is asked for when one is requested -- and its
+// seal's material is the credentials member sealKey, of at least 32 bytes.
 func readTokenCredential(t *TokenStep, members map[string]string) (*tokenSigner, error) {
+	if t.MetadataAudience != "" {
+		key, ok := members[sealKeyMember]
+		if !ok || len(key) < minSealKey {
+			return nil, tokenFailure(TokenNoCredential, "the credentials file of a metadata token step holds sealKey, a string of at least %d bytes the sealed token's key is derived from", minSealKey)
+		}
+		return &tokenSigner{metadata: t.MetadataAudience, material: []byte(key)}, nil
+	}
 	if t.FederatedTokenFile != "" {
 		file, err := openFederatedToken(t)
 		if err != nil {
@@ -465,16 +488,23 @@ func federatedOrNone(t *TokenStep) string {
 
 // sealAAD binds a sealed token to the configuration it was obtained under:
 // the source's endpoint, the token endpoint, the client, the kind of
-// assertion and the scope asked for. A token sealed for one is not opened
-// under another, whatever hands it in.
+// assertion and the scope asked for, and a metadata step's audience. A
+// token sealed for one is not opened under another, whatever hands it in.
+// A step of the key or the file form is bound as it was before the
+// metadata form existed.
 func sealAAD(cfg Config) []byte {
 	t := cfg.Token
-	out, _ := json.Marshal([]string{sealInfo, cfg.Endpoint, t.Endpoint, t.ClientID, t.KeyMember, t.FederatedTokenFile, federatedOrNone(t), t.X5T, t.X5TS256, t.Scope})
+	words := []string{sealInfo, cfg.Endpoint, t.Endpoint, t.ClientID, t.KeyMember, t.FederatedTokenFile, federatedOrNone(t), t.X5T, t.X5TS256, t.Scope}
+	if t.MetadataAudience != "" {
+		words = append(words, "metadata", t.MetadataAudience)
+	}
+	out, _ := json.Marshal(words)
 	return out
 }
 
 // sealCipher is AES-256-GCM under a key derived by HKDF-SHA256 from the
-// step's credential, the key's PEM text or the federated token: only the
+// step's credential, the key's PEM text, the federated token, or a metadata
+// step's sealKey: only the
 // adapter's own user, which reads that credential, derives it. A
 // credential that changes -- a federated token renewed, a key replaced --
 // derives another key, and what was sealed before is no longer opened.
@@ -555,10 +585,16 @@ func tokenFor(ctx context.Context, cfg Config, signer *tokenSigner, secrets *[]s
 	return obtained.value, nil
 }
 
-// obtain makes the assertion and the token request.
+// obtain makes the assertion -- for a metadata step, asks the metadata
+// server for it -- and the token request.
 func obtain(ctx context.Context, cfg Config, signer *tokenSigner, secrets *[]string) (obtainedToken, error) {
-	assertion, err := signer.assertion(cfg.Token, time.Now())
-	if err != nil {
+	var assertion string
+	var err error
+	if signer.metadata != "" {
+		if assertion, err = metadataIdentityToken(ctx, signer.metadata, time.Now()); err != nil {
+			return obtainedToken{}, err
+		}
+	} else if assertion, err = signer.assertion(cfg.Token, time.Now()); err != nil {
 		return obtainedToken{}, tokenFailure(TokenNoCredential, "the token step's assertion could not be signed")
 	}
 	*secrets = append(*secrets, assertion)

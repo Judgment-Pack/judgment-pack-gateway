@@ -335,7 +335,13 @@ token request included, so a token endpoint that hangs holds an acquisition no l
 source that hangs. A request naming a path or a method the operation does not allow is refused
 before a token is requested for it. The token step does not establish which identity the token was issued to, or
 that the token endpoint is the one the source trusts; it changes how the credential is obtained,
-not what the receipt says.
+not what the receipt says. A token step whose federated token is asked of the platform's metadata
+server (`federatedToken`, engine configuration version 32, the version after the path-template change; gateway
+#502; [ADR-0043](docs/adr/0043-a-federated-token-from-the-platforms-metadata-server.md)) presents
+the compute's own identity, not a file the platform's user holds, so every process on that compute
+can ask for an identity token and the separation by the platform's user above does not hold for
+that credential; its access token is sealed under the credentials file's `sealKey` instead,
+which the adapter checks at the source's first acquisition, not the engine at load.
 
 **A read-only asset inventory source is one more program that holds a credential, with the
 platform's user; the signer holds its list token sealed** (engine configuration version 29;

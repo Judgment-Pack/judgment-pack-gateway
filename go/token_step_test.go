@@ -136,6 +136,107 @@ func TestTokenStepIsAVersion21MemberOfTheLiveCredentials(t *testing.T) {
 	}
 }
 
+// unreadVersion is the engine configuration version one past the newest
+// this engine reads.
+func unreadVersion() string {
+	n, _ := strconv.Atoi(engineVersion)
+	return strconv.Itoa(n + 1)
+}
+
+// The engine reads every version from 1 to its newest and no other, so a
+// provisional version number left beside the one it stood in for is seen
+// (metadataTokenVersion).
+func TestEngineVersionsRunUnbrokenToTheNewest(t *testing.T) {
+	n, err := strconv.Atoi(engineVersion)
+	if err != nil || len(engineVersions) != n || !versionAtLeast(engineVersion, metadataTokenVersion) {
+		t.Fatalf("engineVersion %q, %d versions read, metadataTokenVersion %q", engineVersion, len(engineVersions), metadataTokenVersion)
+	}
+	for i := 1; i <= n; i++ {
+		if !engineVersions[strconv.Itoa(i)] {
+			t.Fatalf("version %d is not read", i)
+		}
+	}
+}
+
+// From metadataTokenVersion a token step's federated token may be asked of
+// the platform's metadata server: federatedToken, {"kind": "metadata",
+// "audience": …}, in place of privateKey and federatedTokenFile, handed to
+// adapter-http as its audience alone. Under an earlier version it is
+// refused by name; beside another kind of assertion, of another kind, with
+// any other member -- one naming an address among them -- or with an
+// audience out of form, it is refused, and a refusal repeats no value. A
+// step of the other forms derives the source it derived before.
+func TestTokenStepFederatedTokenFromTheMetadataServer(t *testing.T) {
+	catalog := catalogWith(t, map[string]string{"records": tokenBinding})
+	ref := "records@" + digestOf(tokenBinding)
+	adapters := `,"adapters":"` + abs(t, t.TempDir(), "bin") + `"`
+	federated := abs(t, t.TempDir(), "federated.jwt")
+	sha1 := base64.RawURLEncoding.EncodeToString(make([]byte, 20))
+	head := `"endpoint":"https://login.example/token","clientId":"client-7"`
+	step := func(members string) string {
+		return tokenPlatformJSON(t, "records", ref, "engine-docs", `,"tokenStep":{`+members+`}`, ``)
+	}
+	metadata := func(inner string) string { return step(head + `,"federatedToken":{` + inner + `}`) }
+	good := head + `,"federatedToken":{"kind":"metadata","audience":"api://records-reader"}`
+	_, sources, err := load(t, atVersion(t, metadataTokenVersion, catalog, adapters, step(good)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := sources["records/live"]
+	if !live.tokenStep || !slices.Contains(live.argv, "--federated-token-metadata-audience=api://records-reader") || slices.ContainsFunc(live.argv, func(arg string) bool {
+		return strings.HasPrefix(arg, "--federated-token-file") || strings.HasPrefix(arg, "--federated-token-dir") || strings.HasPrefix(arg, "--assertion-") || strings.HasPrefix(arg, "--bearer")
+	}) {
+		t.Fatalf("a metadata token step: %q", live.argv)
+	}
+	previous := func() string { n, _ := strconv.Atoi(metadataTokenVersion); return strconv.Itoa(n - 1) }()
+	keyed := step(head + `,"privateKey":"SIGNING_KEY","x5t":"` + sha1 + `"`)
+	_, before, err := load(t, atVersion(t, previous, catalog, adapters, keyed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, after, err := load(t, atVersion(t, metadataTokenVersion, catalog, adapters, keyed))
+	if err != nil || !reflect.DeepEqual(before["records/live"], after["records/live"]) {
+		t.Fatalf("a key step is derived as before: %v\n%+v\n%+v", err, before["records/live"], after["records/live"])
+	}
+	exactlyOne := "exactly one of privateKey, federatedTokenFile and federatedToken is the assertion's credential"
+	audienceForm := "federatedToken: audience is 1 to 256 ASCII letters, digits and the characters . _ ~ : / @ -"
+	for _, c := range []struct{ name, version, platform, want string }{
+		{"under the version before", previous, step(good), "credentials.live.tokenStep.federatedToken is a version-" + metadataTokenVersion + " member; engineVersion " + previous + " has no federatedToken"},
+		{"none of the three, under the version before", previous, step(head), "exactly one of privateKey and federatedTokenFile is the assertion's credential"},
+		{"beside privateKey", metadataTokenVersion, step(good + `,"privateKey":"SIGNING_KEY"`), exactlyOne},
+		{"beside federatedTokenFile", metadataTokenVersion, step(good + `,"federatedTokenFile":"` + federated + `"`), exactlyOne},
+		{"none of the three", metadataTokenVersion, step(head), exactlyOne},
+		{"a thumbprint beside it", metadataTokenVersion, step(good + `,"x5t":"` + sha1 + `"`), "x5t is a thumbprint for an assertion the adapter signs, beside privateKey"},
+		{"not an object", metadataTokenVersion, step(head + `,"federatedToken":"api://records-reader"`), `federatedToken: member "federatedToken" is not an object`},
+		{"another kind", metadataTokenVersion, metadata(`"kind":"file","audience":"api://records-reader"`), `federatedToken: kind is "metadata"`},
+		{"a kind not a string", metadataTokenVersion, metadata(`"kind":1,"audience":"api://records-reader"`), `federatedToken: kind is "metadata"`},
+		{"no kind", metadataTokenVersion, metadata(`"audience":"api://records-reader"`), `federatedToken: missing member "kind"`},
+		{"no audience", metadataTokenVersion, metadata(`"kind":"metadata"`), `federatedToken: missing member "audience"`},
+		{"an address", metadataTokenVersion, metadata(`"kind":"metadata","audience":"api://records-reader","address":"http://10.0.0.1"`), `federatedToken: unknown member "address"`},
+		{"a url", metadataTokenVersion, metadata(`"kind":"metadata","audience":"api://records-reader","url":"http://10.0.0.1/computeMetadata"`), `federatedToken: unknown member "url"`},
+		{"a host", metadataTokenVersion, metadata(`"kind":"metadata","audience":"api://records-reader","host":"10.0.0.1"`), `federatedToken: unknown member "host"`},
+		{"an audience adding a query member", metadataTokenVersion, metadata(`"kind":"metadata","audience":"api://records-reader&audience=other"`), audienceForm},
+		{"an audience percent-encoded", metadataTokenVersion, metadata(`"kind":"metadata","audience":"api://records-reader%26x"`), audienceForm},
+		{"an audience with a space", metadataTokenVersion, metadata(`"kind":"metadata","audience":"api://records reader"`), audienceForm},
+		{"an empty audience", metadataTokenVersion, metadata(`"kind":"metadata","audience":""`), audienceForm},
+		{"an audience of 257 bytes", metadataTokenVersion, metadata(`"kind":"metadata","audience":"` + strings.Repeat("r", 257) + `"`), audienceForm},
+		{"an audience not a string", metadataTokenVersion, metadata(`"kind":"metadata","audience":7`), audienceForm},
+	} {
+		_, _, err := load(t, atVersion(t, c.version, catalog, ``, c.platform))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Fatalf("%s: want %q, got %v", c.name, c.want, err)
+		}
+		for _, value := range []string{"records-reader", "records reader", "10.0.0.1", "login.example", `"file"`, "rrrr"} {
+			if strings.Contains(err.Error(), value) {
+				t.Fatalf("%s: the refusal repeats a value it was given: %v", c.name, err)
+			}
+		}
+	}
+	if _, _, err := load(t, atVersion(t, metadataTokenVersion, catalog, ``, metadata(`"kind":"metadata","audience":"`+strings.Repeat("r", 256)+`"`))); err != nil {
+		t.Fatalf("an audience of 256 bytes: %v", err)
+	}
+}
+
 // The derived source carries the token step's flags in place of the
 // binding's bearer, and a configuration without one derives the source it
 // derived before the member existed, word for word, at either version.
