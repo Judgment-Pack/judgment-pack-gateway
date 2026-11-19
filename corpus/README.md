@@ -227,7 +227,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 164 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 186 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -419,7 +419,34 @@ session-removal record names `scope-a`, and is `sealed-session-missing` where th
 well, names `scope-b` (§1.3a, "A removed session"). A verifier written before these seals (v0.30.0,
 in Go and in TypeScript) loads none of them: it answers `unregistered-session` for the seven
 vectors whose seal this version loads, finds nothing of `s1` in the two removal vectors (`ok`, with
-no observation), and agrees with the eight whose seal loads nothing.
+no observation), and agrees with the eight whose seal loads nothing. `v3-seal-scope-other-version`
+names `sealVersion` `"3"` signed under version 2's prefix: since version 3 (below) it loads nothing
+because its signature does not verify under version 3's prefix, the answer it expects unchanged.
+
+Twenty-two are of the scope salt and of a seal of version 3, which names its session's scope by a
+digest over the salt the session's receipts carry, so that the registry alone tests no guessed
+identifier against it (§1.2a, `scopeSalt`; §1.3a; §3, "A seal of version 3"; §3c; §4 step 3;
+`docs/adr/0042-a-seal-names-its-scope-over-a-salt-the-registry-does-not-hold.md`), named
+`v3-scope-salt-*` and `v3-seal-salted-*` and signed, receipts, seals and records alike, by a signer
+written for them from `SPEC.md` alone and not kept here; their expected answers were written from
+§1.2a, §1.3a, §3, §3c and §4, and the signer was checked to reproduce the frozen seals of
+`v3-scope-valid` and `v3-seal-scope-valid` byte for byte. An acquisition of `scope-a` carrying a
+salt of its form is `ok`; a salt in uppercase hexadecimal, of 62 characters, or with no scope
+beside it is `malformed`, and one changed after signing `signature-mismatch`. A session of two
+receipts of `scope-a` carrying one salt and sealed by a seal of version 3 over it is `ok`, and two
+such sessions of `scope-a`, each with a salt of its own, both verify. The same seal naming
+`scope-b`, naming `scope-a` over another salt, over receipts of `scope-a` carrying no salt, or over
+receipts of no scope, is `seal-scope-mismatch`, the seal anchoring the count; a seal of version 2
+whose digest is version 3's over the salt loads, as version 2, and is `seal-scope-mismatch`. A seal
+of version 3 loads nothing, and the session is `unregistered-session`, observed `session-open`,
+when its digest is changed after signing, when it is signed under version 2's prefix, or when it
+names `sealVersion` `"4"`. A receipt whose salt was changed after signing is `signature-mismatch`
+beside an `ok` one, and the seal asks nothing more of the session. A seal after an interruption
+of version 3 is `ok`, observed `sealed-after-interruption`; over another salt, observed so and
+`seal-scope-mismatch`; signed under §3c's second prefix, it loads nothing. A session sealed by a
+seal of version 3 and removed is observed `session-removed` where its session-removal record
+carries the salt (ten members), and is `sealed-session-missing` where the record carries none or
+another. By §3, a verifier that knows no version 3 loads none of these seals.
 
 **`witnesses`.** A vector whose report names witnesses gives them in `expected`
 as `witnesses`, each `{"trail", "origin", "keyId"}`, and a runner compares them

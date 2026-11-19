@@ -147,6 +147,7 @@ func TestUndelegatedReceiptsAreByteIdentical(t *testing.T) {
 			if in.scope, _ = memberString(obj, "scope"); in.scope != "" {
 				scoped++
 			}
+			in.scopeSalt, _ = memberString(obj, "scopeSalt")
 			detail, _ := obj.get(kind)
 			in.detail = detail.(*vObject)
 			core := buildReceipt(in)
@@ -169,9 +170,16 @@ func TestUndelegatedReceiptsAreByteIdentical(t *testing.T) {
 	// the thirty the v3-session-removed* vectors hold (a scope's sessions,
 	// removed or kept beside them), and the twenty-four of the twelve
 	// v3-seal-scope-* vectors whose session s1 holds two receipts of scope-a
-	// (the others' receipts carry no scope).
-	if scoped != 58 {
-		t.Fatalf("%d receipts holding a scope rebuilt, want 58", scoped)
+	// (the others' receipts carry no scope); and twenty-eight of the
+	// v3-scope-salt-* and v3-seal-salted-* vectors (ADR-0042): v3-scope-salt-valid's
+	// one, two in each of the thirteen v3-seal-salted-* vectors whose s1
+	// holds two signed receipts of scope-a (with a salt, or, in
+	// v3-seal-salted-over-receipts-without-salt, none), and
+	// v3-seal-salted-two-sessions' s2 besides, two, and the first of
+	// v3-seal-salted-receipt-salt-changed-after-signing, whose second no
+	// longer verifies. A salt out of form is refused before it is rebuilt.
+	if scoped != 86 {
+		t.Fatalf("%d receipts holding a scope rebuilt, want 86", scoped)
 	}
 }
 
@@ -183,6 +191,9 @@ func expectedTopLevel(obj *vObject) int {
 		n++
 	}
 	if _, present := obj.get("scope"); present {
+		n++
+	}
+	if _, present := obj.get("scopeSalt"); present {
 		n++
 	}
 	return n

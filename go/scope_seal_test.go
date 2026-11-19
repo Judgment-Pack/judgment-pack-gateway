@@ -4,9 +4,10 @@ package main
 // (docs/adr/0036-a-session-is-of-one-scope-identifier-and-its-seal-names-it.md,
 // gateway #442): the filesystem kind refuses an acquisition of another scope
 // into a session, and an action into a scoped one; a scoped session is
-// sealed by a seal of version 2, which loads, and whose scope a verifier
-// holds the receipts to; a session of no scope is sealed in §3's form, as
-// before; and a store gateway v0.30.0 wrote verifies as v0.30.0 verified it.
+// sealed by a seal of version 3 (ADR-0042; version 2 before it), which
+// loads, and whose scope a verifier holds the receipts to; a session of no
+// scope is sealed in §3's form, as before; and a store gateway v0.30.0 wrote
+// verifies as v0.30.0 verified it.
 
 import (
 	"bytes"
@@ -99,13 +100,13 @@ func TestAnActionIsRefusedInASessionOfAScope(t *testing.T) {
 	}
 }
 
-// A scoped session is sealed by a seal of version 2: its seven members,
-// naming the scope by its digest in the session and never by the identifier,
-// signed under its own prefix, loading under the gateway's key; a session of
-// no scope is sealed in §3's form, the five members it always had. A digest
-// changed or taken out, a version taken out or changed, and the identifier
-// put on the seal beside its digest, load nothing, and the session reads
-// unregistered.
+// A scoped session is sealed by a seal of version 3: its seven members,
+// naming the scope by its digest over the session's scope salt and never by
+// the identifier or the salt, signed under its own prefix, loading under the
+// gateway's key; a session of no scope is sealed in §3's form, the five
+// members it always had. A digest changed or taken out, a version taken out
+// or changed -- to version 2's among them -- and the identifier put on the
+// seal beside its digest, load nothing, and the session reads unregistered.
 func TestAScopedSessionsSealNamesItsScope(t *testing.T) {
 	service, server, _ := scopedService(t)
 	scoped := `"scope":` + jsonText(t, testScope) + `,`
@@ -138,13 +139,15 @@ func TestAScopedSessionsSealNamesItsScope(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &plainSeal); err != nil {
 		t.Fatal(err)
 	}
-	if len(scopedSeal) != 7 || scopedSeal["scopeDigest"] != sealScopeDigest("bound", testScope) || scopedSeal["sealVersion"] != "2" || scopedSeal["finalCount"] != float64(2) {
+	salt := service.sessions["bound"].scopeSalt
+	if len(scopedSeal) != 7 || !isScopeSalt(salt) || scopedSeal["scopeDigest"] != saltedScopeDigest("bound", testScope, salt) || scopedSeal["sealVersion"] != "3" || scopedSeal["finalCount"] != float64(2) {
 		t.Fatalf("the seal of a scoped session: %s", lines[0])
 	}
 	// a registry line carries no scope identifier (ADR-0036; ADR-0033,
-	// decision 5): the seal names the scope by its digest alone
-	if strings.Contains(string(registry), testScope) || strings.Contains(string(registry), jsonText(t, testScope)) {
-		t.Fatalf("the registry holds the scope identifier: %q", registry)
+	// decision 5) and no scope salt (ADR-0042): the seal names the scope by
+	// its digest alone
+	if strings.Contains(string(registry), testScope) || strings.Contains(string(registry), jsonText(t, testScope)) || strings.Contains(string(registry), salt) {
+		t.Fatalf("the registry holds the scope identifier or its salt: %q", registry)
 	}
 	// §3's form, the bytes of its four members under its prefix
 	if len(plainSeal) != 5 {
@@ -157,12 +160,13 @@ func TestAScopedSessionsSealNamesItsScope(t *testing.T) {
 	if rep := scopedVerdict(t, service); !rep.OK || len(statusesOf(rep)) != 0 {
 		t.Fatalf("both sealed sessions verify: %v", rep.Findings)
 	}
-	member := `"scopeDigest":"` + sealScopeDigest("bound", testScope) + `",`
+	member := `"scopeDigest":"` + saltedScopeDigest("bound", testScope, salt) + `",`
 	for _, tc := range []struct{ name, line string }{
-		{"the digest changed", strings.Replace(lines[0], member, `"scopeDigest":"`+sealScopeDigest("bound", "équipe-b")+`",`, 1)},
+		{"the digest changed", strings.Replace(lines[0], member, `"scopeDigest":"`+saltedScopeDigest("bound", "équipe-b", salt)+`",`, 1)},
 		{"the digest taken out", strings.Replace(lines[0], member, "", 1)},
-		{"the version and the digest taken out", strings.Replace(strings.Replace(lines[0], member, "", 1), `"sealVersion":"2",`, "", 1)},
-		{"another version", strings.Replace(lines[0], `"sealVersion":"2"`, `"sealVersion":"3"`, 1)},
+		{"the version and the digest taken out", strings.Replace(strings.Replace(lines[0], member, "", 1), `"sealVersion":"3",`, "", 1)},
+		{"version 2's", strings.Replace(lines[0], `"sealVersion":"3"`, `"sealVersion":"2"`, 1)},
+		{"another version", strings.Replace(lines[0], `"sealVersion":"3"`, `"sealVersion":"4"`, 1)},
 		{"a member more", strings.Replace(lines[0], `"finalCount"`, `"extra":1,"finalCount"`, 1)},
 		{"the identifier beside its digest", strings.Replace(lines[0], member, `"scope":`+jsonText(t, testScope)+`,`+member, 1)},
 	} {
@@ -181,34 +185,40 @@ func TestAScopedSessionsSealNamesItsScope(t *testing.T) {
 	}
 }
 
-// A seal of version 2 is held to the receipts it counts: a session holding
-// an accepted receipt of another scope, or of none, is seal-scope-mismatch,
-// once, whichever seal of the two kinds names the scope; a seal of §3's form
-// asks nothing of its receipts' scopes.
+// A seal of version 3 is held to the receipts it counts: a session holding
+// an accepted receipt of another scope, of none, or of the scope under
+// another salt, is seal-scope-mismatch, once, whichever seal of the two kinds
+// names the scope; a seal of §3's form asks nothing of its receipts' scopes.
 func TestASealNamingAScopeIsHeldToItsReceipts(t *testing.T) {
 	service, server, _ := scopedService(t)
 	scoped := `"scope":` + jsonText(t, testScope) + `,`
 	for _, call := range []struct{ session, source, scope string }{
 		{"of-none", "plain", ""}, {"of-none", "plain", ""}, {"of-scope", "scoped", scoped}, {"after", "plain", ""},
+		{"of-salt", "scoped", scoped},
 	} {
 		if code, out := post(t, server, "/acquire", `{"session":"`+call.session+`","source":"`+call.source+`",`+call.scope+`"arguments":{"q":"a"}}`); code != http.StatusOK {
 			t.Fatalf("%v: %d %v", call, code, out)
 		}
 	}
 	// sealed by the writer, as no conforming gateway seals them
-	if _, err := service.registry.sealOfScope("of-none", 2, "2026-11-16T00:00:00Z", testScope); err != nil {
+	other := strings.Repeat("ab", 32)
+	if _, err := service.registry.sealOfScope("of-none", 2, "2026-11-16T00:00:00Z", testScope, other); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.registry.sealOfScope("of-scope", 1, "2026-11-16T00:00:00Z", "équipe-b"); err != nil {
+	if _, err := service.registry.sealOfScope("of-scope", 1, "2026-11-16T00:00:00Z", "équipe-b", service.sessions["of-scope"].scopeSalt); err != nil {
+		t.Fatal(err)
+	}
+	// the scope the receipts carry, over a salt they do not
+	if _, err := service.registry.sealOfScope("of-salt", 1, "2026-11-16T00:00:00Z", testScope, other); err != nil {
 		t.Fatal(err)
 	}
 	head := receiptSignature(t, service.storeRoot, "after", 0)
-	if _, err := service.registry.sealAfterInterruptionOfScope("after", 1, head, "2026-11-16T00:00:00Z", sealedViaCommand, testScope); err != nil {
+	if _, err := service.registry.sealAfterInterruptionOfScope("after", 1, head, "2026-11-16T00:00:00Z", sealedViaCommand, testScope, other); err != nil {
 		t.Fatal(err)
 	}
 	rep := scopedVerdict(t, service)
 	got := strings.Join(statusesOf(rep), " ")
-	if rep.OK || got != "after/seal-scope-mismatch of-none/seal-scope-mismatch of-scope/seal-scope-mismatch" {
+	if rep.OK || got != "after/seal-scope-mismatch of-none/seal-scope-mismatch of-salt/seal-scope-mismatch of-scope/seal-scope-mismatch" {
 		t.Fatalf("ok %v, %s", rep.OK, got)
 	}
 }

@@ -401,7 +401,10 @@ records itself as the session's holder when it admits the call, before the sourc
   versions. So stop every instance of v0.30.0 or earlier, and wait for each to
   exit, before the first v0.31.0 instance serves; once a seal of version 2 is in the registry,
   never start an older instance on the database, nor run an older `gateway seal-open` against it.
-  The upgrade is one-way.
+  The upgrade is one-way. The same holds again for the seal of version 3 (SPEC.md §3, "A seal of
+  version 3"; ADR-0042), which v0.31.0 and v0.32.0 do not read: stop every instance of them before
+  the first instance of the release that brings it serves, and never start them on the database
+  afterwards.
 - **Throughput:** acquisitions scale with instances across sessions; one session's calls serialise
   in its instance; seals serialise on the registry's append. A take-up stalls its instance: it
   waits for every write of the stopped instance that still holds that instance's row -- at most
@@ -699,12 +702,15 @@ available with this kind yet").
 - **The registry** is one chain across scopes: its tables carry no scope column, and every view
   reads the whole registry. Its lines are seals (SPEC.md §3, §3c): a session's id, its count of
   receipts, its time, the key's identifier and a signature, and, for a session of a scope
-  identifier, `sealVersion` `"2"` and `scopeDigest`, the identifier's SHA-256 digest in the
-  session (ADR-0036, decision 9; SPEC.md §3, "A seal of version 2"), never the identifier. None
+  identifier, `sealVersion` `"3"` and `scopeDigest`, the identifier's SHA-256 digest over the
+  session's scope salt, which its receipts carry and no registry row does (ADR-0042; SPEC.md §3,
+  "A seal of version 3"), or, for a seal an earlier release wrote, `sealVersion` `"2"` and the
+  identifier's digest in the session (ADR-0036, decision 9), never the identifier. None
   carries a receipt, a payload, an argument or a scope identifier, so a gateway of one scope reads
   the ids, counts and digests of every scope's sealed sessions and no other scope's identifier,
-  which `gateway.scope_identifiers` keeps from it. A digest is not a secret: one who guesses an
-  identifier can digest it in a session's id and test it. When a scope's rows are removed its
+  which `gateway.scope_identifiers` keeps from it. A digest of version 3 tests no guessed
+  identifier without the salt; one of version 2 is not a secret: one who guesses an identifier
+  can digest it in a session's id and test it. When a scope's rows are removed its
   seals stay, digests of rows no longer held: the chain needs every line. `gateway verify` reads
   the chain from an export, which holds every line; neither it nor the export selects by scope
   (engine-config.md, "A platform's scope").
