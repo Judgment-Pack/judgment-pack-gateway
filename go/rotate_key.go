@@ -145,6 +145,10 @@ func holdEngineRegistry(seedPaths []string, registryPath string, seed []byte) (i
 	}
 	err = rotationPendingBesideAny(seedPaths, registryPath)
 	if err == nil {
+		// a store rotated away from (SPEC.md §3d) is held by nothing again
+		err = refuseRotatedStore(registryPath)
+	}
+	if err == nil {
 		var data []byte
 		if data, _, err = readRegistryBytes(registryPath); err == nil {
 			_, err = engineWalk(data, ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey))

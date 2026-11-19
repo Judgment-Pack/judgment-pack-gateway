@@ -270,7 +270,7 @@ func cmdVerify(args []string) int {
 		verdict, err = verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, ordinarySealsOnly)
 	}
 	if err == nil {
-		err = linkPrevious(verdict, previous)
+		err = linkPrevious(verdict, previous, publicKey)
 	}
 	if err != nil {
 		// Could not produce a verdict at all.

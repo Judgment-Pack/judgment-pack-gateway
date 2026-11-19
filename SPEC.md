@@ -1513,8 +1513,9 @@ A store can be let go of whole by starting another (`docs/adr/0048-retention-by-
 `gateway store rotate`, the gateway stopped and its registry held as `rotate-key` holds it (§3b), seals
 every session left open in the old store as after an interruption (§3c), refusing the rotation, nothing
 new made, when one cannot be sealed; then makes a new store directory and a new registry, neither there
-before, whose first line is a **store continuation**. The old store is left as it is, for its operator
-to archive or delete whole. On the PostgreSQL kind a rotation is to a new database, or a new schema the
+before, whose first line is a **store continuation**; then, still under the hold, marks the old store
+**rotated away from** (below). The old store is otherwise left as it is, for its operator to archive or
+delete whole. On the PostgreSQL kind a rotation is to a new database, or a new schema the
 migration login owns, never a new instance on the same database (ADR-0035), whose instances share one
 registry chain; that kind rotates to a new database (`docs/postgresql-store.md`, "Rotating the
 store"), its continuation this one, byte for byte, read through `gateway export`.
@@ -1526,13 +1527,25 @@ store"), its continuation this one, byte for byte, read through `gateway export`
 | `continuedAt` | `YYYY-MM-DDThh:mm:ssZ`, the form of `rotatedAt` | the gateway's clock when it rotated |
 | `keyId` | 32 lowercase hexadecimal characters | the key id of the key in force, which signs it |
 | `previousLines` | an integer from 0 to 2⁵³−1 | the old registry's line count |
-| `previousLastLine` | 64 lowercase hexadecimal characters | the SHA-256 of the old registry's last line |
+| `previousDigest` | 64 lowercase hexadecimal characters | the SHA-256 of the old registry's bytes, whole |
 | `signature` | 128 lowercase hexadecimal characters | Ed25519 over `"judgment-pack-gateway/store-continuation/1:"` and `canon` of the statement without `signature` |
 
 A registry's **line count** is the number of pieces its bytes split into at each `0x0A`, a last piece
-that is empty not counted; its **last line** is the last of them, without its `0x0A`, of no bytes for a
-registry of none. A torn last line is a line like any other here: the continuation names the registry as
-it ends.
+that is empty not counted; its **digest** is the SHA-256 of all its bytes, blank lines and a torn last
+line among them, of no bytes for a registry of none: the continuation names the registry exactly as it
+ends, and a line blanked or changed anywhere in it is another registry.
+
+**The mark.** A store rotated away from carries the mark `store-rotated:` followed by the lowercase
+hexadecimal SHA-256 of the new registry's first line, the continuation, without its `0x0A`. On the
+filesystem kind it is a file beside the registry, the registry's path with `.rotated` appended, holding
+the mark and a `0x0A`. The mark is outside the registry's bytes, so it is not in the digest, and a verifier never reads it. Every later
+hold of the old registry -- a gateway's start, `seal-open`, `remove-artifact`, `remove-scope`, a second
+`store rotate` --
+refuses the store by the mark's name: *the store was rotated away from (store-rotated:...)*. A rotation
+stopped by a crash is finished by running it again: a new store directory that is empty, or holds only
+what the rotation left, does not refuse it, the new registry is written whole beside its place and
+renamed into it, and a new registry already there whose only line is the old registry's continuation, by
+its count and digest under the key in force, is kept, and only the mark is written.
 
 **Reading it.** A registry line is a store continuation when §1.1's parser reads it as one JSON object
 whose `kind` is `"store-continuation"`. It is never a seal or a rotation statement. At the registry's
@@ -1541,14 +1554,18 @@ and of its form, its `keyId` is the current key's (§3b: the key pinned) and its
 that key; otherwise the registry is **`continuation-forged`**. At any other line it loads nothing and the
 registry is **`continuation-misplaced`**. A registry reports at most one of the two, `{status}`, naming
 no session; a gateway's own reading (§3b) refuses either. A continuation that loads is no finding: the
-report carries the **observation** `continues-from`, `{observation, previousLines, previousLastLine}`,
+report carries the **observation** `continues-from`, `{observation, previousLines, previousDigest}`,
 since the store before it may have been deleted under retention.
 
 **Crossing a rotation.** `gateway verify --previous <registry>` (after `--artifacts`, before the store
 root) also reads the registry of the store before, absent or unreadable no verdict, and holds the link:
 no continuation loads and neither finding above stands → **`continuation-missing`**; `previousLines` is
-not its line count → **`continuation-count-mismatch`**; otherwise `previousLastLine` is not the SHA-256
-of its last line → **`continuation-tail-mismatch`**; each `{status}`, and the verdict then fails. `--previous`
+not its line count → **`continuation-count-mismatch`**; otherwise `previousDigest` is not its digest →
+**`continuation-digest-mismatch`**; otherwise the continuation's `keyId` is not the key that registry's
+rotations end at → **`continuation-key-mismatch`**. That registry is walked as a gateway walks its own
+(§3b): from the key its first `key-continuation` names as `previous`, where it holds one, and from the
+key pinned otherwise; a walk that finds one of §3b's findings ends at no key, and is that finding too. Each
+is `{status}`, and the verdict then fails. `--previous`
 is given at most once, naming one registry: a second is a usage error. Each store is verified on its own,
 with its own run, so a sequence is verified pairwise, each store with the registry of the one before it;
 a verdict over a sequence is `ok` only when every store's is and every link holds. A receipt is never read across stores.

@@ -482,7 +482,7 @@ func verifierBy(ordinarySealsOnly bool, scope string, previous ...string) func(s
 		if err != nil || len(previous) == 0 {
 			return rep, err
 		}
-		if err := linkPrevious(rep, previous[0]); err != nil {
+		if err := linkPrevious(rep, previous[0], publicKey); err != nil {
 			return nil, err
 		}
 		return rep, nil

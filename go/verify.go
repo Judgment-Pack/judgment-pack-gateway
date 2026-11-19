@@ -819,7 +819,7 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 	if c := walk.continuation; c != nil {
 		rep.continuation = c
 		rep.Observations = append(rep.Observations, finding{
-			"observation": observationContinuesFrom, "previousLines": c.previousLines, "previousLastLine": c.previousLastLine,
+			"observation": observationContinuesFrom, "previousLines": c.previousLines, "previousDigest": c.previousDigest,
 		})
 	}
 
