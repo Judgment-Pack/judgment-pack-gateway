@@ -828,8 +828,8 @@ whose one operation is `live` of the `http` shape (gateway #384,
 }
 ```
 
-The members are exactly these, `methods`, `headers` and `checkPath` optional, and exactly one of
-`bearer` and `credentialHeader`:
+The members are exactly these, `methods`, `headers`, `checkPath` and `errorCodes` optional, and
+exactly one of `bearer` and `credentialHeader`:
 
 - `endpoint` is the base URL every request goes under, held to the endpoint form SPEC.md §1.2a
   gives a remote server — `https`, or `http` at a loopback address written as one, `localhost`
@@ -867,6 +867,19 @@ The members are exactly these, `methods`, `headers` and `checkPath` optional, an
   have no GUID to fill, with `GET` among `methods`, so a check asks for nothing an acquisition
   could not. Without it a check is the TLS handshake, or, to
   plaintext loopback, the connection alone.
+- `errorCodes` declares the endpoint's error codes the gateway may act on (gateway #514 and #524,
+  [ADR-0047](../adr/0047-an-endpoints-error-code-from-a-closed-list.md)): an object of exactly `at` and
+  at least one of `referenceExpired` and `accessRefused`. `at` is 1 to 4 member names, each 1 to
+  64 ASCII letters, digits, `_` and `-`, from the error object's top to the code (`["error",
+  "code"]` for an answer `{"error": {"code": …}}`). `referenceExpired` is 1 to 8 objects of
+  exactly `status` and `code`, the status a 4xx other than `401`, `403`, `410` and `429`: an
+  answer of that status whose code is that code is an expired reference ("An expired reference",
+  below). `accessRefused` is 1 to 16 codes an access refusal passes on ("An access refusal",
+  below). Every code is 1 to 64 ASCII letters, digits, `_`, `.` and `-`, once in its list, and
+  not `unlisted`. Only `adapter-http` reads the body, at most 4 KiB of it, and only a value of
+  these lists crosses to the gateway, which holds it to the same lists. It is a binding-format
+  member and needs no engine configuration version: the configuration pins the binding by
+  digest, and an engine written before it refuses a binding naming it.
 
 A path is sent as written, or refused when the binding is loaded (gateway #407). The adapter sets
 a request's path, the endpoint's decoded path followed by the request's, and leaves its escaping
@@ -935,7 +948,20 @@ body (SPEC.md §6, "When an acquisition does not happen"). It is not receipted a
 `callIndex`, the sealed token is kept, and the session is left open: the caller drops the
 reference it kept and reads again from its first value, in the same session or a new one. A
 `410` from the token step's token endpoint is a refused token request, and a `404` or a `400`
-from the endpoint is answered `400` as before.
+from the endpoint is answered `400` as before, unless the binding's `errorCodes.referenceExpired`
+declares its status beside the error code it carries (ADR-0047). A declared pair is answered as the
+`410` is, with a sentence that names the status the endpoint gave.
+
+**An access refusal** (gateway #524, ADR-0047). When the endpoint answers `403`, or `401` to a
+request that carried no token a token step obtained, `/acquire` answers `403` with
+`"code": "source_access_refused"`, `endpointStatus` (the endpoint's `401` or `403`), and
+`endpointCode`, beside the gateway's own sentence. `endpointCode` is the endpoint's error code when
+`errorCodes.accessRefused` lists it, and `unlisted` otherwise, including for a body over 4 KiB, not
+JSON, without the code, or with a code of another type. Nothing of the body reaches the caller. It
+is not receipted and takes no `callIndex`, the sealed token is kept, and the session is left open.
+A `401` to a token the token step obtained is the token refused: the token is dropped, and the
+answer is the token step's fixed sentence, as before. A token endpoint's own `401` is a refused
+token request.
 
 **Paging is the caller's** (gateway #389). The engine keeps no cursor, no high-water mark and no
 "since" for a source of this shape, or for any generic source: each `/acquire` is one request to

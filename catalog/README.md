@@ -292,10 +292,21 @@ round starts again from the delta path; a delta token of a directory object is h
 (delta query overview). `/acquire` answers such a `410` with `source_reference_expired` and
 nothing of the answer, the `Location` among it; the caller drops the delta link and sends the
 delta path again. The same page says that "In case the token expires, the service should respond
-with a 40X-series error with error codes such as `syncStateNotFound`": a `400` or a `404` so
-answered is a failed source, as any other, and not `source_reference_expired`, so a caller that
-kept a delta link past seven days reads again from the delta path either way. Which status the
-service gives an expired directory delta token has not been observed here.
+with a 40X-series error with error codes such as `syncStateNotFound`". The binding declares,
+under `errorCodes` ([ADR-0047](../docs/adr/0047-an-endpoints-error-code-from-a-closed-list.md)),
+the code at `error.code` and the pairs `400` and `404` with `syncStateNotFound` and with
+`resyncRequired`. Such an answer is `source_reference_expired` too, and nothing of it is passed
+on. Any other `400` or `404` is a failed source, as before. Which status the service gives an
+expired directory delta token has not been observed here, and a code in another case is not
+one of the pairs.
+
+**An access refusal.** A read the credential is not permitted, or not licensed, is answered
+`403` with an error object (`{"error": {"code": …, "message": …}}`). `/acquire` answers a `401`
+or a `403` from the directory service with `403`, `source_access_refused`, `endpointStatus` and
+`endpointCode`, and nothing of the body (engine-config.md, "An access refusal"). `endpointCode`
+is the endpoint's code when the binding's `errorCodes.accessRefused` lists it, and `unlisted`
+otherwise. The list holds `Authorization_RequestDenied` alone, the permission not granted. A
+further code is added to that one array, which is a binding change re-pinned by digest.
 
 **Throttling.** A request the service throttles is answered `429 Too Many Requests` with a
 `Retry-After` of seconds ([throttling](https://learn.microsoft.com/en-us/graph/throttling),

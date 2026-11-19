@@ -83,12 +83,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	serviceAccount := fs.String("signed-by-service-account", "", "token step: the service account the credentials API, at its fixed address, signs a JWT-bearer assertion as, authenticated by the compute's access token from the platform's metadata server, in place of --client-id, --assertion-key and the federated forms; with --token-subject and --token-scope; the credentials file holds sealKey")
 	subject := fs.String("token-subject", "", "token step, with --signed-by-service-account: the subject the assertion names, which the service account acts as")
 	tokenScope := fs.String("token-scope", "", "token step: the scope the token request asks for; with --signed-by-service-account, the assertion's scope, of the read-only Admin SDK scopes alone")
+	errorCodeAt := fs.String("error-code-at", "", "the member names, joined by \".\", from a refusing answer's top JSON object to the endpoint's error code, read from at most 4 KiB of its body (ADR-0047)")
+	expiredCodes := fs.String("expired-codes", "", "with --error-code-at, STATUS:CODE pairs, comma-separated, of a 4xx and the endpoint's error code that mean the reference the request sent has expired, reported as one (exit 8)")
+	accessCodes := fs.String("access-codes", "", "with --error-code-at, the endpoint's error codes, comma-separated, an answer of 401 or 403 reports beside its status (exit 10); any other is reported as \"unlisted\"")
 	tokenOnly := fs.Bool("token-only", false, "token step: obtain an access token and write it on stdout sealed under a key derived from the step's credential, instead of reading a request; an acquisition is then handed it in "+httpsource.SealedTokenVariable)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 0 || *endpoint == "" || *paths == "" {
-		fmt.Fprintln(stderr, "usage: adapter-http --endpoint URL --paths /A,/B [--check [--check-path /P]] [--credentials FILE (--bearer MEMBER | --credential-header NAME=MEMBER)] [--header NAME=VALUE]... [--methods GET,POST] [--ca-file FILE] [--max-output BYTES] [--timeout D] [--token-endpoint URL --client-id ID (--assertion-key MEMBER [--assertion-alg RS256|PS256] [--assertion-x5t T | --assertion-x5t-s256 T] | --federated-token-file FILE [--federated-token-dir DIR] | --federated-token-metadata-audience AUDIENCE) [--token-scope S] [--token-only] | --token-endpoint URL --signed-by-service-account SA --token-subject S --token-scope S [--token-only]]")
+		fmt.Fprintln(stderr, "usage: adapter-http --endpoint URL --paths /A,/B [--check [--check-path /P]] [--credentials FILE (--bearer MEMBER | --credential-header NAME=MEMBER)] [--header NAME=VALUE]... [--methods GET,POST] [--ca-file FILE] [--max-output BYTES] [--timeout D] [--error-code-at A.B (--expired-codes S:C,... | --access-codes C,...)...] [--token-endpoint URL --client-id ID (--assertion-key MEMBER [--assertion-alg RS256|PS256] [--assertion-x5t T | --assertion-x5t-s256 T] | --federated-token-file FILE [--federated-token-dir DIR] | --federated-token-metadata-audience AUDIENCE) [--token-scope S] [--token-only] | --token-endpoint URL --signed-by-service-account SA --token-subject S --token-scope S [--token-only]]")
 		return 2
 	}
 	if *checkPath != "" && !*check {
@@ -99,10 +102,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "adapter-http: --token-only and --check are two runs")
 		return 2
 	}
+	errorCodes, err := httpsource.ParseErrorCodes(*errorCodeAt, *expiredCodes, *accessCodes)
+	if err != nil {
+		fmt.Fprintln(stderr, "adapter-http:", err)
+		return 2
+	}
 	cfg := httpsource.Config{
 		Endpoint: *endpoint, Credentials: *credentials, Bearer: *bearer, CredentialHeader: *credentialHeader,
 		Headers: headers, Paths: split(*paths), Methods: split(*methods), MaxOutput: *maxOutput, CAFile: *caFile,
-		CheckPath: *checkPath,
+		CheckPath: *checkPath, ErrorCodes: errorCodes,
 	}
 	if *tokenEndpoint != "" || *clientID != "" || *assertionKey != "" || *federatedTokenFile != "" || *federatedTokenDir != "" || *metadataAudience != "" || *serviceAccount != "" || *subject != "" || *assertionAlg != "" || *assertionX5T != "" || *assertionX5TS256 != "" || *tokenScope != "" || *tokenOnly {
 		cfg.Token = &httpsource.TokenStep{Endpoint: *tokenEndpoint, ClientID: *clientID, KeyMember: *assertionKey, FederatedTokenFile: *federatedTokenFile,
@@ -141,6 +149,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if errors.As(err, &expired) {
 			stdout.Write(expired.Report())
 			return httpsource.ReferenceExpiredStatus
+		}
+		// An access refusal (401 or 403 from the source's endpoint, a 401
+		// only where no token step obtained the token sent) exits with its
+		// own status and reports the status and the listed code, or
+		// "unlisted", on stdout beside it; the diagnostic is unchanged.
+		var refused *httpsource.AccessRefused
+		if errors.As(err, &refused) {
+			stdout.Write(refused.Report())
+			return httpsource.AccessRefusedStatus
 		}
 		var failure *httpsource.TokenFailure
 		if errors.As(err, &failure) {

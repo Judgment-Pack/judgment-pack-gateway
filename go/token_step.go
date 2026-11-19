@@ -724,6 +724,11 @@ func (g *gatewayService) obtainToken(ctx context.Context, timeout time.Duration,
 	if errors.As(err, &expired) {
 		err = expired.failed
 	}
+	// So is an access refusal: a token request is not the source's read.
+	var refused *sourceAccessRefused
+	if errors.As(err, &refused) {
+		err = refused.failed
+	}
 	switch exitCodeOf(err) {
 	case tokenExitNoCredential:
 		return "", 0, fmt.Errorf(errTokenNoCredential, source)

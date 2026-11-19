@@ -45,4 +45,6 @@ header lines (`Name: value`) after it; `<case>.json` is the body.
 | `delta-expired` | 410 | `users/delta` read with a delta token no longer held; the body is the `syncStateNotFound` error |
 | `throttled` | 429, `Retry-After: 7` | a later page of `auditLogs/signIns` read too fast |
 | `unlicensed` | 403 | `identityProtection/riskDetections` of a directory without the licence the feature needs; generic wording |
+| `delta-resync` | 400 | `groups/delta` read with a delta token no longer held, answered `400` with the `resyncRequired` error, a pair the binding declares an expired reference |
+| `denied` | 403 | `identity/conditionalAccess/policies` read by a credential not granted the permission; the body is the `Authorization_RequestDenied` error, on the binding's access list |
 | `oauth2-permission-grants.empty.json` | 200 (no status file) | `oauth2PermissionGrants` present but empty: `{"value":[]}` |

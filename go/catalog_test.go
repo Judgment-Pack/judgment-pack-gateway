@@ -83,6 +83,15 @@ func TestShippedCatalogHoldsItsShape(t *testing.T) {
 				len(h.http.headers) != 0 || h.http.checkPath != "/v1.0/organization" || len(h.http.paths) != 24 {
 				t.Fatalf("catalog/microsoft-graph.json: the endpoint, GET alone, the bearer, the check path, the paths: %+v", h.http)
 			}
+			// The error codes (ADR-0047): the code at error.code, the two
+			// codes the delta query documents for an expired token beside
+			// 400 and 404, and the access list, the one place a code is
+			// added to it.
+			if c := h.http.errorCodes; c == nil || strings.Join(c.at, ".") != "error.code" || strings.Join(c.access, ",") != "Authorization_RequestDenied" ||
+				len(c.expired) != 4 || c.expired[0] != (httpExpiredPair{400, "syncStateNotFound"}) || c.expired[1] != (httpExpiredPair{404, "syncStateNotFound"}) ||
+				c.expired[2] != (httpExpiredPair{400, "resyncRequired"}) || c.expired[3] != (httpExpiredPair{404, "resyncRequired"}) {
+				t.Fatalf("catalog/microsoft-graph.json: the error codes: %+v", h.http.errorCodes)
+			}
 			var templates []string
 			for _, path := range h.http.paths {
 				if !strings.HasPrefix(path, "/v1.0/") {

@@ -37,11 +37,20 @@ func TestReferenceExpiredReportIsReadStrictly(t *testing.T) {
 		{`{"referenceExpired":{"status":410}}` + "\n", false},
 		{" " + `{"referenceExpired":{"status":410}}`, false},
 		{`{"referenceExpired":410}`, false},
+		// A declared pair (ADR-0047) is taken, its status answered; an
+		// undeclared one, a 410 with a code, a code of another type and a
+		// member more are not.
+		{`{"referenceExpired":{"code":"syncStateNotFound","status":400}}`, true},
+		{`{"referenceExpired":{"code":"syncStateNotFound","status":404}}`, false},
+		{`{"referenceExpired":{"code":"codeNotDeclared","status":400}}`, false},
+		{`{"referenceExpired":{"code":"syncStateNotFound","status":410}}`, false},
+		{`{"referenceExpired":{"code":400,"status":400}}`, false},
+		{`{"referenceExpired":{"code":"syncStateNotFound","status":400,"body":"x"}}`, false},
 		{`{"throttled":{"retryAfter":30,"status":429}}`, false},
 		{`{}`, false},
 		{``, false},
 	} {
-		if got := referenceExpiredReport([]byte(c.report)); got != c.taken {
+		if _, got := referenceExpiredReport([]byte(c.report), testErrorCodes); got != c.taken {
 			t.Errorf("%q: taken %v", c.report, got)
 		}
 	}

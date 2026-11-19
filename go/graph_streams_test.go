@@ -71,6 +71,9 @@ func TestGraphStreamsFixturesAreReadThroughTheShippedBinding(t *testing.T) {
 	const throttledURI = "/v1.0/auditLogs/signIns?$top=2&$skiptoken=sign-ins-page-3"
 	routes[expiredURI], routes[throttledURI] = "delta-expired.json", "throttled.json"
 	routes["/v1.0/identityProtection/riskDetections?$top=1"] = "unlicensed.json"
+	const resyncURI = "/v1.0/groups/delta?$deltatoken=groups-delta-resync"
+	routes[resyncURI] = "delta-resync.json"
+	routes["/v1.0/identity/conditionalAccess/policies?$top=1"] = "denied.json"
 	routes["/v1.0/oauth2PermissionGrants?$top=1"] = "oauth2-permission-grants.empty.json"
 
 	api := &graphAPI{serve: func(w http.ResponseWriter, r *http.Request, origin string) {
@@ -154,13 +157,23 @@ func TestGraphStreamsFixturesAreReadThroughTheShippedBinding(t *testing.T) {
 		strings.Contains(throttled.body, "TooManyRequests") {
 		t.Fatalf("a throttled read: %d %v %s", throttled.code, throttled.header, throttled.body)
 	}
-	// 403: as the code does today -- not a passed-through answer and not
-	// receipted: any status but 2xx is a failed source (400, one sentence,
-	// no receipt), and that sentence carries the endpoint's own excerpt.
+	// 400 with resyncRequired: a pair the binding declares an expired
+	// reference (ADR-0047), answered as the 410 is, by its code, with
+	// nothing of the endpoint's answer.
+	resync := postRaw(t, server.URL, "/acquire", fmt.Sprintf(`{"session":"gs-400","source":"directory/live","arguments":{"link":%q,"method":"GET"}}`, graph.URL+resyncURI))
+	if resync.code != http.StatusGone || resync.body != `{"code":"source_reference_expired","error":"source failed: the source's endpoint answered 400 Bad Request with an error code its binding declares an expired reference: the reference the request sent has expired; nothing was retained or minted"}` {
+		t.Fatalf("a declared pair: %d %s", resync.code, resync.body)
+	}
+	// 403: the access class (ADR-0047): 403, the code, the endpoint's
+	// status, and its error code only when the binding lists it -- this
+	// one's is not, so "unlisted" -- with nothing of its body, unreceipted.
 	unlicensed := postRaw(t, server.URL, "/acquire", `{"session":"gs-403","source":"directory/live","arguments":{"path":"/v1.0/identityProtection/riskDetections","method":"GET","query":{"$top":"1"}}}`)
-	if unlicensed.code != http.StatusBadRequest || !strings.Contains(unlicensed.body, "the endpoint answered 403 Forbidden") ||
-		!strings.Contains(unlicensed.body, "does not hold a licence") || strings.Contains(unlicensed.body, `"receipt"`) {
+	if unlicensed.code != http.StatusForbidden || unlicensed.body != `{"code":"source_access_refused","endpointCode":"unlisted","endpointStatus":403,"error":"source failed: the source's endpoint answered 403 Forbidden: it refused this read to the source's credential; nothing was retained or minted"}` {
 		t.Fatalf("an unlicensed read: %d %s", unlicensed.code, unlicensed.body)
+	}
+	denied := postRaw(t, server.URL, "/acquire", `{"session":"gs-403-listed","source":"directory/live","arguments":{"path":"/v1.0/identity/conditionalAccess/policies","method":"GET","query":{"$top":"1"}}}`)
+	if denied.code != http.StatusForbidden || !strings.Contains(denied.body, `"endpointCode":"Authorization_RequestDenied","endpointStatus":403,`) || strings.Contains(denied.body, "Insufficient") {
+		t.Fatalf("a listed code: %d %s", denied.code, denied.body)
 	}
 	// A present-but-empty stream is an answer: 200, an empty value, receipted.
 	empty := acquire("gs-empty", `{"path":"/v1.0/oauth2PermissionGrants","method":"GET","query":{"$top":"1"}}`)
