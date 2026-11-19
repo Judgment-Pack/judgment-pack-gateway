@@ -313,6 +313,19 @@ start, and the signer refuses each call of them (`401`, or the scope refusal). A
 `scope_ids` claim out of form, or wider than its subject's entry) is refused `401` at the
 transport with the signer's sentence, or stops a stdio start.
 
+The listing's 8 MiB bound (`docs/design/tool-descriptors.md`, "The listing") is applied, in the
+caller form, to each scope identifier's platforms on their own, and to the platforms of none on
+theirs: each such group drops its own platforms' snapshots, in reverse table order, until its
+listing (the seal tool and its tools) fits, and the start names the snapshots dropped. A
+caller's listing is then made from the tools it reaches alone, in table order, each platform
+described from its snapshot where its group kept it and while the answer stays within 8 MiB,
+and as if nothing were captured from the first that would pass it. What a caller is listed is
+thus a function of the platforms it reaches: the platforms of a scope identifier it does not
+reach, however large, change no byte of it, and a caller of one scope identifier is listed what
+a server fixed to it lists
+([ADR-0041](../adr/0041-what-one-scope-learns-of-another-through-a-shared-gateway.md)). The
+server holds each group's described entries, up to 8 MiB a group.
+
 A scope identifier never comes from the client. No tool's input schema gains a member, a
 call's arguments are carried to the signer byte for byte, and `_meta` is read for the session
 alone, so a scope named in either has no effect. The forward carries the caller's token, so

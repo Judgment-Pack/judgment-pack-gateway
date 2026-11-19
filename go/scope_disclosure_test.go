@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -143,5 +144,85 @@ func TestPostureOfOneScopeIsTheSameWhateverAnotherScopeHolds(t *testing.T) {
 	}
 	if bytes.Equal(report(withA, nil), report(ofB, nil)) {
 		t.Fatal("the installation's report is the same with and without A's sources, so the test shows nothing")
+	}
+}
+
+// A front that takes each caller's scope identifiers lists a caller of scope
+// B the same bytes whether or not a platform of scope A exists whose snapshot
+// alone passes the listing's bound (ADR-0041): B's platforms' snapshots are
+// bounded among B's own, and the platforms of none among theirs, so A's
+// cannot leave B's undescribed. A's, where it alone passes the bound, is
+// dropped in its own listing and said at start; where it fits its own, it is
+// served to A's caller; and a caller of both is listed within the bound.
+func TestTheListingOfOneScopeIsTheSameWhateverAnotherScopeHolds(t *testing.T) {
+	f := newServedFixture(t, canonicalSnapshot(t, servedTools))
+	ref := func(name string) string { return name + "@sha256:" + strings.Repeat("0", 64) }
+	pin := func(name, words string) string {
+		data := bytes.Replace(canonicalSnapshot(t, `{"lookup":{"description":"`+words+`"}}`), []byte(`"platform":"tickets"`), []byte(`"platform":"`+name+`"`), 1)
+		return f.write(t, bytes.Replace(data, []byte(servedBinding), []byte(ref(name)), 1))
+	}
+	bWords := strings.Repeat("b", 2000)
+	a := platformConfig{name: "a", scope: callerScopeA, binding: ref("a"), descriptors: pin("a", strings.Repeat("a", 3000))}
+	b := platformConfig{name: "b", scope: callerScopeB, binding: ref("b"), descriptors: pin("b", bWords)}
+	plain := platformConfig{name: "plain", binding: ref("plain")}
+	live := func() *operation { return &operation{shape: "mcp", tools: []string{"lookup"}} }
+	bindings := map[string]binding{"a": {platform: "a", live: live()}, "b": {platform: "b", live: live()}, "plain": {platform: "plain", live: live()}}
+	serve := func(platforms ...platformConfig) *mcpServer {
+		t.Helper()
+		cfg := engineConfig{authority: "gateway:test", listen: "127.0.0.1:1", platforms: platforms,
+			mcp: &mcpConfig{listen: "127.0.0.1:0", resource: "https://engine.test/mcp", sessions: 8, idleSeconds: 60, concurrency: 4, callsPerMinute: 100, scopeFromCaller: true}}
+		s, err := newDeclaredMCPTestServer(t, cfg, bindings, nil, f.config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	listed := func(s *mcpServer, reach scopeReach) []byte {
+		t.Helper()
+		list := s.toolList(&mcpSession{reach: &reach}, "")
+		if size, _ := listingSize(list); size > listingBound {
+			t.Fatalf("a listing of %d bytes, over %d", size, listingBound)
+		}
+		out, _ := json.Marshal(list)
+		return out
+	}
+	ofB := scopeReach{ids: map[string]bool{callerScopeB: true}}
+	ofBAndNone := scopeReach{none: true, ids: map[string]bool{callerScopeB: true}}
+	size, _ := listingSize(serve(b, plain).toolList(&mcpSession{reach: &ofBAndNone}, ""))
+	saved := listingBound
+	t.Cleanup(func() { listingBound = saved })
+	// a bound B's listing beside the platforms of none just fits, and that
+	// A's snapshot alone passes
+	listingBound = size + 100
+	alone, beside := serve(b, plain), serve(a, b, plain)
+	for _, reach := range []scopeReach{ofB, ofBAndNone} {
+		got, want := listed(beside, reach), listed(alone, reach)
+		if !bytes.Equal(got, want) {
+			t.Errorf("B's caller is listed otherwise beside A's platform:\n%s\n%s", got, want)
+		}
+		if !bytes.Contains(got, []byte(bWords)) {
+			t.Errorf("B's snapshot is not served to B's caller: %s", got)
+		}
+	}
+	if strings.Join(beside.dropped, ",") != "a" || len(alone.dropped) != 0 {
+		t.Fatalf("dropped at start: %v beside A, %v alone", beside.dropped, alone.dropped)
+	}
+	// A's snapshot within its own bound, and A's and B's together past it
+	aWords := strings.Repeat("a", 1200)
+	a.descriptors = pin("a", aWords)
+	beside = serve(a, b, plain)
+	if len(beside.dropped) != 0 {
+		t.Fatalf("dropped at start: %v", beside.dropped)
+	}
+	for _, reach := range []scopeReach{ofB, ofBAndNone} {
+		if got, want := listed(beside, reach), listed(alone, reach); !bytes.Equal(got, want) {
+			t.Errorf("B's caller is listed otherwise beside A's platform:\n%s\n%s", got, want)
+		}
+	}
+	if got := listed(beside, scopeReach{ids: map[string]bool{callerScopeA: true}}); !bytes.Contains(got, []byte(aWords)) {
+		t.Errorf("A's snapshot is not served to A's caller: %s", got)
+	}
+	if got := listed(beside, scopeReach{every: true}); !bytes.Contains(got, []byte(aWords)) || bytes.Contains(got, []byte(bWords)) {
+		t.Errorf("a caller of every scope: the platforms first in the table that fit are described, and no further: %s", got)
 	}
 }

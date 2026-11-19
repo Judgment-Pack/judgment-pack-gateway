@@ -254,7 +254,11 @@ The limits below are exact, and when one is reached the overflow is deterministi
   snapshot's labels can render to far more than the snapshot, so the frontend builds no
   description past the room the listing has left. It reads and verifies one snapshot at a time,
   every pinned snapshot whether or not the bound drops it, and lets each go once its tools are
-  described; what it holds after start is the listing.
+  described; what it holds after start is the listing. A server that takes each caller's scope
+  identifiers (`mcp.scopeFrom: "caller"`) bounds each scope identifier's platforms, and the
+  platforms of none, on their own, and lists each caller from the platforms it reaches within
+  the same 8 MiB, so one scope's snapshots never decide another's caller's listing
+  (`docs/design/mcp-server.md`, "Scope identifiers"; ADR-0041).
 
 ## What the frontend serves
 
