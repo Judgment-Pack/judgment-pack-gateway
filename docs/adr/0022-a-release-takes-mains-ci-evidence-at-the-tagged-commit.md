@@ -50,8 +50,10 @@ write to the repository, and is never read.
    `.github/ci-evidence.json`, [docs/releasing.md](../releasing.md#the-ci-evidence-the-release-takes)):
    the newest run of `ci.yml` at the tagged commit, by a push to `main`, completed and successful,
    at most 48 hours old, every job and leg present and successful on its hosted runner, the inputs
-   the commit holds, and each leg's toolchain: the Go `release.yml` names on every leg, and on Linux
-   the runner image and toolchains the release's runner resolves. The decision record is kept with
+   the commit holds, and each leg's toolchain: the Go `release.yml` names on every leg, and the
+   exact Node and Python `dev.json` names for the check jobs (amended: these were the runner image
+   and toolchains the release's runner resolves, which GitHub's serving of several builds of one
+   image at once made a release unable to match). The decision record is kept with
    the run. `ci.yml` is not called.
 3. **A refusal stops the release.** Nothing re-runs or dispatches CI by itself; the fresh route
    (re-run all jobs of `main`'s run at the commit, then the release's failed jobs) is a
@@ -76,7 +78,8 @@ CI. That it must, as the commit defines it, stands.
   of determination 1 of ADR-0008.
 - Bad, because what the gate cannot see stays unseen, a known bound: the dependencies `pip`
   resolves for the setup step's `jsonschema` (test-only; a hash-locked requirements file would
-  close it), and the macOS and Windows image versions, which are recorded and not compared.
+  close it), and every runner's image version (recorded) and the check jobs' Docker (the image's, not held), neither
+  compared; the release job builds and checks the engine image itself.
 - Revisit when the kit's gate accepts prereleases (devkit #54), or when a check of `ci.yml` comes
   to depend on the tag (it then belongs in the release workflow, not in the evidence).
 
