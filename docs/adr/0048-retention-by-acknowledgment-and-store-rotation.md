@@ -91,7 +91,8 @@ This record sets out the options for each and the form chosen. Nothing of it is 
      the key in force under a prefix of its own. The statement names the old registry's line
      count, the SHA-256 of its bytes, whole, and the key id in force.
   4. It marks the old store rotated away from, outside the old registry's bytes, and every
-     later start on the old store refuses it by the mark's name (SPEC.md §3d).
+     later start, removal or key rotation on the old store refuses it by the mark's name
+     (SPEC.md §3d).
 
   A verifier given the new store alone reports the observation `continues-from`, which is no
   finding: the old store may have been removed under retention. A verifier given both

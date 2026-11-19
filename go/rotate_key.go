@@ -264,6 +264,12 @@ func rotateKey(seedPath, registryPath string, stamp func() string, random io.Rea
 	if lock != nil {
 		defer lock.Close()
 	}
+	// a store rotated away from (SPEC.md §3d) takes no rotation statement:
+	// one would change the bytes the new store's continuation names, and
+	// the seed the new store starts under
+	if err := refuseRotatedStore(registryPath); err != nil {
+		return nil, fmt.Errorf("%w; nothing was changed", err)
+	}
 	data, _, err := readRegistryBytes(registryPath)
 	if err != nil {
 		return nil, fmt.Errorf("registry: %w", err)
@@ -427,6 +433,12 @@ func resumeRotation(seedPath, registryPath string, _ func() string, _ io.Reader)
 	}
 	if lock != nil {
 		defer lock.Close()
+	}
+	// a store rotated away from (SPEC.md §3d) takes no rotation statement:
+	// one would change the bytes the new store's continuation names, and
+	// the seed the new store starts under
+	if err := refuseRotatedStore(registryPath); err != nil {
+		return nil, fmt.Errorf("%w; nothing was changed", err)
 	}
 	data, present, err := readRegistryBytes(registryPath)
 	if err != nil {
