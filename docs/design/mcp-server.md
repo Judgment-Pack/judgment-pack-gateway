@@ -301,19 +301,45 @@ In both forms a caller is listed, and may call, only the platform tools of the s
 token reaches. The rule is ADR-0037's, computed by the signer's own function. Any
 other tool is answered `unknown tool: <name>`, exactly as a name the table does not hold, and
 nothing is forwarded. `engine.seal` is listed to every caller, because the signer holds
-`/seal` to the caller itself. Over HTTP the reach is read from each request's token. Over
+`/seal` to the caller itself. A server fixed to a scope identifier names it in every `/seal`
+it forwards (`{"scope": ..., "session": ...}`), and the signer answers a session of another
+scope identifier, or of none, `no such session`, as it answers a name it does not hold, so
+the fixed form seals its own scope's sessions alone whatever else the caller's token reaches
+([ADR-0041](../adr/0041-what-one-scope-learns-of-another-through-a-shared-gateway.md)). A
+session another process sealed in the registry is still said to be sealed, to every caller, as
+`/registry` shows anyone. The caller form names no scope on a seal. Over HTTP the reach is read from each request's token. Over
 stdio it is read once at start, with `ENGINE_TOKEN`, and holds until the next start: after the
 token expires, or the subject's grant is narrowed, `tools/list` still lists the tools of the
 start, and the signer refuses each call of them (`401`, or the scope refusal). A token the signer refuses `401` (a
 `scope_ids` claim out of form, or wider than its subject's entry) is refused `401` at the
 transport with the signer's sentence, or stops a stdio start.
 
+The listing's 8 MiB bound (`docs/design/tool-descriptors.md`, "The listing") is applied, in the
+caller form, to each scope identifier's platforms on their own, and to the platforms of none on
+theirs: each such group drops its own platforms' snapshots, in reverse table order, until its
+listing (the seal tool and its tools) fits, and the start names the snapshots dropped. A
+caller's listing is then made from the tools it reaches alone, in table order, each platform
+described from its snapshot where its group kept it and while the answer stays within 8 MiB,
+and as if nothing were captured from the first that would pass it. What a caller is listed is
+thus a function of the platforms it reaches: the platforms of a scope identifier it does not
+reach, however large, change no byte of it
+([ADR-0041](../adr/0041-what-one-scope-learns-of-another-through-a-shared-gateway.md)). The
+server holds each group's described entries, up to 8 MiB a group: up to (the number of scope
+identifiers + 1) × 8 MiB in all, with no cap of its own, so an operator sizes the host for the
+scope identifiers whose platforms pin snapshots.
+
 A scope identifier never comes from the client. No tool's input schema gains a member, a
 call's arguments are carried to the signer byte for byte, and `_meta` is read for the session
 alone, so a scope named in either has no effect. The forward carries the caller's token, so
 the signer holds it to the source's scope identifier and to the caller's reach as it holds a
 direct `/acquire`. The receipt's `scope` is the identifier the forward named. No write tool is
-served in either form.
+served in either form, and no live tool that is not declared effect `read-external`
+([ADR-0044](../adr/0044-a-scoped-mcp-front-serves-only-live-tools-declared-read-external.md)).
+Under `scope` that holds each platform fixed to the identifier, and under `scopeFrom` every
+platform, those of none included. A tool declared `propose` or `act`, or one with no
+declaration, is not left out: `gateway mcp` and `serve` refuse to start, and `connect` refuses
+to write the platform, with `platform <name>: tool "<tool>" is not declared effect
+read-external` and the two ways out, naming no scope identifier.
 
 A session is of one scope identifier (ADR-0036). In the caller form, a caller that reaches two
 scope identifiers names a session per identifier in `_meta`. Otherwise the signer refuses its
@@ -509,7 +535,14 @@ omitting `/act` make the tools read-only: `execute_sql` sits in the postgres bin
 operation (which is its only operation that names it; the binding has no write operation), and
 what holds a live tool to reading is the
 credential the operator gave it — a role that can only read — as `catalog/README.md` says.
-The server names tools; it cannot make them harmless.
+The server names tools; it cannot make them harmless. On a server of neither form, that is the
+whole of it.
+A server that names `scope` or `scopeFrom` serves no live tool that is not declared effect
+`read-external`, and refuses to start where one would be served
+([ADR-0044](../adr/0044-a-scoped-mcp-front-serves-only-live-tools-declared-read-external.md)).
+No decision policy holds a live tool's call, and a platform fixed to a scope identifier enables
+no write operation to carry one. So `execute_sql` is not served behind a scoped front at all. A
+declared read still reads only as far as its credential lets it.
 
 ## Where it lives, and what proves it
 

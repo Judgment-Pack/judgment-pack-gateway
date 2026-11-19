@@ -235,13 +235,13 @@ func TestAGCPAssetSourceReportsItsGroups(t *testing.T) {
 	}
 	posture := func() readOnlySourcePosture {
 		t.Helper()
-		p := readOnlySourcePostures(service.sources, nil)
+		p := readOnlySourcePostures(service.sources)
 		if len(p) != 1 {
 			t.Fatalf("%+v", p)
 		}
 		return p[0]
 	}
-	state := func() string { return readOnlyCredentialsLines(service.sources, nil)[0].state }
+	state := func() string { return readOnlyCredentialsLines(service.sources)[0].state }
 	if p := posture(); p.groupBindings != "checked" || state() != postureEnforced {
 		t.Fatalf("before any page: %+v %s", p, state())
 	}
@@ -310,7 +310,7 @@ func TestUnderRefuseAGroupUnresolvedFailsTheAcquisitionAndClosesNothing(t *testi
 		t.Fatalf("a page refused for a group unresolved: %d %s", got.code, got.body)
 	}
 	requireNothingKept(t, service, "drift-1")
-	p := readOnlySourcePostures(service.sources, nil)[0]
+	p := readOnlySourcePostures(service.sources)[0]
 	if p.state != "serving" || p.refusal != nil || p.groupBindings != "unchecked" || p.groupsUnresolved != 2 || p.groupReason != "members" {
 		t.Fatalf("refused, and not closed: %+v", p)
 	}
@@ -318,7 +318,7 @@ func TestUnderRefuseAGroupUnresolvedFailsTheAcquisitionAndClosesNothing(t *testi
 	if runs := gcpStandInRuns(dir); !reflect.DeepEqual(runs, []string{"TOKEN:false", "TOKEN:false", "PAGE:true", "TOKEN:false", "PAGE:true"}) {
 		t.Fatalf("the next acquisition did not run: %v", runs)
 	}
-	if p := readOnlySourcePostures(service.sources, nil)[0]; p.groupsUnresolved != 4 {
+	if p := readOnlySourcePostures(service.sources)[0]; p.groupsUnresolved != 4 {
 		t.Fatalf("the second refusal is not counted: %+v", p)
 	}
 
@@ -337,7 +337,7 @@ func TestUnderRefuseAGroupUnresolvedFailsTheAcquisitionAndClosesNothing(t *testi
 		if err == nil || strings.Contains(err.Error(), "group-unresolved") || strings.Contains(err.Error(), "example.invalid") {
 			t.Fatalf("%s: %v", c.out, err)
 		}
-		if p := readOnlySourcePostures(service.sources, nil)[0]; p.groupsUnresolved != 0 || p.groupBindings != "checked" || p.state != "serving" {
+		if p := readOnlySourcePostures(service.sources)[0]; p.groupsUnresolved != 0 || p.groupBindings != "checked" || p.state != "serving" {
 			t.Fatalf("%s counted: %+v", c.out, p)
 		}
 	}
@@ -352,7 +352,7 @@ func TestUnderRefuseAGroupUnresolvedFailsTheAcquisitionAndClosesNothing(t *testi
 	if _, _, _, err := service.runGCPAssetSource(source, service.sources[source], []byte(gcpStandInArguments)); err == nil || !strings.Contains(err.Error(), "is closed") {
 		t.Fatalf("found: %v", err)
 	}
-	if p := readOnlySourcePostures(service.sources, nil)[0]; p.state != "closed" || p.refusal.reason != refusalCredentialBoundAtRsrc {
+	if p := readOnlySourcePostures(service.sources)[0]; p.state != "closed" || p.refusal.reason != refusalCredentialBoundAtRsrc {
 		t.Fatalf("found closes the source: %+v", p)
 	}
 }
@@ -360,8 +360,8 @@ func TestUnderRefuseAGroupUnresolvedFailsTheAcquisitionAndClosesNothing(t *testi
 // groupBindings is "off" where a source does not opt in, which changes
 // nothing; "unchecked" where it serves no IAM_POLICY; and the
 // read-only-credentials line is partial while any source it is judged
-// over is unchecked, whoever asks, its counts of the sources the caller
-// reaches, and its text as before where the caller reaches none that
+// over -- one the caller reaches (ADR-0041) -- is unchecked, its counts of
+// those sources, and its text as before where the caller reaches none that
 // resolves groups.
 func TestGroupBindingsOnPosture(t *testing.T) {
 	iamOp := gcpStandInOp
@@ -380,33 +380,37 @@ func TestGroupBindingsOnPosture(t *testing.T) {
 			t.Errorf("%+v: %s, want %s", c.s.op, state, c.want)
 		}
 	}
-	value := canonicalJSONOf(t, readOnlySourcePostures(map[string]sourceSpec{"a/live": {shape: "http", gcpAsset: off}}, nil)[0].value())
+	value := canonicalJSONOf(t, readOnlySourcePostures(map[string]sourceSpec{"a/live": {shape: "http", gcpAsset: off}})[0].value())
 	if !strings.Contains(string(value), `"groupBindings":"off","groupReason":null,"groupsUnresolved":0`) {
 		t.Fatalf("off: %s", value)
 	}
 
 	// Every source serving IAM_POLICY, none opted in: enforced, as before.
 	sources := map[string]sourceSpec{"a/live": {shape: "http", scope: "scope-a", gcpAsset: off}}
-	if lines := readOnlyCredentialsLines(sources, nil); lines[0].state != postureEnforced || !strings.Contains(lines[0].reason, "not a grant through a group") {
+	if lines := readOnlyCredentialsLines(sources); lines[0].state != postureEnforced || !strings.Contains(lines[0].reason, "not a grant through a group") {
 		t.Fatalf("off changes nothing: %+v", lines)
 	}
 	sources["b/live"] = sourceSpec{shape: "http", scope: "scope-b", gcpAsset: checked}
-	lines := readOnlyCredentialsLines(sources, nil)
+	lines := readOnlyCredentialsLines(sources)
 	if lines[0].state != postureEnforced || !strings.Contains(lines[0].reason, "1 of them resolve a grant through a group") || !strings.Contains(lines[0].reason, "0 of those left a group unresolved") {
 		t.Fatalf("checked: %+v", lines)
 	}
 	sources["c/live"] = sourceSpec{shape: "http", scope: "scope-c", gcpAsset: unchecked}
+	// a caller of another scope than C's is not told of C's unresolved group
+	// by the state either (ADR-0041)
 	for _, c := range []struct {
 		name  string
 		reach *scopeReach
+		state string
 		want  string
 	}{
-		{"every source", nil, "2 of them resolve a grant through a group with a third token held to a read-only scope, over the memberships the operator lets the principal view, and 1 of those left a group unresolved"},
-		{"scope B's caller", &scopeReach{ids: map[string]bool{"scope-b": true}}, "1 of them resolve a grant through a group with a third token held to a read-only scope, over the memberships the operator lets the principal view, and 0 of those left a group unresolved"},
-		{"scope A's caller", &scopeReach{ids: map[string]bool{"scope-a": true}}, "not a grant through a group"},
+		{"every source", nil, posturePartial, "2 of them resolve a grant through a group with a third token held to a read-only scope, over the memberships the operator lets the principal view, and 1 of those left a group unresolved"},
+		{"scope B's caller", &scopeReach{ids: map[string]bool{"scope-b": true}}, postureEnforced, "1 of them resolve a grant through a group with a third token held to a read-only scope, over the memberships the operator lets the principal view, and 0 of those left a group unresolved"},
+		{"scope A's caller", &scopeReach{ids: map[string]bool{"scope-a": true}}, postureEnforced, "not a grant through a group"},
+		{"scope C's caller", &scopeReach{ids: map[string]bool{"scope-c": true}}, posturePartial, "1 of those left a group unresolved"},
 	} {
-		lines := readOnlyCredentialsLines(sources, c.reach)
-		if len(lines) != 1 || lines[0].state != posturePartial || !strings.Contains(lines[0].reason, c.want) {
+		lines := postureLinesOf(sources, c.reach, protectionReadOnlyCredentials)
+		if len(lines) != 1 || lines[0].state != c.state || !strings.Contains(lines[0].reason, c.want) {
 			t.Errorf("%s: %+v", c.name, lines)
 		}
 	}

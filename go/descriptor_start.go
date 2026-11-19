@@ -307,34 +307,54 @@ func (c *listingCount) add(t mcpTool) error {
 	return nil
 }
 
-// buildListing is the whole tools/list answer's tools, from the listing
-// counted with no snapshot: each platform that pins one served from it
-// while the answer, serialized, stays within listingBound; past that,
-// platforms' snapshots are dropped whole, in reverse table order, until
-// it fits, and dropped says which, in the order dropped.
+// buildListing is the listing held at start, from the listing counted with
+// no snapshot: each platform that pins one served from it while the answer
+// of its group, serialized, stays within listingBound; past that, the group's
+// platforms' snapshots are dropped whole, in reverse table order, until it
+// fits, and dropped says which, in the order dropped. A group is the
+// platforms group names alike: all of them, but for a server that takes each
+// caller's scope identifiers, whose groups are the platforms of one scope
+// identifier, or of none (ADR-0041), so that what one scope's platforms hold
+// never decides which of another's snapshots are served. A group's answer is
+// the seal tool's entry and its platforms' tools'.
 //
 // Nothing past the bound is built, and no snapshot is held past its turn.
 // Platform by platform, in table order, its snapshot is read from dir and
-// verified, its tools' entries built from it only as far as the room left,
-// and the snapshot let go. A platform after the first that does not fit
-// is still read and verified -- a snapshot that fails its checks refuses
-// the start, served or not -- and let go unserved. A tool described from
-// a snapshot is never shorter than described without one (the provenance
-// sentence and the fence outweigh the sentence they replace, and a
-// projection holds at least the open schema), so the answer only grows as
-// platforms are kept: the platforms kept are the longest run from the
-// table's start that fits, which is what dropping from its end until it
-// fits leaves.
-func buildListing(order []string, tools map[string]mcpTool, count *listingCount, platforms []platformConfig, bindings map[string]binding, dir *servedDirectory) ([]json.RawMessage, []string, error) {
-	total, entries := count.total, count.entries
+// verified, its tools' entries built from it only as far as the room its
+// group has left, and the snapshot let go. A platform after the first of its
+// group that does not fit is still read and verified -- a snapshot that
+// fails its checks refuses the start, served or not -- and let go unserved.
+// A tool described from a snapshot is never shorter than described without
+// one (the provenance sentence and the fence outweigh the sentence they
+// replace, and a projection holds at least the open schema), so the answer
+// only grows as platforms are kept: the platforms kept are the longest run
+// from the group's start that fits, which is what dropping from its end until
+// it fits leaves.
+func buildListing(order []string, tools map[string]mcpTool, count *listingCount, platforms []platformConfig, bindings map[string]binding, dir *servedDirectory, group func(platformConfig) string) (*heldListing, []string, error) {
+	held := &heldListing{plain: count.entries, described: map[string]json.RawMessage{}}
 	byPlatform := map[string][]string{}
 	for _, name := range order {
 		if t := tools[name]; !t.seal {
 			byPlatform[t.platform] = append(byPlatform[t.platform], name)
 		}
 	}
+	// each group's answer with no snapshot, as listingCount counts it: the
+	// seal tool's entry, and a separator and an entry for each of its tools
+	empty, err := listingSize(nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	totals, full := map[string]int{}, map[string]bool{}
+	for _, p := range platforms {
+		g := group(p)
+		if _, seen := totals[g]; !seen {
+			totals[g] = empty + len(count.entries[mcpSealTool])
+		}
+		for _, name := range byPlatform[p.name] {
+			totals[g] += 1 + len(count.entries[name])
+		}
+	}
 	var dropped []string
-	full := false
 	for _, p := range platforms {
 		if p.descriptors == "" && len(p.operationDescriptors) == 0 {
 			continue
@@ -343,36 +363,98 @@ func buildListing(order []string, tools map[string]mcpTool, count *listingCount,
 		if err != nil {
 			return nil, nil, err
 		}
-		if !full {
-			grown, described := 0, map[string]json.RawMessage{}
+		g := group(p)
+		kept := heldPlatform{tools: byPlatform[p.name]}
+		if !full[g] {
+			described := map[string]json.RawMessage{}
 			for _, name := range byPlatform[p.name] {
-				room := listingBound - total - grown + len(entries[name])
+				room := listingBound - totals[g] - kept.growth + len(count.entries[name])
 				entry, err := listingEntry(tools[name], sp, room)
 				if err != nil {
 					return nil, nil, err
 				}
 				if entry == nil {
-					full = true
+					full[g] = true
 					break
 				}
 				described[name] = entry
-				grown += len(entry) - len(entries[name])
+				kept.growth += len(entry) - len(count.entries[name])
 			}
-			if !full {
+			if !full[g] {
 				for name, entry := range described {
-					entries[name] = entry
+					held.described[name] = entry
 				}
-				total += grown
+				totals[g] += kept.growth
+				kept.kept = true
+				held.platforms = append(held.platforms, kept)
 				continue
 			}
 		}
+		held.platforms = append(held.platforms, heldPlatform{tools: byPlatform[p.name]})
 		dropped = append([]string{p.name}, dropped...)
 	}
-	list := make([]json.RawMessage, len(order))
-	for i, name := range order {
-		list[i] = entries[name]
+	return held, dropped, nil
+}
+
+// heldListing is what the server holds of its listing after start: every
+// tool's entry described as if nothing were captured, the entries of the
+// tools whose platform's snapshot its group kept, and the platforms that pin
+// a snapshot, in table order, each with its tools, whether its group kept it
+// and by how much it grows an answer.
+type heldListing struct {
+	plain, described map[string]json.RawMessage
+	platforms        []heldPlatform
+}
+
+type heldPlatform struct {
+	tools  []string
+	kept   bool
+	growth int
+}
+
+// assemble is the listing of the tools named, in the order given (a
+// platform's tools are named together or not at all): each platform's tools
+// described from its snapshot, in table order, while the answer stays within
+// listingBound, and as if nothing were captured from the first platform that
+// would pass it on; a platform its group did not keep is described so too.
+// It is a function of the tools named and their platforms alone, so a caller
+// is listed the same whatever the platforms it is not listed hold; of every
+// tool of one group it is the group's listing, platforms dropped as at start,
+// since a group keeps the longest run from its start that fits (ADR-0041).
+func (h *heldListing) assemble(names []string) []json.RawMessage {
+	listed := make(map[string]bool, len(names))
+	total, _ := listingSize(nil)
+	for i, name := range names {
+		listed[name] = true
+		if i > 0 {
+			total++
+		}
+		total += len(h.plain[name])
 	}
-	return list, dropped, nil
+	described := map[string]bool{}
+	for _, p := range h.platforms {
+		if len(p.tools) == 0 || !listed[p.tools[0]] {
+			continue
+		}
+		if !p.kept {
+			continue
+		}
+		if total+p.growth > listingBound {
+			break
+		}
+		total += p.growth
+		for _, name := range p.tools {
+			described[name] = true
+		}
+	}
+	list := make([]json.RawMessage, len(names))
+	for i, name := range names {
+		list[i] = h.plain[name]
+		if described[name] {
+			list[i] = h.described[name]
+		}
+	}
+	return list
 }
 
 // listingEntry is a tool's entry in the listing, serialized as it is sent,

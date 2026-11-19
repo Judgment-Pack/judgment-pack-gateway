@@ -540,7 +540,9 @@ options: under an engine configuration the derived sources keep the thirty-secon
 `/acquire` keeps one mebibyte, and a source's stdout keeps its own mebibyte. An `/acquire` body's arguments are refused past 524,288 JSON values, a count a
 one-mebibyte body cannot reach, and raising the bound does not raise it.
 On Unix, `serve` refuses a seed file that is not a regular file
-owned by the gateway's own user and readable by it alone, says which `chmod` to run,
+owned by the gateway's own user and readable by it alone (a seed on a read-only secret
+mount is copied to a private file at start: [docs/seed-from-a-secret-mount.md](docs/seed-from-a-secret-mount.md)),
+says which `chmod` to run,
 and marks every descriptor its launcher left open close-on-exec so none reaches a
 source; on Windows it checks that the seed is a regular file and says the rest is the
 filesystem's. What this does not give: a source that runs as the gateway's own user can

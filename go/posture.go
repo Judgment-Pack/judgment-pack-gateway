@@ -103,14 +103,14 @@ type postureInput struct {
 	// configured or some source is fixed to one; "" adds none.
 	callerScopes string
 	// reach, where not nil, is the reach of the caller the report is
-	// served to (ADR-0037): programs lists only the sources it takes, so
-	// the names of other scopes' sources are not learned from the report,
-	// as /acquire does not tell them from unknown ones. Every line is
-	// still judged over every source; the counts that are the reach's are
-	// read-only-credentials' (its sources, those serving IAM_POLICY and
-	// those closed), so how many read-only sources another scope holds,
-	// and whether one was refused, is not learned either. nil lists and
-	// counts every source.
+	// served to (ADR-0037): the report is of the sources it takes alone
+	// (ADR-0041). Every line is judged over them -- its state, its counts
+	// and the sources or platforms it names -- and programs and
+	// readOnlySources list only them, so nothing in the report changes with
+	// the sources of a scope identifier the caller does not reach: neither
+	// their names, nor how many there are, nor whether one of them is held
+	// less, as /acquire does not tell them from unknown ones. nil judges
+	// and lists every source.
 	reach *scopeReach
 }
 
@@ -259,8 +259,13 @@ var postureStatements = map[string]map[string]postureLine{
 // hostPosture judges every protection under the configuration given: the
 // lines every report gives, the listener's last of them, then a
 // delegation's, then writeRequesters', then the caller scopes', then the
-// read-only credentials', each only where the configuration carries it.
+// read-only credentials', each only where the configuration carries it. A
+// report served to a reach is judged over the sources the reach takes, and
+// over nothing else (reachedSources).
 func hostPosture(in postureInput) postureReport {
+	if in.reach != nil {
+		in.sources = reachedSources(in.sources, *in.reach)
+	}
 	programs := sourceProgramPosture(in.sources)
 	if in.public {
 		for i := range programs {
@@ -274,18 +279,21 @@ func hostPosture(in postureInput) postureReport {
 		seedPosture(in),
 		programConfinementPosture(programs),
 		listenerPosture(in),
-	}, append(append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources)...), readOnlyCredentialsLines(in.sources, in.reach)...)...),
-		readOnly: readOnlySourcePostures(in.sources, in.reach)}
-	if in.reach != nil {
-		var listed []postureProgram
-		for _, p := range programs {
-			if in.reach.holds(in.sources[p.source].scope) {
-				listed = append(listed, p)
-			}
-		}
-		report.programs = listed
-	}
+	}, append(append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources, in.reach != nil)...), readOnlyCredentialsLines(in.sources)...)...),
+		readOnly: readOnlySourcePostures(in.sources)}
 	return report
+}
+
+// reachedSources are the sources a reach takes (ADR-0041): what a report
+// served to a caller held to scope identifiers is judged over.
+func reachedSources(sources map[string]sourceSpec, reach scopeReach) map[string]sourceSpec {
+	reached := make(map[string]sourceSpec, len(sources))
+	for name, spec := range sources {
+		if reach.holds(spec.scope) {
+			reached[name] = spec
+		}
+	}
+	return reached
 }
 
 // sourceUserPosture is whether every source runs as a user of its own
@@ -298,6 +306,11 @@ func sourceUserPosture(in postureInput, switching func(map[string]sourceSpec) er
 		return line(postureNotApplicable, "no configuration was named, so there is no source to judge")
 	}
 	if len(in.sources) == 0 {
+		if in.reach != nil {
+			// a report cut to a reach says nothing of the sources it does
+			// not take, nor whether there are any
+			return line(postureNotApplicable, "this caller's token reaches no source, so there is none to judge")
+		}
 		return line(postureNotApplicable, "the configuration names no source")
 	}
 	var asSigner, asRoot []string

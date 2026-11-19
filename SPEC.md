@@ -1922,7 +1922,7 @@ HTTP: the gateway terminates no TLS on either form.
 | Method | Path        | Body / result |
 |--------|-------------|---------------|
 | POST   | `/acquire`  | `{session, source, arguments, trail, scope}`, `trail` and `scope` optional → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, an empty registry and any discarded line establishing no seal — so a seal stays final across a restart; a seal made after an interruption (§3c) is such a seal. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal — and so is a registry that is not there, since the gateway made it when it started (§3); a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. A session this process does not hold and the registry does not seal is then looked up in the store, and is refused `400` before the source runs where the store holds a receipt in it — any entry of its directory whose name ends in `.json`, whatever it holds — where the store holds it as anything but a directory, a link included, and where the store cannot show it, which is never taken for empty: a gateway keeps a session's chain in memory, so one another process left open is not continued from the store, whose last receipts may have been taken away (§2), and stays `unregistered-session` (§4 step 3). A session directory that holds no receipt is taken up. Where gateway instances serve one store beside one another (the reference gateway's PostgreSQL storage kind, by its configuration), a session is held by the instance that admitted its first call, which keeps its chain: a session another instance holds while that instance still serves is refused `409` before the source runs, with a fixed sentence that names no instance, and the caller sends the session's calls to the instance that holds it; once that instance has stopped, the session is judged as one another process left open, and one that holds no receipt is taken up. |
-| POST   | `/seal`     | `{session}` → seals the session's final count; returns the seal record. A session this process does not hold is refused `400`: one sealed in the registry as sealed, the registry read as for `/acquire` (one that cannot be read refuses), one the store holds receipts in, or holds as anything but a directory, or cannot show, as `/acquire` refuses it — its count is not sealed from the store, for the reason `/acquire` does not continue it; `gateway seal-open`, with the gateway stopped — or, where gateway instances serve one store beside one another, once the instance that held it no longer serves — seals it as a seal made after an interruption (§3c) — and any other as no such session. Where gateway instances serve one store beside one another, a session another instance holds while that instance still serves is refused `409` with the fixed sentence `/acquire` gives, and is not sealed. |
+| POST   | `/seal`     | `{session, scope}`, `scope` optional and read only where some source is fixed to a scope identifier, as `/acquire` reads it ("Caller scope identifiers", below) → seals the session's final count; returns the seal record. A session this process does not hold is refused `400`: one sealed in the registry as sealed, the registry read as for `/acquire` (one that cannot be read refuses), one the store holds receipts in, or holds as anything but a directory, or cannot show, as `/acquire` refuses it — its count is not sealed from the store, for the reason `/acquire` does not continue it; `gateway seal-open`, with the gateway stopped — or, where gateway instances serve one store beside one another, once the instance that held it no longer serves — seals it as a seal made after an interruption (§3c) — and any other as no such session. Where gateway instances serve one store beside one another, a session another instance holds while that instance still serves is refused `409` with the fixed sentence `/acquire` gives, and is not sealed. |
 
 A gateway minting version 3 receipts answers `/acquire` with `{result, receipt,
 salts}`: `salts` is an object with one member per commitment the receipt
@@ -2058,10 +2058,16 @@ not granted is still refused `401`, and the start and `/posture` say so.
   <id>`, the answer for a session the gateway does not hold, whatever its state: held by this
   process, left open by another (§3c), held by another instance serving the database (`409`
   otherwise), or unreadable. A caller that does not reach every source gets that answer too
-  where the store cannot say the session's scope. A session sealed in the registry is said to
-  be so, as `/registry` serves its seal to anyone. An `/acquire` into a session whose receipts
-  are of a scope other than the source's is refused `400` with that refusal's sentence,
-  whatever else the session holds.
+  where the store cannot say the session's scope. A request may name `scope`, a string, where
+  some source is fixed to a scope identifier (elsewhere the member is refused as one `/seal`
+  does not read, and a `scope` that is not a string is refused `400`); it then reaches only a
+  session of that scope identifier, and only where the caller reaches it: a session of another
+  scope identifier, or of none, is answered `no such session: <id>` in the same way, whoever
+  asks (`docs/adr/0041-what-one-scope-learns-of-another-through-a-shared-gateway.md`). A
+  session this process does not hold that is sealed in the registry is said to be so to every
+  caller, whatever scope the request names, as `/registry` serves its seal to anyone.
+  An `/acquire` into a session whose receipts are of a scope other than the source's is
+  refused `400` with that refusal's sentence, whatever else the session holds.
 - `/verify`: served to a caller that reaches every source, and, where no source is fixed to a
   scope identifier and the store holds no session of one (no receipt holding `scope`, no seal
   of version 2), to one that reaches the sources of none; otherwise `403`, before the store is
@@ -2077,6 +2083,18 @@ not granted is still refused `401`, and the start and `/posture` say so.
   hidden, scope identifiers are chosen with at least 128 bits of entropy (for instance 22 or
   more characters drawn at random from a 64-character alphabet), and a name a person reads is
   kept outside the identifier.
+- `/posture`: served to a caller that does not reach every source, the report is of the sources
+  it reaches alone: `programs` and `readOnlySources` list only them, and every protection line is
+  judged over them, its state, its counts and the sources or platforms it names, so the report
+  is the same, byte for byte, whether or not the sources of a scope identifier the caller does
+  not reach exist, and whatever they hold
+  (`docs/adr/0041-what-one-scope-learns-of-another-through-a-shared-gateway.md`). Where the
+  caller reaches no source, the line of who runs the sources says the caller's token reaches
+  none, and where it reaches none fixed to a scope identifier, `caller-scope-identifiers` says
+  so of the sources it reaches. The lines that are not of the sources (the seed, custody, the
+  listener, the descendants' probe, the delegation's narrowing and sender constraint) are the
+  same for every caller. The installation's caller, `"unchecked"` and a gateway without
+  `identity` are given the report of every source.
 
 The receipt's `caller` is the caller as before; the claim is not recorded, the receipt's
 `scope` being the identifier the request was held to. A scoped caller's subject and issuer are
@@ -2100,13 +2118,20 @@ neither form serves no such platform, and a configuration that fixes one beside 
 
 In both forms, `tools/list` lists and `tools/call` admits only the platform tools whose
 platform's scope identifier the caller's token reaches, by the rule above. The seal tool is
-listed to every caller. A call of any other tool is refused exactly as a call of a tool the
+listed to every caller; a front fixed to a scope identifier names it in every `/seal` it sends,
+so it seals that identifier's sessions alone. A call of any other tool is refused exactly as a call of a tool the
 front does not hold, and nothing is sent. A token this section refuses `401` is refused `401`
 at the front's HTTP transport, and over stdio the server does not start. A scope identifier
 is never read from the client: no tool's input schema has a member for one, and a call's
 arguments and `_meta` do not change the `scope` sent. Every `/acquire` the front sends carries
 the caller's token and is held by this section as a direct request is. The receipt's `scope` is
-the identifier sent. The front serves no write tool.
+the identifier sent. The front serves no write tool. In both forms it serves only live tools
+whose owner declares effect `read-external`: under `mcp.scope` those of the platforms fixed to
+it, and under `mcp.scopeFrom` those of every platform, platforms of none included. A
+configuration under which it would serve a tool declared `propose` or `act`, or a tool with no
+declaration, is refused at start, by the front and by the gateway, in a refusal that names the
+platform and the tool and no scope identifier
+(`docs/adr/0044-a-scoped-mcp-front-serves-only-live-tools-declared-read-external.md`).
 
 ### When an acquisition does not happen
 
@@ -3838,7 +3863,9 @@ shape, the calls that name a tool; a platform's other sources are not counted. T
 that do; `not-applicable` when none does, or none is reached, since the delegation then serves no
 call. Its reason names each platform reached that names no grant, sorted, at most five and the
 rest counted, as refusing every delegated call `grant-unknown` until it names one: such a
-platform is refused, never open, so the line is never `not-enforced`. A gateway without
+platform is refused, never open, so the line is never `not-enforced`. Served to a caller that
+does not reach every source, the line is judged over the sources it reaches (§6, `/posture`), so
+a platform of another scope identifier is neither counted nor named. A gateway without
 `delegation` reports none of the three lines, and its posture is the one it was.
 
 ### 11.10 Definitions and departures
