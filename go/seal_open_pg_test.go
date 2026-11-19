@@ -184,7 +184,7 @@ func sealOpenPgSeals(t *testing.T, lines []string, prefix, via string, heads map
 func sealOpenPgVerdict(t *testing.T, dir, config, name string) []byte {
 	t.Helper()
 	out := filepath.Join(dir, name)
-	if _, err := exportEngine(config, out, nil); err != nil {
+	if _, err := exportEngine(config, out, nil, ""); err != nil {
 		t.Fatalf("export: %v", err)
 	}
 	requireExportChecks(t, out)

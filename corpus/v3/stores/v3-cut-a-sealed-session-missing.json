@@ -1,0 +1,41 @@
+{
+  "name": "v3-cut-a-sealed-session-missing",
+  "note": "s1, sealed by a seal of version 3, not held and named by no removal record; s2 of scope-b, sealed and kept. A seal of version 3 names its scope only over the salt its receipts carry, so s1 is named unattributed and its sealed-session-missing finding reported, and the verdict by --scope scope-b is not ok.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+    "receipts/s2/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"scope\":\"scope-b\",\"scopeSalt\":\"62261c0bc74e002706c4a1c21f13a89ef2ccf4f718a66d28ef9b16b42325a513\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"e0b887fa86b65e8336fbc6b4eb7953c75849aa6eb2304c0ebd24d6a7a315b20b41fb29e4f368b712fa444f1e2b6d159381bb1f9a7f9eb678baba6081e7e1ec06\",\"source\":\"corpus\"}\n",
+    "receipts/s2/1.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":\"e0b887fa86b65e8336fbc6b4eb7953c75849aa6eb2304c0ebd24d6a7a315b20b41fb29e4f368b712fa444f1e2b6d159381bb1f9a7f9eb678baba6081e7e1ec06\",\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"scope\":\"scope-b\",\"scopeSalt\":\"62261c0bc74e002706c4a1c21f13a89ef2ccf4f718a66d28ef9b16b42325a513\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"6b4987abc35d777a7c4fe1b49e342f37c76ebba17c1a619f65803078f6382b293256a4fd53a677b5a20f978ceb270daae36a3f58a41c2d7080e1ea368537e70b\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"scopeDigest\":\"sha256:b3fc80f054d33c995d825b71c562fa16387085919a72c710cce56ad26960d4c0\",\"sealVersion\":\"3\",\"sealedAt\":\"2026-11-18T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"b02a0ca41853297cea3cbf021e81cc66838a84c0269fdf61257574446ae86a06df087f2fb2fe24b92f19e6825b61ab650dc0b6931cf1d203f65b755253992e08\"}\n{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"scopeDigest\":\"sha256:fda82ae5448b17119df4f59ad8807b91867639ff8c4bf63179847957b66010b0\",\"sealVersion\":\"3\",\"sealedAt\":\"2026-11-18T00:00:01Z\",\"sessionId\":\"s2\",\"signature\":\"4f4cd73bc0598b54de4d04f20e91366a73e72e93844a6eb94330b9fba72f9e6b083508c6623ba76c1ecf2358e8c2e52cb81336504f5421477f1cd48243f22106\"}\n",
+  "scope": "scope-b",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s2",
+        "status": "ok"
+      },
+      {
+        "callIndex": 1,
+        "sessionId": "s2",
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "status": "sealed-session-missing"
+      }
+    ],
+    "observations": [],
+    "cut": {
+      "scope": "scope-b",
+      "sessions": [
+        "s2"
+      ],
+      "unattributed": [
+        "s1"
+      ]
+    }
+  }
+}

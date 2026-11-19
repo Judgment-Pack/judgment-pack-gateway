@@ -141,7 +141,27 @@ func cmdCanon() int {
 }
 
 func cmdVerify(args []string) int {
-	const usage = "usage: gateway verify [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
+	const usage = "usage: gateway verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
+	// --scope <identifier>, first or not at all: the verdict is cut by the
+	// scope identifier (SPEC.md §4, "A verdict by scope"), and takes no
+	// decision-record directory. In any later place it is a usage error,
+	// as the other options are; a directory so named is given as ./--scope.
+	scope := ""
+	if len(args) > 0 && args[0] == "--scope" {
+		if len(args) < 2 || !isScopeIdentifier(args[1]) {
+			fmt.Fprintln(os.Stderr, "gateway verify: --scope names a scope identifier: "+scopeForm)
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		scope, args = args[1], args[2:]
+	}
+	for _, a := range args {
+		if a == "--scope" {
+			fmt.Fprintln(os.Stderr, "gateway verify: --scope goes first, before every other option; a directory so named is given as ./--scope")
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+	}
 	// --ordinary-seals-only, first or not at all: a session a seal made
 	// after an interruption anchors is then a finding, not an observation
 	// (SPEC.md §4 step 3). The option in any later place is a usage error,
@@ -206,6 +226,11 @@ func cmdVerify(args []string) int {
 		}
 		decisionRecords = rest[1]
 	}
+	if scope != "" && decisionRecords != "" {
+		fmt.Fprintln(os.Stderr, "gateway verify: a verdict by scope reads no decision records: an action receipt carries no scope")
+		fmt.Fprintln(os.Stderr, usage)
+		return 2
+	}
 
 	raw, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -218,13 +243,18 @@ func cmdVerify(args []string) int {
 		return 1
 	}
 
-	report, err := verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, ordinarySealsOnly)
+	var verdict *report
+	if scope != "" {
+		verdict, err = verifyByScope(storeRoot, registryPath, authority, supplied, scope, publicKey, ordinarySealsOnly)
+	} else {
+		verdict, err = verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, ordinarySealsOnly)
+	}
 	if err != nil {
 		// Could not produce a verdict at all.
 		fmt.Fprintln(os.Stderr, "verify:", err)
 		return 1
 	}
-	out, err := report.marshal()
+	out, err := verdict.marshal()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "encode verdict:", err)
 		return 1

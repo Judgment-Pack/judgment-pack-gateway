@@ -162,8 +162,8 @@ func TestTheStorageMemberTakesAStartWaitFromVersion25(t *testing.T) {
 			"engine configuration: storage.startWaitSeconds 9007199254740991 is outside 1 to 3600"},
 		{"a string", at("25", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":"60"}`),
 			"engine configuration: storage.startWaitSeconds must be an integer"},
-		{"version 32", at("32", `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":60}`),
-			`engine configuration: unsupported engineVersion "32" (latest "31")`},
+		{"a version past the newest", at(unreadVersion(), `{"kind":"postgresql",`+byFile+`,"startWaitSeconds":60}`),
+			`engine configuration: unsupported engineVersion "` + unreadVersion() + `" (latest "` + engineVersion + `")`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parseEngineConfig([]byte(tc.config))
@@ -711,7 +711,7 @@ func TestThePostgresKindServesAndExportsWithTheConnectionStringInNoOutput(t *tes
 	// directory an export could be inside of, and "" is never taken for one
 	t.Chdir(dir)
 	out := filepath.Join(dir, "export")
-	summary, err := exportEngine(config, out, nil)
+	summary, err := exportEngine(config, out, nil, "")
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
