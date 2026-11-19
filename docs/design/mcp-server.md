@@ -339,7 +339,10 @@ Under `scope` that holds each platform fixed to the identifier, and under `scope
 platform, those of none included. A tool declared `propose` or `act`, or one with no
 declaration, is not left out: `gateway mcp` and `serve` refuse to start, and `connect` refuses
 to write the platform, with `platform <name>: tool "<tool>" is not declared effect
-read-external` and the two ways out, naming no scope identifier.
+read-external` and the two ways out, naming no scope identifier. The signer holds a platform
+fixed to a scope identifier to the same rule whatever the front, a configuration with no `mcp`
+included, so a direct `/acquire` reaches no such tool either
+([ADR-0046](../adr/0046-a-scoped-platforms-live-tools-are-declared-read-external-whatever-the-front.md)).
 
 A session is of one scope identifier (ADR-0036). In the caller form, a caller that reaches two
 scope identifiers names a session per identifier in `_meta`. Otherwise the signer refuses its
@@ -541,7 +544,8 @@ A server that names `scope` or `scopeFrom` serves no live tool that is not decla
 `read-external`, and refuses to start where one would be served
 ([ADR-0044](../adr/0044-a-scoped-mcp-front-serves-only-live-tools-declared-read-external.md)).
 No decision policy holds a live tool's call, and a platform fixed to a scope identifier enables
-no write operation to carry one. So `execute_sql` is not served behind a scoped front at all. A
+no write operation to carry one. So `execute_sql` is not served behind a scoped front at all,
+and a platform fixed to a scope identifier does not start with it, front or none (ADR-0046). A
 declared read still reads only as far as its credential lets it.
 
 ## Where it lives, and what proves it

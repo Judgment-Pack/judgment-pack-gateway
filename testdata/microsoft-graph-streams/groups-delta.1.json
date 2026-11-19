@@ -1,0 +1,18 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#groups",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000104",
+      "displayName": "Group A",
+      "securityEnabled": true,
+      "mailEnabled": false
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000105",
+      "displayName": "Group B",
+      "securityEnabled": true,
+      "mailEnabled": false
+    }
+  ],
+  "@odata.nextLink": "https://graph.example.com/v1.0/groups/delta?$skiptoken=groups-delta-page-2"
+}

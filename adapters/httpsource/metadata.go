@@ -19,20 +19,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"adapters/internal/metadataclient"
 )
 
 // metadataBase is the metadata server: the platform's fixed link-local
 // address, written as an IP literal so that no resolver is asked where it
 // is. A test of this package points it at a stand-in; nothing a
 // configuration, a flag or the environment holds changes it.
-var metadataBase = "http://169.254.169.254"
+var metadataBase = metadataclient.Address
 
 const (
 	// metadataIdentityPath is the identity token's path on the metadata
@@ -63,40 +64,13 @@ var (
 	compactJWS = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$`)
 )
 
-// errMetadataAddress is a connection to an address other than the metadata
-// server's, which the metadata client does not make.
-var errMetadataAddress = errors.New("a connection to an address other than the metadata server's is not made")
-
-// metadataClient is the client the identity token is asked with: no proxy,
-// a connection dialed to metadataBase's address and port alone, no redirect
+// metadataClient is the client the identity token is asked with, the one
+// the adapters share (adapters/internal/metadataclient): no proxy, a
+// connection dialed to metadataBase's address and port alone, no redirect
 // followed -- one would be an answer from somewhere else -- and the request
 // bounded in time.
 func metadataClient() (*http.Client, error) {
-	base, err := url.Parse(metadataBase)
-	if err != nil || base.Scheme != "http" || base.Hostname() == "" {
-		return nil, errMetadataAddress
-	}
-	pinned := base.Host
-	if base.Port() == "" {
-		pinned = net.JoinHostPort(base.Hostname(), "80")
-	}
-	dialer := &net.Dialer{Timeout: metadataTimeout}
-	return &http.Client{
-		Timeout: metadataTimeout,
-		Transport: &http.Transport{
-			Proxy: nil,
-			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-				if address != pinned {
-					return nil, errMetadataAddress
-				}
-				return dialer.DialContext(ctx, network, address)
-			},
-			DisableKeepAlives:      true,
-			MaxResponseHeaderBytes: maxHeaderBytes,
-			DisableCompression:     true,
-		},
-		CheckRedirect: func(*http.Request, []*http.Request) error { return errRedirect },
-	}, nil
+	return metadataclient.New(metadataBase, metadataTimeout)
 }
 
 // metadataIdentityToken asks the metadata server for an identity token of
@@ -127,13 +101,13 @@ func metadataIdentityToken(ctx context.Context, audience string, now time.Time) 
 	req.Header.Set("Metadata-Flavor", "Google")
 	resp, err := client.Do(req)
 	if err != nil {
-		if errors.Is(err, errRedirect) {
+		if errors.Is(err, metadataclient.ErrRedirect) {
 			return refuse("answered with a redirect, which is not followed")
 		}
 		return refuse("could not be reached in time")
 	}
 	defer resp.Body.Close()
-	if flavor := resp.Header.Values("Metadata-Flavor"); len(flavor) != 1 || flavor[0] != "Google" {
+	if !metadataclient.Flavored(resp.Header) {
 		return refuse("answered without Metadata-Flavor: Google")
 	}
 	if throttles(resp.StatusCode) {

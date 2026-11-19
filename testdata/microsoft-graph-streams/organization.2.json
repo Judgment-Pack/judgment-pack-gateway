@@ -1,0 +1,15 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#organization",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000157",
+      "displayName": "Example Directory 3",
+      "verifiedDomains": [
+        {
+          "name": "example.org",
+          "isDefault": true
+        }
+      ]
+    }
+  ]
+}

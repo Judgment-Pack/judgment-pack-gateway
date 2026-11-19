@@ -62,7 +62,7 @@ entry is `{"file": …}`, and a live one's may carry `tokenStep` beside `file`. 
 absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"32"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"34"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
@@ -86,9 +86,10 @@ absolute.
   source (engine version 30)", below), version 31 a path template among an http live
   operation's `paths` ("Path templates and links on an http source (engine version 31)",
   below), version 32 a token step's `federatedToken` ("A federated token from the
-  platform's metadata server", below), and version 33 a token step's `signedBy` and `subject`
+  platform's metadata server", below), version 33 a token step's `signedBy` and `subject`
   and an http path's `{numericId}` and `{alnumId}` ("A token step with a delegated subject
-  (engine version 33)", below). A
+  (engine version 33)", below), and version 34 a token step's `assertionAlgorithm` ("A live
+  operation's token step (engine version 21)", below). A
   file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -441,7 +442,7 @@ way:
 | `<platform>/history` | `adapter-airbyte` | `--image=<history.image> --credentials=<credentials.history.file> --runtime=<runtime> [--endpoint=<endpoint>]` |
 | `<platform>/live` | `adapter-mcp` | `--image=<live.server.image> --credentials=<credentials.live.file> --runtime=<runtime> --tools=<live.tools, comma-joined> [--endpoint=<endpoint>] [-- <live.server.args>]` |
 | `<platform>/write` | `adapter-mcp` | `--image=<write.server.image> --credentials=<credentials.write.file> --runtime=<runtime> --tools=<write.tools, comma-joined> --error-results [--endpoint=<endpoint>] [-- <write.server.args>]` — derived only for a platform whose configuration sets `write: true`; it is what the executor runs ([executor.md](executor.md)) and never a source `/acquire` may name |
-| `<platform>/live` of an `http` binding | `adapter-http` | `--endpoint=<live.endpoint> --paths=<live.paths, comma-joined> --methods=<live.methods, comma-joined> --credentials=<credentials.live.file> (--bearer=<live.bearer> \| --credential-header=<live.credentialHeader> \| --token-endpoint=<tokenStep.endpoint> --client-id=<tokenStep.clientId> (--assertion-key=<tokenStep.privateKey> \| --federated-token-file=<tokenStep.federatedTokenFile> --federated-token-dir=<its directory, resolved at start> \| --federated-token-metadata-audience=<tokenStep.federatedToken.audience>) [--assertion-x5t=<tokenStep.x5t> \| --assertion-x5t-s256=<tokenStep.x5t#S256>] [--token-scope=<tokenStep.requestScope>]) [--header=<NAME=VALUE>]...` — no runtime, no tools and no platform endpoint ([below](#an-http-api-as-a-platforms-live-operation)); the token step's flags in place of `--bearer` when `credentials.live` carries one ([below](#a-live-operations-token-step-engine-version-21)) |
+| `<platform>/live` of an `http` binding | `adapter-http` | `--endpoint=<live.endpoint> --paths=<live.paths, comma-joined> --methods=<live.methods, comma-joined> --credentials=<credentials.live.file> (--bearer=<live.bearer> \| --credential-header=<live.credentialHeader> \| --token-endpoint=<tokenStep.endpoint> --client-id=<tokenStep.clientId> (--assertion-key=<tokenStep.privateKey> [--assertion-alg=<tokenStep.assertionAlgorithm>] \| --federated-token-file=<tokenStep.federatedTokenFile> --federated-token-dir=<its directory, resolved at start> \| --federated-token-metadata-audience=<tokenStep.federatedToken.audience>) [--assertion-x5t=<tokenStep.x5t> \| --assertion-x5t-s256=<tokenStep.x5t#S256>] [--token-scope=<tokenStep.requestScope>]) [--header=<NAME=VALUE>]...` — no runtime, no tools and no platform endpoint ([below](#an-http-api-as-a-platforms-live-operation)); the token step's flags in place of `--bearer` when `credentials.live` carries one ([below](#a-live-operations-token-step-engine-version-21)) |
 
 For an operation whose binding names a remote server (below), `live` and `write` are derived
 as `--url=<server.url> --credentials=<credentials.<operation>.file> --bearer=<server.bearer>
@@ -1710,6 +1711,21 @@ of one operator's sources can be told apart by the party each serves.
   and writes no line on stderr. So is a request that names a scope for a source of a platform
   without one. A gateway whose platforms give no `scope` refuses the request member as unknown,
   as it did before.
+- **Live tools are reads.** Each tool of the platform's live operation is declared effect
+  `read-external` in its binding's `toolTaxonomies`, whatever the configuration's `mcp` member,
+  none included ([ADR-0046](../adr/0046-a-scoped-platforms-live-tools-are-declared-read-external-whatever-the-front.md)):
+  no decision policy holds a live tool's call, and the platform enables no write operation.
+  A tool declared `propose` or `act`, or one with no declaration, refuses `serve` and `gateway
+  mcp` at start, and `connect` refuses to write the platform, with `platform <name>: tool
+  "<tool>" is not declared effect read-external, ...`, naming no scope identifier; the tool is
+  never left out of a source that starts. The shipped postgres binding's `execute_sql` is an
+  act, so a platform of it, like the one above, starts only with a binding that declares it
+  `read-external` (under a role that only reads) or names `search_objects` alone.
+  **Upgrading:** this holds a file of any version from 20, with no version to raise. A file
+  that started before and breaks here either declares the tool `read-external` (for instance
+  `{"operation": "read", "effect": "read-external"}`) and approves the binding again with
+  `connect --replace`, if the tool only reads, or takes it off the scoped platform: a binding
+  whose live operation names reading tools alone, or the platform without `scope`.
 - **The receipt** of such a source carries the identifier as its top-level `scope`. A platform
   without the member mints the receipts it minted before, byte for byte.
 - **A session is of one scope**, on either storage kind
@@ -1830,15 +1846,15 @@ assertion (RFC 7523).
   `federatedTokenFile` and `federatedToken` ("A federated token from the platform's metadata
   server", below), or from engine version 33 exactly one of those three and `signedBy` ("A
   token step with a delegated subject (engine version 33)", below, which takes no `clientId`);
-  `x5t`, `x5t#S256` and `requestScope` are optional. Any other member is refused by name, and a
-  refusal repeats no value.
+  `x5t`, `x5t#S256`, `requestScope` and, from engine version 34, `assertionAlgorithm` are
+  optional. Any other member is refused by name, and a refusal repeats no value.
   - `endpoint` is the token endpoint: `https`, or `http` at a loopback address written as one,
     with no user, query, fragment or placeholder.
   - `clientId` is the client identifier, 1 to 256 printable ASCII characters without spaces,
     sent as `client_id` and as the assertion's `iss` and `sub`.
   - `privateKey` names the member of the live credentials file holding the key, one PKCS #8
     `PRIVATE KEY` PEM block: an RSA key of 2048 bits or more, signed RS256, or a P-256 key,
-    signed ES256. The algorithm is the key's; nothing else selects it.
+    signed ES256. The algorithm is the key's, unless `assertionAlgorithm` asks for another.
   - `federatedTokenFile` is an absolute path to a file whose text, read at each token request,
     is sent as the assertion. It is held as the credentials file is: owned by the platform's
     user, readable by that user alone, not a directory, on a way no other user may replace, and
@@ -1854,6 +1870,18 @@ assertion (RFC 7523).
     credential, and that acquisition fails.
   - `x5t` and `x5t#S256`, at most one, beside `privateKey` only: the certificate's SHA-1 or
     SHA-256 thumbprint, unpadded base64url, placed in the assertion's header as written.
+  - `assertionAlgorithm`, from engine version 34 and beside `privateKey` only, is `"RS256"` or
+    `"PS256"` ([ADR-0027](../adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md),
+    amendment, gateway #513), passed as `--assertion-alg`. `"PS256"` signs the assertion
+    RSASSA-PSS with SHA-256, MGF1 with SHA-256 and a salt of 32 bytes, header `alg` `PS256`, as
+    the Microsoft identity platform asks of a certificate's client assertion; `"RS256"` signs
+    what the member's absence signs, byte for byte. Absent, the algorithm is the key's, so a file
+    without it signs as before. Any other value, or the member beside another kind of assertion
+    or in a file before version 34, is refused by name, repeating no value. The engine never
+    reads the key, so either value beside a P-256 key is refused by `adapter-http` as no
+    credential, in a sentence naming the algorithm asked, before any token request; `ES256` is
+    not a value, since only a P-256 key gives it. The sealed token is bound to the value when one
+    is given.
   - `requestScope` is sent as the token request's `scope`: scope tokens (RFC 6749 §3.3)
     separated by single spaces, at most 1024 bytes. It is not the platform's `scope`.
 - **Where it is taken.** Under `credentials.live` alone, of a binding whose live operation is
@@ -1862,8 +1890,8 @@ assertion (RFC 7523).
   is refused. The binding's `bearer` member is not read; the token is the bearer. In federated
   mode the live credentials file is still required, and nothing of it is sent. A platform with a
   token step may not set `ADAPTER_HTTP_SEALED_TOKEN` in its `environment`.
-- **The assertion.** With `privateKey`, a JWT: header `alg`, `typ` `JWT` and the thumbprint
-  given; claims `iss` and `sub` the client identifier, `aud` the token endpoint as written, a
+- **The assertion.** With `privateKey`, a JWT: header `alg` (the key's, or `PS256` when
+  `assertionAlgorithm` asks for it), `typ` `JWT` and the thumbprint given; claims `iss` and `sub` the client identifier, `aud` the token endpoint as written, a
   random `jti`, `iat` and `nbf` now, `exp` five minutes on. It is sent with
   `grant_type=client_credentials`, `client_id`, `client_assertion_type`
   `urn:ietf:params:oauth:client-assertion-type:jwt-bearer` and `client_assertion`, as a form
@@ -2364,7 +2392,8 @@ Refused by name, `engine configuration: …`, quoting nothing of the value:
 `gateway mcp` and `serve` both refuse to start, and `connect` refuses to write the platform,
 where a server of either form would serve a live tool declared `propose` or `act`, or one with
 no declaration: `platform <name>: tool "<tool>" is not declared effect read-external`, naming
-no scope identifier.
+no scope identifier. `serve` refuses the same of a platform fixed to a scope identifier with no
+`mcp` at all ("A platform's scope (engine version 20)", "Live tools are reads"; ADR-0046).
 
 **Upgrading.** A file of version 27 or earlier loads as before, and an MCP server without
 either member serves as before, with one change in a file of any version: under `identity`

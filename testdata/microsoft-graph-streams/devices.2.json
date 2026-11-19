@@ -1,0 +1,12 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#devices",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000153",
+      "deviceId": "00000000-0000-4000-8000-000000000154",
+      "displayName": "Device 3",
+      "operatingSystem": "Linux",
+      "accountEnabled": true
+    }
+  ]
+}

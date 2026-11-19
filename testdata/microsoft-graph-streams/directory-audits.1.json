@@ -1,0 +1,32 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#directoryaudits",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000137",
+      "activityDateTime": "2026-01-01T11:00:00Z",
+      "activityDisplayName": "Update group",
+      "category": "GroupManagement",
+      "result": "success",
+      "initiatedBy": {
+        "user": {
+          "userPrincipalName": "user1@example.com",
+          "ipAddress": "198.51.100.11"
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000138",
+      "activityDateTime": "2026-01-02T11:00:00Z",
+      "activityDisplayName": "Update group",
+      "category": "GroupManagement",
+      "result": "success",
+      "initiatedBy": {
+        "user": {
+          "userPrincipalName": "user2@example.com",
+          "ipAddress": "198.51.100.12"
+        }
+      }
+    }
+  ],
+  "@odata.nextLink": "https://graph.example.com/v1.0/auditLogs/directoryAudits?$top=2&$skiptoken=directory-audits-page-2"
+}

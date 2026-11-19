@@ -42,11 +42,16 @@ type tokenStepConfig struct {
 	// is named in, as engineRefusals resolved it, which the adapter finds
 	// the file again under at each token request.
 	federatedTokenDir string
+	// assertionAlgorithm is "RS256" or "PS256", beside privateKey alone,
+	// from assertionAlgorithmVersion (ADR-0027, amendment #513); empty, the
+	// algorithm is the key's, as before.
+	assertionAlgorithm string
 }
 
 var tokenStepMembers = map[string]bool{
 	"endpoint": true, "clientId": true,
 	"privateKey": false, "federatedTokenFile": false, "federatedToken": false, "x5t": false, "x5t#S256": false, "requestScope": false,
+	"assertionAlgorithm": false,
 }
 
 // metadataTokenVersion is the engine configuration version that admits
@@ -63,6 +68,17 @@ const metadataTokenVersion = "32"
 // metadata token (32, ADR-0043). engine.go reads this constant as the
 // newest version.
 const delegatedTokenVersion = "33"
+
+// assertionAlgorithmVersion is the engine configuration version that admits
+// tokenStep.assertionAlgorithm (ADR-0027, amendment #513): 34, the version
+// after the delegated subject (33, ADR-0045). engine.go reads this constant
+// as the newest version.
+const assertionAlgorithmVersion = "34"
+
+// assertionAlgorithms are tokenStep.assertionAlgorithm's values: the two an
+// RSA key signs. ES256 is not one: a P-256 key gives it, and nothing else
+// may.
+var assertionAlgorithms = map[string]bool{"RS256": true, "PS256": true}
 
 // signedByCredentialsAPI is signedBy's one kind: the service account
 // credentials API, at the address adapter-http has built in.
@@ -125,8 +141,10 @@ var (
 // a credentials member's name, federatedTokenFile, an absolute path, and,
 // from metadataTokenVersion, federatedToken (parseFederatedToken); at
 // most one of x5t (a SHA-1 thumbprint, base64url) and x5t#S256 (a SHA-256
-// one), beside privateKey only; and requestScope, scope tokens separated by
-// single spaces. A refusal names the member and repeats no value.
+// one), beside privateKey only; from assertionAlgorithmVersion,
+// assertionAlgorithm, "RS256" or "PS256", beside privateKey only; and
+// requestScope, scope tokens separated by single spaces. A refusal names the
+// member and repeats no value.
 func parseTokenStep(v value, name, op, version string) (*tokenStepConfig, error) {
 	where := "engine configuration: platform " + name + ": credentials." + op + ".tokenStep"
 	if !versionAtLeast(version, "21") {
@@ -147,6 +165,10 @@ func parseTokenStep(v value, name, op, version string) (*tokenStepConfig, error)
 	}
 	if err := exactlyMembers(obj, tokenStepMembers, "platform "+name+" credentials."+op+".tokenStep"); err != nil {
 		return nil, err
+	}
+	_, hasAlgorithm := obj.get("assertionAlgorithm")
+	if hasAlgorithm && !versionAtLeast(version, assertionAlgorithmVersion) {
+		return nil, fmt.Errorf("%s.assertionAlgorithm is a version-%s member; engineVersion %s has no assertionAlgorithm", where, assertionAlgorithmVersion, version)
 	}
 	t := &tokenStepConfig{}
 	if t.endpoint, err = requireString(obj, "endpoint"); err != nil || strings.ContainsAny(t.endpoint, "{}") || !isRemoteEndpoint(t.endpoint) {
@@ -201,6 +223,16 @@ func parseTokenStep(v value, name, op, version string) (*tokenStepConfig, error)
 	}
 	if t.x5t != "" && t.x5tS256 != "" {
 		return nil, fmt.Errorf("%s: one of x5t and x5t#S256, not both", where)
+	}
+	if hasAlgorithm {
+		if !hasKey {
+			return nil, fmt.Errorf("%s: assertionAlgorithm is the algorithm of an assertion the adapter signs, beside privateKey", where)
+		}
+		s, err := requireString(obj, "assertionAlgorithm")
+		if err != nil || !assertionAlgorithms[s] {
+			return nil, fmt.Errorf("%s: assertionAlgorithm is \"RS256\" or \"PS256\"", where)
+		}
+		t.assertionAlgorithm = s
 	}
 	if _, present := obj.get("requestScope"); present {
 		t.requestScope, err = requireString(obj, "requestScope")
@@ -323,6 +355,9 @@ func tokenStepArgv(t *tokenStepConfig) []string {
 	argv := []string{"--token-endpoint=" + t.endpoint, "--client-id=" + t.clientID}
 	if t.privateKey != "" {
 		argv = append(argv, "--assertion-key="+t.privateKey)
+		if t.assertionAlgorithm != "" {
+			argv = append(argv, "--assertion-alg="+t.assertionAlgorithm)
+		}
 	} else if t.metadataAudience != "" {
 		argv = append(argv, "--federated-token-metadata-audience="+t.metadataAudience)
 	} else {

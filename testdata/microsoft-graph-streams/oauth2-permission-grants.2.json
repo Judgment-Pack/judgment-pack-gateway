@@ -1,0 +1,12 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#oauth2permissiongrants",
+  "value": [
+    {
+      "id": "grant-3",
+      "clientId": "00000000-0000-4000-8000-000000000126",
+      "consentType": "AllPrincipals",
+      "resourceId": "00000000-0000-4000-8000-000000000127",
+      "scope": "Records.Read"
+    }
+  ]
+}

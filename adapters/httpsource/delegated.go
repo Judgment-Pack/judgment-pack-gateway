@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"adapters/internal/canon"
+	"adapters/internal/metadataclient"
 )
 
 // credentialsAPIBase is the service account credentials API, built in: the
@@ -115,13 +116,13 @@ func metadataAccessToken(ctx context.Context, now time.Time) (string, error) {
 	req.Header.Set("Metadata-Flavor", "Google")
 	resp, err := client.Do(req)
 	if err != nil {
-		if errors.Is(err, errRedirect) {
+		if errors.Is(err, metadataclient.ErrRedirect) {
 			return refuse("answered with a redirect, which is not followed")
 		}
 		return refuse("could not be reached in time")
 	}
 	defer resp.Body.Close()
-	if flavor := resp.Header.Values("Metadata-Flavor"); len(flavor) != 1 || flavor[0] != "Google" {
+	if !metadataclient.Flavored(resp.Header) {
 		return refuse("answered without Metadata-Flavor: Google")
 	}
 	if throttles(resp.StatusCode) {

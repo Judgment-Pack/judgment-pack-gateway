@@ -1,0 +1,11 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#serviceprincipals",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000132",
+      "appId": "00000000-0000-4000-8000-000000000133",
+      "displayName": "Service 3",
+      "servicePrincipalType": "Application"
+    }
+  ]
+}

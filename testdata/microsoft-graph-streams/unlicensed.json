@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "Forbidden",
+    "message": "The directory does not hold a licence that includes this feature.",
+    "innerError": {
+      "date": "2026-01-05T09:00:00",
+      "request-id": "00000000-0000-4000-8000-000000000162",
+      "client-request-id": "00000000-0000-4000-8000-000000000163"
+    }
+  }
+}

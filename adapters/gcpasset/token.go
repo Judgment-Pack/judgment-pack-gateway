@@ -50,20 +50,23 @@ import (
 	"time"
 
 	"adapters/internal/canon"
+	"adapters/internal/metadataclient"
 	"adapters/internal/redact"
 )
 
 // endpoints are the platform's endpoints. They are fixed: a key file's own
-// token_uri is not read, so a key cannot carry its assertion elsewhere. A
-// test of this package sets them, and no build of the command can change
-// them.
+// token_uri is not read, so a key cannot carry its assertion elsewhere. The
+// metadata server is the link-local IP literal the adapters share
+// (adapters/internal/metadataclient, gateway #510), so no resolver is asked
+// where it is. A test of this package sets them, and no build of the
+// command can change them.
 var endpoints = struct {
 	Asset, ResourceManager, Identity, Metadata, OAuthToken, TokenInfo string
 }{
 	Asset:           "https://cloudasset.googleapis.com",
 	ResourceManager: "https://cloudresourcemanager.googleapis.com",
 	Identity:        "https://cloudidentity.googleapis.com",
-	Metadata:        "http://metadata.google.internal",
+	Metadata:        metadataclient.Address,
 	OAuthToken:      "https://oauth2.googleapis.com/token",
 	TokenInfo:       "https://oauth2.googleapis.com/tokeninfo",
 }
@@ -145,12 +148,12 @@ type source struct {
 	// secrets are every value kept out of a diagnostic: the credentials
 	// file's scalars, and each token and assertion once made.
 	secrets []string
-	// api is the client for every endpoint but the metadata server's,
-	// metadata the client for it, which uses no proxy.
-	api, metadata *http.Client
+	// api is the client for every endpoint but the metadata server's, which
+	// metadataGet asks with the adapters' shared metadata client.
+	api *http.Client
 }
 
-func httpClient(proxy bool) *http.Client {
+func httpClient() *http.Client {
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: testRoots}
 	transport := &http.Transport{
 		TLSClientConfig:        tlsConfig,
@@ -158,9 +161,7 @@ func httpClient(proxy bool) *http.Client {
 		MaxResponseHeaderBytes: maxHeaderBytes,
 		TLSHandshakeTimeout:    requestTimeout,
 		DisableCompression:     true,
-	}
-	if proxy {
-		transport.Proxy = http.ProxyFromEnvironment
+		Proxy:                  http.ProxyFromEnvironment,
 	}
 	return &http.Client{
 		Timeout:       requestTimeout,
@@ -182,7 +183,7 @@ func newSource(cfg Config) (*source, error) {
 	if _, err := canon.Canonicalize(data, canon.CarryNumbersAsText); err != nil {
 		return nil, tokenFailure(StatusNoCredential, "%v", redact.MalformedCredentials(err))
 	}
-	s := &source{cfg: cfg, secrets: redact.SecretsOf(data), api: httpClient(true), metadata: httpClient(false)}
+	s := &source{cfg: cfg, secrets: redact.SecretsOf(data), api: httpClient()}
 	var members map[string]json.RawMessage
 	if json.Unmarshal(data, &members) != nil || members == nil {
 		return nil, tokenFailure(StatusNoCredential, "the credentials file is not a JSON object")
@@ -277,25 +278,32 @@ func (s *source) mint(ctx context.Context, scope string) (obtained, error) {
 	return tok, nil
 }
 
-// metadataGet is one request to the metadata server: the Metadata-Flavor
-// header sent, and answered back, so an answer from something else on that
-// address is not taken.
+// metadataGet is one request to the metadata server, with the adapters'
+// shared metadata client (adapters/internal/metadataclient): no proxy, a
+// connection to endpoints.Metadata's address alone, no redirect followed.
+// The Metadata-Flavor header is sent, and answered back once, so an answer
+// from something else on that address is not taken.
 func (s *source) metadataGet(ctx context.Context, path string) ([]byte, string, error) {
+	unreached := tokenFailure(StatusNoCredential, "the metadata server could not be reached: no token was obtained")
+	client, err := metadataclient.New(endpoints.Metadata, requestTimeout)
+	if err != nil {
+		return nil, "", unreached
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoints.Metadata+path, nil)
 	if err != nil {
 		return nil, "", tokenFailure(StatusTokenRefused, "the metadata request could not be formed")
 	}
 	req.Header.Set("Metadata-Flavor", "Google")
-	resp, err := s.metadata.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, "", tokenFailure(StatusNoCredential, "the metadata server could not be reached: no token was obtained")
+		return nil, "", unreached
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenAnswer+1))
 	if err != nil || len(raw) > maxTokenAnswer {
 		return nil, "", tokenFailure(StatusTokenRefused, "the metadata server's answer could not be read whole within 64 KiB")
 	}
-	if resp.Header.Get("Metadata-Flavor") != "Google" {
+	if !metadataclient.Flavored(resp.Header) {
 		return nil, "", tokenFailure(StatusTokenRefused, "the metadata server's answer does not carry Metadata-Flavor: Google")
 	}
 	if resp.StatusCode != http.StatusOK {

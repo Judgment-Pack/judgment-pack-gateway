@@ -1,0 +1,26 @@
+{
+  "@odata.context": "https://graph.example.com/v1.0/$metadata#organization",
+  "value": [
+    {
+      "id": "00000000-0000-4000-8000-000000000155",
+      "displayName": "Example Directory 1",
+      "verifiedDomains": [
+        {
+          "name": "example.org",
+          "isDefault": true
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000156",
+      "displayName": "Example Directory 2",
+      "verifiedDomains": [
+        {
+          "name": "example.org",
+          "isDefault": true
+        }
+      ]
+    }
+  ],
+  "@odata.nextLink": "https://graph.example.com/v1.0/organization?$top=2&$skiptoken=organization-page-2"
+}
