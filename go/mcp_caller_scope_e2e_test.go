@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // The MCP server in front of an operator's own read-only tool servers, each
@@ -441,7 +442,13 @@ func TestMCPFrontServesOperatorReadToolsByCallerScope(t *testing.T) {
 	}
 	// effect read is the engine's own state, which no tool of a server
 	// outside the engine declares: the binding is refused
-	if _, err := parseBinding([]byte(strings.ReplaceAll(bindingA, `"effect":"read-external"`, `"effect":"read"`))); err == nil || !strings.Contains(err.Error(), "missing or invalid owner taxonomy for allowed tool") {
+	// one tool's declaration alone is changed, so the refusal is that
+	// tool's and not the binding's as a whole
+	oneTool := `"get_record":{"effect":"read-external","operation":"read"}`
+	if !strings.Contains(bindingA, oneTool) {
+		t.Fatalf("binding records-a declares no %s: %s", oneTool, bindingA)
+	}
+	if _, err := parseBinding([]byte(strings.Replace(bindingA, oneTool, `"get_record":{"effect":"read","operation":"read"}`, 1))); err == nil || !strings.Contains(err.Error(), "missing or invalid owner taxonomy for allowed tool") {
 		t.Fatalf("a tool of effect read: %v", err)
 	}
 
@@ -452,10 +459,10 @@ func TestMCPFrontServesOperatorReadToolsByCallerScope(t *testing.T) {
 	argumentsNaming := func(foreign string) map[string]string {
 		return map[string]string{
 			"list_records":         `{"filter":"status:open","scope":"` + foreign + `"}`,
-			"get_record":           `{"id":"R-101"}`,
-			"get_item_state":       `{"id":"item-7"}`,
-			"get_item_timeline":    `{"id":"item-7"}`,
-			"list_related_records": `{"id":"R-101"}`,
+			"get_record":           `{"id":"R-101","scope":"` + foreign + `"}`,
+			"get_item_state":       `{"id":"item-7","scope":"` + foreign + `"}`,
+			"get_item_timeline":    `{"id":"item-7","scope":"` + foreign + `"}`,
+			"list_related_records": `{"id":"R-101","scope":"` + foreign + `"}`,
 		}
 	}
 	// each caller, side by side on the one gateway
@@ -495,7 +502,7 @@ func TestMCPFrontServesOperatorReadToolsByCallerScope(t *testing.T) {
 			}
 		}
 		calledBefore, otherBefore := len(tc.server.called()), len(tc.other.called())
-		meta := `{"` + mcpSessionMeta + `":"` + tc.session + `","scope":"` + tc.foreign + `"}`
+		meta := `{"` + mcpSessionMeta + `":"` + tc.session + `","scope":"` + tc.foreign + `","io.judgment-pack/scope":"` + tc.foreign + `"}`
 		arguments := argumentsNaming(tc.foreign)
 		for i, tool := range recordsReadTools {
 			_, _, body := g.call(t, http.MethodPost, sid, toolCall(10+i, tc.platform+"."+tool, arguments[tool], meta), nil)
@@ -587,7 +594,7 @@ func TestMCPFrontServesOperatorReadToolsByCallerScope(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, g.signer.URL+"/acquire", strings.NewReader(acquireBodyFor("direct", "records-a/live", callerScopeA)))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+g.token)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -62,7 +62,7 @@ entry is `{"file": …}`, and a live one's may carry `tokenStep` beside `file`. 
 absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"31"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"32"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
@@ -83,9 +83,10 @@ absolute.
   `scopeFrom` ("The MCP server on scoped platforms (engine version 28)", below), version 29
   the `gcp-asset` shape ("A read-only Cloud Asset Inventory source (engine version 29)",
   below), version 30 a gcp-asset source's `groups` ("Grants through groups on a gcp-asset
-  source (engine version 30)", below), and version 31 a path template among an http live
+  source (engine version 30)", below), version 31 a path template among an http live
   operation's `paths` ("Path templates and links on an http source (engine version 31)",
-  below). A
+  below), and version 32 a token step's `federatedToken` ("A federated token from the
+  platform's metadata server", below). A
   file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -438,7 +439,7 @@ way:
 | `<platform>/history` | `adapter-airbyte` | `--image=<history.image> --credentials=<credentials.history.file> --runtime=<runtime> [--endpoint=<endpoint>]` |
 | `<platform>/live` | `adapter-mcp` | `--image=<live.server.image> --credentials=<credentials.live.file> --runtime=<runtime> --tools=<live.tools, comma-joined> [--endpoint=<endpoint>] [-- <live.server.args>]` |
 | `<platform>/write` | `adapter-mcp` | `--image=<write.server.image> --credentials=<credentials.write.file> --runtime=<runtime> --tools=<write.tools, comma-joined> --error-results [--endpoint=<endpoint>] [-- <write.server.args>]` — derived only for a platform whose configuration sets `write: true`; it is what the executor runs ([executor.md](executor.md)) and never a source `/acquire` may name |
-| `<platform>/live` of an `http` binding | `adapter-http` | `--endpoint=<live.endpoint> --paths=<live.paths, comma-joined> --methods=<live.methods, comma-joined> --credentials=<credentials.live.file> (--bearer=<live.bearer> \| --credential-header=<live.credentialHeader> \| --token-endpoint=<tokenStep.endpoint> --client-id=<tokenStep.clientId> (--assertion-key=<tokenStep.privateKey> \| --federated-token-file=<tokenStep.federatedTokenFile> --federated-token-dir=<its directory, resolved at start>) [--assertion-x5t=<tokenStep.x5t> \| --assertion-x5t-s256=<tokenStep.x5t#S256>] [--token-scope=<tokenStep.requestScope>]) [--header=<NAME=VALUE>]...` — no runtime, no tools and no platform endpoint ([below](#an-http-api-as-a-platforms-live-operation)); the token step's flags in place of `--bearer` when `credentials.live` carries one ([below](#a-live-operations-token-step-engine-version-21)) |
+| `<platform>/live` of an `http` binding | `adapter-http` | `--endpoint=<live.endpoint> --paths=<live.paths, comma-joined> --methods=<live.methods, comma-joined> --credentials=<credentials.live.file> (--bearer=<live.bearer> \| --credential-header=<live.credentialHeader> \| --token-endpoint=<tokenStep.endpoint> --client-id=<tokenStep.clientId> (--assertion-key=<tokenStep.privateKey> \| --federated-token-file=<tokenStep.federatedTokenFile> --federated-token-dir=<its directory, resolved at start> \| --federated-token-metadata-audience=<tokenStep.federatedToken.audience>) [--assertion-x5t=<tokenStep.x5t> \| --assertion-x5t-s256=<tokenStep.x5t#S256>] [--token-scope=<tokenStep.requestScope>]) [--header=<NAME=VALUE>]...` — no runtime, no tools and no platform endpoint ([below](#an-http-api-as-a-platforms-live-operation)); the token step's flags in place of `--bearer` when `credentials.live` carries one ([below](#a-live-operations-token-step-engine-version-21)) |
 
 For an operation whose binding names a remote server (below), `live` and `write` are derived
 as `--url=<server.url> --credentials=<credentials.<operation>.file> --bearer=<server.bearer>
@@ -1823,8 +1824,10 @@ assertion (RFC 7523).
 ```
 
 - **The members.** `endpoint` and `clientId` are required, and exactly one of `privateKey` and
-  `federatedTokenFile`; `x5t`, `x5t#S256` and `requestScope` are optional. Any other member is
-  refused by name, and a refusal repeats no value.
+  `federatedTokenFile`, or from engine version 32 exactly one of `privateKey`,
+  `federatedTokenFile` and `federatedToken` ("A federated token from the platform's metadata
+  server", below); `x5t`, `x5t#S256` and `requestScope` are optional. Any other member is refused by name, and a
+  refusal repeats no value.
   - `endpoint` is the token endpoint: `https`, or `http` at a loopback address written as one,
     with no user, query, fragment or placeholder.
   - `clientId` is the client identifier, 1 to 256 printable ASCII characters without spaces,
@@ -1909,8 +1912,7 @@ assertion (RFC 7523).
 http source a token step, raise `engineVersion` to `"21"` and add `tokenStep` to the platform's
 `credentials.live`; a gateway older than this one refuses a version-21 file by its version.
 
-**A federated token from the platform's metadata server** (the engine version after the
-path-template change; [ADR-0043](../adr/0043-a-federated-token-from-the-platforms-metadata-server.md),
+**A federated token from the platform's metadata server** (engine version 32; [ADR-0043](../adr/0043-a-federated-token-from-the-platforms-metadata-server.md),
 gateway #502). In place of `privateKey` and `federatedTokenFile`, a token step may name
 `federatedToken`: `{"kind": "metadata", "audience": "api://records-reader"}`. It has exactly
 those two members, `kind` is `"metadata"` alone, and `audience` is 1 to 256 bytes of ASCII
