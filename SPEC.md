@@ -1138,7 +1138,9 @@ verifier checks without knowing the identifier), its `keyId` is the key current 
 so, a line holding a member `scope` among them, loads nothing, a line of `sealVersion` `"3"`
 being read under its own rule (below). A seal of version 2 anchors its
 session as a seal of the form above does, and a verifier holds the session's receipts to the
-scope it names (§4 step 3, `seal-scope-mismatch`). A verifier written before version 2 reads such a line as a seal of the
+scope it names (§4 step 3, `seal-scope-mismatch`). A seal of version 2 over receipts that carry
+`scopeSalt` is held to the scope alone, and the salt is not checked: this gateway writes none, and
+only the holder of the signing key could. A verifier written before version 2 reads such a line as a seal of the
 form above whose signature does not verify, so it loads nothing and the session is
 `unregistered-session` to it: it fails closed, and a reader of a store with scoped sessions
 needs a verifier of this version.

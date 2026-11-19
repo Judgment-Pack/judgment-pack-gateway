@@ -90,8 +90,11 @@ operator's existing identifiers would be refused.
   undone without rewriting signed history. SPEC.md §6 keeps the advice to choose identifiers of
   at least 128 bits of entropy for such registries.
 - Bad, because a verifier written before this release (v0.31.0 and v0.32.0, Go and TypeScript)
-  loads no seal of version 3 and reports such sessions `unregistered-session`, and rejects a
-  session-removal record of ten members: it fails closed, and a reader needs this version.
+  loads no seal of version 3 and rejects a session-removal record of ten members. For a session
+  the store holds it reports `unregistered-session`: it fails closed there, and a reader needs
+  this version. For a session removed from the store it fails open: it loads no seal naming the
+  session and finds none of its receipts, so it reports nothing of it, and a store holding nothing
+  else it refuses is `ok` to it.
 - Bad, because `finalCount`, `sealedAt` and `sessionId` of every seal remain open on
   `/registry`, of either version.
 - Revisit when the registry is kept per scope, or if a session's salt is wanted outside its
