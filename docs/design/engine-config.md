@@ -1331,13 +1331,18 @@ Legacy/unavailable selections use mode `unconfigured`, backend `none`, state
 `not-enforced`, preset `custom`, approval `""` and operations `[]`. A completed
 probe reports its actual selection; policy version 1 has empty approval/families.
 No-source posture has the six lines above and no `programs`.
-With `identity.callerScopes` checked, the `/posture` endpoint lists in `programs`
-only the sources the caller reaches (ADR-0037), and omits `programs` when it reaches
-none; the installation's caller, `"unchecked"` and a gateway without `identity`
-list every source. Every protection line is judged over every source, whoever asks; the counts
-that are the caller's are `read-only-credentials`' (its sources, those serving `IAM_POLICY`,
-those resolving groups and of those the ones unchecked, and those closed), of the sources the
-caller reaches.
+With `identity.callerScopes` checked, the `/posture` endpoint served to a caller that
+does not reach every source is the report of the sources it reaches alone (ADR-0037,
+ADR-0041): `programs` and `readOnlySources` list only them, and `programs` is omitted when it
+reaches none; every protection line is judged over them, its state, its counts and the sources
+or platforms it names (`source-user-switch`, `operator-program-confinement`, `delegation-grants`,
+`write-requesters`, `caller-scope-identifiers`, `read-only-credentials`), so the report does
+not change with the sources of a scope identifier the caller does not reach. Where it reaches
+no source, `source-user-switch` is `not-applicable`, "this caller's token reaches no source, so there
+is none to judge"; where it reaches none fixed to a scope identifier,
+`caller-scope-identifiers` says no source the caller's token reaches is fixed to one. The
+lines that are not of the sources are the same for every caller. The installation's caller,
+`"unchecked"` and a gateway without `identity` are given the report of every source.
 Container-helper entries concern the local runtime client, and are partial even
 when its backend enforces all filesystem writes: the external daemon is not
 confined by that client boundary. Such a source's probe and launch keep
@@ -2195,7 +2200,9 @@ scope identifier ([ADR-0038](../adr/0038-the-mcp-server-on-platforms-fixed-to-a-
   `--stdio`.
 - `scopeFrom`, the string `"caller"`: the server serves every platform, and each forward names
   its tool's platform's scope identifier, or none for a platform of none. It needs `identity`
-  with `callerScopes` checked, and runs over `--http` alone.
+  with `callerScopes` checked, and runs over `--http` alone. Its listing is bounded per scope
+  identifier (ADR-0041), so it holds up to (the number of scope identifiers + 1) × 8 MiB of
+  described tool entries, with no cap of its own.
 
 In both, a caller is listed, and may call, only the tools of the sources its token reaches
 ("Caller scope identifiers (engine version 27)", above); any other tool is answered as one the

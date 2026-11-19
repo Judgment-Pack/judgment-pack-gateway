@@ -9,11 +9,13 @@ import (
 	"testing"
 )
 
-// With caller scopes checked, /posture's programs names only the sources
-// the caller reaches (ADR-0037), as /acquire does not tell another scope's
-// sources from unknown ones; the installation's caller and "unchecked" read
-// every source, as before, and every protection line is the same whoever
-// asks, judged over every source.
+// With caller scopes checked, /posture is of the sources the caller reaches
+// (ADR-0037, ADR-0041), as /acquire does not tell another scope's sources
+// from unknown ones: its programs name only them, and its protection lines
+// are judged over them alone, so a caller's report is the same, byte for
+// byte, whether or not the sources it does not reach exist, and names none of
+// them, in a member or in a line's text. The installation's caller and
+// "unchecked" read every source, as before.
 func TestPostureProgramsNameOnlyTheSourcesTheCallerReaches(t *testing.T) {
 	callers := callerScopes{entries: map[string]callerEntry{
 		subjectA:       {grants: map[string]bool{callerScopeA: true}},
@@ -39,10 +41,10 @@ func TestPostureProgramsNameOnlyTheSourcesTheCallerReaches(t *testing.T) {
 		return names, strings.Join(names, ","), report.Protections
 	}
 	every := "plain,scoped-a,scoped-b"
-	_, all, lines := read(tokenFor(t, issuer, "installation", nil))
-	if all != every {
+	if _, all, _ := read(tokenFor(t, issuer, "installation", nil)); all != every {
 		t.Fatalf("the installation's caller reads programs %q, want %q", all, every)
 	}
+	configured := service.sources
 	for _, tc := range []struct {
 		name, token, want string
 		unreached         []string
@@ -51,18 +53,29 @@ func TestPostureProgramsNameOnlyTheSourcesTheCallerReaches(t *testing.T) {
 		{"scope B's caller", tokenFor(t, issuer, subjectB, []any{callerScopeB}), "scoped-b", []string{"scoped-a", "plain", callerScopeA}},
 		{"a caller of no scope identifier", tokenFor(t, issuer, "subject-with-no-entry", nil), "plain", []string{"scoped-a", "scoped-b"}},
 	} {
-		_, got, gotLines := read(tc.token)
+		_, got, _ := read(tc.token)
 		if got != tc.want {
 			t.Errorf("%s reads programs %q, want %q", tc.name, got, tc.want)
 		}
-		if !bytes.Equal(gotLines, lines) {
-			t.Errorf("%s reads other protection lines than the installation's caller:\n%s\n%s", tc.name, gotLines, lines)
-		}
 		_, raw := postRawWith(t, server, "/posture", ``, tc.token)
 		for _, name := range tc.unreached {
-			if bytes.Contains(raw, []byte(`"`+name+`"`)) {
+			if bytes.Contains(raw, []byte(`"`+name+`"`)) || bytes.Contains(raw, []byte(`\"`+name+`\"`)) {
 				t.Errorf("%s's report names %q: %s", tc.name, name, raw)
 			}
+		}
+		// the gateway with the sources the caller does not reach left out
+		// answers it the same bytes
+		reached := map[string]sourceSpec{}
+		for name, spec := range configured {
+			if !contains(tc.unreached, name) {
+				reached[name] = spec
+			}
+		}
+		service.sources = reached
+		_, alone := postRawWith(t, server, "/posture", ``, tc.token)
+		service.sources = configured
+		if !bytes.Equal(raw, alone) {
+			t.Errorf("%s's report changes with the sources it does not reach:\n%s\n%s", tc.name, raw, alone)
 		}
 	}
 	unchecked := *service.identity
