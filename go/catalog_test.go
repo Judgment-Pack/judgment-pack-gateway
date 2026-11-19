@@ -95,6 +95,30 @@ func TestShippedCatalogHoldsItsShape(t *testing.T) {
 			if strings.Join(templates, ",") != "/v1.0/groups/{id}/members,/v1.0/directoryRoles/{id}/members,/v1.0/servicePrincipals/{id}/appRoleAssignedTo,/v1.0/servicePrincipals/{id}/owners" {
 				t.Fatalf("catalog/microsoft-graph.json: the templates: %v", templates)
 			}
+		case "google-workspace-directory", "google-workspace-reports":
+			// The Admin SDK's Directory and Reports APIs, read only
+			// (catalog/README.md, ADR-0045): live alone, by GET alone, under
+			// the service's own host, exactly the read paths, the check a
+			// fixed path, and a Workspace id only as {numericId} or {alnumId},
+			// never {id}, never an address.
+			h := b.live
+			if b.history != nil || b.write != nil || h == nil || h.http == nil {
+				t.Fatalf("catalog/%s: one http live operation: %+v", e.Name(), b)
+			}
+			want := workspaceDirectoryPaths
+			check := "/admin/directory/v1/customer/my_customer/roles"
+			if name == "google-workspace-reports" {
+				want, check = workspaceReportsPaths, "/admin/reports/v1/activity/users/all/applications/admin"
+			}
+			if h.http.endpoint != "https://admin.googleapis.com" || strings.Join(h.http.methods, ",") != "GET" || h.http.bearer != "token" ||
+				len(h.http.headers) != 0 || h.http.checkPath != check || strings.Join(h.http.paths, ",") != strings.Join(want, ",") {
+				t.Fatalf("catalog/%s: the endpoint, GET alone, the bearer, the check path, the paths: %+v", e.Name(), h.http)
+			}
+			for _, path := range h.http.paths {
+				if strings.Contains(path, "{id}") || strings.Contains(path, "@") {
+					t.Fatalf("catalog/%s: %s takes a GUID or an address", e.Name(), path)
+				}
+			}
 		case "databricks":
 			// A Unity Catalog function's managed MCP server, for writes alone:
 			// its one tool, named for the function; no SQL server, since a
@@ -249,3 +273,20 @@ func TestStatementWriteToolIsRefused(t *testing.T) {
 		t.Fatalf("postgres with its write operation put back is not caught: %+v", b.write)
 	}
 }
+
+// The Workspace bindings' read paths, written by hand from ADR-0045,
+// decision 11.
+var (
+	workspaceDirectoryPaths = []string{
+		"/admin/directory/v1/users", "/admin/directory/v1/users/{numericId}",
+		"/admin/directory/v1/groups", "/admin/directory/v1/groups/{alnumId}", "/admin/directory/v1/groups/{alnumId}/members",
+		"/admin/directory/v1/customer/my_customer/roles", "/admin/directory/v1/customer/my_customer/roles/{numericId}",
+		"/admin/directory/v1/customer/my_customer/roleassignments", "/admin/directory/v1/customer/my_customer/roleassignments/{numericId}",
+	}
+	workspaceReportsPaths = []string{
+		"/admin/reports/v1/activity/users/all/applications/admin", "/admin/reports/v1/activity/users/all/applications/login",
+		"/admin/reports/v1/activity/users/all/applications/token", "/admin/reports/v1/activity/users/all/applications/user_accounts",
+		"/admin/reports/v1/activity/users/all/applications/groups", "/admin/reports/v1/activity/users/all/applications/saml",
+		"/admin/reports/v1/activity/users/all/applications/drive", "/admin/reports/v1/activity/users/all/applications/mobile",
+	}
+)

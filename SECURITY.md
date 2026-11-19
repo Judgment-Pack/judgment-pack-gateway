@@ -342,6 +342,19 @@ the compute's own identity, not a file the platform's user holds, so every proce
 can ask for an identity token and the separation by the platform's user above does not hold for
 that credential; its access token is sealed under the credentials file's `sealKey` instead,
 which the adapter checks at the source's first acquisition, not the engine at load.
+A token step whose assertion the service account credentials API signs (`signedBy`, engine
+configuration version 33; gateway #503;
+[ADR-0045](docs/adr/0045-a-delegated-subject-token-signed-by-the-credentials-api.md)) holds no
+key: the adapter asks the metadata server for the compute's access token and the credentials API,
+at an address built in, to sign the configured claims. It presents the compute's identity again,
+so every process on that compute can ask for the same token and call `signJwt` as that identity,
+and the separation by the platform's user does not hold for it. Domain-wide delegation means the
+service account acts as the subject over the whole domain, within the scopes the domain's
+administrator granted it: whoever can call `signJwt` as that identity can name any subject and
+any of those scopes. The gateway's configuration fixes the subject and holds the scopes to the
+Admin SDK's read-only list, which bounds what the gateway asks for, not what the identity can; a
+deployment keeps the delegation's grant to that list and the subject to an administrator whose
+role reads alone.
 
 **A read-only asset inventory source is one more program that holds a credential, with the
 platform's user; the signer holds its list token sealed** (engine configuration version 29;

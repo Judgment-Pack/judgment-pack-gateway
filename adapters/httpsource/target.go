@@ -2,7 +2,10 @@ package httpsource
 
 // A request's target (docs/adr/0040-path-templates-and-links-on-an-http-source.md):
 // a configured path is fixed, or a template whose one placeholder, {id},
-// is a whole segment matched by a GUID and nothing else; and a request
+// is a whole segment matched by a GUID and nothing else, or {numericId}, 1
+// to 32 ASCII digits, or {alnumId}, 1 to 64 lowercase ASCII letters and
+// digits (docs/adr/0045-a-delegated-subject-token-signed-by-the-credentials-api.md,
+// decision 9); and a request
 // names its target by a path under the endpoint and a query object, or by
 // a link -- an absolute URL the endpoint itself handed out, a next page's
 // or a delta's -- which is admitted only when it names this endpoint, a
@@ -74,25 +77,90 @@ func isGUID(s string) bool {
 	return true
 }
 
+// placeholder is a placeholder a configured path may carry as a whole
+// segment: the form of what fills it, and a value of that form a template
+// is held to a path's rules with. {id} is ADR-0040's, unchanged;
+// {numericId} and {alnumId} are ADR-0045's, narrow forms of their own
+// beside it.
+type placeholder struct {
+	name, check string
+	admits      func(string) bool
+}
+
+var placeholders = []placeholder{
+	{idPlaceholder, templateCheckID, isGUID},
+	{"{numericId}", "0", isNumericID},
+	{"{alnumId}", "0", isAlnumID},
+}
+
+// isNumericID is whether s is 1 to 32 ASCII digits and nothing else.
+func isNumericID(s string) bool {
+	if s == "" || len(s) > 32 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isAlnumID is whether s is 1 to 64 lowercase ASCII letters and digits and
+// nothing else.
+func isAlnumID(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !('0' <= s[i] && s[i] <= '9' || 'a' <= s[i] && s[i] <= 'z') {
+			return false
+		}
+	}
+	return true
+}
+
+// placeholderOf is the placeholder a configured path carries, nil when
+// none.
+func placeholderOf(path string) *placeholder {
+	for i := range placeholders {
+		if strings.Contains(path, placeholders[i].name) {
+			return &placeholders[i]
+		}
+	}
+	return nil
+}
+
 // configuredPathProblem is why a configured path, one of --paths, is not
 // one to admit, or nil: a fixed path pathProblem holds, or a template --
-// one {id}, a whole segment, and no other brace -- which, with a GUID in
-// place of {id}, pathProblem holds.
+// one placeholder of any kind, a whole segment, and no other brace --
+// which, with a value of the placeholder's form in its place, pathProblem
+// holds.
 func configuredPathProblem(path string) error {
-	switch strings.Count(path, idPlaceholder) {
-	case 0:
-	case 1:
-		for _, segment := range strings.Split(path, "/") {
-			if strings.Contains(segment, idPlaceholder) && segment != idPlaceholder {
-				return errors.New(`"path" carries {id} within a segment; the placeholder is a whole segment`)
-			}
-		}
-	default:
-		return errors.New(`"path" carries more than one {id} placeholder`)
+	count := 0
+	for _, p := range placeholders {
+		count += strings.Count(path, p.name)
 	}
-	filled := strings.Replace(path, idPlaceholder, templateCheckID, 1)
+	p := placeholderOf(path)
+	switch {
+	case count == 0:
+		if strings.ContainsAny(path, "{}") {
+			return errors.New(`"path" carries a brace that is not the {id} placeholder`)
+		}
+		return pathProblem(path)
+	case count > 1 && strings.Count(path, idPlaceholder) > 1:
+		return errors.New(`"path" carries more than one {id} placeholder`)
+	case count > 1:
+		return errors.New(`"path" carries more than one placeholder`)
+	}
+	for _, segment := range strings.Split(path, "/") {
+		if strings.Contains(segment, p.name) && segment != p.name {
+			return errors.New(`"path" carries ` + p.name + ` within a segment; the placeholder is a whole segment`)
+		}
+	}
+	filled := strings.Replace(path, p.name, p.check, 1)
 	if strings.ContainsAny(filled, "{}") {
-		return errors.New(`"path" carries a brace that is not the {id} placeholder`)
+		return errors.New(`"path" carries a brace that is not the ` + p.name + ` placeholder`)
 	}
 	return pathProblem(filled)
 }
@@ -110,7 +178,8 @@ func pathAdmitted(paths []string, path string) bool {
 }
 
 func templateMatches(template, path string) bool {
-	if !strings.Contains(template, idPlaceholder) {
+	p := placeholderOf(template)
+	if p == nil {
 		return template == path
 	}
 	want, got := strings.Split(template, "/"), strings.Split(path, "/")
@@ -118,8 +187,8 @@ func templateMatches(template, path string) bool {
 		return false
 	}
 	for i := range want {
-		if want[i] == idPlaceholder {
-			if !isGUID(got[i]) {
+		if want[i] == p.name {
+			if !p.admits(got[i]) {
 				return false
 			}
 		} else if want[i] != got[i] {

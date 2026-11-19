@@ -306,6 +306,22 @@ caller's choosing cannot be made through it; a header is a change to the binding
 digest. Every request in this binding's tests went to an invented stand-in on loopback
 (`go/graph_binding_e2e_test.go`); none reached the service.
 
+## google-workspace-directory and google-workspace-reports
+
+| Binding | Live operation | Paths | Check |
+|---|---|---|---|
+| `google-workspace-directory` | `https://admin.googleapis.com`, `GET` alone, the token step's token as the bearer | users, a user (`{numericId}`), groups, a group and its members (`{alnumId}`), roles, a role, role assignments, a role assignment (`{numericId}`), under `/admin/directory/v1` and `customer/my_customer` | the roles listing, answerable under `admin.directory.rolemanagement.readonly` |
+| `google-workspace-reports` | the same | the activities of all users for the applications `admin`, `login`, `token`, `user_accounts`, `groups`, `saml`, `drive` and `mobile`, fixed paths | the `admin` application's activities, under `admin.reports.audit.readonly` |
+
+The Google Workspace Admin SDK's Directory and Reports APIs, read only
+([ADR-0045](../docs/adr/0045-a-delegated-subject-token-signed-by-the-credentials-api.md)). Each
+platform takes a token step of the `signedBy` form (engine version 33), whose scopes are the
+Admin SDK's read-only ones alone; the service's own terms are the licence, since no image runs.
+A user or group is named in a path by its unique id alone, never its address: an address goes
+in a query member (`users?customer=my_customer&query=email:…`, `groups?userKey=…`). Paging is by
+the `pageToken` query member. The Directory API's tokens resource is not bound: its scope,
+`admin.directory.user.security`, also deletes tokens and signs users out.
+
 ## Action recovery
 
 The write catalogs use bindingVersion 3. Each listed tool explicitly declares

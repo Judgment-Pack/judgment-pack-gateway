@@ -53,7 +53,9 @@ import (
 // its directory as resolved when the step was configured (the file's own
 // directory as written when empty; federated.go), and MetadataAudience,
 // the audience of an identity token asked of the platform's metadata server
-// at each token request (metadata.go). X5T and X5TS256 are a fixed certificate thumbprint for the
+// at each token request (metadata.go), and ServiceAccount, the service
+// account the credentials API signs a JWT-bearer assertion as, naming
+// Subject, beside which ClientID is empty (delegated.go). X5T and X5TS256 are a fixed certificate thumbprint for the
 // assertion's header, at most one, beside KeyMember only. Scope, when
 // given, is sent as the request's scope.
 type TokenStep struct {
@@ -63,6 +65,8 @@ type TokenStep struct {
 	FederatedTokenFile string
 	FederatedTokenDir  string
 	MetadataAudience   string
+	ServiceAccount     string
+	Subject            string
 	X5T                string
 	X5TS256            string
 	Scope              string
@@ -157,18 +161,22 @@ func holdTokenStep(t *TokenStep) (*url.URL, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--token-endpoint: %v", err)
 	}
-	if t.ClientID == "" || len(t.ClientID) > 256 || !visible(t.ClientID) {
+	if t.ServiceAccount == "" && (t.ClientID == "" || len(t.ClientID) > 256 || !visible(t.ClientID)) {
 		return nil, errors.New("--client-id is 1 to 256 printable ASCII characters without spaces")
 	}
 	kinds := 0
-	for _, given := range []bool{t.KeyMember != "", t.FederatedTokenFile != "", t.MetadataAudience != ""} {
+	for _, given := range []bool{t.KeyMember != "", t.FederatedTokenFile != "", t.MetadataAudience != "", t.ServiceAccount != ""} {
 		if given {
 			kinds++
 		}
 	}
 	switch {
+	case kinds != 1 && t.ServiceAccount != "":
+		return nil, errors.New("a token step takes exactly one of --assertion-key, --federated-token-file, --federated-token-metadata-audience and --signed-by-service-account")
 	case kinds != 1:
 		return nil, errors.New("a token step takes exactly one of --assertion-key, --federated-token-file and --federated-token-metadata-audience")
+	case t.ServiceAccount == "" && t.Subject != "":
+		return nil, errors.New("--token-subject is the subject of an assertion the credentials API signs, beside --signed-by-service-account")
 	case t.MetadataAudience != "" && !audienceForm.MatchString(t.MetadataAudience):
 		return nil, errors.New("--federated-token-metadata-audience is 1 to 256 ASCII letters, digits and the characters . _ ~ : / @ -")
 	case t.FederatedTokenFile == "" && t.FederatedTokenDir != "":
@@ -185,6 +193,10 @@ func holdTokenStep(t *TokenStep) (*url.URL, error) {
 		return nil, errors.New("--assertion-x5t is the base64url, unpadded, of a 20-byte SHA-1 thumbprint")
 	case t.X5TS256 != "" && !thumbprintOf(t.X5TS256, sha256.Size):
 		return nil, errors.New("--assertion-x5t-s256 is the base64url, unpadded, of a 32-byte SHA-256 thumbprint")
+	case t.ServiceAccount != "":
+		if err := holdDelegated(t); err != nil {
+			return nil, err
+		}
 	}
 	if t.KeyMember != "" && !visible(t.KeyMember) {
 		return nil, errors.New("--assertion-key names a credentials member in printable ASCII without spaces")
@@ -227,6 +239,9 @@ type tokenSigner struct {
 	alg       string
 	federated string
 	metadata  string
+	// delegated is a step whose assertion the credentials API signs
+	// (delegated.go).
+	delegated bool
 	material  []byte
 }
 
@@ -239,6 +254,15 @@ type tokenSigner struct {
 // reads no token here -- it is asked for when one is requested -- and its
 // seal's material is the credentials member sealKey, of at least 32 bytes.
 func readTokenCredential(t *TokenStep, members map[string]string) (*tokenSigner, error) {
+	if t.ServiceAccount != "" {
+		// No key is read: the credentials API signs. The seal's material is
+		// sealKey, as a metadata step's is.
+		key, ok := members[sealKeyMember]
+		if !ok || len(key) < minSealKey {
+			return nil, tokenFailure(TokenNoCredential, "the credentials file of a credentials API token step holds sealKey, a string of at least %d bytes the sealed token's key is derived from", minSealKey)
+		}
+		return &tokenSigner{delegated: true, material: []byte(key)}, nil
+	}
 	if t.MetadataAudience != "" {
 		key, ok := members[sealKeyMember]
 		if !ok || len(key) < minSealKey {
@@ -385,12 +409,19 @@ func tokenClient() *http.Client {
 // never the body.
 func requestToken(ctx context.Context, client *http.Client, t *TokenStep, assertion string) (obtainedToken, error) {
 	form := url.Values{}
-	form.Set("grant_type", "client_credentials")
-	form.Set("client_id", t.ClientID)
-	form.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
-	form.Set("client_assertion", assertion)
-	if t.Scope != "" {
-		form.Set("scope", t.Scope)
+	if t.ServiceAccount != "" {
+		// RFC 7523, section 2.1: the assertion is the grant; its scope and
+		// subject are in its claims, and no client is authenticated.
+		form.Set("grant_type", jwtBearerGrant)
+		form.Set("assertion", assertion)
+	} else {
+		form.Set("grant_type", "client_credentials")
+		form.Set("client_id", t.ClientID)
+		form.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+		form.Set("client_assertion", assertion)
+		if t.Scope != "" {
+			form.Set("scope", t.Scope)
+		}
 	}
 	body := form.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.Endpoint, strings.NewReader(body))
@@ -498,6 +529,9 @@ func sealAAD(cfg Config) []byte {
 	if t.MetadataAudience != "" {
 		words = append(words, "metadata", t.MetadataAudience)
 	}
+	if t.ServiceAccount != "" {
+		words = append(words, "credentials-api", t.ServiceAccount, t.Subject)
+	}
 	out, _ := json.Marshal(words)
 	return out
 }
@@ -590,7 +624,11 @@ func tokenFor(ctx context.Context, cfg Config, signer *tokenSigner, secrets *[]s
 func obtain(ctx context.Context, cfg Config, signer *tokenSigner, secrets *[]string) (obtainedToken, error) {
 	var assertion string
 	var err error
-	if signer.metadata != "" {
+	if signer.delegated {
+		if assertion, err = delegatedAssertion(ctx, cfg.Token, secrets); err != nil {
+			return obtainedToken{}, err
+		}
+	} else if signer.metadata != "" {
 		if assertion, err = metadataIdentityToken(ctx, signer.metadata, time.Now()); err != nil {
 			return obtainedToken{}, err
 		}

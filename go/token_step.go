@@ -7,7 +7,9 @@ package main
 // with a key held as a member of the platform's live credentials file, or
 // by a federated identity token it reads from a file fixed here, or, from
 // metadataTokenVersion, asks of the platform's metadata server for an
-// audience fixed here (ADR-0043). The signer
+// audience fixed here (ADR-0043), or, from delegatedTokenVersion, by a
+// JWT-bearer assertion naming a delegated subject fixed here, which the
+// service account credentials API signs (ADR-0045). The signer
 // reads neither, nor the access token: it holds, per source, the token as
 // adapter-http sealed it under a key only the platform's credential
 // derives, hands it to the next acquisition, and drops it when the source
@@ -32,6 +34,10 @@ import (
 // at most one, only beside privateKey.
 type tokenStepConfig struct {
 	endpoint, clientID, privateKey, federatedTokenFile, metadataAudience, x5t, x5tS256, requestScope string
+	// serviceAccount and subject are signedBy's service account and the
+	// assertion's subject (ADR-0045); set together, and with no clientId,
+	// no other credential and no thumbprint beside them.
+	serviceAccount, subject string
 	// federatedTokenDir is not written: it is the directory federatedTokenFile
 	// is named in, as engineRefusals resolved it, which the adapter finds
 	// the file again under at each token request.
@@ -50,6 +56,47 @@ var tokenStepMembers = map[string]bool{
 // engineVersions, so a merge that keeps both changes' versions without
 // renumbering it does not compile (a duplicate key in that map).
 const metadataTokenVersion = "32"
+
+// delegatedTokenVersion is the engine configuration version that admits
+// tokenStep.signedBy and tokenStep.subject (ADR-0045), and a binding path's
+// {numericId} and {alnumId} placeholders: 33, the version after the
+// metadata token (32, ADR-0043). engine.go reads this constant as the
+// newest version.
+const delegatedTokenVersion = "33"
+
+// signedByCredentialsAPI is signedBy's one kind: the service account
+// credentials API, at the address adapter-http has built in.
+const signedByCredentialsAPI = "credentials-api"
+
+var (
+	// serviceAccountForm is a user-managed service account's address: a
+	// name and a project of 6 to 30 lowercase letters, digits and hyphens,
+	// each starting with a letter and not ending with a hyphen. It enters
+	// the credentials API's path, and admits no / % ? # or :.
+	serviceAccountForm = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$`)
+	// subjectForm is the delegated subject's address: a local part of 1 to
+	// 64 letters, digits and . _ + -, and a domain of dot-separated labels
+	// of letters, digits and hyphens; at most 254 bytes in all.
+	subjectForm = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$`)
+)
+
+// delegatedScopes are the scopes a token step signed by the credentials API
+// may ask for: the Admin SDK's read-only scopes the catalog's Workspace
+// bindings read under, and no other. admin.directory.user.security is not
+// among them: it also deletes a user's tokens and signs a user out.
+var delegatedScopes = map[string]bool{
+	"https://www.googleapis.com/auth/admin.directory.user.readonly":           true,
+	"https://www.googleapis.com/auth/admin.directory.group.readonly":          true,
+	"https://www.googleapis.com/auth/admin.directory.group.member.readonly":   true,
+	"https://www.googleapis.com/auth/admin.directory.rolemanagement.readonly": true,
+	"https://www.googleapis.com/auth/admin.reports.audit.readonly":            true,
+}
+
+// delegatedTokenStepMembers are a signedBy step's members, every one
+// required: no clientId, since the JWT-bearer grant authenticates no client
+// and the assertion's iss is the service account, and no thumbprint, since
+// the adapter signs nothing.
+var delegatedTokenStepMembers = map[string]bool{"endpoint": true, "signedBy": true, "subject": true, "requestScope": true}
 
 // federatedTokenMetadata is federatedToken's one kind: the platform's
 // metadata server, at the address adapter-http has built in.
@@ -90,6 +137,12 @@ func parseTokenStep(v value, name, op, version string) (*tokenStepConfig, error)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %v", where, err)
 	}
+	if _, delegated := obj.get("signedBy"); delegated {
+		if !versionAtLeast(version, delegatedTokenVersion) {
+			return nil, fmt.Errorf("%s.signedBy is a version-%s member; engineVersion %s has no signedBy", where, delegatedTokenVersion, version)
+		}
+		return parseDelegatedTokenStep(obj, where, "platform "+name+" credentials."+op+".tokenStep")
+	}
 	if err := exactlyMembers(obj, tokenStepMembers, "platform "+name+" credentials."+op+".tokenStep"); err != nil {
 		return nil, err
 	}
@@ -107,6 +160,8 @@ func parseTokenStep(v value, name, op, version string) (*tokenStepConfig, error)
 		return nil, fmt.Errorf("%s.federatedToken is a version-%s member; engineVersion %s has no federatedToken", where, metadataTokenVersion, version)
 	}
 	switch {
+	case !hasMetadata && !hasKey && !hasFederated && versionAtLeast(version, delegatedTokenVersion):
+		return nil, fmt.Errorf("%s: exactly one of privateKey, federatedTokenFile, federatedToken and signedBy is the assertion's credential", where)
 	case hasMetadata && (hasKey || hasFederated), !hasMetadata && !hasKey && !hasFederated && versionAtLeast(version, metadataTokenVersion):
 		return nil, fmt.Errorf("%s: exactly one of privateKey, federatedTokenFile and federatedToken is the assertion's credential", where)
 	case hasMetadata:
@@ -180,6 +235,64 @@ func parseFederatedToken(v value, where string) (string, error) {
 	return "", fmt.Errorf("%s: audience is 1 to 256 ASCII letters, digits and the characters . _ ~ : / @ -", where)
 }
 
+// parseDelegatedTokenStep reads a token step of the signedBy form
+// (ADR-0045): exactly endpoint, of the endpoint form with no placeholder;
+// signedBy, an object of exactly kind, "credentials-api" alone, and
+// serviceAccount, in serviceAccountForm; subject, in subjectForm; and
+// requestScope, one or more of delegatedScopes, each once, separated by
+// single spaces. No other credential, no clientId and no thumbprint stands
+// beside it. A refusal names the member and repeats no value.
+func parseDelegatedTokenStep(obj *vObject, where, what string) (*tokenStepConfig, error) {
+	for _, other := range []string{"privateKey", "federatedTokenFile", "federatedToken"} {
+		if _, present := obj.get(other); present {
+			return nil, fmt.Errorf("%s: exactly one of privateKey, federatedTokenFile, federatedToken and signedBy is the assertion's credential", where)
+		}
+	}
+	if _, present := obj.get("clientId"); present {
+		return nil, fmt.Errorf("%s: clientId is not given beside signedBy: the JWT-bearer grant authenticates no client, and the assertion's iss is the service account", where)
+	}
+	if err := exactlyMembers(obj, delegatedTokenStepMembers, what); err != nil {
+		return nil, err
+	}
+	t := &tokenStepConfig{}
+	var err error
+	if t.endpoint, err = requireString(obj, "endpoint"); err != nil || strings.ContainsAny(t.endpoint, "{}") || !isRemoteEndpoint(t.endpoint) {
+		return nil, fmt.Errorf("%s: endpoint must be %s, and names no placeholder", where, remoteEndpointForm)
+	}
+	signedBy, _ := obj.get("signedBy")
+	signer, err := requireObject(signedBy, "signedBy")
+	if err != nil {
+		return nil, fmt.Errorf("%s.signedBy: %v", where, err)
+	}
+	if err := exactlyMembers(signer, map[string]bool{"kind": true, "serviceAccount": true}, where+".signedBy"); err != nil {
+		return nil, err
+	}
+	if kind, ok := memberString(signer, "kind"); !ok || kind != signedByCredentialsAPI {
+		return nil, fmt.Errorf("%s.signedBy: kind is %q, the service account credentials API, at the address adapter-http has built in", where, signedByCredentialsAPI)
+	}
+	if account, ok := memberString(signer, "serviceAccount"); ok && serviceAccountForm.MatchString(account) {
+		t.serviceAccount = account
+	} else {
+		return nil, fmt.Errorf("%s.signedBy: serviceAccount is NAME@PROJECT.iam.gserviceaccount.com, NAME and PROJECT each 6 to 30 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen", where)
+	}
+	if subject, ok := memberString(obj, "subject"); ok && len(subject) <= 254 && subjectForm.MatchString(subject) {
+		t.subject = subject
+	} else {
+		return nil, fmt.Errorf("%s: subject is an address of at most 254 bytes: 1 to 64 letters, digits and . _ + -, an @, and a domain of dot-separated labels of letters, digits and hyphens", where)
+	}
+	scope, ok := memberString(obj, "requestScope")
+	seen := map[string]bool{}
+	for _, token := range strings.Split(scope, " ") {
+		ok = ok && delegatedScopes[token] && !seen[token]
+		seen[token] = true
+	}
+	if !ok {
+		return nil, fmt.Errorf("%s: requestScope is one or more of the Admin SDK's read-only scopes ADR-0045 lists, each once, separated by single spaces", where)
+	}
+	t.requestScope = scope
+	return t, nil
+}
+
 // tokenStepMatch holds a platform's token step to its binding: the binding's
 // live operation is of the http shape, and sends its credential as the
 // bearer, which is how an access token is sent; credentialHeader names a
@@ -202,6 +315,9 @@ func tokenStepMatch(p platformConfig, b binding) error {
 // flag and its value one word, in place of the binding's --bearer: the
 // token is the bearer.
 func tokenStepArgv(t *tokenStepConfig) []string {
+	if t.serviceAccount != "" {
+		return []string{"--token-endpoint=" + t.endpoint, "--signed-by-service-account=" + t.serviceAccount, "--token-subject=" + t.subject, "--token-scope=" + t.requestScope}
+	}
 	argv := []string{"--token-endpoint=" + t.endpoint, "--client-id=" + t.clientID}
 	if t.privateKey != "" {
 		argv = append(argv, "--assertion-key="+t.privateKey)

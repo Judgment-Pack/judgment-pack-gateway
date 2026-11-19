@@ -85,8 +85,10 @@ absolute.
   below), version 30 a gcp-asset source's `groups` ("Grants through groups on a gcp-asset
   source (engine version 30)", below), version 31 a path template among an http live
   operation's `paths` ("Path templates and links on an http source (engine version 31)",
-  below), and version 32 a token step's `federatedToken` ("A federated token from the
-  platform's metadata server", below). A
+  below), version 32 a token step's `federatedToken` ("A federated token from the
+  platform's metadata server", below), and version 33 a token step's `signedBy` and `subject`
+  and an http path's `{numericId}` and `{alnumId}` ("A token step with a delegated subject
+  (engine version 33)", below). A
   file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -1826,7 +1828,9 @@ assertion (RFC 7523).
 - **The members.** `endpoint` and `clientId` are required, and exactly one of `privateKey` and
   `federatedTokenFile`, or from engine version 32 exactly one of `privateKey`,
   `federatedTokenFile` and `federatedToken` ("A federated token from the platform's metadata
-  server", below); `x5t`, `x5t#S256` and `requestScope` are optional. Any other member is refused by name, and a
+  server", below), or from engine version 33 exactly one of those three and `signedBy` ("A
+  token step with a delegated subject (engine version 33)", below, which takes no `clientId`);
+  `x5t`, `x5t#S256` and `requestScope` are optional. Any other member is refused by name, and a
   refusal repeats no value.
   - `endpoint` is the token endpoint: `https`, or `http` at a loopback address written as one,
     with no user, query, fragment or placeholder.
@@ -1937,6 +1941,78 @@ identity token is the compute's: every process on it can ask for
 one, so this form does not hold platforms apart by their users as the file form does. Under an
 earlier version `federatedToken` is refused by name, and a file without it loads and derives its
 sources as before.
+
+## A token step with a delegated subject (engine version 33)
+
+A token step may obtain its access token by the JWT-bearer grant (RFC 7523) with an assertion
+that names a fixed delegated subject and that the service account credentials API signs, so no
+service-account key is held anywhere the gateway runs
+([ADR-0045](../adr/0045-a-delegated-subject-token-signed-by-the-credentials-api.md), gateway
+#503). It is the form the Google Workspace Admin SDK takes; the shipped
+`google-workspace-directory` and `google-workspace-reports` bindings read under it
+([catalog/README.md](../../catalog/README.md#google-workspace-directory-and-google-workspace-reports)).
+
+```json
+"tokenStep": {
+  "endpoint": "https://oauth2.googleapis.com/token",
+  "signedBy": {"kind": "credentials-api", "serviceAccount": "directory-reader@example-project.iam.gserviceaccount.com"},
+  "subject": "admin@example.com",
+  "requestScope": "https://www.googleapis.com/auth/admin.directory.user.readonly https://www.googleapis.com/auth/admin.reports.audit.readonly"
+}
+```
+
+- **The members.** Exactly `endpoint`, `signedBy`, `subject` and `requestScope`, all required.
+  `clientId` is refused beside `signedBy`, as are `privateKey`, `federatedTokenFile`,
+  `federatedToken`, `x5t` and `x5t#S256`; `subject` is refused beside any other form. A refusal
+  names the member and repeats no value.
+  - `endpoint` is the token endpoint, of the endpoint form every token step's is. It is the
+    assertion's `aud`.
+  - `signedBy` is exactly `kind`, `"credentials-api"` alone, and `serviceAccount`,
+    `NAME@PROJECT.iam.gserviceaccount.com` with `NAME` and `PROJECT` each 6 to 30 lowercase
+    letters, digits and hyphens, starting with a letter and not ending with a hyphen. No member
+    names an address.
+  - `subject` is the administrator the service account acts as: an address of at most 254
+    bytes, a local part of 1 to 64 letters, digits and `.` `_` `+` `-`, an `@`, and a domain of
+    dot-separated labels of letters, digits and hyphens.
+  - `requestScope` is one or more of the Admin SDK's read-only scopes, each once, separated by
+    single spaces: `…/auth/admin.directory.user.readonly`, `…/auth/admin.directory.group.readonly`,
+    `…/auth/admin.directory.group.member.readonly`,
+    `…/auth/admin.directory.rolemanagement.readonly` and `…/auth/admin.reports.audit.readonly`
+    (`…` is `https://www.googleapis.com`). Any other scope is refused at load;
+    `admin.directory.user.security` among them, since it also deletes a user's tokens.
+- **What adapter-http is handed.** `--token-endpoint=E --signed-by-service-account=SA
+  --token-subject=S --token-scope=SCOPES`, in place of `--client-id` and the other credential
+  flags.
+
+| Flag | From |
+|---|---|
+| `--token-endpoint` | `endpoint` |
+| `--signed-by-service-account` | `signedBy.serviceAccount` |
+| `--token-subject` | `subject` |
+| `--token-scope` | `requestScope` |
+
+- **The flow.** At each token request: an access token of the compute's own identity from the
+  metadata server, `GET /computeMetadata/v1/instance/service-accounts/default/token` at the
+  link-local literal built into the adapter, under every rule the identity token above is asked
+  under; then `POST https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/SA:signJwt`
+  under that token, the address built in, for the claims `iss` the service account, `sub` the
+  subject, `scope` the scopes, `aud` the token endpoint, and `iat` and `exp` five minutes apart;
+  then the token request, `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer` and
+  `assertion` the signed JWT. A signed JWT whose claims are not the ones asked for is not sent.
+  The metadata token and the signed JWT are held in the memory of the one run, and written
+  nowhere. The live credentials file holds `sealKey`, as the metadata form's does, and nothing
+  else is needed in it.
+- **Failures.** Anything before the token request is the no-credential sentence, and no token is
+  requested; a 429 or 503 of the metadata server or the credentials API is a throttled answer.
+- **Paths that name a Workspace object.** From this version an http path may carry, in place of
+  `{id}`, `{numericId}` (1 to 32 ASCII digits) or `{alnumId}` (1 to 64 lowercase ASCII letters
+  and digits), a whole segment, at most one placeholder of any kind in a path. `{id}` keeps
+  taking a GUID alone. An address is never a path segment: a request names one in a query
+  member (`users?customer=my_customer&query=email:…`, `groups?userKey=…`).
+- **Upgrading.** A file of version 32 or earlier loads and derives its sources as before. Under
+  an earlier version `signedBy` is refused by name, and a binding with `{numericId}` or
+  `{alnumId}` is refused at start. A gateway older than this one refuses a version-33 file by its
+  version.
 
 ## A platform that keeps no payload (engine version 22)
 
