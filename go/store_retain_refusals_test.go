@@ -17,7 +17,8 @@ import (
 
 // An acknowledgment of an open session of a scope identifier, and one of a
 // sealed session while a receipt of another session, left in the database,
-// names it, refuse the call by name, and the database does not change.
+// names it, refuse the call by name, and the database does not change; so
+// does a database rotated away from, by the rotation's sentence.
 func TestAPostgresStoreRetainRefusesWhatItCannotRemoveWhole(t *testing.T) {
 	db := newPgTestDB(t)
 	db.migrate(t)
@@ -76,6 +77,26 @@ func TestAPostgresStoreRetainRefusesWhatItCannotRemoveWhole(t *testing.T) {
 		if db.fingerprint(t) != print {
 			t.Fatalf("%s: a refused call changed the database", tc.name)
 		}
+	}
+
+	// a database rotated away from is refused by the rotation's sentence,
+	// with the citing receipt gone so that the line would otherwise remove
+	// s-a, and no removal record is kept
+	asOwnerIn(t, db, pgNoScope, `DELETE FROM gateway.entries WHERE series = 's-c' AND name = 'cites-s-a'`)
+	mark := strings.Repeat("cd", 32)
+	asOwnerIn(t, db, pgNoScope, `INSERT INTO gateway.rotated (continuation, rotated_at) VALUES ($1, now())`, mark)
+	var stdout, stderr bytes.Buffer
+	code := cmdStoreRetainAt([]string{"--connection-file", connection, "--owner", db.roles.owner, "--runtime", db.roles.runtime,
+		"--config", config, "--acknowledgments", writeAcks(t, retentionAckLine(retentionAckKey, "s-a", sa.signature, sa.finalCount, at)), "--by", "operator-1", "--timeout", "60"},
+		&stdout, &stderr, fixedStamp(removalStamp), func() time.Time { return now })
+	if code != 1 || stdout.String() != "" || !strings.Contains(stderr.String(), "the store was rotated away from ("+rotatedMarkPrefix+mark+")") {
+		t.Fatalf("a database rotated away from: %d %q %q", code, stdout.String(), stderr.String())
+	}
+	if rows := asOwnerIn(t, db, pgNoScope, `SELECT 1 FROM gateway.removal_records`); len(rows.rows) != 0 {
+		t.Fatal("a removal record was kept on a database rotated away from")
+	}
+	if rows := asOwnerIn(t, db, pgRowScope("scope-a"), `SELECT 1 FROM gateway.series WHERE name = 's-a'`); len(rows.rows) != 1 {
+		t.Fatal("s-a was removed from a database rotated away from")
 	}
 }
 

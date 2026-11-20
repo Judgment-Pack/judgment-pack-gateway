@@ -263,3 +263,22 @@ func TestRetainFinishesARemovalARunCutOffAfterItsRecord(t *testing.T) {
 		})
 	}
 }
+
+// A store rotated away from is refused by the rotation's sentence before
+// anything is written: a removal appended to its registry would break the
+// link the new store names (ADR-0048), so a line that would otherwise
+// remove a1 removes nothing.
+func TestRetainRefusesAStoreRotatedAwayFrom(t *testing.T) {
+	g, config := retainStore(t)
+	a1 := sealOf(t, g.regPath, g.publicKey, "a1")
+	acks := writeAcks(t, retentionAckLine(retentionAckKey, "a1", a1.signature, a1.finalCount, stampOf(sealTime(t, a1))))
+	if err := os.WriteFile(rotatedMarkPath(g.regPath), []byte(rotatedMarkPrefix+strings.Repeat("ab", 32)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tree, registry := retainTree(t, g)
+	code, stdout, stderr := runRetain(config, acks, sealTime(t, a1).Add(31*24*time.Hour))
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "the store was rotated away from ("+rotatedMarkPrefix+strings.Repeat("ab", 32)+")") {
+		t.Fatalf("%d %q %q", code, stdout, stderr)
+	}
+	requireRetainUnchanged(t, g, tree, registry)
+}

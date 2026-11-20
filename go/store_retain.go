@@ -187,6 +187,11 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 	if err := pgHoldEveryInstance(c, "retain"); err != nil {
 		return failed(err)
 	}
+	// a database rotated away from takes nothing more: a removal appended
+	// to its registry would break the link the new store names (ADR-0048)
+	if err := pgRefuseRotated(c); err != nil {
+		return failed(err)
+	}
 	tx := pgTx{c}
 	data, present, err := pgLog{name: "registry"}.readTx(tx, 0)
 	if err != nil {
