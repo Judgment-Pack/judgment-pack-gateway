@@ -54,7 +54,7 @@ func TestStoreRotateSignsThroughTheKeyService(t *testing.T) {
 	before := readFile(t, registry)
 
 	var stdout, stderr bytes.Buffer
-	code := cmdStoreRotateAt([]string{"--store", store, "--seed", seedPath, "--registry", registry, "--authority", "gateway:test",
+	code := cmdStoreRotateAt([]string{"--store", store, "--seed", seedPath, "--registry", registry, "--authority", "gateway:test", "--no-sink",
 		"--new-store", newStore, "--new-registry", newRegistry}, &stdout, &stderr, fixedStamp("2026-11-19T00:00:01Z"))
 	if code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "no rotation in the registry leads from it") {
 		t.Fatalf("the seed over a key service's store: %d %q %q", code, stdout.String(), stderr.String())
