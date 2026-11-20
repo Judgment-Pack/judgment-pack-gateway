@@ -163,7 +163,7 @@ place:
 | a platform's `descriptorStatements`; descriptor provenance; a descriptor capture by `gateway connect` | the load; the start; `connect` before any adapter is asked | the signed snapshot is read from the store on disk (`gateway connect --no-descriptors` connects a platform without one) |
 | `/verify` | answers 501 | it verifies the store on disk: export the store and verify the export |
 | `gateway remove-artifact --config`, `gateway remove-scope --config` | the command | they keep removal records, and remove files, on disk; on this kind `gateway store remove-scope` removes a scope identifier's rows ("Removing one scope identifier's rows"), and `gateway store retain` an acknowledged session's ("Retention by acknowledgment") |
-| `gateway rotate-key` | the start refuses a rotation under way beside the seed | the rotation keeps the registry at a path |
+| `gateway rotate-key` | the start refuses a rotation under way beside the seed | the rotation keeps the registry at a path; on this kind `gateway store rotate-key` rotates the key, every instance stopped ("Rotating the signing key") |
 
 `gateway verify` takes a store directory and a registry file: it reads an export of this kind
 (`gateway export --config`), never the database.
@@ -886,6 +886,68 @@ Exit 2 on a usage error: `--new-store` and `--new-registry` are the filesystem k
 migration login's flags are refused beside a configuration of that kind, as `--no-sink` is. Dropping the old database
 once it is past retention is the operator's, with PostgreSQL's own tools. Its rows stay in the
 write-ahead log, base backups and replicas under the operator's own retention.
+
+## Rotating the signing key
+
+```text
+gateway store rotate-key --config <engine.json> (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> [--from-key-version <name> --from-public-key <hex>] [--timeout <seconds>]
+```
+
+On this kind the gateway's signing key is rotated with every instance stopped
+([ADR-0050](adr/0050-an-external-signer-in-a-key-service.md), decision 3(a); SPEC.md §3b). SIGHUP
+rotation is refused here, and `gateway rotate-key` needs a file registry. The command moves a store
+from the seed to a key service's key version, or from one key version to the next:
+
+1. Stop every instance.
+2. Seal every session left open, under the key in force: `gateway seal-open --config <the
+   configuration naming it> --all` ("Sealing the sessions an instance left open"). A session that
+   holds a receipt is never continued by a later instance, and its seal under the key rotated from
+   bounds what that key signed in it.
+3. Write the next key version into `signingKeyVersion` and its public key into `signingPublicKey`
+   (engine version 36).
+4. Run the command with that configuration.
+5. Start every instance under it.
+
+- **The keys.** The next key is the configuration's `signingKeyVersion`, held to
+  `signingPublicKey` and read as at the start. The key rotated from is named apart, since the
+  configuration now names the next one. With neither `--from-key-version` nor `--from-public-key`
+  it is the seed's key, from the configuration's `seed`. With both it is that key version, held to
+  that public key. The pair is given together or not at all, as `signingKeyVersion` and
+  `signingPublicKey` are. A configuration naming no `signingKeyVersion` is refused: a rotation on
+  this kind is to a key service.
+- **How it runs.** The connection is the migration login's. The command acts as the owner, in one
+  transaction that holds the migration's lock and every row of the start lease, as `gateway store
+  retain` does. In that transaction it reads the registry under the log's append lock, as every
+  append reads it, and walks it. It appends SPEC.md §3b's `key-rotation`, signed by the key rotated
+  from and naming the next key, and the `key-continuation`, signed by the next key and naming the
+  previous one. Each signature is verified before anything is written. It then reads the registry
+  back and walks it to the next key, and only then commits. It prints the two statements, and
+  names the rotation on the standard error.
+- **After it.** Every instance starts under the next key and is admitted beside the others: the
+  rows of the start lease are compared only while they are live. `GET /publickey/history` lists
+  every key the walk reaches. The store's earlier receipts and seals verify under the key they
+  name, from the seed's key, as `gateway verify` follows the rotation. A start under the key
+  rotated from is refused by the registry's walk.
+- **A COMMIT that did not answer.** The record commits whole or not at all, so no part of it is
+  left in the registry. The command says *the key may have rotated: rerun to check*. Run it again
+  with the same keys. Where the record is whole, the walk ending at the next key by a rotation from
+  the key rotated from, it says *the rotation is made; nothing was changed* (exit 0). Where nothing
+  was kept, it rotates.
+
+It is refused, with exit status 1 and nothing changed:
+
+- while an instance serves, by the start lease's sentence: *stop the gateway, then rotate-key*;
+- on a database rotated away from, by the store rotation's sentence;
+- when the next key is the key in force: *the next key, key id ..., is the key in force already*;
+- when the walk ends at another key than the key rotated from, or the registry or a session's first
+  receipt is under a key the walk did not reach;
+- while a session that holds a receipt is open: *session ... holds a receipt and is not sealed*;
+- when a signature does not verify, or the record would not walk to the next key: a rotation back
+  to a key the registry rotated from is refused so.
+
+Exit 2 on a usage error. A configuration of the filesystem kind is one: its key is rotated by
+`gateway rotate-key` (the seed) or by SIGHUP (a key service). A coordinated rotation while
+instances serve is #537.
 
 ## Retention by acknowledgment
 

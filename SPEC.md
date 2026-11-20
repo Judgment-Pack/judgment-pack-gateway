@@ -1378,6 +1378,15 @@ again. Any other part of the record: the walk refuses a start under either key u
 from its first byte and nothing more, by its operator, as `--resume` cuts it; the gateway then starts
 under the key rotated from and is rotated again. No other byte of the registry is cut.
 
+On the PostgreSQL storage kind (`docs/postgresql-store.md`, "Rotating the signing key") a rotation is
+`gateway store rotate-key`, every instance stopped, and its record is appended in one transaction:
+the registry ends with the record whole or without any part of it, and the second and third cases
+never arise. A COMMIT whose answer did not arrive is settled by running the command again with the
+same keys: where the registry's walk ends at the next key by a rotation from the key rotated from,
+the record is whole and nothing is changed; where it ends at the key rotated from, nothing of the
+record was kept, and the command rotates. Either way every instance then starts under the
+configuration naming the next key version.
+
 **The gateway's own reading.** A gateway pins no key out of band for itself. It walks
 its registry from the key its first rotation rotated from — the `previous` of the
 registry's first `key-continuation` statement — or from its own key when the registry
