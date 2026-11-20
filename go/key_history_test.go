@@ -376,3 +376,39 @@ func TestARerunOfAStoreRotationRefusesAKeyHistoryNotTheOneNamed(t *testing.T) {
 		t.Fatalf("the refused rerun changed the key history:\n%s", got)
 	}
 }
+
+// A carried history that holds, and whose bytes are the ones the store
+// continuation names, must still end at the key that signed the
+// continuation: one ending at another key is answered 500, and the same
+// store with a history ending at that key is answered.
+func TestACarriedKeyHistoryEndsAtTheKeyThatSignedTheContinuation(t *testing.T) {
+	signer := ed25519.NewKeyFromSeed(testSeed)
+	serveWith := func(ending ed25519.PublicKey) (int, []byte) {
+		dir := t.TempDir()
+		newStore, newRegistry := filepath.Join(dir, "store"), filepath.Join(dir, "registry.jsonl")
+		if err := os.Mkdir(newStore, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		history := keyHistoryDocument([]keyHistoryEntry{{key: ending, keyID: keyIDFor(ending)}})
+		if _, err := checkKeyHistory(history, ending); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(keyHistoryBeside(newRegistry), history, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(newRegistry, newContinuationLine(signer, []byte("x\n"), history, "2026-11-19T00:00:00Z"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		g, err := newGatewayServiceSigned(newStore, testSeed, nil, "gateway:test", newRegistry, ksSources())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return askKeyHistory(t, g)
+	}
+	if code, body := serveWith(seedKeyOf(historySeed("other"))); code != http.StatusInternalServerError {
+		t.Fatalf("a carried history ending at another key: %d %s", code, body)
+	}
+	if code, body := serveWith(seedKeyOf(testSeed)); code != http.StatusOK {
+		t.Fatalf("a carried history ending at the key that signed the continuation: %d %s", code, body)
+	}
+}
