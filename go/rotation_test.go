@@ -789,7 +789,12 @@ func TestAnActionCitesAReceiptMintedBeforeTheRotation(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "other-registry.jsonl"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	foreign, err := newGatewayService(store, bytes.Repeat([]byte{5}, 32), "gateway:test", filepath.Join(root, "other-registry.jsonl"), sources)
+	// the foreign receipt is minted in a store of its own and laid in this
+	// one only once the gateway under the next key has started: a start is
+	// refused over a store holding a receipt under a key its walk never
+	// reached (ADR-0050), and the citation is held to it all the same
+	foreignStore := filepath.Join(root, "foreign-store")
+	foreign, err := newGatewayService(foreignStore, bytes.Repeat([]byte{5}, 32), "gateway:test", filepath.Join(root, "other-registry.jsonl"), sources)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -803,6 +808,16 @@ func TestAnActionCitesAReceiptMintedBeforeTheRotation(t *testing.T) {
 	}
 	second, err := newGatewayService(store, next, "gateway:test", registry, sources)
 	if err != nil {
+		t.Fatal(err)
+	}
+	foreignReceipt, err := os.ReadFile(filepath.Join(foreignStore, "receipts", "foreign", "0.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(store, "receipts", "foreign"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "receipts", "foreign", "0.json"), foreignReceipt, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	keys, err := second.reachedKeys()

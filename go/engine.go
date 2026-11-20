@@ -110,9 +110,14 @@ import (
 // (assertionAlgorithmVersion) a token step's `assertionAlgorithm`, RS256 or
 // PS256 beside an RSA privateKey (docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md,
 // amendment #513; token_step.go): a file with the member is refused under an
-// earlier version, and a file without it signs as before. connect raises a file to
+// earlier version, and a file without it signs as before; and version 35
+// (receiptSinkVersion) the optional `receiptSink`, the endpoint each receipt
+// /acquire mints is delivered to before /acquire answers
+// (docs/adr/0049-a-receipt-is-acknowledged-by-the-sink-before-it-is-answered.md;
+// receipt_sink.go): a file with the member is refused under an earlier
+// version, and a file without it serves as before. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
-// were; it never lowers a configuration version, and it raises none to 31, 32, 33 or 34.
+// were; it never lowers a configuration version, and it raises none to 31, 32, 33, 34, 35, 36 or 37.
 // Version 37 (retentionVersion) is the optional `retention`, by which
 // gateway retain and gateway store retain remove a sealed session an
 // acknowledgment signed under a pinned key names, once a window has passed
@@ -121,7 +126,7 @@ import (
 // member nothing is removed by age.
 const engineVersion = retentionVersion
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, retentionVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, retentionVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -148,21 +153,28 @@ type engineConfig struct {
 	retention *retentionConfig
 	sandbox   *engineSandbox
 
-	authority       string
-	seed            string
-	store           string
-	registry        string
-	decisionRecords string
-	listen          string
-	catalog         string
-	runtime         string
-	adapters        string
-	rootSigner      bool
-	hostRuntime     bool
-	identity        *identitySpec    // who may call; nil records caller null
-	platforms       []platformConfig // in name order
-	version         string
-	mcp             *mcpConfig // the MCP server's own settings; nil when the configuration has none
+	authority string
+	seed      string
+	// signingKeyVersion names the key service's key version that signs in
+	// place of the seed's key (ADR-0050); "" where the seed signs
+	signingKeyVersion string
+	// signingPublicKey, where it is named, is the public key signingKeyVersion's
+	// key version must answer, 64 lowercase hexadecimal characters: a key
+	// version whose key is another signs nothing (ADR-0050)
+	signingPublicKey string
+	store            string
+	registry         string
+	decisionRecords  string
+	listen           string
+	catalog          string
+	runtime          string
+	adapters         string
+	rootSigner       bool
+	hostRuntime      bool
+	identity         *identitySpec    // who may call; nil records caller null
+	platforms        []platformConfig // in name order
+	version          string
+	mcp              *mcpConfig // the MCP server's own settings; nil when the configuration has none
 	// witness makes the signer a checkpoint witness (ADR-0013); nil when the
 	// configuration has none.
 	witness *witnessSpec
@@ -180,6 +192,9 @@ type engineConfig struct {
 	// source's sandbox and refuses to start unless each source would
 	// launch (sandbox_at_start.go); off unless the configuration sets it.
 	measureSandboxAtStart bool
+	// receiptSink is where each receipt /acquire mints is delivered before
+	// /acquire answers (engineVersion 35, receipt_sink.go); nil for none.
+	receiptSink *receiptSinkSpec
 	// storage names the PostgreSQL kind that keeps the store and the
 	// registry (engineVersion 24, storage_kind.go); nil when the filesystem
 	// kind keeps them at store and registry, as before the member. With it,
@@ -412,8 +427,8 @@ var engineMembers = map[string]bool{
 	"decisionRecords": true, "listen": true, "catalog": true, "platforms": true,
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
 	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
-	"sealOpenAtStart": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
-	"retention": false,
+	"sealOpenAtStart": false, "signingKeyVersion": false, "signingPublicKey": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
+	"receiptSink": false, "retention": false,
 }
 
 var platformMembers = map[string]bool{
@@ -613,6 +628,16 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			return engineConfig{}, errors.New("engine configuration: measureSandboxAtStart, when present, is true or false")
 		}
 		cfg.measureSandboxAtStart = bool(on)
+	}
+	if value, present := obj.get("receiptSink"); present {
+		if !versionAtLeast(version, receiptSinkVersion) {
+			return engineConfig{}, fmt.Errorf("engine configuration: receiptSink is a version-%s member; engineVersion %s has no receiptSink", receiptSinkVersion, version)
+		}
+		sink, err := parseReceiptSink(value)
+		if err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
+		}
+		cfg.receiptSink = sink
 	}
 	for _, name := range []string{"rootSigner", "hostRuntime"} {
 		if _, present := obj.get(name); !present {
@@ -857,6 +882,40 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	}
 	if err := storageRefusals(&cfg); err != nil {
 		return engineConfig{}, fmt.Errorf("engine configuration: %w", err)
+	}
+	// signingKeyVersion (ADR-0050): one key version's resource name, of its
+	// closed form, from keyServiceSignerVersion; not yet beside a witness,
+	// whose checkpoints the seed's key signs
+	if keyValue, present := obj.get("signingKeyVersion"); present {
+		if !versionAtLeast(version, keyServiceSignerVersion) {
+			return engineConfig{}, fmt.Errorf("engine configuration: signingKeyVersion is a version-%s member; engineVersion %s has no signingKeyVersion", keyServiceSignerVersion, version)
+		}
+		named, ok := keyValue.(vString)
+		if !ok || !keyVersionForm.MatchString(string(named)) {
+			return engineConfig{}, fmt.Errorf("engine configuration: signingKeyVersion is one key version's resource name, %s", keyVersionFormText)
+		}
+		if cfg.witness != nil {
+			return engineConfig{}, errors.New("engine configuration: signingKeyVersion is not yet taken beside witness, whose checkpoints the seed's key signs (ADR-0050)")
+		}
+		cfg.signingKeyVersion = string(named)
+	}
+	// signingPublicKey (ADR-0050): the key version's public key, pinned
+	// beside its name, as the seed's expected key is pinned elsewhere
+	if keyValue, present := obj.get("signingPublicKey"); present {
+		if !versionAtLeast(version, keyServiceSignerVersion) {
+			return engineConfig{}, fmt.Errorf("engine configuration: signingPublicKey is a version-%s member; engineVersion %s has no signingPublicKey", keyServiceSignerVersion, version)
+		}
+		named, ok := keyValue.(vString)
+		if !ok || !signingPublicKeyForm.MatchString(string(named)) {
+			return engineConfig{}, errors.New("engine configuration: signingPublicKey is the key version's Ed25519 public key, 64 lowercase hexadecimal characters")
+		}
+		if cfg.signingKeyVersion == "" {
+			return engineConfig{}, errors.New("engine configuration: signingPublicKey is the public key of signingKeyVersion's key version, and is not given without it")
+		}
+		cfg.signingPublicKey = string(named)
+	}
+	if cfg.signingKeyVersion != "" && cfg.signingPublicKey == "" {
+		return engineConfig{}, errSigningPublicKeyRequired
 	}
 	return cfg, nil
 }
@@ -2700,7 +2759,7 @@ func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, e
 // engineServeOptions is what `serve` runs for a configuration: the derived
 // sources, the receipt version the design assumes, and the defaults.
 func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec, identity *identityConfig) serveOptions {
-	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed}
+	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed, receiptSink: cfg.receiptSink}
 }
 
 // maxKeySetBytes bounds the issuer's key file.

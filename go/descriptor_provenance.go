@@ -72,11 +72,15 @@ func (s *store) retainDescriptorCapture(data []byte, operation string) (descript
 	if err != nil {
 		return p, err
 	}
+	key := s.signing.key()
 	o := newObject()
-	for k, v := range map[string]string{"statementVersion": "1", "authority": s.authority, "keyId": s.keyID, "source": snap.platform + "/" + operation, "binding": snap.binding, "snapshot": p.snapshot, "endpoint": snap.endpoint, "capturedAt": snap.capturedAt} {
+	for k, v := range map[string]string{"statementVersion": "1", "authority": s.authority, "keyId": key.keyID, "source": snap.platform + "/" + operation, "binding": snap.binding, "snapshot": p.snapshot, "endpoint": snap.endpoint, "capturedAt": snap.capturedAt} {
 		o.set(k, vString(v))
 	}
-	sig := ed25519.Sign(s.private, append([]byte(descriptorStatementContext), canon(o)...))
+	sig, err := key.signVerified(append([]byte(descriptorStatementContext), canon(o)...))
+	if err != nil {
+		return p, err
+	}
 	o.set("signature", vString(hex.EncodeToString(sig)))
 	raw := canon(o)
 	if len(raw) > maxDescriptorStatementBytes {
@@ -161,7 +165,13 @@ func retainConnectedCapture(cfg engineConfig, data []byte, operation string) (de
 	if err != nil {
 		return descriptorProvenance{}, err
 	}
-	s, err := newStore(cfg.store, seed, cfg.authority)
+	// signed through the key service's key version where the configuration
+	// names one (ADR-0050), else the seed
+	sig, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, seed)
+	if err != nil {
+		return descriptorProvenance{}, err
+	}
+	s, err := newStoreWith(cfg.store, seed, newSignerHolder(sig), cfg.authority)
 	if err != nil {
 		return descriptorProvenance{}, err
 	}

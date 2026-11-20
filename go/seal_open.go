@@ -32,7 +32,7 @@ package main
 // lock, and the sessions are read from the kind (seal_open_pg.go).
 
 import (
-	"crypto/ed25519"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +49,9 @@ and chained. The seal says it was made after an interruption, over the
 receipts the store holds (SPEC.md §3c); such a session is never continued.
 --all seals each such session in the store, and names each one that is not
 whole, which stays as it is. Prints each seal appended, as its registry line.
+With a receiptSink in the configuration, each receipt a session holds is
+first delivered to the sink, oldest first; a session whose receipts the sink
+does not all acknowledge is not sealed and is named.
 Nothing is deleted.`
 
 // sealOpenTarget is a session found whole and unsealed: its count and the
@@ -93,6 +96,10 @@ type sealOpenStore interface {
 	// removals are the store's removal records of payloads, as verify loads
 	// them under keys (SPEC.md §1.3a).
 	removals(keys []reachedKey) (map[string][]removalRecord, error)
+	// payload is the payload the store keeps under the digest's hexadecimal
+	// for the session, for a receipt delivered again to the receipt sink
+	// (ADR-0049); false where the store holds none.
+	payload(sessionID, hexSum string) ([]byte, bool, error)
 }
 
 // fsSealOpenStore is a store directory of the filesystem kind.
@@ -118,6 +125,14 @@ func (s fsSealOpenStore) reading(sessionID string) (sessionReading, string, erro
 	}
 	reading, err := fsSessionReading(s.root, sessionID)
 	return reading, "", err
+}
+
+func (s fsSealOpenStore) payload(_, hexSum string) ([]byte, bool, error) {
+	data, err := fsBlobs{dir: filepath.Join(s.root, "artifacts")}.getBlob("sha256:" + hexSum)
+	if faultOf(err) == faultAbsent {
+		return nil, false, nil
+	}
+	return data, err == nil, err
 }
 
 func (s fsSealOpenStore) removals(keys []reachedKey) (map[string][]removalRecord, error) {
@@ -193,7 +208,18 @@ func sealOpenJudge(st sealOpenStore, authority string, walk *registryWalk, ret *
 // seals appended, in order, and the refusals; a seal whose append fails ends
 // it, the seals before it standing.
 func sealOpenUnder(st sealOpenStore, authority string, writer *registryWriter, data []byte, session, via string, stamp func() string) ([]*vObject, []string, error) {
-	walk, err := engineWalk(data, writer.priv.Public().(ed25519.PublicKey))
+	return sealOpenUnderSink(st, authority, writer, data, session, via, stamp, nil)
+}
+
+// sealOpenUnderSink is sealOpenUnder where a receipt sink may be configured
+// (ADR-0049): before a session is sealed, each receipt the store holds of
+// it is delivered to the sink, oldest first, which acknowledges by digest
+// and so takes one it has already acknowledged as it did. A session whose
+// receipts are not all acknowledged is not sealed: it stays open and is
+// named. Once one delivery is not acknowledged the sink is not asked for
+// the sessions after it, which are named as well.
+func sealOpenUnderSink(st sealOpenStore, authority string, writer *registryWriter, data []byte, session, via string, stamp func() string, sink *sealOpenSink) ([]*vObject, []string, error) {
+	walk, err := engineWalk(data, writer.signing.key().public)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -228,7 +254,15 @@ func sealOpenUnder(st sealOpenStore, authority string, writer *registryWriter, d
 		}
 	}
 	var sealed []*vObject
+	sinkDown := false
 	for _, t := range targets {
+		if sink != nil {
+			if sinkDown || !sink.deliver(st, t) {
+				sinkDown = true
+				refused = append(refused, fmt.Sprintf("session %s is not sealed: %v; it is left open", t.sessionID, receiptNotForwarded{}))
+				continue
+			}
+		}
 		record, err := writer.sealAfterInterruptionOfScope(t.sessionID, t.count, t.head, stamp(), via, t.scope, t.salt)
 		if errors.Is(err, errSessionAlreadySealed) {
 			// sealed since it was judged: on the PostgreSQL kind, where
@@ -266,8 +300,12 @@ func sealOpenAtStart(service *gatewayService, stderr io.Writer, stamp func() str
 	var sealed []*vObject
 	var refused []string
 	var err error
+	var sink *sealOpenSink
+	if service.forwarder != nil {
+		sink = &sealOpenSink{forwarder: service.forwarder, ctx: service.forwardingContext()}
+	}
 	if kind, onKind := service.kind.(*pgKind); onKind {
-		sealed, refused, err = sealOpenOnKind(kind, service.authority, service.registry, "", sealedViaStart, stamp)
+		sealed, refused, err = sealOpenOnKindSink(kind, service.authority, service.registry, "", sealedViaStart, stamp, sink)
 	} else {
 		data, present, readErr := readRegistryBytes(service.regPath)
 		if readErr != nil {
@@ -276,7 +314,7 @@ func sealOpenAtStart(service *gatewayService, stderr io.Writer, stamp func() str
 		if !present {
 			return fmt.Errorf("the registry the engine made at its start is not there: %s", service.regPath)
 		}
-		sealed, refused, err = sealOpenUnder(fsSealOpenStore{service.storeRoot}, service.authority, service.registry, data, "", sealedViaStart, stamp)
+		sealed, refused, err = sealOpenUnderSink(fsSealOpenStore{service.storeRoot}, service.authority, service.registry, data, "", sealedViaStart, stamp, sink)
 	}
 	for _, record := range sealed {
 		fmt.Fprintf(stderr, "start: sealed after an interruption: %s\n", canon(record))
@@ -293,12 +331,28 @@ func sealOpenAtStart(service *gatewayService, stderr io.Writer, stamp func() str
 // sealOpenOptions is the command line: the store, the seed by each name it
 // is known by, the registry, the authority, and the session or all of them.
 type sealOpenOptions struct {
+	// keyVersion and keyPublic are the configuration's signingKeyVersion
+	// and signingPublicKey: the key service's key version the command signs
+	// through, "" where the seed signs (ADR-0050)
+	keyVersion, keyPublic               string
 	store, registry, authority, session string
 	seedNames                           []string
 	// storage is the configuration's storage member where the PostgreSQL
 	// kind keeps the store and the registry (seal_open_pg.go), and nil
 	// where the filesystem kind keeps them at store and registry.
 	storage *storageSpec
+	// receiptSink is the configuration's receipt sink (ADR-0049), nil where
+	// there is none or no configuration is given.
+	receiptSink *receiptSinkSpec
+}
+
+// sink is the receipt sink the command delivers to before it seals, nil
+// where the configuration names none.
+func (o sealOpenOptions) sink() *sealOpenSink {
+	if o.receiptSink == nil {
+		return nil
+	}
+	return &sealOpenSink{forwarder: newReceiptForwarder(o.receiptSink), ctx: context.Background()}
 }
 
 func parseSealOpen(args []string) (sealOpenOptions, string) {
@@ -347,7 +401,8 @@ func parseSealOpen(args []string) (sealOpenOptions, string) {
 		}
 		// with the PostgreSQL kind, store and registry are "" and storage
 		// names the kind (seal_open_pg.go)
-		o.store, o.registry, o.authority, o.seedNames, o.storage = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}, cfg.storage
+		o.keyVersion, o.keyPublic = cfg.signingKeyVersion, cfg.signingPublicKey
+		o.store, o.registry, o.authority, o.seedNames, o.storage, o.receiptSink = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}, cfg.storage, cfg.receiptSink
 		// the seed by the name it resolves to as well, as serve --config
 		// looks for a rotation under way beside both
 		if resolved, err := filepath.EvalSymlinks(cfg.seed); err == nil && resolved != cfg.seed {
@@ -428,7 +483,11 @@ func sealOpen(o sealOpenOptions, stamp func() string) (sealed []*vObject, refuse
 	} else if !present {
 		return nil, nil, false, absentRegistry
 	}
-	hold, err := holdEngineRegistry(o.seedNames, o.registry, seed)
+	sig, err := commandSigner(o.keyVersion, o.keyPublic, seed)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	hold, err := holdEngineRegistryKey(o.seedNames, o.registry, sig.publicKey())
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
 			return nil, nil, false, fmt.Errorf("%w; stop the gateway, then seal", err)
@@ -444,10 +503,19 @@ func sealOpen(o sealOpenOptions, stamp func() string) (sealed []*vObject, refuse
 	if !present {
 		return nil, nil, unlocked, absentRegistry
 	}
-	writer, err := newRegistryWriter(o.registry, seed, func() (bool, error) { return true, nil })
+	// history under a key the walk did not reach -- a store a key service
+	// signs for, given here the seed by --seed -- is refused (ADR-0050)
+	walk, err := engineWalk(data, sig.publicKey())
 	if err != nil {
 		return nil, nil, unlocked, err
 	}
-	sealed, refused, err = sealOpenUnder(fsSealOpenStore{o.store}, o.authority, writer, data, o.session, sealedViaCommand, stamp)
+	if err := heldUnderAnotherKey(data, walk.keys, sig.publicKey(), newFsKind(fsLayout{store: o.store}).receipts()); err != nil {
+		return nil, nil, unlocked, err
+	}
+	writer, err := newRegistryWriterWith(o.registry, seed, newSignerHolder(sig), func() (bool, error) { return true, nil })
+	if err != nil {
+		return nil, nil, unlocked, err
+	}
+	sealed, refused, err = sealOpenUnderSink(fsSealOpenStore{o.store}, o.authority, writer, data, o.session, sealedViaCommand, stamp, o.sink())
 	return sealed, refused, unlocked, err
 }

@@ -442,7 +442,15 @@ func retain(o retainOptions, stamp func() string, now time.Time) (out removalOut
 	} else if !present {
 		return out, false, fmt.Errorf("the registry is not there: %s", cfg.registry)
 	}
-	hold, err := holdEngineRegistry(seedNames, cfg.registry, seed)
+	// the key in force signs the records: the key service's key version the
+	// configuration names, held to signingPublicKey, or else the seed's
+	// (ADR-0050)
+	sig, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, seed)
+	if err != nil {
+		return out, false, err
+	}
+	key := newSigningKey(sig)
+	hold, err := holdEngineRegistryKey(seedNames, cfg.registry, key.public)
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
 			return out, false, fmt.Errorf("%w; stop the gateway, then retain", err)
@@ -455,12 +463,14 @@ func retain(o retainOptions, stamp func() string, now time.Time) (out removalOut
 	if err != nil {
 		return out, unlocked, fmt.Errorf("registry: %w", err)
 	}
-	priv := ed25519.NewKeyFromSeed(seed)
-	walk, err := engineWalk(data, priv.Public().(ed25519.PublicKey))
+	walk, err := engineWalk(data, key.public)
 	if err != nil {
 		return out, unlocked, err
 	}
-	out, err = retainFrom(cfg.store, cfg.authority, priv, walk, acks, cfg.retention, o, stamp, now)
+	if err := heldUnderAnotherKey(data, walk.keys, key.public, newFsKind(fsLayout{store: cfg.store}).receipts()); err != nil {
+		return out, unlocked, err
+	}
+	out, err = retainFrom(cfg.store, cfg.authority, key, walk, acks, cfg.retention, o, stamp, now)
 	if err == nil && len(out.refused) == 0 {
 		out.notes = append(out.notes, retentionSummary(len(out.appended), sum, cfg.retention.keyID))
 	}
@@ -470,7 +480,7 @@ func retain(o retainOptions, stamp func() string, now time.Time) (out removalOut
 // retainFrom is the command's work on a store of the filesystem kind, the
 // registry held: the store read, the sessions chosen, the plan made and
 // refused whole or kept, the records appended, and then the files removed.
-func retainFrom(storeRoot, authority string, priv ed25519.PrivateKey, walk *registryWalk, acks []retentionAck, cfg *retentionConfig,
+func retainFrom(storeRoot, authority string, priv *signingKey, walk *registryWalk, acks []retentionAck, cfg *retentionConfig,
 	o retainOptions, stamp func() string, now time.Time) (out removalOutcome, err error) {
 	records, torn, err := readRecords(storeRoot, walk.keys)
 	if err != nil {

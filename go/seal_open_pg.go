@@ -63,6 +63,12 @@ import (
 // the kind keeps, this process holding the start lease. It answers as
 // sealOpenUnder does.
 func sealOpenOnKind(kind *pgKind, authority string, writer *registryWriter, session, via string, stamp func() string) ([]*vObject, []string, error) {
+	return sealOpenOnKindSink(kind, authority, writer, session, via, stamp, nil)
+}
+
+// sealOpenOnKindSink is sealOpenOnKind where a receipt sink may be
+// configured (sealOpenUnderSink).
+func sealOpenOnKindSink(kind *pgKind, authority string, writer *registryWriter, session, via string, stamp func() string, sink *sealOpenSink) ([]*vObject, []string, error) {
 	data, err := writer.log.readLog(0)
 	if faultOf(err) == faultAbsent {
 		return nil, nil, fmt.Errorf("the registry is not there: %s; a gateway makes it when it starts, and a seal is recorded in it", writer.path)
@@ -74,7 +80,7 @@ func sealOpenOnKind(kind *pgKind, authority string, writer *registryWriter, sess
 	if err != nil {
 		return nil, nil, fmt.Errorf("the store's sessions could not be read, and nothing was sealed: %v", err)
 	}
-	return sealOpenUnder(st, authority, writer, data, session, via, stamp)
+	return sealOpenUnderSink(st, authority, writer, data, session, via, stamp, sink)
 }
 
 // pgSealOpenStore is the kind's sessions as sealOpenUnder judges them: each
@@ -278,6 +284,20 @@ func (st *pgSealOpenStore) reading(sessionID string) (sessionReading, string, er
 	}, "", nil
 }
 
+// payload is the bytes the kind holds under a payload's name in the
+// session's scope.
+func (st *pgSealOpenStore) payload(sessionID, hexSum string) ([]byte, bool, error) {
+	row, held := st.scopeOf[sessionID]
+	if !held {
+		return nil, false, nil
+	}
+	data, err := st.kind.ofRow(row).artifacts().getBlob("sha256:" + hexSum)
+	if faultOf(err) == faultAbsent {
+		return nil, false, nil
+	}
+	return data, err == nil, err
+}
+
 // namedPayload is the payload a receipt's bytes name -- its resultDigest's
 // hexadecimal, as the ladder's lexical order reads it -- where they name one.
 // Bytes that do not are a receipt the ladder refuses, and need none.
@@ -330,7 +350,12 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 	if err != nil {
 		return nil, nil, err
 	}
-	kind.instance = instanceFor(&spec, seed, o.authority)
+	sig, err := commandSigner(o.keyVersion, o.keyPublic, seed)
+	if err != nil {
+		kind.close()
+		return nil, nil, err
+	}
+	kind.instance = instanceForKey(&spec, sig.publicKey(), o.authority)
 	holder, err := newStartLeaseHolder()
 	if err != nil {
 		kind.close()
@@ -353,11 +378,11 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 	// a registry that is not there is never made here (the store's history
 	// is taken as held), and one whose walk does not end at the seed's key
 	// is refused
-	writer, err := newRegistryWriterOn(kind.registry(), pgRegistryName, seed, func() (bool, error) { return true, nil })
+	writer, err := newRegistryWriterOnWith(kind.registry(), pgRegistryName, seed, newSignerHolder(sig), func() (bool, error) { return true, nil })
 	if err != nil {
 		return nil, nil, err
 	}
 	// a seal is appended only while the lease is held: once it is lost,
 	// each append fails at its fence and the command ends with that failure
-	return sealOpenOnKind(kind, o.authority, writer, o.session, sealedViaCommand, stamp)
+	return sealOpenOnKindSink(kind, o.authority, writer, o.session, sealedViaCommand, stamp, o.sink())
 }

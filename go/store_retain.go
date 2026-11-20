@@ -10,7 +10,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io"
@@ -103,7 +102,7 @@ func storeRetain(spec *storageSpec, roles pgRoles, o retainOptions, timeout time
 	if err != nil {
 		return removalOutcome{}, err
 	}
-	out, err := retainRows(dsn, roles, o, cfg.retention, acks, ed25519.NewKeyFromSeed(seed), timeout, stamp, now)
+	out, err := retainRows(dsn, roles, o, cfg.retention, acks, newSigningKey(newSeedSigner(seed)), timeout, stamp, now)
 	if err == nil && len(out.refused) == 0 {
 		out.notes = append(out.notes, retentionSummary(len(out.appended), sum, cfg.retention.keyID))
 	}
@@ -116,7 +115,7 @@ type pgRetainEntry struct {
 	data        []byte
 }
 
-func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig, acks []retentionAck, priv ed25519.PrivateKey,
+func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig, acks []retentionAck, priv *signingKey,
 	timeout time.Duration, stamp func() string, now time.Time) (out removalOutcome, err error) {
 	if !pgRoleName(roles.owner) || !pgRoleName(roles.runtime) {
 		return out, errors.New("store: a role's name is 1 to 63 bytes with no NUL and no double quote")
@@ -189,8 +188,13 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 	if !present {
 		return failed(errors.New("the registry is not there; a gateway makes it when it starts, and its walk names the key the records are signed under"))
 	}
-	walk, err := engineWalk(data, priv.Public().(ed25519.PublicKey))
+	walk, err := engineWalk(data, priv.public)
 	if err != nil {
+		return failed(err)
+	}
+	// the seed signs here: a registry holding records under a key the walk
+	// did not reach, a key service's among them, is refused (ADR-0050)
+	if err := heldUnderAnotherKey(data, walk.keys, priv.public, nil); err != nil {
 		return failed(err)
 	}
 	file, next, err := pgRemovalFile(tx)

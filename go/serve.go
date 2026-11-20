@@ -62,6 +62,10 @@ type sessionState struct {
 	// registry line; the seal's digest is taken over it. "" until drawn, and
 	// for a session of no scope.
 	scopeSalt string
+	// forward holds the session's receipts minted and not yet acknowledged
+	// by the receipt sink (receipt_sink.go, ADR-0049), oldest first; nil
+	// until the first receipt is minted where a sink is configured.
+	forward *forwardQueue
 }
 
 // scopeSaltOf is the session's scope salt, drawn the first time it is
@@ -297,6 +301,10 @@ type gatewayService struct {
 	// receiptVersion is what acquire mints: "3" unless the operator asked
 	// for "2" to keep a consumer not yet updated working (SPEC.md §1.2a).
 	receiptVersion string
+	// forwarder delivers each receipt /acquire mints to the configured
+	// receipt sink before /acquire answers (ADR-0049); nil where none is
+	// configured, and the gateway is then as it was before.
+	forwarder *receiptForwarder
 	// decisionRecords is where an action's cited decision record is looked
 	// for (executor.md); empty refuses every action.
 	decisionRecords string
@@ -312,8 +320,11 @@ type gatewayService struct {
 	// so shutting the service down cancels every source in flight; a source
 	// in its own process group would otherwise outlive the gateway that
 	// started it, since it no longer shares the terminal's signals.
-	ctx    context.Context
-	cancel context.CancelFunc
+	// rereadConfig, where it is set, reads the configuration the gateway
+	// started from again, for a rotation at SIGHUP (rotateOnHangup)
+	rereadConfig func() (engineConfig, error)
+	ctx          context.Context
+	cancel       context.CancelFunc
 	// waitDelay bounds how long, after a source's context is cancelled or
 	// the source has exited, the gateway keeps waiting for its stdout and
 	// stderr to reach end of file. A descendant that escaped the source's
@@ -363,6 +374,18 @@ var startHook = func() {}
 
 func newGatewayService(storeRoot string, seed []byte, authority, registryPath string,
 	sources map[string]sourceSpec) (*gatewayService, error) {
+	return newGatewayServiceSigned(storeRoot, seed, nil, authority, registryPath, sources)
+}
+
+// newGatewayServiceSigned is newGatewayService signing through sig, the
+// seed's key where it is nil (ADR-0050): the store and the registry share
+// one signer, switched whole by a rotation (registryWriter.rotateTo).
+func newGatewayServiceSigned(storeRoot string, seed []byte, sig signer, authority, registryPath string,
+	sources map[string]sourceSpec) (*gatewayService, error) {
+	var signing *signerHolder
+	if sig != nil {
+		signing = newSignerHolder(sig)
+	}
 	if err := holdSourceForms(sources); err != nil {
 		return nil, err
 	}
@@ -371,7 +394,7 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 	if err := requirePlainSpelling(registryPath, true); err != nil {
 		return nil, err
 	}
-	st, err := newStore(storeRoot, seed, authority)
+	st, err := newStoreWith(storeRoot, seed, signing, authority)
 	if err != nil {
 		return nil, err
 	}
@@ -379,7 +402,7 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 	// A registry that is not there is made at start only for a store with
 	// no history (SPEC.md §3), decided by the writer on its own read of the
 	// registry, with the store asked after that read.
-	reg, err := newRegistryWriter(registryPath, seed, func() (bool, error) {
+	reg, err := newRegistryWriterWith(registryPath, seed, st.signing, func() (bool, error) {
 		held, err := os.ReadDir(filepath.Join(storeRoot, "receipts"))
 		if err != nil && !absent(err) {
 			return false, err
@@ -387,6 +410,9 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 		return len(held) > 0, nil
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := holdStoreUnderKey(st, reg); err != nil {
 		return nil, err
 	}
 	return newServiceAround(st, reg, storeRoot, registryPath, authority, sources), nil
@@ -471,6 +497,17 @@ func sourceScopes(sources map[string]sourceSpec) []string {
 // scope identifier a source is fixed to: what the start then writes is the
 // record of each identifier, where it is not there (pgKind.scopeViews).
 func newGatewayServiceOn(kind storeKind, seed []byte, authority string, sources map[string]sourceSpec) (*gatewayService, error) {
+	return newGatewayServiceOnSigned(kind, seed, nil, authority, sources)
+}
+
+// newGatewayServiceOnSigned is newGatewayServiceOn signing through sig: the
+// seed's key where it is nil (ADR-0050). Every store over the kind, and its
+// registry, share one signerHolder.
+func newGatewayServiceOnSigned(kind storeKind, seed []byte, sig signer, authority string, sources map[string]sourceSpec) (*gatewayService, error) {
+	var signing *signerHolder
+	if sig != nil {
+		signing = newSignerHolder(sig)
+	}
 	if err := holdSourceForms(sources); err != nil {
 		return nil, err
 	}
@@ -482,7 +519,7 @@ func newGatewayServiceOn(kind storeKind, seed []byte, authority string, sources 
 	if len(seed) != seedBytes {
 		return nil, fmt.Errorf("an Ed25519 signing seed is %d bytes", seedBytes)
 	}
-	st := newStoreOn("", kind.artifacts(), kind.receipts(), seed, authority)
+	st := newStoreOnWith("", kind.artifacts(), kind.receipts(), seed, signing, authority)
 	startHook()
 	receipts := kind.receipts()
 	history := func() (bool, error) {
@@ -493,8 +530,11 @@ func newGatewayServiceOn(kind storeKind, seed []byte, authority string, sources 
 	if keeps {
 		history = keeper.holdsAnySeries
 	}
-	reg, err := newRegistryWriterOn(kind.registry(), pgRegistryName, seed, history)
+	reg, err := newRegistryWriterOnWith(kind.registry(), pgRegistryName, seed, st.signing, history)
 	if err != nil {
+		return nil, err
+	}
+	if err := holdStoreUnderKey(st, reg); err != nil {
 		return nil, err
 	}
 	g := newServiceAround(st, reg, "", "", authority, sources)
@@ -510,7 +550,7 @@ func newGatewayServiceOn(kind storeKind, seed []byte, authority string, sources 
 		}
 		g.scoped = map[string]*store{}
 		for scope, view := range views {
-			g.scoped[scope] = newStoreOn("", view.artifacts(), view.receipts(), seed, authority)
+			g.scoped[scope] = newStoreOnWith("", view.artifacts(), view.receipts(), seed, st.signing, authority)
 		}
 	}
 	return g, nil
@@ -583,7 +623,7 @@ func newServiceAround(st *store, reg *registryWriter, storeRoot, registryPath, a
 // the kind keeps.
 func (g *gatewayService) engineSeals() (map[string]seal, error) {
 	if g.kind == nil {
-		return loadEngineSeals(g.regPath, g.publicKey)
+		return loadEngineSeals(g.regPath, g.ownKey())
 	}
 	w, err := g.kindRegistryWalk()
 	if err != nil {
@@ -603,7 +643,7 @@ func (g *gatewayService) kindRegistryWalk() (*registryWalk, error) {
 	if err != nil {
 		return nil, err
 	}
-	return engineWalk(data, g.publicKey)
+	return engineWalk(data, g.ownKey())
 }
 
 // provenanceKeys is the registry's reached keys for descriptor provenance,
@@ -691,6 +731,21 @@ func (g *gatewayService) openAdmission() {
 
 func (g *gatewayService) bindLifetime(parent context.Context) {
 	g.ctx, g.cancel = context.WithCancel(parent)
+	// a key service's signings derive from the lifetime, so a stop ends a
+	// signing that waits under g.mu (ADR-0050)
+	if g.store != nil && g.store.signing != nil {
+		if b, ok := g.store.signing.key().signer.(lifeBinder); ok {
+			b.bindLife(g.ctx)
+		}
+	}
+}
+
+// holdStoreUnderKey refuses a store whose receipts are under a key the
+// registry's walk did not reach, whether a key service or the seed signs
+// (ADR-0050): a store a key service signed for, started under the seed, is
+// refused as the reverse is.
+func holdStoreUnderKey(st *store, reg *registryWriter) error {
+	return heldUnderAnotherKey(nil, reg.startKeys, st.signing.key().public, st.receipts)
 }
 
 // envGroupAnchor and anchorArg together select the anchor mode of this
@@ -1308,6 +1363,14 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	}
 	defer g.release(sessionID)
 
+	// What the session holds for the receipt sink goes first (ADR-0049): a
+	// receipt minted and not acknowledged is delivered again before the
+	// source runs, the delegation counts or the grant is asked, and while it
+	// is not acknowledged nothing else of the session proceeds.
+	if err := g.redeliver(sessionID); err != nil {
+		return nil, err
+	}
+
 	// A call under a delegation is admitted here, immediately before the
 	// source starts (SPEC.md §11.5); a read-back of a delegated action is not
 	// a call under the delegation, and records who sent it instead (§11.7).
@@ -1396,7 +1459,14 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	}
 
 	g.mu.Lock()
-	defer g.mu.Unlock()
+	// unlocked by the return, or before the receipt is delivered to the sink,
+	// which is never done under the gateway's lock
+	locked := true
+	defer func() {
+		if locked {
+			g.mu.Unlock()
+		}
+	}()
 	// The session is known because admission reserved it, and it cannot have
 	// been sealed since: sealing refuses while an acquisition is in flight.
 	state := g.sessions[sessionID]
@@ -1411,11 +1481,25 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	// of the bytes returned, and the receipt says nothing was kept (SPEC.md
 	// §1.3a), which only a version 3 receipt can (refused above, before the
 	// source ran).
-	var resultDigest string
-	if spec.notRetained {
-		resultDigest = "sha256:" + digestOfBytes(canon(result))
-	} else if resultDigest, err = st.retain(canon(result)); err != nil {
-		return nil, err
+	//
+	// The digest is of the bytes returned, kept or not, and a payload kept
+	// is retained once the receipt's signature verifies and before the
+	// receipt is written (stampOwningAfter): a receipt the signer does not
+	// sign leaves nothing in the store (ADR-0050).
+	payload := canon(result)
+	resultDigest := "sha256:" + digestOfBytes(payload)
+	retainPayload := func() error {
+		if spec.notRetained {
+			return nil
+		}
+		kept, err := st.retain(payload)
+		if err != nil {
+			return err
+		}
+		if kept != resultDigest {
+			return errors.New("the payload was kept under a digest other than the one its receipt names")
+		}
+		return nil
 	}
 
 	// Keep time and salt draws here, in their original order: the builder
@@ -1473,9 +1557,20 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	if g.beforeStamp != nil {
 		g.beforeStamp()
 	}
-	stored, signature, made, err := st.stampOwning(core)
+	stored, signature, made, err := st.stampOwningAfter(core, retainPayload)
 	if err != nil {
 		return nil, err
+	}
+	// Held for the sink in the hold that stamped it, so the session's
+	// receipts are held, and delivered, in the order of their indexes.
+	var forwarding *forwardQueue
+	minted := state.index
+	if g.forwarder != nil {
+		if state.forward == nil {
+			state.forward = newForwardQueue()
+		}
+		state.forward.add(g.forwarder.held(minted, stored, resultDigest, result, spec.notRetained))
+		forwarding = state.forward
 	}
 	state.index++
 	state.prev = signature
@@ -1503,6 +1598,18 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	}
 	if salts != nil {
 		response["salts"] = salts
+	}
+	if forwarding != nil {
+		// Delivered before the answer, outside the gateway's lock and under
+		// the session's admission, which a seal waits for: an answer is
+		// written only once the sink has acknowledged this receipt and every
+		// one before it. One not acknowledged stays held, and the caller is
+		// told the fixed sentence and nothing of the receipt.
+		g.mu.Unlock()
+		locked = false
+		if err := g.forwarder.deliver(g.forwardingContext(), forwarding, minted); err != nil {
+			return nil, err
+		}
 	}
 	return response, nil
 }
@@ -2162,6 +2269,11 @@ func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string
 	if refusal := g.sealedElsewhere(sessionID); refusal != "" {
 		return nil, badRequest{errors.New(refusal)}
 	}
+	// What the session holds for the receipt sink is delivered before the
+	// seal (ADR-0049), for a session the caller reaches alone.
+	if err := g.redeliverReached(sessionID, reach); err != nil {
+		return nil, err
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	state, seen := g.sessions[sessionID]
@@ -2187,6 +2299,12 @@ func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string
 		return nil, badRequest{fmt.Errorf(
 			"session has %d acquisition(s) in flight, retry after they finish: %s",
 			state.inFlight, sessionID)}
+	}
+	// A session is not sealed while a receipt of it is unacknowledged: one
+	// an acquisition minted since the delivery above is delivered by that
+	// acquisition, or held, and the seal is asked again.
+	if state.forward.unacknowledged() {
+		return nil, receiptNotForwarded{}
 	}
 	// a session of a scope identifier is sealed naming it (ADR-0036), over
 	// the scope salt its receipts carry (ADR-0042), one of no scope in §3's
@@ -2223,7 +2341,7 @@ func (g *gatewayService) verifyReport() (*report, error) {
 	if g.kind != nil {
 		return nil, storageUnsupported("/verify, which verifies the store on disk; export the store and verify the export,")
 	}
-	return verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
+	return verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.ownKey())
 }
 
 // verdictMap is a verdict as the JSON object /verify answers.
@@ -2241,8 +2359,8 @@ func verdictMap(rep *report) (map[string]any, error) {
 // auditing this same gateway proves consistency, not authenticity (SPEC.md §5).
 func (g *gatewayService) publicKeyDocument() map[string]any {
 	return map[string]any{
-		"algorithm": "ed25519", "keyId": g.keyID,
-		"publicKey": hex.EncodeToString(g.publicKey), "authority": g.authority,
+		"algorithm": "ed25519", "keyId": g.ownKeyID(),
+		"publicKey": hex.EncodeToString(g.ownKey()), "authority": g.authority,
 	}
 }
 
@@ -2321,6 +2439,13 @@ func (g *gatewayService) handler() http.Handler {
 		// A source whose endpoint answered 410 (source_reference_expired.go):
 		// that class, as a throttled source's is answered with its own, the
 		// code a caller acts on, and the gateway's sentence.
+		// A receipt the sink did not acknowledge (receipt_sink.go,
+		// ADR-0049): one sentence and its code, whatever went wrong.
+		var unforwarded receiptNotForwarded
+		if errors.As(err, &unforwarded) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": unforwarded.Error(), "code": receiptNotForwardedCode})
+			return
+		}
 		var expired *sourceReferenceExpired
 		if errors.As(err, &expired) {
 			writeJSON(w, http.StatusGone, map[string]any{"error": expired.Error(), "code": sourceReferenceExpiredCode})

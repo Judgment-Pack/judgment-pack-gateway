@@ -284,7 +284,10 @@ func TestRemoveScopeRefusesWhatItCannotRemoveWhole(t *testing.T) {
 		want  string
 	}{
 		{"an action citing a removed receipt", func(t *testing.T, g *gatewayService) {
-			writeStoreFile(t, g, "receipts/c/1.json", strings.Replace(action, `"sessionId":"s2","signature"`, `"sessionId":"a1","signature"`, 1))
+			// under the store's own key, so the key a rotation leads to
+			// (ADR-0050) is not what refuses it
+			planted := strings.Replace(action, `"sessionId":"s2","signature"`, `"sessionId":"a1","signature"`, 1)
+			writeStoreFile(t, g, "receipts/c/1.json", strings.ReplaceAll(planted, vectorKeyID(t, action), g.keyID))
 		}, "remove-scope: receipt c/1 cites receipt a1/0, of session a1, which the call would remove; its citation would no longer resolve\n"},
 		{"bytes that spell a removed receipt's signature", func(t *testing.T, g *gatewayService) {
 			v, err := parseJSON([]byte(readFile(t, filepath.Join(g.storeRoot, "receipts", "a2", "0.json"))))
@@ -402,4 +405,18 @@ func TestRemoveScopeCommandLine(t *testing.T) {
 	if exists(filepath.Join(g.storeRoot, removalsFile)) {
 		t.Fatal("a usage error wrote the removal file")
 	}
+}
+
+// vectorKeyID is the key id a vector's receipt is signed under.
+func vectorKeyID(t *testing.T, receipt string) string {
+	t.Helper()
+	v, err := parseJSON([]byte(receipt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyID, ok := memberString(v.(*vObject), "keyId")
+	if !ok {
+		t.Fatal("the vector's receipt names no key id")
+	}
+	return keyID
 }

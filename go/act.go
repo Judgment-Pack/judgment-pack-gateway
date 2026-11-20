@@ -494,6 +494,14 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	}
 	defer g.release(sessionID)
 
+	// What the session holds for the receipt sink goes first (ADR-0049), as
+	// it does for /acquire: a receipt of the session not yet acknowledged is
+	// delivered again before the executor runs, and while it is not, the
+	// action is refused with the fixed sentence and nothing is sent.
+	if err := g.redeliver(sessionID); err != nil {
+		return nil, err
+	}
+
 	var result value
 	// A dispatch marker without its not-dispatched answer: the mutation may
 	// have been sent, so it is recorded as uncertain and never sent again.
@@ -781,7 +789,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 // write that ran and could not be receipted is the one outcome this design
 // exists to refuse.
 func (g *gatewayService) sessionOpen(sessionID string) string {
-	if seals, err := loadEngineSeals(g.regPath, g.publicKey); err != nil {
+	if seals, err := loadEngineSeals(g.regPath, g.ownKey()); err != nil {
 		return registryRefusal(err)
 	} else if _, sealed := seals[sessionID]; sealed {
 		return "session is sealed in the registry: " + sessionID
@@ -1065,7 +1073,7 @@ func (g *gatewayService) reachedKeys() ([]reachedKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	w, err := engineWalk(data, g.publicKey)
+	w, err := engineWalk(data, g.ownKey())
 	if err != nil {
 		return nil, err
 	}

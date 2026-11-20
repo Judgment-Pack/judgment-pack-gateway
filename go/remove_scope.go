@@ -34,7 +34,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
@@ -61,6 +60,10 @@ kind, gateway store remove-scope removes a scope identifier's rows.`
 
 // removeScopeOptions is the command line.
 type removeScopeOptions struct {
+	// keyVersion and keyPublic are the configuration's signingKeyVersion
+	// and signingPublicKey: the key service's key version the command signs
+	// through, "" where the seed signs (ADR-0050)
+	keyVersion, keyPublic      string
 	store, registry, authority string
 	seedNames                  []string
 	scope                      string
@@ -111,6 +114,7 @@ func parseRemoveScope(args []string) (removeScopeOptions, string) {
 		if cfg.storage != nil {
 			return removeScopeOptions{}, fmt.Errorf("%w: gateway remove-scope removes the files of a store on disk; on the PostgreSQL kind, gateway store remove-scope removes a scope identifier's rows", errStorageKindUnsupported).Error()
 		}
+		o.keyVersion, o.keyPublic = cfg.signingKeyVersion, cfg.signingPublicKey
 		o.store, o.registry, o.authority, o.seedNames = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}
 		if resolved, err := filepath.EvalSymlinks(cfg.seed); err == nil && resolved != cfg.seed {
 			o.seedNames = append(o.seedNames, resolved)
@@ -179,7 +183,12 @@ func removeScope(o removeScopeOptions, stamp func() string) (out removalOutcome,
 	} else if !present {
 		return out, false, absentRegistry
 	}
-	hold, err := holdEngineRegistry(o.seedNames, o.registry, seed)
+	sig, err := commandSigner(o.keyVersion, o.keyPublic, seed)
+	if err != nil {
+		return out, false, err
+	}
+	key := newSigningKey(sig)
+	hold, err := holdEngineRegistryKey(o.seedNames, o.registry, key.public)
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
 			return out, false, fmt.Errorf("%w; stop the gateway, then remove", err)
@@ -195,12 +204,14 @@ func removeScope(o removeScopeOptions, stamp func() string) (out removalOutcome,
 	if !present {
 		return out, unlocked, absentRegistry
 	}
-	priv := ed25519.NewKeyFromSeed(seed)
-	walk, err := engineWalk(data, priv.Public().(ed25519.PublicKey))
+	walk, err := engineWalk(data, key.public)
 	if err != nil {
 		return out, unlocked, err
 	}
-	out, err = removeScopeFrom(o.store, o.authority, priv, walk, o, stamp)
+	if err := heldUnderAnotherKey(data, walk.keys, key.public, newFsKind(fsLayout{store: o.store}).receipts()); err != nil {
+		return out, unlocked, err
+	}
+	out, err = removeScopeFrom(o.store, o.authority, key, walk, o, stamp)
 	return out, unlocked, err
 }
 
@@ -257,7 +268,7 @@ type scopeRemovalPlan struct {
 // removeScopeFrom is the command's work, the registry held: the store read,
 // the plan made and refused whole or kept, the records appended, and then
 // the payloads and the sessions removed.
-func removeScopeFrom(storeRoot, authority string, priv ed25519.PrivateKey, walk *registryWalk, o removeScopeOptions, stamp func() string) (out removalOutcome, err error) {
+func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *registryWalk, o removeScopeOptions, stamp func() string) (out removalOutcome, err error) {
 	keys := walk.keys
 	// the records already there, read as a verifier reads them; where
 	// something at the file's path is not a regular file nothing is read
@@ -399,7 +410,7 @@ func carriedSalt(receipts []*storedReceipt) string {
 // seal of version 3 is named over the scope salt salt, which the record
 // carries (ADR-0042); a seal of another form is named as before, and the
 // record carries no salt.
-func signedSessionRemoval(priv ed25519.PrivateKey, keys []reachedKey, session string, s seal, scope, salt, by, at string) (*vObject, []byte, error) {
+func signedSessionRemoval(priv *signingKey, keys []reachedKey, session string, s seal, scope, salt, by, at string) (*vObject, []byte, error) {
 	record := newObject()
 	record.set("finalCount", vInt(s.finalCount))
 	record.set("keyId", vString(keys[len(keys)-1].keyID))
@@ -412,7 +423,11 @@ func signedSessionRemoval(priv ed25519.PrivateKey, keys []reachedKey, session st
 	}
 	record.set("sealSignature", vString(s.signature))
 	record.set("sessionId", vString(session))
-	record.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, recordSigningInput(sessionRemovalContext, record)))))
+	signature, err := priv.signVerified(recordSigningInput(sessionRemovalContext, record))
+	if err != nil {
+		return nil, nil, err
+	}
+	record.set("signature", vString(hex.EncodeToString(signature)))
 	line := append(canon(record), '\n')
 	loaded, _, _ := scanRecords(bytes.NewReader(line), keys)
 	if probe := (&retention{sessions: loaded.sessions}); !probe.sessionRemoved(session, s) {
@@ -428,7 +443,7 @@ type scopeRemovalCounts struct {
 
 // signedScopeRemoval is the call's scope-removal record, signed as
 // signedSessionRemoval's, and its line, read back as a verifier reads it.
-func signedScopeRemoval(priv ed25519.PrivateKey, keys []reachedKey, scope, by, at string, n scopeRemovalCounts) (*vObject, []byte, error) {
+func signedScopeRemoval(priv *signingKey, keys []reachedKey, scope, by, at string, n scopeRemovalCounts) (*vObject, []byte, error) {
 	record := newObject()
 	record.set("keyId", vString(keys[len(keys)-1].keyID))
 	record.set("kind", vString(scopeRemovalKind))
@@ -439,7 +454,11 @@ func signedScopeRemoval(priv ed25519.PrivateKey, keys []reachedKey, scope, by, a
 	record.set("removedBy", vString(by))
 	record.set("scope", vString(scope))
 	record.set("sealedSessions", vInt(n.sealed))
-	record.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, recordSigningInput(scopeRemovalContext, record)))))
+	signature, err := priv.signVerified(recordSigningInput(scopeRemovalContext, record))
+	if err != nil {
+		return nil, nil, err
+	}
+	record.set("signature", vString(hex.EncodeToString(signature)))
 	line := append(canon(record), '\n')
 	if !readsBackAsScopeRemoval(line, keys) {
 		return nil, nil, errors.New("the call's scope-removal record would not load as a verifier reads the file")
