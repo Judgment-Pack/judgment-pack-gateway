@@ -269,18 +269,19 @@ func rotateKeyRows(dsn pgDSN, roles pgRoles, from, to *signingKey, timeout time.
 	if err := walk.ownReading(walk.current().held()); err != nil {
 		return failed(err)
 	}
+	// keys are compared with their algorithms, never by key id alone
 	end := walk.current()
-	if end.keyID == to.keyID {
+	if end.held().is(to.held()) {
 		// a rerun after a COMMIT that did not answer: the rotation from
 		// the key rotated from to the next key is the walk's last
-		if n := len(walk.keys); n >= 2 && walk.keys[n-2].keyID == from.keyID {
+		if n := len(walk.keys); n >= 2 && walk.keys[n-2].held().is(from.held()) {
 			rollback()
 			out.ordinal = n - 1
 			return out, nil
 		}
 		return failed(fmt.Errorf("the next key, key id %s, is the key in force already: the registry's walk ends at it; a rotation is to a key other than the one in force", to.keyID))
 	}
-	if end.keyID != from.keyID {
+	if !end.held().is(from.held()) {
 		return failed(fmt.Errorf("the registry's walk ends at key id %s, not at the key rotated from, key id %s: the key rotated from is the key in force, the seed's with no --from-key-version, or the key version --from-key-version and --from-public-key name", end.keyID, from.keyID))
 	}
 	// the key rotated from is the key in force: nothing in the registry,

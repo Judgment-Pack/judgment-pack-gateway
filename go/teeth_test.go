@@ -123,7 +123,7 @@ func linkFindings(registryPath, previous string, publicKey []byte) ([]finding, e
 	data, _ := os.ReadFile(registryPath)
 	walk := walkRegistry(data, publicKey)
 	rep := &report{continuation: walk.continuation, continuationRefused: walk.continuationFinding != nil}
-	if err := linkPrevious(rep, previous, publicKey); err != nil {
+	if err := linkPrevious(rep, previous, edKey(publicKey)); err != nil {
 		return nil, err
 	}
 	return rep.Findings, nil

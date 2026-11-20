@@ -283,7 +283,7 @@ func cmdVerify(args []string) int {
 	// one call makes either verdict under the key pinned with its algorithm
 	verdict, err = verifySuppliedPin(storeRoot, registryPath, authority, decisionRecords, supplied, heldKey{alg: pinAlg, key: publicKey}, ordinarySealsOnly, scope)
 	if err == nil {
-		err = linkPrevious(verdict, previous, publicKey)
+		err = linkPrevious(verdict, previous, heldKey{alg: pinAlg, key: publicKey})
 	}
 	if err != nil {
 		// Could not produce a verdict at all.

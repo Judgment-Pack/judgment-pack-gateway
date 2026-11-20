@@ -679,6 +679,14 @@ canonical JSON (SPEC.md §1.1), so two answers compare byte for byte:
   whose `scope_ids` names a scope identifier the configuration does not grant is refused `401`),
   `not-enforced` where `callerScopes` is `"unchecked"` or no `identity` is configured, naming no
   subject and no scope identifier.
+- Last, `/posture` of a gateway that signs through a key service's key version (`signingKeyVersion`,
+  ADR-0050 and ADR-0053) adds `signing-key-custody`: the key's algorithm (`Ed25519` or `ES256`) and
+  the protection level the service answered at start, named in one sentence, naming neither the key
+  version nor the key. It is `enforced` at every level the service answers, since the gateway holds
+  no private key at any of them; `partial` only where the level is unstated, or for a P-256 key away
+  from `HSM`, which the start refuses. It is read at each request, so after a serving
+  rotation it names the key then in force. A gateway that signs with the seed reports no such line,
+  and `gateway posture`, which calls no key service, reports none.
 
 Windows has no shipped restricted-command backend. Engine versions 13 and later
 wrap every configured source adapter, including adapters for remote and container

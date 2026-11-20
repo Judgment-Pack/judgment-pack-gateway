@@ -10,7 +10,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -198,11 +197,11 @@ func newContinuationLine(key *signingKey, previous, history []byte, at string) (
 // read, absent or unreadable no verdict, and a link that does not hold a
 // finding. That registry is walked as a gateway walks its own (§3b), from
 // its first key-continuation's previous key where it has one and from the
-// key pinned otherwise, and the continuation's key must be the key its walk
+// key pinned otherwise, with the algorithm it was pinned with, and the continuation's key must be the key its walk
 // ends at; and the key its last seal states must be the key in force at
 // that seal's line, so that a registry that never rotated is held to the
 // key its seals name, not to the key pinned (lastSealHolds).
-func linkPrevious(rep *report, previous string, pinned ed25519.PublicKey) error {
+func linkPrevious(rep *report, previous string, pinned heldKey) error {
 	if previous == "" {
 		return nil
 	}
@@ -221,12 +220,12 @@ func linkPrevious(rep *report, previous string, pinned ed25519.PublicKey) error 
 		status = statusContinuationMissing
 	default:
 		lines, digest := registryLink(data)
-		before := walkRegistryFrom(data, registryFirstKey(data, edKey(pinned)))
+		before := walkRegistryFrom(data, registryFirstKey(data, pinned))
 		if c.previousLines != lines {
 			status = statusContinuationCountMismatch
 		} else if c.previousDigest != digest {
 			status = statusContinuationDigestMismatch
-		} else if before.finding != nil || before.current().keyID != c.keyID || !lastSealHolds(data, registryFirstKey(data, edKey(pinned))) {
+		} else if before.finding != nil || before.current().keyID != c.keyID || !lastSealHolds(data, registryFirstKey(data, pinned)) {
 			status = statusContinuationKeyMismatch
 		}
 	}

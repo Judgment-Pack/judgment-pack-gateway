@@ -3068,6 +3068,11 @@ func (g *gatewayService) handler() http.Handler {
 		if g.delegation != nil {
 			in.delegation = &delegationPosture{bearerReadOnly: g.delegation.bearerReadOnly}
 		}
+		// The key read at each request: a serving rotation (SIGHUP) may
+		// have moved it to another key or algorithm.
+		if g.store != nil && g.store.signing != nil {
+			in.signing = signingPostureOf(g.store.signing.key())
+		}
 		report := hostPosture(in)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(report.canonical())

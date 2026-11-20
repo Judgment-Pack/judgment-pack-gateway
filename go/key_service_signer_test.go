@@ -127,7 +127,12 @@ func (s *keyServiceStandIn) serveKMS(w http.ResponseWriter, r *http.Request) {
 		if level == "" {
 			level = "HSM"
 		}
-		json.NewEncoder(w).Encode(map[string]string{"name": version, "pem": pemText, "algorithm": keyServiceAlgorithmP256, "pemCrc32c": crc32c([]byte(pemText)), "protectionLevel": level})
+		answer := map[string]string{"name": version, "pem": pemText, "algorithm": keyServiceAlgorithmP256, "pemCrc32c": crc32c([]byte(pemText)), "protectionLevel": level}
+		if level == "omitted" {
+			// an answer that states no protection level at all
+			delete(answer, "protectionLevel")
+		}
+		json.NewEncoder(w).Encode(answer)
 		return
 	}
 	if version, ok := strings.CutSuffix(path, ":asymmetricSign"); ok && r.Method == http.MethodPost && s.p256[version] != nil {

@@ -108,7 +108,10 @@ type keyServiceSigner struct {
 	version string
 	public  []byte
 	// alg is the key version's algorithm, as signingKeyAlgorithm names it.
-	alg      string
+	alg string
+	// level is the protection level the service answered at start, or
+	// "unstated": what the start line and /posture name (ADR-0053 §6).
+	level    string
 	api      *http.Client
 	metadata *http.Client
 	now      func() time.Time
@@ -263,6 +266,7 @@ func newKeyServiceSigner(version, alg string) (*keyServiceSigner, string, error)
 	if alg == algES256 && level != "HSM" {
 		return nil, "", fmt.Errorf("the key service answers protection level %s for the key version configured; a key of signingKeyAlgorithm ES256 is taken at protection level HSM alone (ADR-0053), and the gateway does not start", level)
 	}
+	k.level = level
 	return k, fmt.Sprintf("the signer is the key service's key version %s (%s, protection level %s), keyId %s; the gateway holds no private key", version, named, level, keyIDFor(k.public)), nil
 }
 

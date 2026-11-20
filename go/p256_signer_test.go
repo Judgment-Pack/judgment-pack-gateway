@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -161,6 +162,14 @@ func TestTheP256KeyVersionIsTakenAtTheHSMLevelAloneAndSignsLowS(t *testing.T) {
 			t.Fatalf("level %s: %v", level, err)
 		}
 	}
+	// a level the answer leaves out, or one of no form the service has, is
+	// "unstated", and refused as any level but HSM is
+	for _, level := range []string{"omitted", "hsm", "HSM_PLUS"} {
+		standIn.set(func(s *keyServiceStandIn) { s.level = level })
+		if _, _, err := newKeyServiceSigner(ksP256One, algES256); err == nil || !strings.Contains(err.Error(), "protection level unstated ") {
+			t.Fatalf("level %q: %v", level, err)
+		}
+	}
 	standIn.set(func(s *keyServiceStandIn) { s.level = "" })
 	if _, _, err := newKeyServiceSigner(ksVersion1, algES256); !errors.Is(err, errKeyServicePublicKeyP256) {
 		t.Fatalf("an Ed25519 key version under ES256: %v", err)
@@ -235,8 +244,7 @@ func TestAP256StoreVerifiesUnderItsPinAndItsRecordsNameTheAlgorithm(t *testing.T
 	// a receipt under the point given as Ed25519 is key-mismatch; its
 	// signature uppercased or as DER is malformed
 	data := []byte(files[receipt])
-	session, name := receipt[:strings.LastIndex(receipt, "/")], receipt[strings.LastIndex(receipt, "/")+1:]
-	session = session[strings.LastIndex(session, "/")+1:]
+	session, name := filepath.Base(filepath.Dir(receipt)), filepath.Base(receipt)
 	if _, status := checkReceiptUnder(data, store, session, name, "gateway:test", []reachedKey{{key: pin.key, alg: algEd25519, keyID: pin.keyID()}}); status != "key-mismatch" {
 		t.Fatalf("the point given as Ed25519: %s", status)
 	}
@@ -513,5 +521,184 @@ func TestSigningKeyAlgorithmIsAVersion40MemberBesideAKeyVersion(t *testing.T) {
 	}
 	if cfg, _, err := load(t, atVersion(t, p256SignerVersion, catalog, keyed(ksVersion1, ed, ""), platform)); err != nil || cfg.signingKeyAlgorithm != algEd25519 {
 		t.Fatalf("version 40 with Ed25519: %v", err)
+	}
+}
+
+// A descriptor statement a P-256 key signs (SPEC.md §9) names its alg and
+// verifies by it, under the point given as P-256 alone (ADR-0053 §2).
+func TestAP256DescriptorStatementVerifiesByItsAlg(t *testing.T) {
+	root := t.TempDir()
+	key := newSigningKey(p256Local{p256Key(3)})
+	s, err := newStoreWith(root, testSeed, newSignerHolder(key.signer), "gateway:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.retainDescriptorCapture([]byte(goodSnapshot), "live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, statement, status := readDescriptorArtifacts(root, p)
+	if status != "" || !bytes.Contains(statement, []byte(`"alg":"ES256"`)) {
+		t.Fatalf("the P-256 descriptor statement does not name its alg (%s): %s", status, statement)
+	}
+	asP256 := []reachedKey{{key: key.public, alg: algES256, keyID: key.keyID}}
+	if got := checkDescriptorProvenance(root, p, s.authority, "tickets/live", "", false, asP256); got != "ok" {
+		t.Fatalf("a P-256 descriptor statement did not verify: %s", got)
+	}
+	asEd := []reachedKey{{key: key.public, alg: algEd25519, keyID: key.keyID}}
+	if got := checkDescriptorProvenance(root, p, s.authority, "tickets/live", "", false, asEd); got != "descriptor-provenance-mismatch" {
+		t.Fatalf("a P-256 descriptor statement under the point given as Ed25519: %s", got)
+	}
+	other := newSigningKey(p256Local{p256Key(4)})
+	asOther := []reachedKey{{key: other.public, alg: algES256, keyID: key.keyID}}
+	if got := checkDescriptorProvenance(root, p, s.authority, "tickets/live", "", false, asOther); got != "descriptor-provenance-mismatch" {
+		t.Fatalf("a P-256 descriptor statement under another P-256 key: %s", got)
+	}
+}
+
+// /posture's signing-key line (ADR-0053 §6) names the key service key's
+// algorithm and protection level, never the key version, and a gateway
+// signing with the seed reports none.
+func TestThePostureNamesTheSigningKeysAlgorithmAndLevel(t *testing.T) {
+	if got := signingPostureOf(newSigningKey(newSeedSigner(testSeed))); got != nil {
+		t.Fatalf("the seed's key reported a signing posture: %+v", got)
+	}
+	if lines := signingKeyLines(nil); len(lines) != 0 {
+		t.Fatalf("no key service, yet a line: %+v", lines)
+	}
+	hsm := signingPostureOf(newSigningKey(&keyServiceSigner{version: ksP256One, alg: algES256, level: "HSM"}))
+	lines := signingKeyLines(hsm)
+	if len(lines) != 1 || lines[0].name != protectionSigningKey || lines[0].state != postureEnforced ||
+		!strings.Contains(lines[0].reason, "ES256 at protection level HSM") || strings.Contains(lines[0].reason, "cryptoKeyVersions") {
+		t.Fatalf("the HSM line: %+v", lines)
+	}
+	soft := signingKeyLines(signingPostureOf(newSigningKey(&keyServiceSigner{version: ksP256Two, alg: algEd25519, level: "SOFTWARE"})))
+	if len(soft) != 1 || soft[0].state != postureEnforced || !strings.Contains(soft[0].reason, "Ed25519 at protection level SOFTWARE") {
+		t.Fatalf("ADR-0050's software Ed25519 key is not enforced: %+v", soft)
+	}
+	for _, guard := range []*signingPosture{{alg: algES256, level: "SOFTWARE"}, {alg: algEd25519, level: "unstated"}} {
+		if got := signingKeyLines(guard); len(got) != 1 || got[0].state != posturePartial {
+			t.Fatalf("%+v is not partial: %+v", guard, got)
+		}
+	}
+}
+
+// rawDER is a SEQUENCE of two INTEGERs whose contents are given byte for
+// byte, so a test can write what asn1.Marshal never would.
+func rawDER(r, s []byte) []byte {
+	integer := func(c []byte) []byte { return append([]byte{0x02, byte(len(c))}, c...) }
+	body := append(integer(r), integer(s)...)
+	return append([]byte{0x30, byte(len(body))}, body...)
+}
+
+// intContent is v as a minimal DER INTEGER's contents; padded adds the
+// needless leading zero a minimal encoding refuses.
+func intContent(v *big.Int, padded bool) []byte {
+	out := v.Bytes()
+	if len(out) == 0 || out[0]&0x80 != 0 {
+		out = append([]byte{0}, out...)
+	}
+	if padded {
+		out = append([]byte{0}, out...)
+	}
+	return out
+}
+
+// Every answer p256SignatureOfDER takes is one minimal DER pair of r and s,
+// each in [1, n − 1], and its s comes out low (ADR-0053 §5); each other
+// form is refused.
+func TestP256SignatureOfDERRefusesEveryOtherForm(t *testing.T) {
+	key, input := p256Key(1), []byte("judgment-pack-gateway/test:{}")
+	d := sha256.Sum256(input)
+	der, _ := ecdsa.SignASN1(rand.Reader, key, d[:])
+	var pair rsPair
+	if _, err := asn1.Unmarshal(der, &pair); err != nil {
+		t.Fatal(err)
+	}
+	r, s := intContent(pair.R, false), intContent(pair.S, false)
+	if _, ok := p256SignatureOfDER(rawDER(r, s)); !ok {
+		t.Fatal("the hand-written form of a good answer was refused")
+	}
+	n := intContent(p256Order, false)
+	nPlus := intContent(new(big.Int).Add(p256Order, big.NewInt(1)), false)
+	for name, bad := range map[string][]byte{
+		"a byte after it":   append(bytes.Clone(der), 0),
+		"r padded":          rawDER(intContent(pair.R, true), s),
+		"s padded":          rawDER(r, intContent(pair.S, true)),
+		"r = 0":             rawDER([]byte{0}, s),
+		"s = 0":             rawDER(r, []byte{0}),
+		"r negative":        rawDER([]byte{0x80}, s),
+		"r = n":             rawDER(n, s),
+		"s = n":             rawDER(r, n),
+		"r = n + 1":         rawDER(nPlus, s),
+		"s = n + 1":         rawDER(r, nPlus),
+		"one INTEGER alone": append([]byte{0x30, byte(2 + len(r)), 0x02, byte(len(r))}, r...),
+	} {
+		if _, ok := p256SignatureOfDER(bad); ok {
+			t.Fatalf("%s was taken", name)
+		}
+	}
+	// high-S in, low-S out
+	low := pair.S
+	if low.Cmp(p256HalfOrder) > 0 {
+		low = new(big.Int).Sub(p256Order, low)
+	}
+	high := new(big.Int).Sub(p256Order, low)
+	got, ok := p256SignatureOfDER(rawDER(r, intContent(high, false)))
+	if !ok || new(big.Int).SetBytes(got[32:]).Cmp(low) != 0 || !verifyByAlgorithm(algES256, heldKey{alg: algES256, key: compressedOf(key)}, input, got) {
+		t.Fatal("a high-S answer did not come out as the low-S r||s that verifies")
+	}
+}
+
+// upperSealSignature is reg with the signature of each line holding a
+// finalCount, the seals, in uppercase hex.
+func upperSealSignature(t *testing.T, reg string) string {
+	t.Helper()
+	lines := strings.Split(reg, "\n")
+	changed := false
+	for i, line := range lines {
+		at := strings.Index(line, `"signature":"`)
+		if !strings.Contains(line, `"finalCount"`) || at < 0 {
+			continue
+		}
+		start := at + len(`"signature":"`)
+		end := start + strings.Index(line[start:], `"`)
+		lines[i] = line[:start] + strings.ToUpper(line[start:end]) + line[end:]
+		changed = true
+	}
+	if !changed {
+		t.Fatalf("no seal in the registry: %s", reg)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// A P-256 seal of §3's form is 128 lowercase hexadecimal characters
+// (ADR-0053 §4): its signature in uppercase loads nothing, while an
+// Ed25519 seal of that form stays lenient of case, as it always was.
+func TestAnUppercaseSealSignatureLoadsForEd25519AloneNotES256(t *testing.T) {
+	standInKeyService(t)
+	k := mustP256Signer(t, ksP256One)
+	for _, c := range []struct {
+		name  string
+		sig   signer
+		pin   heldKey
+		loads int
+	}{
+		{"ES256", k, heldKey{alg: algES256, key: k.publicKey()}, 0},
+		{"Ed25519", newSeedSigner(testSeed), heldKey{alg: algEd25519, key: newSeedSigner(testSeed).publicKey()}, 1},
+	} {
+		g, _, registry := ksService(t, c.sig)
+		mustAcquire(t, g, "served")
+		mustSeal(t, g, "served")
+		regBytes, err := os.ReadFile(registry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w := walkRegistryFrom(regBytes, c.pin); len(w.seals) != 1 {
+			t.Fatalf("%s: the seal as written did not load", c.name)
+		}
+		if w := walkRegistryFrom([]byte(upperSealSignature(t, string(regBytes))), c.pin); len(w.seals) != c.loads {
+			t.Fatalf("%s: the seal with its signature in uppercase loaded %d, want %d", c.name, len(w.seals), c.loads)
+		}
 	}
 }

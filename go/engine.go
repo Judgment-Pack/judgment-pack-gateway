@@ -135,8 +135,10 @@ import (
 // the store (docs/adr/0051-a-session-name-is-a-label-in-its-scope-mapped-to-a-minted-session-id.md;
 // session_labels.go): it adds no member, and the start refuses while the
 // store holds a session open that no label names. connect raises no file to
-// 39 either.
-const engineVersion = labelsVersion
+// 39 either. Version 40 (p256SignerVersion) adds signingKeyAlgorithm: a key
+// service's ECDSA P-256 key version at the HSM protection level signs, and
+// each record it signs names its alg (ADR-0053; signature_alg.go).
+const engineVersion = p256SignerVersion
 
 var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true}
 

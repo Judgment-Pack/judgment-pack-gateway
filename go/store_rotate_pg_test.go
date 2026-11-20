@@ -121,7 +121,7 @@ func pgVerifyPrevious(t *testing.T, out, previous string) *report {
 	if err != nil {
 		t.Fatalf("no verdict for %s: %v", out, err)
 	}
-	if err := linkPrevious(rep, previous, ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey)); err != nil {
+	if err := linkPrevious(rep, previous, edKey(ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey))); err != nil {
 		t.Fatal(err)
 	}
 	return rep
