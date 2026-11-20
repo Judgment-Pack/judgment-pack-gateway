@@ -325,7 +325,7 @@ func TestSealOpenByTheConfigurationDeliversASealPendingForwarding(t *testing.T) 
 	var stdout, stderr bytes.Buffer
 	if code := cmdSealOpenAt([]string{"--config", config, "--all"}, &stdout, &stderr, nowStamp); code != 1 ||
 		!strings.Contains(stdout.String(), `"sessionId":"sl-e"`) ||
-		stderr.String() != "seal-open: "+sealHeldRefusal("sl-e")+"\n" {
+		stderr.String() != "seal-open: "+sealHeldRefusal("sl-e")+"\n"+sealOpenUnlocked() {
 		t.Fatalf("seal-open with sl-e's seal refused: %d %q %q", code, stdout.String(), stderr.String())
 	}
 	if seals, _ := sealsSince(t, sink, len(start)); len(seals) < 2 || seals[0] != registrySealDigest(t, readFile(t, service.regPath), "sl-d") {
