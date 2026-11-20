@@ -532,7 +532,7 @@ func retain(o retainOptions, stamp func() string, now time.Time) (out removalOut
 	}
 	out, err = retainFrom(cfg.store, cfg.authority, key, walk, acks, cfg.retention, o, stamp, now)
 	if err == nil && len(out.refused) == 0 {
-		out.notes = append(out.notes, retentionSummary(len(out.appended), sum, cfg.retention.keyIDs))
+		out.notes = append(out.notes, retentionSummary(out.removed, sum, cfg.retention.keyIDs))
 	}
 	return out, unlocked, err
 }
@@ -612,7 +612,8 @@ func retainFrom(storeRoot, authority string, priv *signingKey, walk *registryWal
 	if err := carryOutRemoval(storeRoot, plan); err != nil {
 		return out, err
 	}
-	out.notes = append(out.notes, fmt.Sprintf("removed %d session(s), holding %d receipt(s), and %d payload(s)", len(plan.sessions)+len(plan.empty), len(plan.receipts), len(plan.payloads)))
+	out.removed = len(plan.sessions) + len(plan.empty)
+	out.notes = append(out.notes, fmt.Sprintf("removed %d session(s), holding %d receipt(s), and %d payload(s)", out.removed, len(plan.receipts), len(plan.payloads)))
 	return out, nil
 }
 

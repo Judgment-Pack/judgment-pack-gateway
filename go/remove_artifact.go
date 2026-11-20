@@ -265,6 +265,9 @@ type removalOutcome struct {
 	appended []*vObject
 	notes    []string
 	refused  []string
+	// removed is how many sessions a retention call removed, those
+	// recorded already among them
+	removed int
 }
 
 // storedReceipt is one file of the store's receipts: where it is, its bytes,

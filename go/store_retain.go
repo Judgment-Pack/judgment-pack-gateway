@@ -111,7 +111,7 @@ func storeRetain(spec *storageSpec, roles pgRoles, o retainOptions, timeout time
 	}
 	out, err := retainRows(dsn, roles, o, cfg.retention, acks, newSigningKey(sig), timeout, stamp, now)
 	if err == nil && len(out.refused) == 0 {
-		out.notes = append(out.notes, retentionSummary(len(out.appended), sum, cfg.retention.keyIDs))
+		out.notes = append(out.notes, retentionSummary(out.removed, sum, cfg.retention.keyIDs))
 	}
 	return out, err
 }
@@ -409,6 +409,7 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 	if done.tag != "COMMIT" {
 		return removalOutcome{}, errors.New("the database rolled the removal back; nothing was removed")
 	}
-	out.notes = append(out.notes, fmt.Sprintf("removed %d session(s), holding %d receipt(s), and %d payload(s)", len(sessions), receipts, payloads))
+	out.removed = len(sessions)
+	out.notes = append(out.notes, fmt.Sprintf("removed %d session(s), holding %d receipt(s), and %d payload(s)", out.removed, receipts, payloads))
 	return out, nil
 }
