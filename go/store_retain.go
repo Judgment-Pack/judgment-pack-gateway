@@ -24,7 +24,7 @@ identifier whose seal an acknowledgment names exactly, once the configuration's
 retention.window has passed since the later of the seal's time and the
 acknowledgment's, as the migration login acting as the owner role, under the
 migration's lock and the start lease. A session-removal record for each is kept
-in the same transaction, signed by the configuration's seed. It refuses as
+in the same transaction, signed by the key in force (signingKeyVersion, else the seed). It refuses as
 gateway retain does, and nothing is removed.`
 
 func cmdStoreRetain(args []string, stdout, stderr io.Writer) int {
@@ -102,7 +102,14 @@ func storeRetain(spec *storageSpec, roles pgRoles, o retainOptions, timeout time
 	if err != nil {
 		return removalOutcome{}, err
 	}
-	out, err := retainRows(dsn, roles, o, cfg.retention, acks, newSigningKey(newSeedSigner(seed)), timeout, stamp, now)
+	// the key in force signs the records: the key service's key version the
+	// configuration names, held to signingPublicKey, or else the seed's
+	// (ADR-0050); the instances are held before the registry is read
+	sig, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, seed)
+	if err != nil {
+		return removalOutcome{}, err
+	}
+	out, err := retainRows(dsn, roles, o, cfg.retention, acks, newSigningKey(sig), timeout, stamp, now)
 	if err == nil && len(out.refused) == 0 {
 		out.notes = append(out.notes, retentionSummary(len(out.appended), sum, cfg.retention.keyIDs))
 	}
@@ -192,8 +199,9 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 	if err != nil {
 		return failed(err)
 	}
-	// the seed signs here: a registry holding records under a key the walk
-	// did not reach, a key service's among them, is refused (ADR-0050)
+	// the key in force signs here: a registry holding records under a key
+	// the walk did not reach, the seed's or a key service's, is refused
+	// (ADR-0050)
 	if err := heldUnderAnotherKey(data, walk.keys, priv.public, nil); err != nil {
 		return failed(err)
 	}
@@ -365,7 +373,7 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 				}
 			}
 			if !shared {
-				doc, err := tx.exec(`SELECT count(*)::int8 FROM gateway.documents WHERE scope = $1 AND pg_catalog.position(pg_catalog.convert_to($2, 'UTF8') IN data) > 0`, row, string(hexSum))
+				doc, err := tx.exec(`SELECT count(*)::int8 FROM gateway.documents WHERE scope = $1 AND pg_catalog.position(data, pg_catalog.convert_to($2, 'UTF8')) > 0`, row, string(hexSum))
 				if err != nil {
 					return failed(err)
 				}
