@@ -231,6 +231,10 @@ type retentionHold struct {
 	scope string
 	held  bool
 	why   string
+	// empty is a session's directory holding no receipt, which a run cut
+	// off between its last receipt and its directory leaves: of no scope
+	// only because nothing is left to carry one
+	empty bool
 }
 
 // retentionChoice is what the acknowledgments let a call remove, each
@@ -282,6 +286,8 @@ func chooseRetained(acks []retentionAck, walk *registryWalk, cfg *retentionConfi
 				c.notes = append(c.notes, fmt.Sprintf("session %s is of another scope identifier than --scope names; it is kept", ack.sessionID))
 			case h.why != "":
 				c.refused = append(c.refused, name+", recorded as removed already, which "+h.why)
+			case h.scope == "" && !h.empty:
+				c.refused = append(c.refused, name+", recorded as removed already under a scope identifier, whose receipts are of none; the session is left whole")
 			case h.scope != "" && subtle.ConstantTimeCompare([]byte(h.scope), []byte(scope)) != 1:
 				c.refused = append(c.refused, name+", recorded as removed already under another scope identifier than its receipts carry; the session is left whole")
 			default:
@@ -625,7 +631,7 @@ func fsRetentionHold(listed bool, receipts []*storedReceipt) retentionHold {
 		return retentionHold{}
 	}
 	if len(receipts) == 0 {
-		return retentionHold{held: true}
+		return retentionHold{held: true, empty: true}
 	}
 	first := receipts[0]
 	if !passesSignedOrders(first) {

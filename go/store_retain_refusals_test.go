@@ -78,3 +78,70 @@ func TestAPostgresStoreRetainRefusesWhatItCannotRemoveWhole(t *testing.T) {
 		}
 	}
 }
+
+// A session of no scope identifier that a session-removal record names under
+// a scope identifier, its rows still there, is not finished by retain: its
+// receipts carry no scope to hold the record to, so the call is refused by
+// name and the database does not change.
+func TestAPostgresStoreRetainRefusesToFinishASessionOfNoScope(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	dir := tempDirAt(t, 0o700)
+	t.Setenv(envSourceHelper, "1")
+	helper := sourceSpec{argv: []string{os.Args[0]}, env: helperEnv}
+	config, started, server := scopedServiceStart(t, db, dir, map[string]sourceSpec{"plain": helper})
+	if code, got := post(t, server, "/acquire", `{"session":"s-none","source":"plain","arguments":{"q":"acme"}}`); code != http.StatusOK {
+		t.Fatalf("acquire: %d %v", code, got)
+	}
+	if code, got := post(t, server, "/seal", `{"session":"s-none"}`); code != http.StatusOK {
+		t.Fatalf("seal: %d %v", code, got)
+	}
+	var said bytes.Buffer
+	started.stop(&said)
+	server.Close()
+
+	t.Chdir(dir)
+	before := filepath.Join(dir, "before")
+	if _, err := exportEngine(config, before, nil, ""); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	pub := started.service.publicKey
+	key := newSigningKey(newSeedSigner(testSeed))
+	if !bytes.Equal(key.public, pub) {
+		t.Fatal("the service does not sign under the test seed")
+	}
+	walk, err := engineWalk([]byte(readFile(t, filepath.Join(before, "registry"))), pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := walk.seals["s-none"]
+	_, line, err := signedSessionRemoval(key, walk.keys, "s-none", s, "scope-a", "", "operator-1", removalStamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asOwnerIn(t, db, pgNoScope, `INSERT INTO gateway.removal_records (scope, ordinal, line) VALUES ('none', 0, $1)`, bytes.TrimSuffix(line, []byte{'\n'}))
+
+	text := readFile(t, config)
+	text = strings.Replace(text, `"engineVersion":"24"`, `"engineVersion":"`+retentionVersion+`"`, 1)
+	text = strings.TrimSuffix(strings.TrimSpace(text), "}") + `,"retention":{"window":30,"acknowledgedBy":["` + hex.EncodeToString(retentionAckKey.Public().(ed25519.PublicKey)) + `"]}}`
+	if err := os.WriteFile(config, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	connection := writeConnection(t, db.migrator)
+	sealed, err := time.Parse(time.RFC3339, s.sealedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	print := db.fingerprint(t)
+	var stdout, stderr bytes.Buffer
+	code := cmdStoreRetainAt([]string{"--connection-file", connection, "--owner", db.roles.owner, "--runtime", db.roles.runtime,
+		"--config", config, "--acknowledgments", writeAcks(t, retentionAckLine(retentionAckKey, "s-none", s.signature, s.finalCount, stampOf(sealed))), "--by", "operator-1", "--timeout", "60"},
+		&stdout, &stderr, fixedStamp(removalStamp), func() time.Time { return sealed.Add(31 * 24 * time.Hour) })
+	want := "store retain: acknowledgment line 1 names session s-none, recorded as removed already under a scope identifier, whose receipts are of none; the session is left whole\n"
+	if code != 1 || stdout.String() != "" || !strings.Contains(stderr.String(), want) || !strings.Contains(stderr.String(), "store retain: nothing was removed\n") {
+		t.Fatalf("a finish of no scope: %d %q %q", code, stdout.String(), stderr.String())
+	}
+	if db.fingerprint(t) != print {
+		t.Fatal("a refused call changed the database")
+	}
+}
