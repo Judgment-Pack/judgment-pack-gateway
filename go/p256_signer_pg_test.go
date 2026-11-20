@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
@@ -100,4 +101,93 @@ func TestAPostgresStoreRotateKeyCrossesAlgorithms(t *testing.T) {
 	}
 	server.Close()
 	b.stop(&s.said)
+}
+
+// An empty PostgreSQL store starts directly under a version 40 ES256
+// configuration, with no rotation: its records name the algorithm, its key
+// history is the one P-256 key, and it verifies under the P-256 pin. The
+// same database, holding those records, refuses a start under an Ed25519
+// key version, since no rotation leads from the P-256 key to it (ADR-0050,
+// ADR-0053).
+func TestAPostgresEmptyStoreStartsDirectlyUnderAP256Key(t *testing.T) {
+	standInKeyService(t)
+	s := newRkStore(t)
+	text, err := os.ReadFile(s.versions[ksVersion1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := `"signingKeyVersion":"` + ksVersion1 + `","signingPublicKey":"` + hex.EncodeToString(ksKey("one").Public().(ed25519.PublicKey)) + `"`
+	point := compressedOf(p256Key(1))
+	keyed := bytes.Replace(text, []byte(`{"engineVersion":"36"`), []byte(`{"engineVersion":"40"`), 1)
+	keyed = bytes.Replace(keyed, []byte(pinned), []byte(`"signingKeyVersion":"`+ksP256One+`","signingPublicKey":"`+hex.EncodeToString(point)+`","signingKeyAlgorithm":"ES256"`), 1)
+	path := filepath.Join(s.dir, "engine-p256.json")
+	if err := os.WriteFile(path, keyed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parseEngineConfig(keyed)
+	if err != nil || cfg.signingKeyAlgorithm != algES256 {
+		t.Fatalf("the P-256 configuration: %v", err)
+	}
+	s.versions[ksP256One], s.cfgs[ksP256One] = path, cfg
+
+	a := s.start(t, ksP256One, mustP256Signer(t, ksP256One))
+	server := httptest.NewServer(a.service.handler())
+	if got := rkCall(t, server, "p256-first", "plain", true); got != keyIDFor(point) {
+		t.Fatalf("the first receipt names %s", got)
+	}
+	get := func(route string) string {
+		resp, err := http.Get(server.URL + route)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: %d %s", route, resp.StatusCode, body)
+		}
+		return string(body)
+	}
+	if doc := get("/publickey"); !strings.Contains(doc, `"algorithm":"ES256"`) || !strings.Contains(doc, hex.EncodeToString(point)) {
+		t.Fatalf("/publickey: %s", doc)
+	}
+	history := get(keyHistoryRoute)
+	if strings.Count(history, `"publicKey"`) != 1 || !strings.Contains(history, `"alg":"ES256"`) ||
+		!strings.Contains(history, `"keyId":"`+keyIDFor(point)+`"`) || strings.Contains(history, "keyRotation") {
+		t.Fatalf("/publickey/history is not the one P-256 key: %s", history)
+	}
+	server.Close()
+	a.stop(&s.said)
+
+	out := filepath.Join(s.dir, "export")
+	t.Chdir(s.dir)
+	if _, err := exportEngine(path, out, nil, ""); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	files := storeFiles(t, filepath.Join(out, "store"))
+	signed := 0
+	for name, text := range files {
+		if strings.HasSuffix(name, ".json") {
+			signed++
+			if !strings.Contains(text, `"alg":"ES256"`) {
+				t.Fatalf("%s carries no alg: %s", name, text)
+			}
+		}
+	}
+	registry, err := os.ReadFile(filepath.Join(out, "registry"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signed == 0 || !strings.Contains(string(registry), `"alg":"ES256"`) || strings.Contains(string(registry), "key-rotation") {
+		t.Fatalf("the records (%d) or the seal carry no alg, or a rotation is recorded: %s", signed, registry)
+	}
+	pin := heldKey{alg: algES256, key: point}
+	if rep, err := verifySuppliedPin(filepath.Join(out, "store"), filepath.Join(out, "registry"), "gateway:test", "", "", pin, false, ""); err != nil || !rep.OK {
+		t.Fatalf("the store under the P-256 pin: %v %+v", err, rep)
+	}
+
+	// the same database under an Ed25519 key version: refused by name
+	_, err = startOnKind(s.cfgs[ksVersion1], testSeed, s.sources, nil, kindRun{period: pgStartLeasePeriod, every: pgStartLeaseRenewal, stopped: context.Background(), said: &s.said, signer: mustKeyServiceSigner(t, ksVersion1)})
+	if err == nil || !strings.Contains(err.Error(), "no rotation in the registry leads from it to this gateway's key") || !strings.Contains(err.Error(), keyIDFor(point)) {
+		t.Fatalf("an Ed25519 start over the P-256 store: %v", err)
+	}
 }
