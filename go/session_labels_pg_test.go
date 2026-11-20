@@ -456,3 +456,24 @@ func TestAPostgresStoreAtSchemaEightMigratesToSessionLabels(t *testing.T) {
 		t.Fatalf("a label on the migrated database: %q %v", got, err)
 	}
 }
+
+// An acquisition refused at its admission -- the signer's gate closed --
+// leaves no label; the label's use once admission reopens mints its
+// session.
+func TestAPostgresARefusedAcquisitionLeavesNoLabel(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	_, cfg := labelsPgConfig(t, db, tempDirAt(t, 0o700), labelsVersion, false, "")
+	started, server, _ := labelsPgServe(t, cfg, sealOpenPgSources(t))
+	started.service.closeAdmission()
+	if code, got := post(t, server, "/acquire", `{"session":"refused-job","source":"screening-a","scope":"scope-a","arguments":{"q":"x"}}`); code == http.StatusOK {
+		t.Fatalf("an acquisition through a closed gate: %d %v", code, got)
+	}
+	if got := pgLabelRowsIn(t, db, pgRowScope("scope-a")); len(got) != 0 {
+		t.Fatalf("a refused acquisition left the labels %v", got)
+	}
+	started.service.openAdmission()
+	if _, index := labelAcquire(t, server, "refused-job", "screening-a", "scope-a"); index != 0 {
+		t.Fatalf("the label once admitted: at %v", index)
+	}
+}

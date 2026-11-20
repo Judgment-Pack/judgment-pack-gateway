@@ -1358,10 +1358,15 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	}
 	// From labelsVersion the session the request names is a label in the
 	// namespace of the source's scope (ADR-0051), looked up there alone and
-	// minted on its first use, its mapping in the store before any receipt
-	// of it. A read-back names the session id of its action, never a label.
+	// minted on its first use. A minted id is recorded for the label only
+	// once the acquisition is admitted, immediately before the source
+	// starts, so a call refused before then leaves no label; the mapping is
+	// in the store before any receipt of it. A read-back names the session
+	// id of its action, never a label.
+	label, labelMinted := "", false
 	if g.labels != nil && reconciliation == nil {
-		if sessionID, err = g.sessionOfLabel(sessionID, spec.scope); err != nil {
+		label = sessionID
+		if sessionID, labelMinted, err = g.labelledSession(label, spec.scope); err != nil {
 			return nil, err
 		}
 	}
@@ -1392,7 +1397,9 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	if admitted != nil {
 		return nil, admitted
 	}
-	defer g.release(sessionID)
+	// held is the session the reservation is of, released on every way out
+	held := sessionID
+	defer func() { g.release(held) }()
 
 	// What the session holds for the receipt sink goes first (ADR-0049): a
 	// receipt minted and not acknowledged is delivered again before the
@@ -1451,6 +1458,33 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 				return nil, refusal
 			}
 			delegationMember = member
+		}
+	}
+
+	// The acquisition admitted, a label minted for it is recorded before the
+	// source starts. Where another request, or another instance, recorded
+	// the label first, the acquisition is admitted into that session as it
+	// would have been had the label been there at the lookup: the minted
+	// id's reservation released, and the session the label names judged and
+	// reserved, and its receipts pending delivered, before the source runs.
+	if labelMinted {
+		recorded, err := g.recordMinted(label, spec.scope, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if recorded != sessionID {
+			g.release(held)
+			held, sessionID = "", recorded
+			if refusal := g.sealedElsewhere(sessionID); refusal != "" {
+				return nil, badRequest{errors.New(refusal)}
+			}
+			if refused := g.admit(sessionID, spec.scope); refused != nil {
+				return nil, refused
+			}
+			held = sessionID
+			if err := g.redeliver(sessionID); err != nil {
+				return nil, err
+			}
 		}
 	}
 

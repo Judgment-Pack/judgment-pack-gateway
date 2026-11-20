@@ -17,6 +17,12 @@ package main
 // use takes up. The verifiers pass labels/ over (SPEC.md §3a). The
 // PostgreSQL kind keeps a row of gateway.session_labels for each label
 // (session_labels_pg.go).
+//
+// An acquisition records a label it mints only once the acquisition is
+// admitted, immediately before its source starts (acquireWithScope): a call
+// refused before then -- its session sealed, the reservation refused, the
+// delegation or its grant refused -- leaves no label, so a caller cannot
+// grow the store's labels by calls that are refused.
 
 import (
 	"crypto/rand"
@@ -328,31 +334,51 @@ func labelFilesOf(keeper labelKeeper, scope string, sessions []string) ([]string
 }
 
 // sessionOfLabel is the session id label names in scope's namespace, minted
-// and recorded on the label's first use there: a new id is minted again
-// where it is a session this process or the store holds already.
+// and recorded on the label's first use there (/act).
 func (g *gatewayService) sessionOfLabel(label, scope string) (string, error) {
+	id, minted, err := g.labelledSession(label, scope)
+	if err != nil || !minted {
+		return id, err
+	}
+	return g.recordMinted(label, scope, id)
+}
+
+// labelledSession is the session id label names in scope's namespace, and
+// minted false; or, where it names none there, a session id minted for its
+// first use, not recorded yet, and minted true: a new id is minted again
+// where it is a session this process or the store holds already. The
+// caller records a minted id (recordMinted) before the session's first
+// receipt, and an acquisition only once it is admitted.
+func (g *gatewayService) labelledSession(label, scope string) (string, bool, error) {
 	id, err := g.labels.labelSession(scope, label)
 	if err != nil {
-		return "", fmt.Errorf(refusalLabelUnread, label)
+		return "", false, fmt.Errorf(refusalLabelUnread, label)
 	}
 	if id != "" {
-		return id, nil
+		return id, false, nil
 	}
 	for attempt := 0; attempt < 4; attempt++ {
 		fresh, err := mintSessionID()
 		if err != nil {
-			return "", fmt.Errorf(refusalLabelUnstored, label)
+			return "", false, fmt.Errorf(refusalLabelUnstored, label)
 		}
 		if g.sessionTaken(fresh) {
 			continue
 		}
-		recorded, err := g.labels.recordLabel(scope, label, fresh)
-		if err != nil {
-			return "", fmt.Errorf(refusalLabelUnstored, label)
-		}
-		return recorded, nil
+		return fresh, true, nil
 	}
-	return "", fmt.Errorf(refusalLabelUnstored, label)
+	return "", false, fmt.Errorf(refusalLabelUnstored, label)
+}
+
+// recordMinted records id, minted by labelledSession, for label in scope's
+// namespace, and is the id the label names: id, or the one another request
+// or another instance recorded for it first.
+func (g *gatewayService) recordMinted(label, scope, id string) (string, error) {
+	recorded, err := g.labels.recordLabel(scope, label, id)
+	if err != nil {
+		return "", fmt.Errorf(refusalLabelUnstored, label)
+	}
+	return recorded, nil
 }
 
 // sessionTaken is whether a minted id is a session already: one this

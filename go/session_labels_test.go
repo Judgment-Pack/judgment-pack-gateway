@@ -552,6 +552,62 @@ func TestTheStartAtLabelsVersionRefusesASessionLeftFromBefore(t *testing.T) {
 	closeHolds()
 }
 
+// An acquisition refused at its admission -- the signer's gate closed --
+// leaves no label: a label is recorded only once the acquisition is
+// admitted. Its use once admission reopens mints the session.
+func TestARefusedAcquisitionLeavesNoLabel(t *testing.T) {
+	g, server, _ := labelledStore(t)
+	g.closeAdmission()
+	if code, out := post(t, server, "/acquire", `{"session":"refused-job","source":"a","scope":`+jsonText(t, testScope)+`,"arguments":{"q":"x"}}`); code == http.StatusOK {
+		t.Fatalf("an acquisition through a closed gate: %d %v", code, out)
+	}
+	if entries, err := g.labels.labelEntries(); err != nil || len(entries) != 0 {
+		t.Fatalf("a refused acquisition left the labels %v %v", entries, err)
+	}
+	g.openAdmission()
+	if _, index := labelAcquire(t, server, "refused-job", "a", testScope); index != 0 {
+		t.Fatalf("the label once admitted: at %v", index)
+	}
+}
+
+// Two acquisitions under one new label, each minting an id before either
+// records it, share one session: the one whose record comes second is
+// admitted into the session the label names, and the store keeps one label.
+func TestTwoAcquisitionsRacingOnANewLabelShareOneSession(t *testing.T) {
+	g, server, _ := labelledStore(t)
+	var mu sync.Mutex
+	arrived := 0
+	var both sync.WaitGroup
+	both.Add(2)
+	g.beforeReadAdmit = func() {
+		mu.Lock()
+		arrived++
+		first := arrived <= 2
+		mu.Unlock()
+		if first {
+			both.Done()
+			both.Wait()
+		}
+	}
+	ids := make([]string, 2)
+	indexes := make([]float64, 2)
+	var done sync.WaitGroup
+	for i := range ids {
+		done.Add(1)
+		go func(i int) {
+			defer done.Done()
+			ids[i], indexes[i] = labelAcquire(t, server, "racing", "a", testScope)
+		}(i)
+	}
+	done.Wait()
+	if ids[0] != ids[1] || indexes[0]+indexes[1] != 1 {
+		t.Fatalf("the two acquisitions: %v at %v", ids, indexes)
+	}
+	if entries, err := g.labels.labelEntries(); err != nil || len(entries) != 1 || entries[0].sessionID != ids[0] {
+		t.Fatalf("the labels kept: %v %v", entries, err)
+	}
+}
+
 // remove-scope takes the labels of a scope that holds labels and no
 // session, as a label minted for a source that failed leaves, and leaves
 // every other namespace's.
