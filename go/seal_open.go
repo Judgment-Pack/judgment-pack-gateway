@@ -300,6 +300,7 @@ func sealOpenUnderSink(st sealOpenStore, authority string, writer *registryWrite
 		if err != nil {
 			return sealed, refused, fmt.Errorf("session %s: %w", t.sessionID, err)
 		}
+		sealAppendedHook(t.sessionID)
 		sealed = append(sealed, record)
 		if forwardSeals && (sinkDown || !sink.deliverSeal(st.forwarding(), record)) {
 			sinkDown = true

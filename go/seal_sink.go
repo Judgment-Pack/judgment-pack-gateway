@@ -52,6 +52,12 @@ const (
 	sealForwardingDocument = "seal-forwarding."
 )
 
+// sealAppendedHook runs once a seal is appended to the registry, by /seal
+// and by seal-open, before anything else of it; a test stops the process
+// there, past the append, to hold that the seal's marker is already in the
+// store (the marker is written before the append).
+var sealAppendedHook = func(sessionID string) {}
+
 // sealNotForwarded is the refusal of a seal the sink did not acknowledge,
 // whatever went wrong: the seal is in the registry, and is held.
 type sealNotForwarded struct{}

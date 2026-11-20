@@ -2379,6 +2379,7 @@ func (g *gatewayService) sealUnderLock(sessionID string, reach scopeReach) (*vOb
 		}
 		return nil, nil, badRequest{err}
 	}
+	sealAppendedHook(sessionID)
 	state.sealed = true
 	if !sealing {
 		return record, nil, nil
