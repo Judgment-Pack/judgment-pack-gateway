@@ -685,6 +685,16 @@ func (x pgIndexed) getEntry(series, entry string) ([]byte, error) {
 
 // --- the log ---------------------------------------------------------------
 
+// pgLogAppendAtEnd appends $2 to the log named $1 at the end it has
+// reached, in a transaction that holds the log's append lock
+// (pgLogAppendLock): every append of the log -- a record, a judged one, and
+// gateway store rotate-key's rotation record -- is this statement.
+const pgLogAppendAtEnd = `INSERT INTO gateway.log_records (log, start, data)
+	SELECT g.name, COALESCE((SELECT r.stop FROM gateway.log_records r
+		WHERE r.log = g.name ORDER BY r.start DESC LIMIT 1), 0), $2
+	FROM gateway.logs g WHERE g.name = $1
+	RETURNING start`
+
 // pgLog is the log named registry: records of no scope, one chain for every
 // scope, appended at the offset the log has reached.
 type pgLog struct {
@@ -715,11 +725,7 @@ func (l pgLog) appendRecord(data []byte) (int, error) {
 		if _, err := tx.exec(`SELECT pg_catalog.pg_advisory_xact_lock($1)`, int64(pgLogAppendLock)); err != nil {
 			return err
 		}
-		rows, err := tx.exec(`INSERT INTO gateway.log_records (log, start, data)
-			SELECT g.name, COALESCE((SELECT r.stop FROM gateway.log_records r
-				WHERE r.log = g.name ORDER BY r.start DESC LIMIT 1), 0), $2
-			FROM gateway.logs g WHERE g.name = $1
-			RETURNING start`, l.name, data)
+		rows, err := tx.exec(pgLogAppendAtEnd, l.name, data)
 		made = err == nil && len(rows.rows) == 1
 		return err
 	})
@@ -782,11 +788,7 @@ func (l pgLog) appendJudged(build func(read func(from int64) ([]byte, error)) ([
 			refused = &storeError{fault: faultRefused, op: "append", err: fmt.Errorf("store: a record of %d bytes is not within the kind's bounds of 1 to %d", len(data), pgMaxValue)}
 			return refused
 		}
-		rows, err := tx.exec(`INSERT INTO gateway.log_records (log, start, data)
-			SELECT g.name, COALESCE((SELECT r.stop FROM gateway.log_records r
-				WHERE r.log = g.name ORDER BY r.start DESC LIMIT 1), 0), $2
-			FROM gateway.logs g WHERE g.name = $1
-			RETURNING start`, l.name, data)
+		rows, err := tx.exec(pgLogAppendAtEnd, l.name, data)
 		made = err == nil && len(rows.rows) == 1
 		return err
 	})
