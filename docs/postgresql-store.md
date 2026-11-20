@@ -875,8 +875,20 @@ row: a run-time login can only mark its own store rotated, which it could alread
 holding the lease. Removing the mark is the owner's alone. A database at an older schema version
 is refused by this release's open until it is migrated (`apply the store's migrations`).
 
+A rotation shuts the old store for good, so what it holds for a receipt sink is delivered first.
+With a `receiptSink` in the configuration, the receipts of each session left open are delivered
+before it is sealed, as `seal-open --config` delivers them; with `receiptSink.seals`, each seal
+held for the sink, pending forwarding, is delivered first too, and each seal the rotation appends
+after it. A session the sink does not acknowledge, or a seal it does not, refuses the rotation:
+*a session left open was not sealed, or its seal is held for the receipt sink, so the store is
+not rotated*. A seal held whose marker the rotation would not deliver, the configuration's sink
+taking no seals, refuses it before anything is sealed: *a seal is held for the receipt sink,
+pending forwarding, of session ...; deliver it first with gateway seal-open --config, or by the
+gateway's start, then rotate*, and nothing is sealed. Neither refusal migrates the new database or
+marks the old one.
+
 Exit 2 on a usage error: `--new-store` and `--new-registry` are the filesystem kind's, and the
-migration login's flags are refused beside a configuration of that kind. Dropping the old database
+migration login's flags are refused beside a configuration of that kind, as `--no-sink` is. Dropping the old database
 once it is past retention is the operator's, with PostgreSQL's own tools. Its rows stay in the
 write-ahead log, base backups and replicas under the operator's own retention.
 

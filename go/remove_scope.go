@@ -312,6 +312,10 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 		out.notes = append(out.notes, fmt.Sprintf("no session of the scope identifier is in the store; its %d session label(s), naming no session, are removed", len(plan.labels)))
 		return out, nil
 	}
+	// every label of the scope's namespace goes with its sessions (ADR-0051)
+	if plan.labels, err = labelFilesOf(fsLabels{root: storeRoot}, o.scope, nil); err != nil {
+		return out, fmt.Errorf("the store's session labels could not be read, and nothing was removed: %v", err)
+	}
 
 	// Every record first, each read back as a verifier reads it, then
 	// appended and made durable.

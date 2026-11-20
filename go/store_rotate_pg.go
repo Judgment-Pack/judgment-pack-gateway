@@ -82,11 +82,16 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 			if err != nil {
 				return err
 			}
-			return heldUnderAnotherKey(data, walk.keys, key.public, kind.receipts())
+			if err := heldUnderAnotherKey(data, walk.keys, key.public, kind.receipts()); err != nil {
+				return err
+			}
+			// a seal held for the sink that this rotation does not deliver
+			// refuses it, before anything is sealed
+			return refuseSealsPending(pgSealForwarding{kind.ofNoScope().documents()}, o.forwardsSeals())
 		},
 		then: func(kind *pgKind, key *signingKey, refused []string, held *kindStart) error {
 			if len(refused) > 0 {
-				return fmt.Errorf("a session left open could not be sealed, so the store is not rotated: %s", refused[0])
+				return fmt.Errorf(storeRotateNotSealed, refused[0])
 			}
 			// the tail is read after the seals, under the lease, and walked
 			// as the gateway walks it: the continuation names the registry
