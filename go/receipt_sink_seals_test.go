@@ -198,16 +198,18 @@ func TestAVersion35SinkIsNeverSentASeal(t *testing.T) {
 		t.Fatalf("a marker's directory was made: %v", err)
 	}
 
-	if !engineVersions[sealSinkVersion] || !versionAtLeast(sealSinkVersion, "36") || versionAtLeast(receiptSinkVersion, sealSinkVersion) {
+	if !engineVersions[sealSinkVersion] || !versionAtLeast(sealSinkVersion, "37") || versionAtLeast(receiptSinkVersion, sealSinkVersion) {
 		t.Fatalf("seals is a member of a version after receiptSink's: %q", sealSinkVersion)
 	}
 	catalog := t.TempDir()
 	with := func(version, member string) string {
 		return atVersion(t, version, catalog, `,"receiptSink":`+member, ``)
 	}
-	_, err := parseEngineConfig([]byte(with(receiptSinkVersion, `{"url":"https://sink.example/r","seals":true}`)))
-	if want := fmt.Sprintf("receiptSink: seals is a version-%s member; engineVersion %s has no seals", sealSinkVersion, receiptSinkVersion); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("seals under version %s: %v", receiptSinkVersion, err)
+	for _, earlier := range []string{receiptSinkVersion, keyServiceSignerVersion} {
+		_, err := parseEngineConfig([]byte(with(earlier, `{"url":"https://sink.example/r","seals":true}`)))
+		if want := fmt.Sprintf("receiptSink: seals is a version-%s member; engineVersion %s has no seals", sealSinkVersion, earlier); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("seals under version %s: %v", earlier, err)
+		}
 	}
 	for member, want := range map[string]bool{
 		`{"url":"https://sink.example/r","seals":true}`:  true,

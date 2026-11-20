@@ -28,7 +28,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
@@ -66,6 +65,10 @@ func (n removalTarget) fileName() string {
 
 // removeArtifactOptions is the command line.
 type removeArtifactOptions struct {
+	// keyVersion and keyPublic are the configuration's signingKeyVersion
+	// and signingPublicKey: the key service's key version the command signs
+	// through, "" where the seed signs (ADR-0050)
+	keyVersion, keyPublic      string
 	store, registry, authority string
 	seedNames                  []string
 	targets                    []removalTarget
@@ -151,6 +154,7 @@ func parseRemoveArtifact(args []string) (removeArtifactOptions, string) {
 		if err := refuseUnderPostgreSQL(cfg, "gateway remove-artifact, which keeps its removal records in the store on disk,"); err != nil {
 			return removeArtifactOptions{}, err.Error()
 		}
+		o.keyVersion, o.keyPublic = cfg.signingKeyVersion, cfg.signingPublicKey
 		o.store, o.registry, o.authority, o.seedNames = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}
 		// the seed by the name it resolves to as well, as seal-open looks
 		// for a rotation under way beside both
@@ -221,7 +225,12 @@ func removeArtifact(o removeArtifactOptions, stamp func() string) (out removalOu
 	} else if !present {
 		return out, false, absentRegistry
 	}
-	hold, err := holdEngineRegistry(o.seedNames, o.registry, seed)
+	sig, err := commandSigner(o.keyVersion, o.keyPublic, seed)
+	if err != nil {
+		return out, false, err
+	}
+	key := newSigningKey(sig)
+	hold, err := holdEngineRegistryKey(o.seedNames, o.registry, key.public)
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
 			return out, false, fmt.Errorf("%w; stop the gateway, then remove", err)
@@ -237,12 +246,16 @@ func removeArtifact(o removeArtifactOptions, stamp func() string) (out removalOu
 	if !present {
 		return out, unlocked, absentRegistry
 	}
-	priv := ed25519.NewKeyFromSeed(seed)
-	walk, err := engineWalk(data, priv.Public().(ed25519.PublicKey))
+	walk, err := engineWalk(data, key.public)
 	if err != nil {
 		return out, unlocked, err
 	}
-	out, err = removeArtifactsUnder(o.store, o.authority, priv, walk.keys, o, stamp)
+	// history under a key the walk did not reach -- a store a key service
+	// signs for, given here the seed by --seed -- is refused (ADR-0050)
+	if err := heldUnderAnotherKey(data, walk.keys, key.public, newFsKind(fsLayout{store: o.store}).receipts()); err != nil {
+		return out, unlocked, err
+	}
+	out, err = removeArtifactsUnder(o.store, o.authority, key, walk.keys, o, stamp)
 	return out, unlocked, err
 }
 
@@ -358,7 +371,7 @@ func descriptorDigests(all []*storedReceipt) map[string]bool {
 // removeArtifactsUnder is the command's work, the registry held: every
 // receipt named judged, the records of those that may be removed appended,
 // and then their bytes removed.
-func removeArtifactsUnder(storeRoot, authority string, priv ed25519.PrivateKey, keys []reachedKey, o removeArtifactOptions, stamp func() string) (out removalOutcome, err error) {
+func removeArtifactsUnder(storeRoot, authority string, key *signingKey, keys []reachedKey, o removeArtifactOptions, stamp func() string) (out removalOutcome, err error) {
 	// the records already there, read as a verifier reads them; but where
 	// something at the file's path is not a regular file -- a link,
 	// whatever it leads to -- nothing is written through it or beside it
@@ -451,7 +464,11 @@ func removeArtifactsUnder(storeRoot, authority string, priv ed25519.PrivateKey, 
 		record.set("removedBy", vString(o.by))
 		record.set("resultDigest", vString(s.r.resultDigest))
 		record.set("sessionId", vString(s.sessionID))
-		record.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, removalSigningInput(record)))))
+		signature, err := key.signVerified(removalSigningInput(record))
+		if err != nil {
+			return out, err
+		}
+		record.set("signature", vString(hex.EncodeToString(signature)))
 		line := append(canon(record), '\n')
 		// what a reader would not load, or would not take as naming this
 		// receipt, is not written: the line is read back as a verifier

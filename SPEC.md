@@ -2381,7 +2381,7 @@ status:
 A gateway whose configuration names a receipt sink (§6a) has one more answer. It is **`503`**
 with `code` `receipt_not_forwarded` beside the fixed sentence of §6a, and it is the one refused
 acquisition after which a receipt is in the store. Where it forwards seals as well
-(`receiptSink.seals`, engine version 36), `/seal` has the same status and code beside the
+(`receiptSink.seals`, engine version 37), `/seal` has the same status and code beside the
 seal's fixed sentence of §6a, and it is the one refused seal after which a seal is in the
 registry.
 
@@ -3070,7 +3070,7 @@ path, version 0.28.0 or later.
 A gateway whose engine configuration names `receiptSink` (engine version 35,
 `docs/design/engine-config.md`; ADR-0049) delivers each receipt `/acquire` mints to that one
 endpoint. `/acquire` answers only once the sink has acknowledged the receipt. Where
-`receiptSink.seals` is `true` (engine version 36), each seal goes to the same endpoint too,
+`receiptSink.seals` is `true` (engine version 37), each seal goes to the same endpoint too,
 after its session's receipts ("Seals", below). Nothing here changes a receipt, a seal or the
 registry, and a receipt or a seal verifies (§4) with or without the sink.
 
@@ -3140,7 +3140,7 @@ start) only once each receipt the store holds of it, oldest first, has been deli
 acknowledged; one whose receipts are not all acknowledged is left open and named (ADR-0049,
 consequences).
 
-**Seals (engine version 36).** A gateway whose `receiptSink.seals` is `true` delivers each seal
+**Seals (engine version 37).** A gateway whose `receiptSink.seals` is `true` delivers each seal
 it appends to the same endpoint: the seal `/seal` appends, and a seal made after an
 interruption (§3c) at the start or by `gateway seal-open --config`. Without the member, or
 under engine version 35, no seal is delivered.

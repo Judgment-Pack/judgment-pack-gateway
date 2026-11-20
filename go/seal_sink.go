@@ -1,6 +1,6 @@
 package main
 
-// Seals delivered to the receipt sink (engineVersion 36, receiptSink.seals;
+// Seals delivered to the receipt sink (engineVersion 37, receiptSink.seals;
 // ADR-0049, amendment of 2026-11-19; SPEC.md §6a): with the member on, each
 // seal -- /seal's, and one made after an interruption by the start or by
 // gateway seal-open -- is delivered to the sink the receipts go to, after
@@ -17,7 +17,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -32,11 +31,11 @@ import (
 )
 
 // sealSinkVersion is the engine configuration version that admits
-// receiptSink.seals: 36, the version after receiptSinkVersion (35). It is
+// receiptSink.seals: 37, the version after keyServiceSignerVersion (36). It is
 // spelled here alone; engine.go lists it in engineVersions, so a merge that
-// keeps another change's 36 without renumbering one of them does not
+// keeps another change's 37 without renumbering one of them does not
 // compile.
-const sealSinkVersion = "36"
+const sealSinkVersion = "37"
 
 const (
 	// sealDeliveryVersion is the seal delivery request's form; a receipt's
@@ -344,7 +343,7 @@ func forwardPendingSealsAtStart(service *gatewayService, stderr io.Writer) error
 	if err != nil {
 		return fmt.Errorf("registry: %w", err)
 	}
-	walk, err := engineWalk(data, service.registry.priv.Public().(ed25519.PublicKey))
+	walk, err := engineWalk(data, service.registry.signing.key().public)
 	if err != nil {
 		return err
 	}

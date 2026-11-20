@@ -422,7 +422,7 @@ func TestThePayloadIsCarriedOnlyWhereConfigured(t *testing.T) {
 // the refusal repeats no value.
 func TestReceiptSinkIsAVersion35MemberHeldToItsURLRule(t *testing.T) {
 	if receiptSinkVersion != "35" || !versionAtLeast(engineVersion, receiptSinkVersion) || !engineVersions[receiptSinkVersion] {
-		t.Fatalf("receiptSink is version 35's member, the newest: %q, engine %q", receiptSinkVersion, engineVersion)
+		t.Fatalf("receiptSink is version 35's member, read by this engine: %q, engine %q", receiptSinkVersion, engineVersion)
 	}
 	catalog := t.TempDir()
 	with := func(version, member string) string {

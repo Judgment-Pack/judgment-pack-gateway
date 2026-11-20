@@ -2647,9 +2647,32 @@ it is acknowledged. The delivery, acknowledgment, retry and deadline rules are S
 The member names no credential: the sink checks each receipt against the gateway's public
 key, which it pins as any verifier does.
 
-## Seals at the receipt sink (engine version 36)
+## A signer in a key service (engine version 36)
 
-Version 36 adds `receiptSink`'s optional `seals` member
+From engine version 36, `signingKeyVersion` names one Ed25519 key version in Cloud KMS
+(`EC_SIGN_ED25519`), which signs the gateway's receipts, seals and descriptor statements in place
+of the seed's key ([ADR-0050](../adr/0050-an-external-signer-in-a-key-service.md), #431).
+
+```json
+"signingKeyVersion": "projects/example-project/locations/global/keyRings/receipts/cryptoKeys/gateway/cryptoKeyVersions/1",
+"signingPublicKey": "<the key version's Ed25519 public key, 64 lowercase hexadecimal characters>"
+```
+
+- **The pin.** `signingPublicKey` is required whenever `signingKeyVersion` is set, and given only beside it: `signingKeyVersion` without it is refused by name at configuration load. A key version that answers another public key signs nothing.
+
+- **Form.** The value is a resource name of exactly that form: `projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>/cryptoKeyVersions/<n>`. Under an earlier version the member is refused by name, and out of form it is refused before anything is asked. Beside `storage` or `witness` it is refused: the PostgreSQL kind's start lease and the witness name the seed's key.
+- **The seed.** `seed` stays required. With a key service it keys the arguments commitment and signs nothing.
+- **At start.** The gateway reads the version's public key once, holds it to the version asked, `EC_SIGN_ED25519`, its CRC32C and one Ed25519 key, and derives its `keyId` from it. The registry's walk must end at that key, as at a seed's. The start line names the version, its protection level and the `keyId`.
+- **Calls.**
+  - Each receipt and each seal is one `asymmetricSign` at the built-in `https://cloudkms.googleapis.com`.
+  - The call is authenticated by the gateway's own access token from the metadata server at its fixed link-local address.
+  - One signing is bounded by 5 seconds.
+  - A key service that cannot be reached, refuses (a 429 or 503 among the refusals) or answers a signature that does not verify fails the acquisition or the seal with a fixed sentence, and nothing is written.
+- **The commands under a key service.** `gateway remove-artifact`, `remove-scope`, `seal-open`, `export` and `connect`'s descriptor capture sign through the key version the configuration names, held to `signingPublicKey`. `gateway rotate-key` stays seed-only and refuses through the registry's walk. A key service's key is rotated by SIGHUP on the file kind; on the PostgreSQL kind every instance is stopped first (ADR-0050).
+
+## Seals at the receipt sink (engine version 37)
+
+Version 37 adds `receiptSink`'s optional `seals` member
 ([ADR-0049](../adr/0049-a-receipt-is-acknowledged-by-the-sink-before-it-is-answered.md),
 amendment of 2026-11-19; SPEC.md §6a). With it on, each seal is delivered to the same sink,
 after every receipt of its session, and acknowledged by its digest.
@@ -2660,8 +2683,8 @@ after every receipt of its session, and acknowledged by its digest.
 
 - `seals` is optional, `true` or `false`, and `false` when absent. A sink of a file without
   it, version 35's among them, is sent receipts alone, as before.
-- The member under version 35 is refused as `receiptSink: seals is a version-36 member;
-  engineVersion 35 has no seals`.
+- The member under version 36 or earlier is refused as `receiptSink: seals is a version-37 member;
+  engineVersion 36 has no seals`.
 
 With `seals: true`:
 - `/seal` answers only once the sink has acknowledged the seal. A seal not acknowledged is

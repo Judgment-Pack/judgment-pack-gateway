@@ -33,7 +33,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io"
@@ -225,7 +224,7 @@ func sealOpenUnder(st sealOpenStore, authority string, writer *registryWriter, d
 // named. Once one delivery is not acknowledged the sink is not asked for
 // the sessions after it, which are named as well.
 func sealOpenUnderSink(st sealOpenStore, authority string, writer *registryWriter, data []byte, session, via string, stamp func() string, sink *sealOpenSink) ([]*vObject, []string, error) {
-	walk, err := engineWalk(data, writer.priv.Public().(ed25519.PublicKey))
+	walk, err := engineWalk(data, writer.signing.key().public)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -359,6 +358,10 @@ func sealOpenAtStart(service *gatewayService, stderr io.Writer, stamp func() str
 // sealOpenOptions is the command line: the store, the seed by each name it
 // is known by, the registry, the authority, and the session or all of them.
 type sealOpenOptions struct {
+	// keyVersion and keyPublic are the configuration's signingKeyVersion
+	// and signingPublicKey: the key service's key version the command signs
+	// through, "" where the seed signs (ADR-0050)
+	keyVersion, keyPublic               string
 	store, registry, authority, session string
 	seedNames                           []string
 	// storage is the configuration's storage member where the PostgreSQL
@@ -425,6 +428,7 @@ func parseSealOpen(args []string) (sealOpenOptions, string) {
 		}
 		// with the PostgreSQL kind, store and registry are "" and storage
 		// names the kind (seal_open_pg.go)
+		o.keyVersion, o.keyPublic = cfg.signingKeyVersion, cfg.signingPublicKey
 		o.store, o.registry, o.authority, o.seedNames, o.storage, o.receiptSink = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}, cfg.storage, cfg.receiptSink
 		// the seed by the name it resolves to as well, as serve --config
 		// looks for a rotation under way beside both
@@ -506,7 +510,11 @@ func sealOpen(o sealOpenOptions, stamp func() string) (sealed []*vObject, refuse
 	} else if !present {
 		return nil, nil, false, absentRegistry
 	}
-	hold, err := holdEngineRegistry(o.seedNames, o.registry, seed)
+	sig, err := commandSigner(o.keyVersion, o.keyPublic, seed)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	hold, err := holdEngineRegistryKey(o.seedNames, o.registry, sig.publicKey())
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
 			return nil, nil, false, fmt.Errorf("%w; stop the gateway, then seal", err)
@@ -522,7 +530,16 @@ func sealOpen(o sealOpenOptions, stamp func() string) (sealed []*vObject, refuse
 	if !present {
 		return nil, nil, unlocked, absentRegistry
 	}
-	writer, err := newRegistryWriter(o.registry, seed, func() (bool, error) { return true, nil })
+	// history under a key the walk did not reach -- a store a key service
+	// signs for, given here the seed by --seed -- is refused (ADR-0050)
+	walk, err := engineWalk(data, sig.publicKey())
+	if err != nil {
+		return nil, nil, unlocked, err
+	}
+	if err := heldUnderAnotherKey(data, walk.keys, sig.publicKey(), newFsKind(fsLayout{store: o.store}).receipts()); err != nil {
+		return nil, nil, unlocked, err
+	}
+	writer, err := newRegistryWriterWith(o.registry, seed, newSignerHolder(sig), func() (bool, error) { return true, nil })
 	if err != nil {
 		return nil, nil, unlocked, err
 	}

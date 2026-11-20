@@ -151,7 +151,7 @@ Chosen: option 1 and K1.
    acquisition's. A caller's own deadline should allow for the source's timeout plus 16
    seconds. A stop of the gateway ends a delivery in flight, which is then refused.
 9. **What is forwarded.** Under version 35, receipts minted by `/acquire` alone (seals are
-   forwarded from version 36 where the configuration asks for them: see the amendment below), including those of the MCP
+   forwarded from version 37 where the configuration asks for them: see the amendment below), including those of the MCP
    front and of an action's read-back, which take the same path. Other records are unchanged
    and not forwarded:
    - an action's receipt minted by `/act`;
@@ -185,7 +185,7 @@ Chosen: option 1 and K1.
   holder has stopped delivers from the store.
 - Later change: forwarding action receipts and seals. Neither is forwarded in this version;
   doing so is a new `deliveryVersion`, and a follow-up issue. Seals are forwarded from
-  version 36, under `deliveryVersion` `"2"` (amendment of 2026-11-19); action receipts are
+  version 37, under `deliveryVersion` `"2"` (amendment of 2026-11-19); action receipts are
   not.
 - Bad: the acknowledgment is the sink's word. A sink that acknowledges and then drops a
   receipt loses it, and the gateway cannot tell.
@@ -203,8 +203,8 @@ what count. The amendment sends each seal to the same sink, under the same rules
 opt-in that a version-35 sink never sees.
 
 1. **The member.** `receiptSink.seals`, `true` or `false`, `false` when absent, read from
-   engine configuration version 36 (`sealSinkVersion`) and refused by name under an earlier
-   one: `receiptSink: seals is a version-36 member; engineVersion 35 has no seals`. Without
+   engine configuration version 37 (`sealSinkVersion`) and refused by name under an earlier
+   one: `receiptSink: seals is a version-37 member; engineVersion 36 has no seals`. Without
    it, nothing changes: a sink is sent receipts alone, and no marker is written.
 2. **What is forwarded.** Every seal the gateway appends: `/seal`'s, and a seal made after an
    interruption (SPEC.md §3c) by the start's `sealOpenAtStart` or by `gateway seal-open
@@ -280,7 +280,7 @@ opt-in that a version-35 sink never sees.
 
 - Good: the log learns that a session ended, and at what count, before the caller does. A
   session's seal reaches it after every receipt the seal counts.
-- Good: a version-35 sink, or one of version 36 without `seals`, sees nothing new.
+- Good: a version-35 sink, or one of version 36 or 37 without `seals`, sees nothing new.
 - Bad: an unavailable sink now stops `/seal` too, after the seal is appended. The caller
   learns of the seal from the registry until the sink acknowledges it.
 - Neutral: `/registry` serves a seal from its append, before the sink acknowledges it, as the
@@ -295,6 +295,6 @@ opt-in that a version-35 sink never sees.
   version 35)"; SECURITY.md, "The receipt sink".
 - `go/receipt_sink.go`; tests in `go/receipt_sink_test.go`.
 - The amendment: `go/seal_sink.go`; tests in `go/receipt_sink_seals_test.go`;
-  `docs/design/engine-config.md`, "Seals at the receipt sink (engine version 36)".
+  `docs/design/engine-config.md`, "Seals at the receipt sink (engine version 37)".
 - ADR-0029 (a fixed sentence for a failure class); ADR-0028 (payloads not kept); ADR-0037 and
   ADR-0041 (scope reach); ADR-0042 (the scope salt).
