@@ -393,18 +393,21 @@ func (g *gatewayService) redeliverReached(sessionID string, reach scopeReach) er
 // sealOpenSink is the receipt sink a seal after an interruption (seal-open,
 // and the start's sealOpenAtStart) delivers to before it seals a session:
 // a receipt held in a stopped or crashed process's memory is gone with it,
-// but every receipt is in the store, so each one the store holds is
-// delivered again, oldest first, and the sink, which keeps one receipt once
+// but every receipt is in the store, so each acquisition receipt the store
+// holds is delivered again, oldest first, and the sink, which keeps one receipt once
 // per digest, takes one it has acknowledged before as it did.
 type sealOpenSink struct {
 	forwarder *receiptForwarder
 	ctx       context.Context
 }
 
-// deliver sends every receipt the store holds of the session t names,
-// oldest first, and reports whether the sink acknowledged them all. A
-// receipt that cannot be read back is no acknowledgment either. The
+// deliver sends each acquisition receipt the store holds of the session t
+// names, oldest first, and reports whether the sink acknowledged them all.
+// A receipt that cannot be read back is no acknowledgment either. The
 // payload goes where the configuration asks for it and the store keeps one.
+// A receipt of another kind, the action receipt /act stores in the same
+// chain, is not delivered: the sink takes acquisition receipts alone
+// (SPEC.md §6a), as the delivery before /acquire answers does.
 func (s *sealOpenSink) deliver(st sealOpenStore, t sealOpenTarget) bool {
 	reading, refusal, err := st.reading(t.sessionID)
 	if err != nil || refusal != "" {
@@ -436,6 +439,16 @@ func (s *sealOpenSink) deliver(st sealOpenStore, t sealOpenTarget) bool {
 		receipt, ok := parsed.(*vObject)
 		if !ok {
 			return false
+		}
+		// a receipt that names no kind (versions 1 and 2) is an acquisition
+		if kind, present := receipt.get("kind"); present {
+			name, isString := kind.(vString)
+			if !isString {
+				return false
+			}
+			if name != "acquisition" {
+				continue
+			}
 		}
 		digest, ok := memberString(receipt, "resultDigest")
 		if !ok {

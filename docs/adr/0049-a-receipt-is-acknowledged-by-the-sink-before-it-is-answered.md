@@ -141,7 +141,8 @@ Chosen: option 1 and K1.
    sentence; the requests queued behind a failing sink therefore end together.
 
    A call stops at the first receipt that is not acknowledged. A failing sink therefore costs
-   one call at most 15.75 seconds. A working sink costs up to 5 seconds for each receipt the
+   one call at most 15.75 seconds of sending, after at most 5 seconds waiting for another call
+   of the same session to end its delivery: 20.75 seconds in all. A working sink costs up to 5 seconds for each receipt the
    call delivers: those held, which are at most the session's acquisitions in flight at once,
    and its own.
 

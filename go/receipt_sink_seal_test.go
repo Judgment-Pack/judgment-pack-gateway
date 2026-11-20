@@ -9,6 +9,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -242,5 +243,121 @@ func TestThePostgresSealOpenDeliversTheStoredReceiptsBeforeSealing(t *testing.T)
 	}
 	if d, _ := readDelivery(t, got[len(got)-1]); d.ReceiptDigest != order[1] {
 		t.Fatalf("the last delivery is not receipt 1's")
+	}
+}
+
+// actionLeftOpen is a session an earlier process left open holding an
+// acquisition receipt, index 0, which the sink acknowledged, and the action
+// receipt /act stored after it in the same chain, index 1; with the gateway,
+// the sink, and the sink's address.
+func actionLeftOpen(t *testing.T) (*gatewayService, *standInSink, string) {
+	t.Helper()
+	sink, sinkServer := newStandInSink(t)
+	service, server := testService(t)
+	service.forwarder = newReceiptForwarder(&receiptSinkSpec{url: sinkServer.URL})
+	service.forwarder.attemptTimeout = 300 * time.Millisecond
+	service.forwarder.backoff = []time.Duration{time.Millisecond, time.Millisecond}
+	t.Setenv(envSourceArgv, filepath.Join(t.TempDir(), "argv"))
+	env, _ := goodEnvelope()
+	t.Setenv(envSourceEnvelope, envelopeText(t, env))
+	image := "--image=x@sha256:" + strings.Repeat("0", 64)
+	service.sources["boards/write"] = sourceSpec{argv: []string{os.Args[0], image, "--tools=wit_work_item_comment_write", "--endpoint=h"}, env: helperEnv,
+		tools: []string{"wit_work_item_comment_write"}, shape: "mcp", endpoint: "h"}
+	service.decisionRecords = t.TempDir()
+	issuer := newIssuer(t)
+	id := identityFor(t, issuer)
+	service.identity = &id
+	token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
+	code, first := authed(t, server, "/acquire", `{"session":"act-k","source":"screening","arguments":{"q":"example"}}`, token)
+	if code != http.StatusOK {
+		t.Fatalf("acquire: %d %v", code, first)
+	}
+	signature := first["receipt"].(map[string]any)["signature"].(string)
+	line := `{"kind":"evaluation","cites":[{"sessionId":"act-k","callIndex":0,"signature":"` + signature + `"}]}`
+	if err := os.WriteFile(filepath.Join(service.decisionRecords, "evaluations.jsonl"), []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	act := `{"session":"act-k","platform":"boards","tool":"wit_work_item_comment_write","arguments":{"action":"add","workItemId":42,"text":"approved"},` +
+		`"decision":{"recordDigest":"sha256:` + hexOf([]byte(line)) + `","packDigest":"sha256:` + strings.Repeat("b", 64) + `"},` +
+		`"cites":[{"sessionId":"act-k","callIndex":0,"signature":"` + signature + `"}]}`
+	if code, body := authed(t, server, "/act", act, token); code != http.StatusOK {
+		t.Fatalf("/act: %d %v", code, body)
+	}
+	server.Close()
+	if n := receiptsHeld(t, filepath.Dir(service.storeRoot), "act-k"); n != 2 {
+		t.Fatalf("the store holds %d receipts of act-k; want the acquisition and the action", n)
+	}
+	// from here the sink refuses an action receipt, as a sink taking
+	// deliveryVersion 1 may: it takes acquisition receipts alone
+	sink.setAnswer(func(n int, digest string, w http.ResponseWriter, r *http.Request) {
+		got, _ := sink.snapshot()
+		if d, _ := readDelivery(t, got[n]); d.Receipt["kind"] != "acquisition" {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			return
+		}
+		_, _ = io.WriteString(w, `{"acknowledged":"`+digest+`"}`)
+	})
+	return service, sink, sinkServer.URL
+}
+
+// deliveredSince is the kind of each delivery the sink was sent after the
+// first n.
+func deliveredSince(t *testing.T, sink *standInSink, n int) []string {
+	t.Helper()
+	got, _ := sink.snapshot()
+	var kinds []string
+	for _, each := range got[n:] {
+		d, _ := readDelivery(t, each)
+		kind, _ := d.Receipt["kind"].(string)
+		kinds = append(kinds, kind)
+	}
+	return kinds
+}
+
+// The start delivers again the acquisition receipts of a session left open,
+// and not the action receipt /act stored in the same chain: a sink that
+// refuses that kind does not hold the session open, and the start seals it.
+func TestTheStartRedeliversAcquisitionReceiptsAloneAndSeals(t *testing.T) {
+	service, sink, sinkURL := actionLeftOpen(t)
+	again, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, service.sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again.forwarder = newReceiptForwarder(&receiptSinkSpec{url: sinkURL})
+	again.forwarder.attemptTimeout = 300 * time.Millisecond
+	again.forwarder.backoff = []time.Duration{time.Millisecond, time.Millisecond}
+	before, _ := sink.snapshot()
+	var stderr bytes.Buffer
+	if err := sealOpenAtStart(again, &stderr, fixedStamp("2026-11-10T00:00:01Z")); err != nil {
+		t.Fatalf("the start: %v", err)
+	}
+	if kinds := deliveredSince(t, sink, len(before)); len(kinds) != 1 || kinds[0] != "acquisition" {
+		t.Fatalf("the start delivered %v; want the acquisition alone", kinds)
+	}
+	if strings.Count(stderr.String(), "start: sealed after an interruption: ") != 1 || strings.Contains(stderr.String(), "is not sealed") {
+		t.Fatalf("the start did not seal the session:\n%s", stderr.String())
+	}
+}
+
+// gateway seal-open --config does as the start does: the acquisition
+// receipts alone are delivered again, and the session is sealed.
+func TestSealOpenByTheConfigurationRedeliversAcquisitionReceiptsAlone(t *testing.T) {
+	service, sink, sinkURL := actionLeftOpen(t)
+	dir := t.TempDir()
+	seedPath := writeSeedFile(t, dir, testSeed)
+	config := filepath.Join(dir, "engine.json")
+	body := fmt.Sprintf(`{"engineVersion":"35","authority":"gateway:test","seed":%q,"store":%q,"registry":%q,"decisionRecords":%q,"listen":"127.0.0.1:8787","catalog":%q,"receiptSink":{"url":%q},"platforms":{}}`,
+		seedPath, service.storeRoot, service.regPath, filepath.Join(dir, "decisions"), filepath.Join(dir, "catalog"), sinkURL)
+	if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := sink.snapshot()
+	var stdout, stderr bytes.Buffer
+	if code := cmdSealOpenAt([]string{"--config", config, "--all"}, &stdout, &stderr, nowStamp); code != 0 ||
+		!strings.Contains(stdout.String(), `"sessionId":"act-k"`) || strings.Contains(stderr.String(), "is not sealed") {
+		t.Fatalf("seal-open: %d %q %q", code, stdout.String(), stderr.String())
+	}
+	if kinds := deliveredSince(t, sink, len(before)); len(kinds) != 1 || kinds[0] != "acquisition" {
+		t.Fatalf("seal-open delivered %v; want the acquisition alone", kinds)
 	}
 }
