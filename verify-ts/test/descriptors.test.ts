@@ -1,11 +1,17 @@
 import * as assert from "node:assert/strict";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import mutableFS from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
+import { es256, keyObject } from "../src/alg.ts";
+import { descriptorStatus } from "../src/descriptors.ts";
 import { readDocument } from "../src/inputs.ts";
+import { parse } from "../src/json.ts";
+import type { ObjectValue } from "../src/json.ts";
+import type { ReachedKey } from "../src/rotation.ts";
 import { verifyStore } from "../src/verify.ts";
 import { acquisitionV3, authority, keyId, newStore, publicKey, put, sealLine, sign, signed, verdictText } from "./support.ts";
 
@@ -108,4 +114,42 @@ test("a descriptor statement signed by a later reached key cannot cover an earli
 test("a descriptor statement's endpoint follows the acquisition's transport", () => {
   const rows: {name:string,statementEndpoint:string,acquisition:Record<string,unknown>,status:string}[] = JSON.parse(fs.readFileSync(new URL("../../testdata/descriptor-provenance/endpoint-cases.json",import.meta.url),"utf8"));
   for (const row of rows) assert.equal(status(fixture(undefined,undefined,undefined,row.statementEndpoint,row.acquisition)),row.status,row.name);
+});
+
+// A descriptor statement a P-256 key signs (ADR-0053 §2) verifies under
+// the key reached as P-256, and a statement with no alg under that key id,
+// signed by that key, is not one: the caller holds the statement's alg to
+// the reached key's, as Go's does.
+test("a P-256 descriptor statement verifies by its alg, and one with no alg under the P-256 key id does not", () => {
+  const n = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+  const { privateKey, publicKey: p256Public } = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const jwk = p256Public.export({ format: "jwk" });
+  const x = Buffer.from(jwk.x!, "base64url"), y = Buffer.from(jwk.y!, "base64url");
+  const raw = Buffer.concat([Buffer.from([2 | (y[31]! & 1)]), x]);
+  const p256KeyId = crypto.createHash("sha256").update(raw).digest("hex").slice(0, 32);
+  const reached: ReachedKey = { raw, keyId: p256KeyId, alg: es256, key: keyObject(es256, raw) };
+  const lowS = (sig: Buffer): string => {
+    const s = BigInt("0x" + sig.subarray(32).toString("hex"));
+    const low = s > (n - 1n) / 2n ? n - s : s;
+    return sig.subarray(0, 32).toString("hex") + low.toString(16).padStart(64, "0");
+  };
+  const statementOf = (withAlg: boolean) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "descriptor-p256-"));
+    fs.mkdirSync(path.join(root, "artifacts"));
+    const snapshot = '{"tools":{}}', snapshotPin = digest(snapshot);
+    const binding = "customer@sha256:" + "1".repeat(64);
+    const core: Record<string,string> = {statementVersion:"1",authority,keyId:p256KeyId,source:"tickets/live",binding,snapshot:snapshotPin,endpoint:"",capturedAt:"2026-09-15T01:02:03Z"};
+    if (withAlg) core["alg"] = es256;
+    const sig = crypto.sign("sha256", Buffer.from(prefix + canonicalText(core), "utf8"), { key: privateKey, dsaEncoding: "ieee-p1363" });
+    const statement = canonicalText({...core, signature: lowS(sig)}), statementPin = digest(statement);
+    fs.writeFileSync(path.join(root, "artifacts", snapshotPin.slice(7)), snapshot);
+    fs.writeFileSync(path.join(root, "artifacts", statementPin.slice(7)), statement);
+    const receipt = parse(Buffer.from(JSON.stringify({authority, source: "tickets/live", acquisition: {descriptorProvenance: {snapshot: snapshotPin, statement: statementPin, binding}}}))) as ObjectValue;
+    return { root, receipt };
+  };
+  const good = statementOf(true);
+  assert.equal(descriptorStatus(good.root, good.receipt, [reached]), "ok");
+  const noAlg = statementOf(false);
+  assert.equal(descriptorStatus(noAlg.root, noAlg.receipt, [reached]), "descriptor-provenance-mismatch");
+  for (const dir of [good.root, noAlg.root]) fs.rmSync(dir, { recursive: true, force: true });
 });

@@ -49,6 +49,9 @@ export function descriptorStatus(root: string, receipt: ObjectValue, keys: reado
   if ((endpoint !== "" || remote) && (!isRemoteEndpoint(endpoint) || endpoint !== text(acquisition,"endpoint"))) return fail;
   const core: ObjectValue = {type:"object",members:obj.members.filter(m => m.name !== "signature")};
   const input = Buffer.concat([Buffer.from("judgment-pack-gateway/descriptor-statement/1:","utf8"),canonical(core)!]);
-  const key = keys.find(k => k.keyId === keyId);
+  // the key reached under the statement's keyId and of its alg, as Go's
+  // caller holds it (descriptor_provenance.go): a key of the other
+  // algorithm under that key id is not the key the statement names
+  const key = keys.find(k => k.keyId === keyId && k.alg === alg);
   return key !== undefined && verifyByAlg(alg,key,input,signature) ? "ok" : fail;
 }

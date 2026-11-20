@@ -18,8 +18,11 @@ cd go && go build -o gateway . && ./gateway conform --impl ../verify-ts/impl
 
 `impl canon` reads one JSON document on stdin and writes its canonical bytes,
 exiting 1 for a document outside the domain and 2 for one past what it reads;
-`impl verify [--scope <identifier>] [--ordinary-seals-only] <store-root> <registry-path> <authority> [<decision-records-dir>]`
-reads the 32-byte public key on stdin and writes `{"ok": …, "findings": […]}`,
+`impl verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] <store-root> <registry-path> <authority> [<decision-records-dir>]`
+reads the 32-byte public key on stdin (or, under `--public-key-alg ES256`, given first, exactly the 66
+lowercase hexadecimal characters of a P-256 compressed point, ADR-0053; as with `--scope`, an argument
+spelled `--public-key-alg` anywhere later is refused as a misplaced option, so a directory so named is
+given as `./--public-key-alg`) and writes `{"ok": …, "findings": […]}`,
 with `"observations": […]` after the findings when §4 has any (step 3's
 `session-open` and `sealed-after-interruption`, step 8's
 `decision-record-not-compared`, §1.2b's of an action), and

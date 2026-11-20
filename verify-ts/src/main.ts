@@ -33,6 +33,7 @@
 
 import * as fs from "node:fs";
 
+import type { Pin } from "./alg.ts";
 import { canonical } from "./canon.ts";
 import { Bytes, NoVerdict, code, documentBound } from "./inputs.ts";
 import { TooLarge, maxValues, parse } from "./json.ts";
