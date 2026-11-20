@@ -120,6 +120,16 @@ func TestTheKeyHistoryServesNoEntryTheChainDoesNotProve(t *testing.T) {
 	if code != http.StatusInternalServerError || string(body) != `{"error":"the key history could not be read; the gateway says why on its stderr"}` {
 		t.Fatalf("a history past a forged rotation: %d %s", code, body)
 	}
+	// the gateway's own key-rotation with no key-continuation after it: a
+	// walk that finds rotation-break, which ends at the gateway's key still
+	record := rotationRecord(data, 1, "2026-11-19T00:00:00Z", ed25519.NewKeyFromSeed(testSeed), ed25519.NewKeyFromSeed(historySeed("next")))
+	broken := append(bytes.Clone(data), bytes.SplitAfter(record, []byte("\n"))[0]...)
+	if err := os.WriteFile(registry, broken, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := askKeyHistory(t, g); code != http.StatusInternalServerError {
+		t.Fatalf("a history past a rotation without its continuation: %d %s", code, body)
+	}
 }
 
 // The consumer's check refuses every entry the chain does not prove: the
@@ -147,6 +157,14 @@ func TestTheKeyHistoryCheckRefusesWhatTheChainDoesNotProve(t *testing.T) {
 		"the key in force dropped":       func(keys []any) { keys[2] = nil },
 		"a validTo not the rotation's":   func(keys []any) { keys[0].(map[string]any)["validTo"] = "2026-11-18T00:00:00Z" },
 		"a validFrom not the rotation's": func(keys []any) { keys[1].(map[string]any)["validFrom"] = "2026-11-18T00:00:00Z" },
+		"a rotation whose signature does not verify": func(keys []any) {
+			k := keys[1].(map[string]any)
+			k["keyRotation"] = badSignature(k["keyRotation"].(string))
+		},
+		"a continuation whose signature does not verify": func(keys []any) {
+			k := keys[2].(map[string]any)
+			k["keyContinuation"] = badSignature(k["keyContinuation"].(string))
+		},
 		"a rotation another key signed": func(keys []any) {
 			keys[1].(map[string]any)["keyRotation"] = strings.Split(string(otherRotation), "\n")[0]
 		},
@@ -292,4 +310,14 @@ func TestARerunOfAStoreRotationCarriesTheKeyHistory(t *testing.T) {
 	if carried := readFile(t, keyHistoryBeside(newRegistry)); carried != string(before) {
 		t.Fatalf("the rerun carried another history:\n%s\n%s", carried, before)
 	}
+}
+
+// badSignature is a statement's line with its signature's first byte changed.
+func badSignature(line string) string {
+	at := strings.Index(line, `"signature":"`) + len(`"signature":"`)
+	flipped := "00"
+	if line[at:at+2] == "00" {
+		flipped = "01"
+	}
+	return line[:at] + flipped + line[at+2:]
 }
