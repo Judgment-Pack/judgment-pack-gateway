@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-19
 deciders: maintainer
 ---
@@ -27,6 +27,8 @@ Two more things follow from the shared namespace:
 
 The maintainer decided the direction on 2026-11-19 (#550). This record settles how it is
 built.
+
+Chosen by the maintainer on 2026-11-19 (direction, #550; label lifetime, point 5).
 
 ## Decision drivers
 
@@ -88,8 +90,8 @@ secret, and it keeps every signed form as it is.
     reuses its id, and nothing is lost.
   - The verifiers do not read `labels/`. SPEC.md §3a lists it as a store member a verifier
     passes over, as it lists `artifact-removals.jsonl`'s place.
-- **PostgreSQL kind.** Migration 0008 (0007 is the rotation mark, #546) adds
-  `gateway.session_labels`:
+- **PostgreSQL kind.** Migration 0009 (0007 is the rotation mark, #546, and 0008 the key
+  history, #560) adds `gateway.session_labels`:
   - `scope` (as `series.scope`: `'none'` or `'scope:' || identifier`), `label`, and `series`;
   - primary key `(scope, label)`, `series` unique;
   - row-level security by `gateway.scope`, as every scoped table has.
@@ -131,8 +133,9 @@ secret, and it keeps every signed form as it is.
 
 ### 4. The upgrade
 
-- The behaviour is an engine configuration version of its own, numbered at the build: the
-  next free version at the build (receipt-sink seals and retention take 37 and 38).
+- The behaviour is engine configuration version 39 (`labelsVersion`), a version of its own:
+  35 to 38 are taken (the receipt sink 35, the key service 36, receipt-sink seals 37,
+  retention 38).
 - At an older version nothing changes, and the name a caller sends is the session id.
 - At the new version, the start refuses while any session is open, and names
   `gateway seal-open --all`. Sealed sessions keep their ids and need no mapping, since nothing
@@ -140,7 +143,17 @@ secret, and it keeps every signed form as it is.
   label.
 - On the PostgreSQL kind, every instance moves together: stop all, seal-open, start all on the
   new version. An instance at the older version is refused beside one at the new version, by
-  name, as an instance on another key version is (ADR-0050).
+  name, as an instance on another key version is (ADR-0050). The instances on one database
+  are admitted beside one another by the rows of `gateway.start_lease`: each start records
+  its instance in its row, and `admitBeside` (`go/store_pg_lease.go`) compares each live
+  row's `key_id` and `authority` with its own and refuses with `errInstanceMismatch`.
+  Migration 0009 adds the column `labels boolean NOT NULL DEFAULT false` to that table. An
+  instance whose configuration is at version 39 or later records `true` in its row, and
+  one at an older version `false`. `admitBeside` compares `labels` as it compares `key_id`,
+  so an instance with labels on beside one with labels off is refused by name
+  (`errInstanceMismatch`), by the same path, whichever of the two starts second. A binary
+  that ships no migration 0009 does not serve a database migrated to it: it refuses a
+  schema newer than itself, as it does today.
 - Going back to an older version needs the same: every session sealed first. The older
   engine then reads the store as before and passes over `labels/` and `session_labels`.
 
@@ -187,6 +200,9 @@ secret, and it keeps every signed form as it is.
   PostgreSQL kind's several instances.
 - Bad, because a label names one session for its life: a job reusing one label after a seal
   is refused, and must label each run.
+- Callers of one scope, for example a user and a scheduled job, share one label namespace.
+  So one of them can learn, by a refusal, that a label is in use within its own scope. This
+  is by design: the namespace is the scope, and a scope's callers reach the same sessions.
 - Revisit when a caller needs a label to name "the current session" across seals. That would
   be a pointer moved by `/seal`, with its own rules for which session a label then means.
 
@@ -203,4 +219,5 @@ secret, and it keeps every signed form as it is.
   `go/open_sessions.go` (the lookup before the claim), `go/serve.go` (`acquireWithScope`,
   `sealFor`), `go/act.go`, `go/mcp.go` (the seal tool), `go/remove_scope.go`,
   `go/store_remove_scope.go`, `go/retain.go`, `go/store_retain.go`,
-  `go/store_pg/migrations/0008_session_labels.sql`, `go/engine.go`.
+  `go/store_pg/migrations/0009_session_labels.sql` (with the `labels` column of
+  `gateway.start_lease`), `go/store_pg_lease.go` (`admitBeside`), `go/engine.go`.
