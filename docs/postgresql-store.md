@@ -354,9 +354,10 @@ records itself as the session's holder when it admits the call, before the sourc
   `session <id> is held by another gateway instance serving this database: a session is served by
   the instance that admitted its first call, so send its calls and its seal to that instance, or
   acquire into a new session`. It is not forwarded.
-- **One seed, one authority, one set of sources** on every instance. A start in this mode is
-  refused, `instance-mismatch`, where an instance whose lease is live signs under another key id
-  or names another authority; it is refused, `start-lease-held`, beside a live instance of the
+- **One seed, one authority, one engine version's reading of sessions, one set of sources** on
+  every instance. A start in this mode is refused, `instance-mismatch`, where an instance whose
+  lease is live signs under another key id, names another authority, or reads the session a
+  request names otherwise: by label from engine version 39, by id before it ("Session labels"); it is refused, `start-lease-held`, beside a live instance of the
   one-instance mode, and an instance of the one-instance mode is refused beside one of this mode.
   The comparison is with live instances alone: once every instance has stopped and its lease has
   run out, a start is compared with none, as in the one-instance mode. A key changed then is still
@@ -565,6 +566,7 @@ start refuses a table it was not restored on.
 | `gateway.removal_records` (schema version 5: the removal records) | SELECT | no scope's: every row is of no scope |
 | `gateway.rotated` (schema version 7: the mark of a store rotated away from) | SELECT, INSERT | every one: it carries no scope, and holds one row at most |
 | `gateway.key_history` (schema version 8: the key history a store rotation carried into the database) | SELECT | every one: it carries no scope, and holds one row at most |
+| `gateway.session_labels` (schema version 9: each session label and the session id minted for it) | SELECT, INSERT | its namespace's: the scope it is of, or none |
 
 Append-only by privilege: nothing but a document and the start lease's rows are changed once written,
 and nothing but a document is removed; a scope identifier, once recorded, stays, and a removal
@@ -752,7 +754,10 @@ seed's key, and a registry under a key service's key is refused.
   so is a store with no registry yet.
 - **Row security stays forced.** The scope's rows are read and removed with `gateway.scope` set
   to the scope's form, and the scope named in every DELETE besides; each DELETE's count is held
-  to the count read, and the transaction rolls back where one differs. The records and the
+  to the count read, and the transaction rolls back where one differs. Every session label of
+  the scope's namespace goes (schema version 9), first, before the receipts, and where the scope
+  holds labels and no session, as a label minted for a source that failed leaves, the labels go
+  alone, with no record, since no session is removed. The records and the
   identifier's row are written with it set to `none`.
 - **The records.** Those of the filesystem kind's `gateway remove-scope` (SPEC.md §1.3a, §6): a
   `session-removal` record for each sealed session of the scope and one `scope-removal` record
@@ -884,12 +889,63 @@ write-ahead log, base backups and replicas under the operator's own retention.
 gives the `retention` member and the seed. It runs as the migration login acting as the owner,
 in one transaction that holds the migration's lock and the start lease, as `gateway store
 remove-scope` does, so a gateway serving the database refuses it. For each session it removes
-it deletes the session's receipts, its holders and its row, and the payloads of its scope that
-no other receipt or document of the scope names, and keeps a `session-removal` record in the
-same transaction. A session of no scope identifier is refused: it goes only with its whole
+it deletes the session's label (schema version 9), first, then its receipts, its holders and
+its row, and the payloads of its scope that no other receipt or document of the scope names,
+and keeps a `session-removal` record in the same transaction. A session of no scope identifier is refused: it goes only with its whole
 database. A database rotated away from is refused by the rotation's sentence, *the store was
 rotated away from (store-rotated:...)*, since a removal appended to its registry would break the
 link the new store names. The run-time role's privileges do not change.
+
+## Session labels
+
+From engine configuration version 39 the `session` a request names is a label in its scope's
+namespace, mapped to a session id the gateway mints (docs/design/engine-config.md, "Session
+labels"; ADR-0051). On this kind a label is a row of `gateway.session_labels` (migration
+`0009_session_labels.sql`, schema version 9):
+
+- **The table.** `scope` (as `gateway.series` holds it: `none`, or `scope:` and the identifier),
+  `label` (of the session id form) and `series` (the minted id, 32 lowercase hexadecimal
+  characters). The primary key is `(scope, label)`, and `series` is unique. No key references
+  `gateway.series`: the row is written before the session's first receipt, so it may name a
+  series that is not there yet. Row security is the policy of every scoped table: an instance
+  reads and writes a namespace's labels through the view of its scope alone, so no statement
+  reads another scope's labels.
+- **The first use.** The instance inserts the row `ON CONFLICT (scope, label) DO NOTHING` and,
+  where another request or another instance recorded the label first, reads the row there in the
+  same transaction. Every instance on one database agrees on one id for a label, without the
+  start lease or a lock of its own. An acquisition records a label it minted only once it is
+  admitted, immediately before its source starts: a call refused before then leaves no label.
+- **The grants.** The run-time role holds SELECT and INSERT ("What the run-time login may do"):
+  a label is never changed. `gateway store remove-scope` and `gateway store retain`, as the
+  migration login acting as the owner, delete the labels of the sessions they remove, first,
+  before the receipts, in their one transaction ("Removing one scope identifier's rows",
+  "Retention by acknowledgment"). A removed label is free, and its next use mints a new id.
+- **The start lease.** Migration 9 adds the column `labels boolean NOT NULL DEFAULT false` to
+  `gateway.start_lease`. Each instance records in its row whether its configuration is of version
+  39 or later. An instance with labels on is refused beside one with them off, either way round,
+  by name (`instance-mismatch`), as one under another key id is ("Several instances on one
+  database"). `gateway seal-open --config` records its configuration's, so it is admitted beside
+  the instances of its version.
+- **The start at version 39** refuses while the database holds a session open that no label
+  names, of any scope, naming `gateway seal-open --all`. A session an instance at version 39 left
+  open is named by its label, and does not refuse a start.
+- **`gateway sessions --config <engine.json> (--scope <identifier> | --no-scope) [--label
+  <label>]`** reads one namespace's labels through the run-time login the configuration names,
+  with the gateway running or stopped, and writes nothing.
+- **What is not carried.** `gateway export` carries no labels, and `gateway store rotate` starts
+  the new database with none.
+
+**Upgrading to version 39.** Every instance moves together:
+
+1. Stop every instance.
+2. Run `gateway seal-open --config <engine.json> --all`, which seals each session left open.
+3. Run `gateway store migrate` with the migration login, naming the run-time role. It applies
+   `0009_session_labels.sql` and the grants, and moves the schema to version 9. A binary that ships
+   no migration 9 does not serve a database migrated to it.
+4. Raise `engineVersion` to `"39"` in every instance's configuration, and start them all.
+
+Going back needs the same: every instance stopped and every session sealed first. An older engine
+on schema version 9 passes `gateway.session_labels` over.
 
 ## Time
 
