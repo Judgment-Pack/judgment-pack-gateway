@@ -238,17 +238,21 @@ type retentionHold struct {
 // session kept and a refusal for each that refuses the call.
 type retentionChoice struct {
 	take    map[string]string
+	finish  map[string]string
 	notes   []string
 	refused []string
 }
 
 // chooseRetained judges every acknowledgment that verified against the
-// store's seals, under the window and the command's clock. removed is
-// whether a session-removal record already names the seal; hold is what the
-// store holds of the session.
+// store's seals, under the window and the command's clock. removed is the
+// scope identifier of the session-removal record that already names the
+// seal, and whether one does; hold is what the store holds of the session.
+// A session recorded as removed whose files or rows are still there is one
+// a run cut off after its records left: it goes to finish, under its
+// record's scope identifier, and is removed with no record signed again.
 func chooseRetained(acks []retentionAck, walk *registryWalk, cfg *retentionConfig, now time.Time, onlyScope string,
-	removed func(session string, s seal) bool, hold func(session string) retentionHold) retentionChoice {
-	c := retentionChoice{take: map[string]string{}}
+	removed func(session string, s seal) (string, bool), hold func(session string) retentionHold) retentionChoice {
+	c := retentionChoice{take: map[string]string{}, finish: map[string]string{}}
 	named := map[string]bool{}
 	window := 0
 	for _, ack := range acks {
@@ -263,12 +267,27 @@ func chooseRetained(acks []retentionAck, walk *registryWalk, cfg *retentionConfi
 		case !sealed:
 			c.refused = append(c.refused, name+", which the store does not hold")
 			continue
+		case walk.conflicted[ack.sessionID]:
+			c.refused = append(c.refused, name+", for which the registry holds more than one seal (SPEC.md §3c); a session whose seal is in conflict is never removed")
+			continue
 		case s.signature != ack.sealSignature || s.finalCount != ack.finalCount:
 			c.refused = append(c.refused, name+" under another seal than the store holds")
 			continue
 		}
-		if removed(ack.sessionID, s) {
-			c.notes = append(c.notes, fmt.Sprintf("session %s was recorded as removed already", ack.sessionID))
+		if scope, done := removed(ack.sessionID, s); done {
+			switch {
+			case !h.held:
+				c.notes = append(c.notes, fmt.Sprintf("session %s was recorded as removed already", ack.sessionID))
+			case onlyScope != "" && subtle.ConstantTimeCompare([]byte(scope), []byte(onlyScope)) != 1:
+				c.notes = append(c.notes, fmt.Sprintf("session %s is of another scope identifier than --scope names; it is kept", ack.sessionID))
+			case h.why != "":
+				c.refused = append(c.refused, name+", recorded as removed already, which "+h.why)
+			case h.scope != "" && subtle.ConstantTimeCompare([]byte(h.scope), []byte(scope)) != 1:
+				c.refused = append(c.refused, name+", recorded as removed already under another scope identifier than its receipts carry; the session is left whole")
+			default:
+				c.notes = append(c.notes, fmt.Sprintf("session %s was recorded as removed already; its files, still there, are removed now", ack.sessionID))
+				c.finish[ack.sessionID] = scope
+			}
 			continue
 		}
 		sealedAt, err := time.Parse(time.RFC3339, s.sealedAt)
@@ -315,7 +334,7 @@ func chooseRetained(acks []retentionAck, walk *registryWalk, cfg *retentionConfi
 	// cumulative acknowledgment file is the same call.
 	var unnamed []string
 	for session, s := range walk.seals {
-		if !named[session] && !removed(session, s) {
+		if _, done := removed(session, s); !named[session] && !done {
 			unnamed = append(unnamed, session)
 		}
 	}
@@ -329,10 +348,14 @@ func chooseRetained(acks []retentionAck, walk *registryWalk, cfg *retentionConfi
 	return c
 }
 
-// removedUnder is whether a session-removal record, of any scope identifier,
-// names the seal (sessionRemoved).
-func removedUnder(ret *retention) func(string, seal) bool {
-	return func(session string, s seal) bool { return ret.sessionRemoved(session, s) }
+// removedUnder is the scope identifier of the session-removal record, of
+// any scope identifier, that names the seal, and whether one does
+// (removalOf).
+func removedUnder(ret *retention) func(string, seal) (string, bool) {
+	return func(session string, s seal) (string, bool) {
+		rec, ok := ret.removalOf(session, s)
+		return rec.scope, ok
+	}
 }
 
 // retentionSummary is the call's summary, the last thing it says: what it
@@ -548,23 +571,29 @@ func retainFrom(storeRoot, authority string, priv *signingKey, walk *registryWal
 		out.refused = append(choice.refused, "nothing was removed")
 		return out, nil
 	}
-	if len(choice.take) == 0 {
+	if len(choice.take) == 0 && len(choice.finish) == 0 {
 		out.notes = append(out.notes, "no session is past retention under an acknowledgment; nothing was removed")
 		return out, nil
 	}
 	plan, refused := planScopeRemoval(storeRoot, all, sessions, walk, ret, func(session string) (string, bool) {
-		scope, take := choice.take[session]
-		return scope, take
+		if scope, take := choice.take[session]; take {
+			return scope, true
+		}
+		scope, finish := choice.finish[session]
+		return scope, finish
 	})
 	if len(refused) > 0 {
 		out.refused = append(refused, "nothing was removed")
 		return out, nil
 	}
-	if len(plan.sessions) != len(choice.take) || plan.sealed != int64(len(choice.take)) {
+	if len(plan.sessions)+len(plan.empty) != len(choice.take)+len(choice.finish) || plan.sealed != int64(len(plan.sessions)) {
 		return out, errors.New("the sessions the acknowledgments name are not those the store would remove, and nothing was removed")
 	}
 	var lines []byte
 	for _, session := range plan.sessions {
+		if _, finish := choice.finish[session]; finish {
+			continue
+		}
 		s := walk.seals[session]
 		record, line, err := signedSessionRemoval(priv, walk.keys, session, s, choice.take[session], carriedSalt(held[session]), o.by, stamp())
 		if err != nil {
@@ -573,15 +602,17 @@ func retainFrom(storeRoot, authority string, priv *signingKey, walk *registryWal
 		lines = append(lines, line...)
 		out.appended = append(out.appended, record)
 	}
-	if err := appendRemovals(storeRoot, torn, lines); err != nil {
-		n := len(out.appended)
-		out.appended = nil
-		return out, fmt.Errorf("%v; the %d record(s) may be in the file, and nothing was removed; a second run completes it", err, n)
+	if len(lines) > 0 {
+		if err := appendRemovals(storeRoot, torn, lines); err != nil {
+			n := len(out.appended)
+			out.appended = nil
+			return out, fmt.Errorf("%v; the %d record(s) may be in the file, and nothing was removed; a second run completes it", err, n)
+		}
 	}
 	if err := carryOutRemoval(storeRoot, plan); err != nil {
 		return out, err
 	}
-	out.notes = append(out.notes, fmt.Sprintf("removed %d session(s), holding %d receipt(s), and %d payload(s)", len(plan.sessions), len(plan.receipts), len(plan.payloads)))
+	out.notes = append(out.notes, fmt.Sprintf("removed %d session(s), holding %d receipt(s), and %d payload(s)", len(plan.sessions)+len(plan.empty), len(plan.receipts), len(plan.payloads)))
 	return out, nil
 }
 

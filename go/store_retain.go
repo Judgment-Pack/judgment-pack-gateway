@@ -249,15 +249,24 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 		return refuse(choice.notes, choice.refused)
 	}
 	out.notes = choice.notes
-	if len(choice.take) == 0 {
+	if len(choice.take) == 0 && len(choice.finish) == 0 {
 		if !c.broken {
 			c.exec("ROLLBACK")
 		}
 		out.notes = append(out.notes, "no session is past retention under an acknowledgment; nothing was removed")
 		return out, nil
 	}
-	sessions := make([]string, 0, len(choice.take))
-	for session := range choice.take {
+	// gone is every session the call removes: those it records now, and
+	// those recorded already whose rows a run cut off left (finish)
+	gone := map[string]string{}
+	for session, scope := range choice.take {
+		gone[session] = scope
+	}
+	for session, scope := range choice.finish {
+		gone[session] = scope
+	}
+	sessions := make([]string, 0, len(gone))
+	for session := range gone {
 		sessions = append(sessions, session)
 	}
 	sort.Strings(sessions)
@@ -267,7 +276,7 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 	// are judged by what they spell, which refuses where a citation would.
 	var refused []string
 	for _, e := range entries {
-		if _, taken := choice.take[e.series]; taken {
+		if _, taken := gone[e.series]; taken {
 			continue
 		}
 		for _, session := range sessions {
@@ -289,18 +298,22 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 		if err := inScope(row); err != nil {
 			return failed(err)
 		}
-		var salt string
-		if s.salted {
-			if salt, err = pgSeriesSalt(tx, row, session); err != nil {
+		// a session recorded as removed already has its rows removed and no
+		// record signed again
+		if _, finish := choice.finish[session]; !finish {
+			var salt string
+			if s.salted {
+				if salt, err = pgSeriesSalt(tx, row, session); err != nil {
+					return failed(err)
+				}
+			}
+			record, line, err := signedSessionRemoval(priv, walk.keys, session, s, choice.take[session], salt, o.by, stamp())
+			if err != nil {
 				return failed(err)
 			}
+			lines = append(lines, line)
+			out.appended = append(out.appended, record)
 		}
-		record, line, err := signedSessionRemoval(priv, walk.keys, session, s, choice.take[session], salt, o.by, stamp())
-		if err != nil {
-			return failed(err)
-		}
-		lines = append(lines, line)
-		out.appended = append(out.appended, record)
 
 		// the payloads only this session's receipts name, in its scope
 		digests := map[string]bool{}
@@ -345,7 +358,7 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 			shared := false
 			for _, e := range entries {
 				if e.row == row && e.series != session && bytes.Contains(e.data, hexSum) {
-					if _, taken := choice.take[e.series]; !taken || e.series > session {
+					if _, taken := gone[e.series]; !taken || e.series > session {
 						shared = true
 						break
 					}
