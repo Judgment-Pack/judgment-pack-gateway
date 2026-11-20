@@ -50,6 +50,7 @@ var continuationMembers = map[string]bool{
 // storeContinuation is a store-continuation statement that loaded.
 type storeContinuation struct {
 	keyID          string
+	continuedAt    string
 	previousLines  int64
 	previousDigest string
 	// keyHistoryDigest is the lowercase hexadecimal SHA-256 of the key
@@ -104,7 +105,7 @@ func continuationOf(obj *vObject, key reachedKey) (*storeContinuation, bool) {
 	if keyID != key.keyID || len(key.key) != ed25519.PublicKeySize || !ed25519.Verify(key.key, continuationSigningInput(obj), signature) {
 		return nil, false
 	}
-	return &storeContinuation{keyID: keyID, previousLines: int64(lines), previousDigest: last, keyHistoryDigest: history}, true
+	return &storeContinuation{keyID: keyID, continuedAt: at, previousLines: int64(lines), previousDigest: last, keyHistoryDigest: history}, true
 }
 
 // continuationSigningInput is what a store continuation's signature covers:

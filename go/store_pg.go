@@ -604,6 +604,29 @@ func (x pgIndexed) listSeries() ([]string, error) {
 	return names, nil
 }
 
+// firstEntries is the first entry of each series of the scope that holds
+// one, in one statement: the series in listSeries' order, and of each the
+// entry whose name is lowest in byte order, as listEntries sorts them; a
+// series of no entry is not among them.
+func (x pgIndexed) firstEntries() ([]seriesFirst, error) {
+	var firsts []seriesFirst
+	err := x.k.transact(pgRead, func(tx pgTx) error {
+		rows, err := tx.exec(`SELECT DISTINCT ON (e.series) e.series, e.data FROM gateway.entries e
+			WHERE e.scope = $1 ORDER BY e.series, e.name COLLATE "C"`, x.k.row)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows.rows {
+			firsts = append(firsts, seriesFirst{series: string(row[0]), data: row[1]})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, pgFailure("first-entries", false, err)
+	}
+	return firsts, nil
+}
+
 func (x pgIndexed) listEntries(series string) ([]string, error) {
 	if !validListedSeries(series) {
 		return nil, pgRefused("list-entries", "not a series' name")

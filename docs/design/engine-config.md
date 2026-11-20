@@ -1087,7 +1087,9 @@ server still reads and verifies the pinned snapshot at its start.
 
 It refuses a binding that is not in the catalog, a platform already configured unless
 `--replace` is given — and with it the entry replaced is not resolved, since its pin may be
-what is being repaired, while every other platform is — a configuration path that is a symbolic
+what is being repaired, while every other platform is, each platform naming the same binding
+first re-pinned to the file `--replace` pins, in the same write, and named in the output — a
+configuration path that is a symbolic
 link, and a configuration that with the entry would exceed the size `serve` reads, judged
 before any check runs. The file's directory is held open from the first read to the rename, so
 what is read, written beside it and put in place is in that directory whatever a path component
@@ -2646,6 +2648,16 @@ held, and the session's next acquisition and its seal deliver it first and are r
 it is acknowledged. The delivery, acknowledgment, retry and deadline rules are SPEC.md §6a's.
 The member names no credential: the sink checks each receipt against the gateway's public
 key, which it pins as any verifier does.
+
+`gateway seal-open --config` delivers each stored receipt of a session to the sink before it
+seals the session. `gateway seal-open` given the store by its flags (`--store`, `--seed`,
+`--registry`, `--authority`) cannot tell whether the gateway that wrote the store forwarded
+receipts, so it refuses, exit 1, with a fixed sentence: `a store given by its flags may have
+been written by a gateway that forwards receipts to a receipt sink, and a seal here would not
+deliver them first; give --config, which names the sink, or --no-sink for a store with no
+receipt sink; nothing was sealed`. With `--no-sink` it seals as before and first writes on
+stderr `seal-open: --no-sink: delivery to a receipt sink was skipped; no receipt was delivered
+before a seal`. `--no-sink` beside `--config` is a usage error.
 
 ## A signer in a key service (engine version 36)
 

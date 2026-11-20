@@ -93,9 +93,9 @@ func TestSealOpenWritesTheSealTheCorpusHolds(t *testing.T) {
 		vec, storeRoot, registry, sealLine := sealOpenVector(t, tc.vector)
 		seedPath := writeSeedFile(t, t.TempDir(), tc.seed)
 		var stdout, stderr bytes.Buffer
-		code := cmdSealOpenAt([]string{"--store", storeRoot, "--seed", seedPath, "--registry", registry, "--authority", vec.Authority, "--session", "s1"},
+		code := cmdSealOpenAt([]string{"--store", storeRoot, "--seed", seedPath, "--registry", registry, "--authority", vec.Authority, "--no-sink", "--session", "s1"},
 			&stdout, &stderr, fixedStamp("2026-11-10T00:00:01Z"))
-		if code != 0 || stdout.String() != sealLine+"\n" || stderr.String() != sealOpenUnlocked() {
+		if code != 0 || stdout.String() != sealLine+"\n" || stderr.String() != sealOpenNoSinkSaid+sealOpenUnlocked() {
 			t.Fatalf("%s: exit %d\nstdout %q\nstderr %q\nwant stdout %q", tc.vector, code, stdout.String(), stderr.String(), sealLine+"\n")
 		}
 		if got := readFile(t, registry); got != vec.Registry {
@@ -180,14 +180,47 @@ func storeTree(t *testing.T, root string) map[string]string {
 	return tree
 }
 
-// sealOpenOn runs the command on a store leftOpenStore made, by its flags,
-// the seed in a file of its own.
+// sealOpenOn runs the command on a store leftOpenStore made, by its flags
+// and --no-sink, the seed in a file of its own. The stderr it returns is
+// past the line --no-sink writes first, which it holds is there.
 func sealOpenOn(t *testing.T, g *gatewayService, seedPath string, at string, rest ...string) (int, string, string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	args := append([]string{"--store", g.storeRoot, "--seed", seedPath, "--registry", g.regPath, "--authority", "gateway:test"}, rest...)
+	args := append([]string{"--store", g.storeRoot, "--seed", seedPath, "--registry", g.regPath, "--authority", "gateway:test", "--no-sink"}, rest...)
 	code := cmdSealOpenAt(args, &stdout, &stderr, fixedStamp(at))
-	return code, stdout.String(), stderr.String()
+	said, skipped := strings.CutPrefix(stderr.String(), sealOpenNoSinkSaid)
+	if !skipped {
+		t.Fatalf("seal-open --no-sink did not say the delivery was skipped: %q", stderr.String())
+	}
+	return code, stdout.String(), said
+}
+
+// A store by its flags, which cannot say whether the gateway that wrote it
+// forwarded receipts to a sink, is refused without --no-sink: exit 1, the
+// fixed sentence, and nothing sealed or written (#541). With --no-sink it
+// is sealed, and stderr says the delivery was skipped.
+func TestSealOpenByItsFlagsNeedsNoSink(t *testing.T) {
+	g := leftOpenStore(t)
+	seedPath := writeSeedFile(t, t.TempDir(), testSeed)
+	registry := readFile(t, g.regPath)
+	held := sessionEntries(t, g.storeRoot, "left")
+	var stdout, stderr bytes.Buffer
+	code := cmdSealOpenAt([]string{"--store", g.storeRoot, "--seed", seedPath, "--registry", g.regPath, "--authority", "gateway:test", "--session", "left"},
+		&stdout, &stderr, fixedStamp("2026-11-10T00:00:01Z"))
+	const want = "seal-open: a store given by its flags may have been written by a gateway that forwards receipts to a receipt sink, and a seal here would not deliver them first; give --config, which names the sink, or --no-sink for a store with no receipt sink; nothing was sealed\n"
+	if code != 1 || stdout.Len() != 0 || stderr.String() != want {
+		t.Fatalf("exit %d\nstdout %q\nstderr %q", code, stdout.String(), stderr.String())
+	}
+	if readFile(t, g.regPath) != registry || !sameEntries(sessionEntries(t, g.storeRoot, "left"), held) {
+		t.Fatal("a refusal wrote")
+	}
+	code, sealed, said := sealOpenOn(t, g, seedPath, "2026-11-10T00:00:01Z", "--session", "left")
+	if code != 0 || strings.Count(sealed, "\n") != 1 || !strings.Contains(sealed, `"sessionId":"left"`) || said != sealOpenUnlocked() {
+		t.Fatalf("seal-open --no-sink: exit %d\nstdout %q\nstderr %q", code, sealed, said)
+	}
+	if sealOpenNoSinkSaid != "seal-open: --no-sink: delivery to a receipt sink was skipped; no receipt was delivered before a seal\n" {
+		t.Fatalf("the line --no-sink writes is %q", sealOpenNoSinkSaid)
+	}
 }
 
 // What the command refuses, each named as it is, exit 1, and the store and
@@ -288,10 +321,10 @@ func TestSealOpenRefusesASeedTheRegistryRotatedFrom(t *testing.T) {
 	before := readFile(t, registry)
 	seedPath := writeSeedFile(t, t.TempDir(), corpusSeed(t))
 	var stdout, stderr bytes.Buffer
-	code := cmdSealOpenAt([]string{"--store", storeRoot, "--seed", seedPath, "--registry", registry, "--authority", vec.Authority, "--session", "s1"},
+	code := cmdSealOpenAt([]string{"--store", storeRoot, "--seed", seedPath, "--registry", registry, "--authority", vec.Authority, "--no-sink", "--session", "s1"},
 		&stdout, &stderr, fixedStamp("2026-11-10T00:00:01Z"))
 	const want = "seal-open: the registry's rotations end at key 33719bd9925ba0b0ef0ddb302e5a3ef4, not this gateway's key ddb406e95cad582adc111a7d6fbff25d: a gateway does not start under a key its registry rotated from, and a rotation pending its switch is finished by gateway rotate-key --resume\n"
-	if code != 1 || stdout.String() != "" || stderr.String() != want {
+	if code != 1 || stdout.String() != "" || stderr.String() != sealOpenNoSinkSaid+want {
 		t.Fatalf("exit %d\nstdout %q\nstderr %q", code, stdout.String(), stderr.String())
 	}
 	if readFile(t, registry) != before {
@@ -424,6 +457,8 @@ func TestSealOpenCommandLine(t *testing.T) {
 		{[]string{"--all", "--all"}, "seal-open: --all is given twice\n" + usage},
 		{[]string{"--store", "s", "--store", "t", "--all"}, "seal-open: --store is given twice\n" + usage},
 		{[]string{"--config", "c", "--registry", "r", "--all"}, "seal-open: --config names the store, the seed, the registry and the authority; --registry is not given beside it\n" + usage},
+		{[]string{"--no-sink", "--store", "s", "--no-sink", "--all"}, "seal-open: --no-sink is given twice\n" + usage},
+		{[]string{"--config", "c", "--no-sink", "--all"}, "seal-open: --config names the receipt sink, or none; --no-sink is not given beside it\n" + usage},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := cmdSealOpenAt(tc.args, &stdout, &stderr, fixedStamp("2026-11-10T00:00:01Z")); code != 2 || stdout.String() != "" || stderr.String() != tc.stderr {

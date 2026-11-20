@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -352,5 +353,28 @@ func TestRetainSignsThroughTheKeyService(t *testing.T) {
 	}
 	if rep, err := verifyWithRegistry(store, registry, "gateway:test", one.publicKey()); err != nil || !rep.OK {
 		t.Fatalf("the store after retain: %v %+v", err, rep)
+	}
+}
+
+// The readiness line names the key in force as it is written: a rotation on
+// SIGHUP, which may come before the line, is the key it names, never the
+// key at start.
+func TestTheReadinessLineNamesTheKeyInForceAfterALiveRotation(t *testing.T) {
+	standInKeyService(t)
+	g, _, _ := ksService(t, nil)
+	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080}
+	seedID := keyIDFor(ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey))
+	if line := g.readinessLine(addr); line != "gateway on http://127.0.0.1:8080 (authority gateway:test, key "+seedID+")\n" {
+		t.Fatalf("the readiness line at start: %q", line)
+	}
+	g.rereadConfig = func() (engineConfig, error) {
+		return engineConfig{signingKeyVersion: ksVersion1, signingPublicKey: hex.EncodeToString(ksKey("one").Public().(ed25519.PublicKey))}, nil
+	}
+	if _, err := g.rotateOnHangup(ksStamper); err != nil {
+		t.Fatalf("the rotation to the key service: %v", err)
+	}
+	oneID := keyIDFor(ksKey("one").Public().(ed25519.PublicKey))
+	if line := g.readinessLine(addr); line != "gateway on http://127.0.0.1:8080 (authority gateway:test, key "+oneID+")\n" {
+		t.Fatalf("the readiness line after a rotation: %q", line)
 	}
 }

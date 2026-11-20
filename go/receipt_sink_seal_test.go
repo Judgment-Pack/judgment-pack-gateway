@@ -130,6 +130,39 @@ func TestARequestBehindADeliveryInFlightIsRefusedAtTheDeadline(t *testing.T) {
 	}
 }
 
+// A seal waiting behind its session's seal delivery still in flight is
+// refused with the held seal's own sentence, at the deadline and when its
+// context ends; with nothing held, the wait is refused with the receipt's
+// sentence (#558).
+func TestASealBehindASealDeliveryInFlightIsRefusedWithTheSealsSentence(t *testing.T) {
+	f := &receiptForwarder{attemptTimeout: 50 * time.Millisecond}
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	held := newForwardQueue()
+	held.add(heldReceipt{index: sealIndex, body: []byte("{}"), digest: "sha256:" + strings.Repeat("0", 64), seal: true})
+	held.send <- struct{}{} // the seal's delivery in flight
+	empty := newForwardQueue()
+	empty.send <- struct{}{}
+	for _, tc := range []struct {
+		what string
+		ctx  context.Context
+		q    *forwardQueue
+		want error
+	}{
+		{"a seal held, at the deadline", context.Background(), held, sealNotForwarded{}},
+		{"a seal held, its context ended", ended, held, sealNotForwarded{}},
+		{"nothing held, at the deadline", context.Background(), empty, receiptNotForwarded{}},
+		{"nothing held, its context ended", ended, empty, receiptNotForwarded{}},
+	} {
+		if err := f.deliver(tc.ctx, tc.q, sealIndex); err != tc.want {
+			t.Fatalf("%s: %v", tc.what, err)
+		}
+	}
+	if (sealNotForwarded{}).Error() != "seal not forwarded: the receipt sink did not acknowledge the session's seal; the session is sealed in the registry, nothing was answered, and the seal is held to be delivered again by the session's next seal while the gateway that sealed it runs, and after a restart only by the next start or by gateway seal-open" {
+		t.Fatalf("the seal's sentence is %q", sealNotForwarded{})
+	}
+}
+
 // /act does not run past a receipt its session holds: it delivers again
 // first, and while the sink does not acknowledge, it is refused with the
 // fixed sentence and the executor is not started; once the sink

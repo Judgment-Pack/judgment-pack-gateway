@@ -141,8 +141,10 @@ func TestAPostgresStoreRotationCarriesTheKeyHistoryAcrossTwoRotations(t *testing
 	_, before := historyPinned(t, g, keys[0])
 	stop()
 
+	// each store rotation made while the key it carries is in force:
+	// after the rotation to it, before the rotation from it
 	target := pgTestDBBeside(t, db)
-	code, stdout, stderr := rotatePg(t, config, target, dir)
+	code, stdout, stderr := rotatePgAt(t, config, target, dir, func() string { return "2026-11-19T00:00:01Z" })
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
 	}
@@ -178,7 +180,7 @@ func TestAPostgresStoreRotationCarriesTheKeyHistoryAcrossTwoRotations(t *testing
 	stop2()
 
 	third := pgTestDBBeside(t, db)
-	if code, stdout, stderr := rotatePg(t, newConfig, third, newDir); code != 0 || stderr != "" {
+	if code, stdout, stderr := rotatePgAt(t, newConfig, third, newDir, func() string { return "2026-11-19T00:00:03Z" }); code != 0 || stderr != "" {
 		t.Fatalf("the second rotation: exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
 	}
 	thirdDir := tempDirAt(t, 0o700)

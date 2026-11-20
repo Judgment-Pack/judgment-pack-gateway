@@ -18,12 +18,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -564,6 +566,13 @@ func newGatewayServiceOnSigned(kind storeKind, seed []byte, sig signer, authorit
 		g.scoped = map[string]*store{}
 		for scope, view := range views {
 			g.scoped[scope] = newStoreOnWith("", view.artifacts(), view.receipts(), seed, st.signing, authority)
+		}
+		// each scope's series are held to the key as the rows of no scope
+		// are: a view's receipts are its scope's alone (ADR-0050)
+		for _, scope := range slices.Sorted(maps.Keys(g.scoped)) {
+			if err := holdStoreUnderKey(g.scoped[scope], reg); err != nil {
+				return nil, fmt.Errorf("scope %s: %w", scope, err)
+			}
 		}
 	}
 	return g, nil
@@ -2296,6 +2305,7 @@ func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string
 	if err := g.redeliverReached(sessionID, reach); err != nil {
 		return nil, err
 	}
+	sealDeliveredHook(sessionID)
 	record, forwarding, err := g.sealUnderLock(sessionID, reach)
 	if err != nil {
 		return nil, err
@@ -2393,6 +2403,7 @@ func (g *gatewayService) sealUnderLock(sessionID string, reach scopeReach) (*vOb
 		}
 		return nil, nil, badRequest{err}
 	}
+	sealAppendedHook(sessionID)
 	state.sealed = true
 	if !sealing {
 		return record, nil, nil
@@ -3130,9 +3141,15 @@ func (g *gatewayService) listenAndServe(address string) error {
 // the listener is bound to, the authority and the key, and serves on the
 // listener.
 func (g *gatewayService) announceAndServe(listener net.Listener) error {
-	fmt.Fprintf(os.Stderr, "gateway on http://%s (authority %s, key %s)\n",
-		listener.Addr(), g.authority, g.keyID)
+	fmt.Fprint(os.Stderr, g.readinessLine(listener.Addr()))
 	return g.serveOn(listener)
+}
+
+// readinessLine is the line announceAndServe writes: the key is the one in
+// force as it is written (ownKeyID), never the key at start, since a
+// rotation on SIGHUP may switch it before the line is written.
+func (g *gatewayService) readinessLine(addr net.Addr) string {
+	return fmt.Sprintf("gateway on http://%s (authority %s, key %s)\n", addr, g.authority, g.ownKeyID())
 }
 
 // The limits a listener other hosts can reach is served under, beside the

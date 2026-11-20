@@ -238,7 +238,7 @@ func connectTaxonomyOperations(ctx context.Context, req connectRequest, file *co
 	}
 	written.operationDescriptors = pins
 	if previous != nil {
-		out.after = restartLines(*previous, written)
+		out.after = repinLines(restartLines(*previous, written), req, written.binding)
 	}
 	return out, nil
 }
