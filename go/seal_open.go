@@ -101,6 +101,9 @@ type sealOpenStore interface {
 	// for the session, for a receipt delivered again to the receipt sink
 	// (ADR-0049); false where the store holds none.
 	payload(sessionID, hexSum string) ([]byte, bool, error)
+	// forwarding is the store's markers of seals pending forwarding
+	// (seal_sink.go).
+	forwarding() sealForwarding
 }
 
 // fsSealOpenStore is a store directory of the filesystem kind.
@@ -135,6 +138,8 @@ func (s fsSealOpenStore) payload(_, hexSum string) ([]byte, bool, error) {
 	}
 	return data, err == nil, err
 }
+
+func (s fsSealOpenStore) forwarding() sealForwarding { return fsSealForwarding{s.root} }
 
 func (s fsSealOpenStore) removals(keys []reachedKey) (map[string][]removalRecord, error) {
 	return loadRemovals(s.root, keys)
@@ -242,6 +247,18 @@ func sealOpenUnderSink(st sealOpenStore, authority string, writer *registryWrite
 	ret := &retention{removals: removals}
 	var targets []sealOpenTarget
 	var refused []string
+	// with seals forwarded, the seals pending forwarding first: each seal
+	// the registry holds whose acknowledgment a stop or a crash left
+	// unknown (seal_sink.go)
+	sinkDown := false
+	forwardSeals := sink != nil && sink.forwarder.seals
+	if forwardSeals {
+		held, acknowledged, err := sink.deliverPending(st.forwarding(), data, walk)
+		if err != nil {
+			return nil, nil, fmt.Errorf("the seals pending forwarding could not be read, and nothing was sealed: %v", err)
+		}
+		refused, sinkDown = held, !acknowledged
+	}
 	for _, name := range names {
 		target, refusal, err := sealOpenJudge(st, authority, walk, ret, name, session != "")
 		if err != nil {
@@ -255,13 +272,19 @@ func sealOpenUnderSink(st sealOpenStore, authority string, writer *registryWrite
 		}
 	}
 	var sealed []*vObject
-	sinkDown := false
 	for _, t := range targets {
 		if sink != nil {
 			if sinkDown || !sink.deliver(st, t) {
 				sinkDown = true
 				refused = append(refused, fmt.Sprintf("session %s is not sealed: %v; it is left open", t.sessionID, receiptNotForwarded{}))
 				continue
+			}
+		}
+		// the seal's marker before the seal, once every receipt is
+		// acknowledged (above)
+		if forwardSeals {
+			if err := st.forwarding().mark(t.sessionID); err != nil {
+				return sealed, refused, fmt.Errorf("session %s: the seal's forwarding could not be recorded, so it was not sealed: %w", t.sessionID, err)
 			}
 		}
 		record, err := writer.sealAfterInterruptionOfScope(t.sessionID, t.count, t.head, stamp(), via, t.scope, t.salt)
@@ -279,6 +302,10 @@ func sealOpenUnderSink(st sealOpenStore, authority string, writer *registryWrite
 			return sealed, refused, fmt.Errorf("session %s: %w", t.sessionID, err)
 		}
 		sealed = append(sealed, record)
+		if forwardSeals && (sinkDown || !sink.deliverSeal(st.forwarding(), record)) {
+			sinkDown = true
+			refused = append(refused, sealHeldRefusal(t.sessionID))
+		}
 	}
 	return sealed, refused, nil
 }

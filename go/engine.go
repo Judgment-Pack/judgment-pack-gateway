@@ -115,12 +115,17 @@ import (
 // /acquire mints is delivered to before /acquire answers
 // (docs/adr/0049-a-receipt-is-acknowledged-by-the-sink-before-it-is-answered.md;
 // receipt_sink.go): a file with the member is refused under an earlier
-// version, and a file without it serves as before. connect raises a file to
+// version, and a file without it serves as before; and version 36
+// (sealSinkVersion) receiptSink's `seals`, each seal delivered to the sink
+// after the session's receipts and acknowledged by its digest before /seal
+// answers (ADR-0049, amendment of 2026-11-19; seal_sink.go): a file with the
+// member is refused under an earlier version, and a sink without it is sent
+// receipts alone, as before. connect raises a file to
 // version 12 when a capture is signed, retaining older registrations as they
-// were; it never lowers a configuration version, and it raises none to 31, 32, 33, 34 or 35.
-const engineVersion = receiptSinkVersion
+// were; it never lowers a configuration version, and it raises none to 31, 32, 33, 34, 35 or 36.
+const engineVersion = sealSinkVersion
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, sealSinkVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -607,7 +612,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		if !versionAtLeast(version, receiptSinkVersion) {
 			return engineConfig{}, fmt.Errorf("engine configuration: receiptSink is a version-%s member; engineVersion %s has no receiptSink", receiptSinkVersion, version)
 		}
-		sink, err := parseReceiptSink(value)
+		sink, err := parseReceiptSink(value, version)
 		if err != nil {
 			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 		}

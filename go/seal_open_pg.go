@@ -192,6 +192,10 @@ func (st *pgSealOpenStore) sessions() ([]string, error) {
 // a series --all meets that no session id names is no session of a
 // gateway's (SPEC.md §3a); it is named, and the rest judged, as the
 // filesystem kind names such a directory
+func (st *pgSealOpenStore) forwarding() sealForwarding {
+	return pgSealForwarding{st.kind.ofNoScope().documents()}
+}
+
 func (st *pgSealOpenStore) misnamed(name string) string {
 	return fmt.Sprintf("the store's series %q is not named as a session is (SPEC.md §3a); it is not sealed", name)
 }

@@ -64,20 +64,25 @@ var receiptSinkBackoff = []time.Duration{250 * time.Millisecond, 500 * time.Mill
 type receiptSinkSpec struct {
 	url     string
 	payload bool
+	// seals is receiptSink.seals (sealSinkVersion; seal_sink.go): each seal
+	// is delivered to the sink too, after the session's receipts.
+	seals bool
 }
 
 // parseReceiptSink holds receiptSink to its form: {"url": …} with an
-// optional "payload", true or false. The url is https, or plain http to a
+// optional "payload", true or false, and from sealSinkVersion an optional
+// "seals", true or false, which a file of an earlier version is refused by
+// name for. The url is https, or plain http to a
 // loopback address written as one -- 127.0.0.0/8 in dotted decimal or
 // [::1] -- so that a plain-http sink is reached without a name being
 // resolved. It carries no user, query or fragment. A refusal repeats no
 // value it was given.
-func parseReceiptSink(v value) (*receiptSinkSpec, error) {
+func parseReceiptSink(v value, version string) (*receiptSinkSpec, error) {
 	obj, ok := v.(*vObject)
 	if !ok {
 		return nil, errors.New("receiptSink is an object")
 	}
-	if err := exactlyMembers(obj, map[string]bool{"url": true, "payload": false}, "receiptSink"); err != nil {
+	if err := exactlyMembers(obj, map[string]bool{"url": true, "payload": false, "seals": false}, "receiptSink"); err != nil {
 		return nil, err
 	}
 	raw, _ := obj.get("url")
@@ -95,6 +100,16 @@ func parseReceiptSink(v value) (*receiptSinkSpec, error) {
 			return nil, errors.New("receiptSink: payload, when present, is true or false")
 		}
 		spec.payload = bool(on)
+	}
+	if value, present := obj.get("seals"); present {
+		if !versionAtLeast(version, sealSinkVersion) {
+			return nil, fmt.Errorf("receiptSink: seals is a version-%s member; engineVersion %s has no seals", sealSinkVersion, version)
+		}
+		on, ok := value.(vBool)
+		if !ok {
+			return nil, errors.New("receiptSink: seals, when present, is true or false")
+		}
+		spec.seals = bool(on)
 	}
 	return spec, nil
 }
@@ -147,6 +162,19 @@ type heldReceipt struct {
 	index  int64
 	body   []byte
 	digest string
+	// seal is a seal held for the sink (seal_sink.go), at sealIndex, which
+	// is refused with its own sentence; acknowledged, where set, runs once
+	// the sink has acknowledged it: the seal's forwarding marker removed.
+	seal         bool
+	acknowledged func()
+}
+
+// refusal is the fixed sentence a delivery stopped at r is refused with.
+func (r heldReceipt) refusal() error {
+	if r.seal {
+		return sealNotForwarded{}
+	}
+	return receiptNotForwarded{}
 }
 
 // forwardQueue is a session's receipts held for the sink, in index order.
@@ -187,6 +215,7 @@ func (q *forwardQueue) unacknowledged() bool {
 type receiptForwarder struct {
 	url            string
 	payload        bool
+	seals          bool
 	client         *http.Client
 	attemptTimeout time.Duration
 	backoff        []time.Duration
@@ -221,6 +250,7 @@ func newReceiptForwarder(spec *receiptSinkSpec) *receiptForwarder {
 	return &receiptForwarder{
 		url:     spec.url,
 		payload: spec.payload,
+		seals:   spec.seals,
 		client: &http.Client{
 			Transport: transport,
 			// a redirect is an answer that is not the acknowledgment
@@ -287,11 +317,14 @@ func (f *receiptForwarder) deliver(ctx context.Context, q *forwardQueue, upTo in
 		next := q.held[0]
 		q.mu.Unlock()
 		if !f.deliverOne(ctx, next) {
-			return receiptNotForwarded{}
+			return next.refusal()
 		}
 		q.mu.Lock()
 		q.held = q.held[1:]
 		q.mu.Unlock()
+		if next.acknowledged != nil {
+			next.acknowledged()
+		}
 	}
 }
 
@@ -356,9 +389,11 @@ func (g *gatewayService) forwardingContext() context.Context {
 	return context.Background()
 }
 
-// redeliver sends what the session holds for the sink before anything else
-// of it proceeds; nil with no sink, or nothing held. The caller holds the
-// session's admission and not the gateway's lock.
+// redeliver sends the receipts the session holds for the sink before
+// anything else of it proceeds; nil with no sink, or nothing held. A seal
+// held after them (seal_sink.go) is delivered by the session's next seal,
+// not by an acquisition or an action, which its seal refuses. The caller
+// holds the session's admission and not the gateway's lock.
 func (g *gatewayService) redeliver(sessionID string) error {
 	if g.forwarder == nil {
 		return nil
@@ -369,11 +404,11 @@ func (g *gatewayService) redeliver(sessionID string) error {
 		q = state.forward
 	}
 	g.mu.Unlock()
-	return g.forwarder.deliver(g.forwardingContext(), q, math.MaxInt64)
+	return g.forwarder.deliver(g.forwardingContext(), q, sealIndex-1)
 }
 
-// redeliverReached is redeliver for a seal, for a session the caller
-// reaches alone (ADR-0037): one it does not reach is answered by the seal
+// redeliverReached is redeliver for a seal, the session's held seal
+// included, for a session the caller reaches alone (ADR-0037): one it does not reach is answered by the seal
 // as one the gateway does not hold, and is not delivered for.
 func (g *gatewayService) redeliverReached(sessionID string, reach scopeReach) error {
 	if g.forwarder == nil {
@@ -385,7 +420,7 @@ func (g *gatewayService) redeliverReached(sessionID string, reach scopeReach) er
 		q = state.forward
 	}
 	g.mu.Unlock()
-	return g.forwarder.deliver(g.forwardingContext(), q, math.MaxInt64)
+	return g.forwarder.deliver(g.forwardingContext(), q, sealIndex)
 }
 
 // --- a session left open ----------------------------------------------------
