@@ -36,9 +36,14 @@ func (s *standInSink) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	var request struct {
 		ReceiptDigest string `json:"receiptDigest"`
+		SealDigest    string `json:"sealDigest"`
 	}
 	_ = json.Unmarshal(body, &request)
 	digest := request.ReceiptDigest
+	if digest == "" {
+		// a seal's delivery (seal_sink.go)
+		digest = request.SealDigest
+	}
 	s.mu.Lock()
 	n := len(s.got)
 	s.got = append(s.got, body)
@@ -108,6 +113,8 @@ type deliveryOf struct {
 	PayloadDigest   string          `json:"payloadDigest"`
 	Receipt         map[string]any  `json:"receipt"`
 	ReceiptDigest   string          `json:"receiptDigest"`
+	Seal            map[string]any  `json:"seal"`
+	SealDigest      string          `json:"sealDigest"`
 }
 
 func readDelivery(t *testing.T, body []byte) (deliveryOf, map[string]json.RawMessage) {

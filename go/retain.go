@@ -33,7 +33,7 @@ import (
 
 // retentionVersion is the engine configuration version that carries the
 // retention member. It is the one place the number is spelled.
-const retentionVersion = "37"
+const retentionVersion = "38"
 
 // retentionAckContext is the prefix an acknowledgment line signs under.
 const retentionAckContext = "judgment-pack-gateway/retention-ack/1:"

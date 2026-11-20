@@ -195,12 +195,17 @@ function main(args: string[]): number {
   // --artifacts <dir>, after --ordinary-seals-only and before the store
   // root, or not at all.
   const supplied = command === "verify" && afterOption[0] === "--artifacts" && afterOption.length > 1 && afterOption[1] !== "";
-  const positional = supplied ? afterOption.slice(2) : afterOption;
+  const afterArtifacts = supplied ? afterOption.slice(2) : afterOption;
+  // --previous <registry>, after --artifacts and before the store root, or
+  // not at all (SPEC.md §3d).
+  const linked = command === "verify" && afterArtifacts[0] === "--previous" && afterArtifacts.length > 1 && afterArtifacts[1] !== "";
+  const positional = linked ? afterArtifacts.slice(2) : afterArtifacts;
+  const misplacedPrevious = command === "verify" && (positional.includes("--previous") || (afterArtifacts[0] === "--previous" && !linked));
   // Either option in any later place is a usage error, never taken as an
   // argument and the plain verdict run in its stead.
   const misplaced = command === "verify" && options.slice(1).includes("--ordinary-seals-only");
   const misplacedArtifacts = command === "verify" && (positional.includes("--artifacts") || (afterOption[0] === "--artifacts" && !supplied));
-  if (command === "verify" && !badScope && !misplacedScope && !misplaced && !misplacedArtifacts && (positional.length === 3 || (positional.length === 4 && !scoped))) {
+  if (command === "verify" && !badScope && !misplacedScope && !misplaced && !misplacedArtifacts && !misplacedPrevious && (positional.length === 3 || (positional.length === 4 && !scoped))) {
     try {
       // The directory comes right before the positional arguments, so the
       // command line's last entries are it and them.
@@ -217,6 +222,7 @@ function main(args: string[]): number {
         ordinarySealsOnly,
         ...(artifacts !== undefined && { artifacts }),
         ...(scope !== undefined && { scope }),
+        ...(linked && { previous: afterArtifacts[1]! }),
       });
       const output = new Output();
       writeVerdict(verdict, (text) => output.write(text));

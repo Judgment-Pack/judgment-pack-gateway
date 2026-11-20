@@ -168,6 +168,14 @@ type registryWalk struct {
 	// of them at least a seal made after an interruption (SPEC.md §3c): the
 	// first still anchors the session, and the verdict finds seal-conflict.
 	conflicted map[string]bool
+	// continuation is the store continuation the registry's first line
+	// loads, nil for none; continuationFinding a store continuation that
+	// does not load where it stands (SPEC.md §3d), at most one.
+	continuation        *storeContinuation
+	continuationFinding finding
+	// lines is how many of the registry's lines the walk has passed: the
+	// place of the next line it reads.
+	lines int
 }
 
 // followed is how many rotations the walk followed.
@@ -206,7 +214,8 @@ func walkRegistry(data []byte, pinned ed25519.PublicKey) *registryWalk {
 // ends at a rotation whose continuation is the first line of more -- and
 // that w finds rotation-break, so a walk with a finding is never continued.
 func (w *registryWalk) continued(more []byte) *registryWalk {
-	next := &registryWalk{seals: map[string]seal{}, conflicted: map[string]bool{}, keys: slices.Clone(w.keys)}
+	next := &registryWalk{seals: map[string]seal{}, conflicted: map[string]bool{}, keys: slices.Clone(w.keys), lines: w.lines,
+		continuation: w.continuation, continuationFinding: w.continuationFinding}
 	next.walkLines(more)
 	return next
 }
@@ -215,6 +224,7 @@ func (w *registryWalk) continued(more []byte) *registryWalk {
 // walk of its bytes and next's as one.
 func (w *registryWalk) absorb(next *registryWalk) {
 	w.keys, w.finding = next.keys, next.finding
+	w.lines, w.continuation, w.continuationFinding = next.lines, next.continuation, next.continuationFinding
 	for _, id := range next.order {
 		w.take(next.seals[id])
 	}
@@ -226,9 +236,21 @@ func (w *registryWalk) absorb(next *registryWalk) {
 // walkLines walks data's lines on from where w stands.
 func (w *registryWalk) walkLines(data []byte) {
 	lines := strings.Split(string(data), "\n")
+	base := w.lines
+	if n := len(lines); lines[n-1] == "" {
+		w.lines += n - 1
+	} else {
+		w.lines += n
+	}
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
 		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		// a store continuation is never a seal or a rotation statement,
+		// and loads only as the registry's first line (SPEC.md §3d)
+		if obj := continuationLine(line); obj != nil {
+			w.readContinuation(obj, base+i)
 			continue
 		}
 		kind, obj := rotationKindOf(line)
@@ -718,6 +740,9 @@ func engineWalk(data []byte, own ed25519.PublicKey) (*registryWalk, error) {
 func (w *registryWalk) ownReading(own ed25519.PublicKey) error {
 	if w.finding != nil {
 		return rotationWalkError{fmt.Sprintf("the registry's rotations do not hold: %s at rotation %d; a rotation whose append was interrupted is finished by gateway rotate-key --resume, and nothing else", w.finding["status"], w.finding["rotation"])}
+	}
+	if w.continuationFinding != nil {
+		return rotationWalkError{fmt.Sprintf("the registry's store continuation does not hold: %s; a store continuation is a registry's first line, signed by the key in force when the store was rotated", w.continuationFinding["status"])}
 	}
 	if !bytes.Equal(w.current().key, own) {
 		return rotationWalkError{fmt.Sprintf("the registry's rotations end at key %s, not this gateway's key %s: a gateway does not start under a key its registry rotated from, and a rotation pending its switch is finished by gateway rotate-key --resume", w.current().keyID, keyIDFor(own))}

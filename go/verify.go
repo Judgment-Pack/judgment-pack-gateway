@@ -65,6 +65,11 @@ type report struct {
 	// namedAt is, for each of them, when the receipts naming it were
 	// minted, earliest first; the reader's report says so (witness fetch).
 	namedAt map[witnessTriple][]string
+	// continuation is the store continuation the registry's first line
+	// loads, nil for none, and continuationRefused one that did not load
+	// (SPEC.md §3d): what --previous holds to the registry before it.
+	continuation        *storeContinuation
+	continuationRefused bool
 	// scoped is whether the store holds a session of a scope identifier, as
 	// far as the store says it: a receipt holding a scope member, whatever
 	// its status, or a seal naming a scope (a seal of version 2). /verify
@@ -807,6 +812,18 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 	// could not take and no session.
 	if walk.finding != nil {
 		rep.Findings = append(rep.Findings, walk.finding)
+	}
+	// SPEC.md §3d: a store continuation that does not load where it stands
+	// is the registry's finding; one that loads is observed, and is none.
+	if walk.continuationFinding != nil {
+		rep.Findings = append(rep.Findings, walk.continuationFinding)
+		rep.continuationRefused = true
+	}
+	if c := walk.continuation; c != nil {
+		rep.continuation = c
+		rep.Observations = append(rep.Observations, finding{
+			"observation": observationContinuesFrom, "previousLines": c.previousLines, "previousDigest": c.previousDigest,
+		})
 	}
 
 	// SPEC.md §4 step 3: every session in the store must be anchored.

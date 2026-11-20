@@ -2670,9 +2670,40 @@ of the seed's key ([ADR-0050](../adr/0050-an-external-signer-in-a-key-service.md
   - A key service that cannot be reached, refuses (a 429 or 503 among the refusals) or answers a signature that does not verify fails the acquisition or the seal with a fixed sentence, and nothing is written.
 - **The commands under a key service.** `gateway remove-artifact`, `remove-scope`, `seal-open`, `export` and `connect`'s descriptor capture sign through the key version the configuration names, held to `signingPublicKey`. `gateway rotate-key` stays seed-only and refuses through the registry's walk. A key service's key is rotated by SIGHUP on the file kind; on the PostgreSQL kind every instance is stopped first (ADR-0050).
 
-## Retention by acknowledgment (engine version 37)
+## Seals at the receipt sink (engine version 37)
 
-Version 37 adds the optional `retention` member
+Version 37 adds `receiptSink`'s optional `seals` member
+([ADR-0049](../adr/0049-a-receipt-is-acknowledged-by-the-sink-before-it-is-answered.md),
+amendment of 2026-11-19; SPEC.md §6a). With it on, each seal is delivered to the same sink,
+after every receipt of its session, and acknowledged by its digest.
+
+```json
+"receiptSink": {"url": "https://audit-log.example/receipts", "seals": true}
+```
+
+- `seals` is optional, `true` or `false`, and `false` when absent. A sink of a file without
+  it, version 35's among them, is sent receipts alone, as before.
+- The member under version 36 or earlier is refused as `receiptSink: seals is a version-37 member;
+  engineVersion 36 has no seals`.
+
+With `seals: true`:
+- `/seal` answers only once the sink has acknowledged the seal. A seal not acknowledged is
+  refused `503` with `code` `receipt_not_forwarded` and the seal's own sentence. The seal is
+  in the registry and held: the session's next `/seal` delivers it again, and answers it once
+  it is acknowledged.
+- A seal made after an interruption, by the start's `sealOpenAtStart` or by `gateway
+  seal-open --config`, is delivered after the session's stored receipts, and named while it
+  is not acknowledged.
+- The store keeps a marker for each seal pending forwarding: on the filesystem kind a file
+  under `seal-forwarding/` in the store's root, on the PostgreSQL kind a document of no
+  scope. The start, with or without `sealOpenAtStart`, and `gateway seal-open --config`
+  deliver each pending seal before they serve or seal. The marker is no part of what
+  `gateway verify` reads. The PostgreSQL kind needs no migration for it: the run-time role's
+  grants on `gateway.documents` cover it.
+
+## Retention by acknowledgment (engine version 38)
+
+Version 38 adds the optional `retention` member
 (docs/adr/0048-retention-by-acknowledgment-and-store-rotation.md, options A1 and R1):
 
 ```json
@@ -2688,8 +2719,8 @@ Version 37 adds the optional `retention` member
   refused at load, by their place in the list.
 
 With no `retention` member nothing is removed by age, as before; nothing runs on a timer, and
-a schedule is the operator's scheduler running the command. A file of version 36 or earlier
-with the member is refused by name: `retention is a version-37 member`.
+a schedule is the operator's scheduler running the command. A file of version 37 or earlier
+with the member is refused by name: `retention is a version-38 member`.
 
 **An acknowledgment line.** The acknowledgment file holds one canonical JSON object per line
 (SPEC.md §1.1: members sorted, no whitespace), each ending in a line feed and under 4096
@@ -2769,9 +2800,9 @@ and verified with `gateway verify --scope <id>` on the restored copy; then
 `gateway remove-scope --scope <id> --by <label>` (or `gateway store remove-scope`), the gateway
 stopped.
 
-**Upgrading.** A file of version 36 or earlier loads as before. To retain, raise
-`engineVersion` to `"37"` and add the member. A gateway older than this one refuses a
-version-37 file by its version.
+**Upgrading.** A file of version 37 or earlier loads as before. To retain, raise
+`engineVersion` to `"38"` and add the member. A gateway older than this one refuses a
+version-38 file by its version.
 
 ## Keyed actions (engine version 14 and later)
 

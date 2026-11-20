@@ -512,7 +512,7 @@ the run-time role, before anything is applied. It prints, as canonical JSON, wha
 part of the connection string:
 
 ```json
-{"applied":[1,2,3,4,5,6],"migrations":"sha256:…","schemaVersion":6}
+{"applied":[1,2,3,4,5,6,7],"migrations":"sha256:…","schemaVersion":7}
 ```
 
 A second run applies nothing (`"applied":[]`). A schema newer than the binary's migrations is
@@ -563,6 +563,7 @@ start refuses a table it was not restored on.
 | `gateway.start_lease` (a row for each instance) | SELECT, INSERT, UPDATE | every one: it carries no scope |
 | `gateway.scope_identifiers` (schema version 3: the scope identifiers recorded) | SELECT, INSERT | no scope's: every row is of no scope |
 | `gateway.removal_records` (schema version 5: the removal records) | SELECT | no scope's: every row is of no scope |
+| `gateway.rotated` (schema version 7: the mark of a store rotated away from) | SELECT, INSERT | every one: it carries no scope, and holds one row at most |
 
 Append-only by privilege: nothing but a document and the start lease's rows are changed once written,
 and nothing but a document is removed; a scope identifier, once recorded, stays, and a removal
@@ -726,7 +727,7 @@ available with this kind yet").
 ## Removing one scope identifier's rows
 
 ```text
-gateway store remove-scope (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> --seed <file> --scope <identifier> --by <label> [--timeout <seconds>]
+gateway store remove-scope (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> (--seed <file> | --config <engine.json>) --scope <identifier> --by <label> [--timeout <seconds>]
 ```
 
 The command removes every row of one scope identifier, its sessions (`gateway.series`, and their
@@ -734,8 +735,10 @@ take-ups, `gateway.series_holders`), receipts
 (`gateway.entries`), payloads (`gateway.blobs`) and documents, and its row of
 `gateway.scope_identifiers`, and records the removal, in one transaction
 ([ADR-0034](adr/0034-removing-one-scope-identifiers-records.md)). It takes the migration login's
-connection string as `gateway store migrate` does, never printed, and the gateway's seed file, by
-which the records are signed.
+connection string as `gateway store migrate` does, never printed. The records are signed by the
+key in force. Given `--config`, that is the key service's key version the configuration names,
+held to `signingPublicKey`, or else the configuration's seed (ADR-0050). Given `--seed`, it is that
+seed's key, and a registry under a key service's key is refused.
 
 - **Who removes.** The migration login, by SET ROLE to the owner for the transaction alone: the
   owner holds DELETE as the tables' owner. No role, grant or function is added for it; the
@@ -779,6 +782,80 @@ Exit 0 on success, 1 on a refusal or failure, 2 on a usage error. A gateway star
 store serves as before; a platform fixed to the removed scope identifier records it again at its
 start and begins anew.
 
+## Rotating the store
+
+```text
+gateway store rotate --config <engine.json> (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> [--timeout <seconds>]
+```
+
+A rotation lets the store go by starting another
+([ADR-0048](adr/0048-retention-by-acknowledgment-and-store-rotation.md), decision 3; SPEC.md §3d).
+On this kind the new store is **a new database**, which the operator makes as in "Before the first
+start", for the same roles. It is never a new instance on the same database: every instance on one
+database shares one registry chain ("Several instances on one database"). `--config` names the old
+store, the seed and the authority, as `gateway seal-open --config` takes them. The connection flags
+name the migration login on the new database, as `gateway store migrate` takes them, never printed.
+`--timeout` bounds each of the command's two transactions there (default 300 seconds).
+
+- **The old database.** The command reaches it by the configuration's run-time login alone. It
+  takes the start lease first, in the one-instance mode whatever `storage.instances` says, and
+  holds it to its end. It seals every session left open, as `gateway seal-open --all` does
+  ("Sealing the sessions an instance left open"), each seal fenced on the lease. Nothing else is
+  written there.
+- **The new database.** Before anything is sealed, the migrations are run there in a transaction
+  that is rolled back at its end, and the database is held to hold no store. Once the seals are
+  appended, the migrations run again. In the same transaction, under the migration's lock, the
+  command checks the database again, reads the old registry again under the lease, and makes the
+  registry holding the store continuation alone. The migration and the registry commit together or
+  not at all.
+- **The grants.** The run-time role holds on the new database what `grants.sql` gives it on every
+  migration, and nothing more (a test compares them with the old database's).
+- **The line.** SPEC.md §3d's `store-continuation`, signed by the seed's key, naming the old
+  registry's line count and the SHA-256 of its bytes, whole, as the registry stands after the seals.
+  The command prints each seal appended, then that line.
+- **Verifying the pair.** Export each database with `gateway export --config` and verify the new
+  export with `gateway verify --previous <old export>/registry`. The old export is to be taken
+  after the rotation, before any instance serves the old database again. An instance started there
+  later appends to its registry, and the link to that registry no longer holds (a test).
+
+It is refused, with exit status 1, by name:
+
+- while any instance's start lease on the old database is live (`start-lease-held: …; stop the
+  gateway, then rotate`). Nothing is sealed, and the new database is not migrated.
+- when the new database cannot be migrated, or holds a store: a registry (`it holds a registry`),
+  a row of the start lease, a secret, or a row of no scope, the scope identifiers recorded among
+  them (`it holds rows of a store`). The old database itself, or a database a rotation already
+  made, is refused so. Nothing is changed. The check reads the scoped tables as rows of no scope
+  only, and every store a gateway made holds a registry and rows of the start lease, which are of no
+  scope: only a database built by hand, holding scoped rows alone, gets past it.
+- when a session left open cannot be sealed, or the old registry is not there. The new database
+  is not migrated.
+- when the old registry changed after it was read under the lease, when the lease is lost or is
+  held for no more than a write's margin by the time the new database's transaction is to commit,
+  or when that transaction fails. The seals appended stay in the old registry, and a run again into
+  an empty database rotates the store. When the COMMIT itself does not answer, the command says the
+  store *may have rotated; rerun to check*: a run again into a new database that holds more than
+  a registry is refused (`it holds a registry`), into one that holds the continuation of the old
+  registry alone writes the mark below and nothing else, and into an empty one rotates the store.
+
+The mark (SPEC.md §3d) is the one row of `gateway.rotated` (schema version 7): the hexadecimal
+SHA-256 of the continuation line and the time it was written. The command writes it last, as the
+run-time login, under the start lease and fenced as every write is, once the new database's
+transaction is committed; a mark that fails to write is said so, and a run again writes it. A
+start on the old database reads the row before the start lease's rows and is refused by name,
+*the store was rotated away from (store-rotated:...)*; so is every command that takes the lease,
+`seal-open` and a second `store rotate` among them. `gateway store remove-scope`, which holds the
+lease's rows without taking a row, is refused by the same sentence, since a removal appended to
+the old registry would break the link the new store names. `grants.sql`
+gives the run-time role SELECT and INSERT on the table and nothing else, and the key admits one
+row: a run-time login can only mark its own store rotated, which it could already cause by
+holding the lease. Removing the mark is the owner's alone. A database at schema version 6 is
+refused by this release's open until it is migrated (`apply the store's migrations`).
+
+Exit 2 on a usage error: `--new-store` and `--new-registry` are the filesystem kind's, and the
+migration login's flags are refused beside a configuration of that kind. Dropping the old database
+once it is past retention is the operator's, with PostgreSQL's own tools. Its rows stay in the
+write-ahead log, base backups and replicas under the operator's own retention.
 
 ## Retention by acknowledgment
 
@@ -792,7 +869,9 @@ remove-scope` does, so a gateway serving the database refuses it. For each sessi
 it deletes the session's receipts, its holders and its row, and the payloads of its scope that
 no other receipt or document of the scope names, and keeps a `session-removal` record in the
 same transaction. A session of no scope identifier is refused: it goes only with its whole
-database. The run-time role's privileges do not change.
+database. A database rotated away from is refused by the rotation's sentence, *the store was
+rotated away from (store-rotated:...)*, since a removal appended to its registry would break the
+link the new store names. The run-time role's privileges do not change.
 
 ## Time
 

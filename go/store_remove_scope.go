@@ -24,8 +24,9 @@ package main
 // mixed scopes and no receipt of another scope cites one removed: what the
 // filesystem kind's command refuses cannot be here.
 //
-// The records are the filesystem kind's, signed by the seed's key, which is
-// the key the registry's walk ends at: a session-removal record for each
+// The records are the filesystem kind's, signed by the key in force (the
+// seed's, or a key service's given --config), which is the key the
+// registry's walk ends at: a session-removal record for each
 // sealed session and a scope-removal record for the call, each read back as
 // a verifier reads the removal file before it is kept, and kept in
 // gateway.removal_records, whose rows an export writes as the store's
@@ -44,13 +45,16 @@ import (
 )
 
 const storeRemoveScopeUsage = `usage:
-  gateway store remove-scope (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> --seed <file> --scope <identifier> --by <label> [--timeout <seconds>]
+  gateway store remove-scope (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> (--seed <file> | --config <engine.json>) --scope <identifier> --by <label> [--timeout <seconds>]
 Removes one scope identifier's rows from the PostgreSQL storage kind -- its
 sessions, receipts, payloads and documents -- and its row of the scope
 identifiers recorded, as the migration login acting as the owner role, in
 one transaction that holds the migration's lock and the start lease: a
 gateway serving the database refuses it. The removal is recorded in the same
-transaction, signed by the seed's key, which is the gateway's: a
+transaction, signed by the key in force: given --config, the key service's
+key version the configuration names, held to signingPublicKey, or else the
+configuration's seed (ADR-0050); given --seed, that seed's key. A registry
+holding records under a key the walk does not reach is refused. A
 session-removal record for each sealed session and a scope-removal record
 for the call, which an export writes as the store's artifact-removals.jsonl
 (SPEC.md §1.3a, §6). The run-time role's privileges do not change. --by is
@@ -58,8 +62,11 @@ a label, recorded and not checked. Prints each record kept, as its line.`
 
 // storeRemoveScopeOptions is the command line, the connection apart.
 type storeRemoveScopeOptions struct {
-	roles     pgRoles
-	seed      string
+	roles pgRoles
+	seed  string
+	// config, where it is given in place of --seed, is the engine
+	// configuration whose seed and key version sign (ADR-0050)
+	config    string
 	scope, by string
 	timeout   time.Duration
 }
@@ -140,11 +147,11 @@ func cmdStoreRemoveScope(args []string, stdout, stderr io.Writer) int {
 func cmdStoreRemoveScopeAt(args []string, stdout, stderr io.Writer, stamp func() string) int {
 	const command = "store remove-scope"
 	usage := storeRemoveScopeUsage
-	flags, code := storeFlags(args, []string{"--connection-file", "--connection-env", "--owner", "--runtime", "--seed", "--scope", "--by", "--timeout"}, command, usage, stderr)
+	flags, code := storeFlags(args, []string{"--connection-file", "--connection-env", "--owner", "--runtime", "--seed", "--config", "--scope", "--by", "--timeout"}, command, usage, stderr)
 	if code != 0 {
 		return code
 	}
-	if flags["--seed"] == "" || flags["--scope"] == "" || flags["--by"] == "" {
+	if (flags["--seed"] == "") == (flags["--config"] == "") || flags["--scope"] == "" || flags["--by"] == "" {
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
@@ -166,7 +173,7 @@ func cmdStoreRemoveScopeAt(args []string, stdout, stderr io.Writer, stamp func()
 	}
 	o := storeRemoveScopeOptions{
 		roles: pgRoles{owner: flags["--owner"], runtime: flags["--runtime"]},
-		seed:  flags["--seed"], scope: flags["--scope"], by: flags["--by"], timeout: timeout,
+		seed:  flags["--seed"], config: flags["--config"], scope: flags["--scope"], by: flags["--by"], timeout: timeout,
 	}
 	out, err := storeRemoveScope(spec, o, stamp)
 	for _, record := range out.appended {
@@ -182,10 +189,26 @@ func cmdStoreRemoveScopeAt(args []string, stdout, stderr io.Writer, stamp func()
 	return 0
 }
 
-// storeRemoveScope reads the seed and the connection string, and removes
-// the scope's rows.
+// storeRemoveScope reads the seed, or the configuration naming it and the
+// key version, and the connection string, and removes the scope's rows,
+// signed by the key in force (commandSigner, ADR-0050).
 func storeRemoveScope(spec *storageSpec, o storeRemoveScopeOptions, stamp func() string) (removalOutcome, error) {
-	seed, err := loadSeed(o.seed)
+	seedPath, version, public := o.seed, "", ""
+	if o.config != "" {
+		data, err := readBounded(o.config, maxEngineConfigBytes)
+		if err != nil {
+			return removalOutcome{}, fmt.Errorf("engine configuration: %v", err)
+		}
+		cfg, err := parseEngineConfig(data)
+		if err != nil {
+			return removalOutcome{}, err
+		}
+		if cfg.storage == nil {
+			return removalOutcome{}, errors.New("the engine configuration names the filesystem kind; gateway remove-scope removes its files")
+		}
+		seedPath, version, public = cfg.seed, cfg.signingKeyVersion, cfg.signingPublicKey
+	}
+	seed, err := loadSeed(seedPath)
 	if err != nil {
 		return removalOutcome{}, fmt.Errorf("seed: %w", err)
 	}
@@ -193,7 +216,11 @@ func storeRemoveScope(spec *storageSpec, o storeRemoveScopeOptions, stamp func()
 	if err != nil {
 		return removalOutcome{}, err
 	}
-	return removeScopeRows(dsn, o, newSigningKey(newSeedSigner(seed)), stamp)
+	sig, err := commandSigner(version, public, seed)
+	if err != nil {
+		return removalOutcome{}, err
+	}
+	return removeScopeRows(dsn, o, newSigningKey(sig), stamp)
 }
 
 // pgScopeRows is what one scope identifier holds in the scoped tables.
@@ -269,6 +296,9 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 	// takes a row meanwhile, and the removal is refused while an instance
 	// serves (ADR-0034, option 1; ADR-0035, option C)
 	if err := pgHoldEveryInstance(c, "remove"); err != nil {
+		return failed(err)
+	}
+	if err := pgRefuseRotated(c); err != nil {
 		return failed(err)
 	}
 

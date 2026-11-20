@@ -143,7 +143,7 @@ func cmdCanon() int {
 }
 
 func cmdVerify(args []string) int {
-	const usage = "usage: gateway verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
+	const usage = "usage: gateway verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] [--previous <registry>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
 	// --scope <identifier>, first or not at all: the verdict is cut by the
 	// scope identifier (SPEC.md §4, "A verdict by scope"), and takes no
 	// decision-record directory. In any later place it is a usage error,
@@ -200,6 +200,26 @@ func cmdVerify(args []string) int {
 			return 2
 		}
 	}
+	// --previous <registry>, the registry of the store before this one
+	// (SPEC.md §3d): after --artifacts, before the store root, or not at
+	// all; the verdict then holds the store continuation to that registry's
+	// tail. In any later place it is a usage error, as the options before
+	// it are; a directory of that spelling is given as ./--previous.
+	previous := ""
+	if len(args) > 0 && args[0] == "--previous" {
+		if len(args) < 2 || args[1] == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		previous, args = args[1], args[2:]
+	}
+	for _, a := range args {
+		if a == "--previous" {
+			fmt.Fprintln(os.Stderr, "gateway verify: --previous goes before the store root, after --artifacts; a directory so named is given as ./--previous")
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+	}
 	if len(args) < 3 || len(args) > 5 {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
@@ -250,6 +270,9 @@ func cmdVerify(args []string) int {
 		verdict, err = verifyByScope(storeRoot, registryPath, authority, supplied, scope, publicKey, ordinarySealsOnly)
 	} else {
 		verdict, err = verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, ordinarySealsOnly)
+	}
+	if err == nil {
+		err = linkPrevious(verdict, previous, publicKey)
 	}
 	if err != nil {
 		// Could not produce a verdict at all.
@@ -580,12 +603,11 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	defer registryHold.Close()
-	// under the hold, before anything is served (SPEC.md §3c)
-	if cfg.sealOpenAtStart {
-		if err := sealOpenAtStart(service, os.Stderr, nowStamp); err != nil {
-			fmt.Fprintln(os.Stderr, "start:", err)
-			return 1
-		}
+	// under the hold, before anything is served (SPEC.md §3c), and the
+	// seals pending forwarding delivered (seal_sink.go)
+	if err := sealsAtStart(service, os.Stderr, nowStamp, cfg.sealOpenAtStart); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
 	}
 	service.witness = witness
 	// SIGHUP: the configuration's signingKeyVersion read again, and the
@@ -844,10 +866,11 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 	if err == nil {
 		_, err = service.kindRegistryWalk()
 	}
-	if err == nil && cfg.sealOpenAtStart {
+	if err == nil {
 		// the lease held and the registry walked, before anything is
-		// served (SPEC.md §3c; seal_open_pg.go)
-		err = sealOpenAtStart(service, r.said, nowStamp)
+		// served (SPEC.md §3c; seal_open_pg.go), and the seals pending
+		// forwarding delivered (seal_sink.go)
+		err = sealsAtStart(service, r.said, nowStamp, cfg.sealOpenAtStart)
 	}
 	if err == nil {
 		// a lease lost while the start ran ends it here
@@ -1335,12 +1358,11 @@ func cmdServe(args []string) int {
 		return 1
 	}
 	defer registryHold.Close()
-	// under the hold, before anything is served (SPEC.md §3c)
-	if opts.sealOpenAtStart {
-		if err := sealOpenAtStart(service, os.Stderr, nowStamp); err != nil {
-			fmt.Fprintln(os.Stderr, "start:", err)
-			return 1
-		}
+	// under the hold, before anything is served (SPEC.md §3c), and the
+	// seals pending forwarding delivered (seal_sink.go)
+	if err := sealsAtStart(service, os.Stderr, nowStamp, opts.sealOpenAtStart); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
 	}
 	// Sources run in their own process groups, so the terminal's interrupt
 	// no longer reaches them; the gateway's does, and it is carried to every

@@ -1507,6 +1507,82 @@ no receipt, is not counted, and is left where it is. Nothing is changed or delet
 session that cannot be read stops the command, and the start, with nothing sealed; at the
 start, a session that is not whole is named and stays open, and the gateway serves.
 
+## 3d. Store rotation: the store continuation
+
+A store can be let go of whole by starting another (`docs/adr/0048-retention-by-acknowledgment-and-store-rotation.md`, S2).
+`gateway store rotate`, the gateway stopped and its registry held as `rotate-key` holds it (§3b), seals
+every session left open in the old store as after an interruption (§3c), refusing the rotation, nothing
+new made, when one cannot be sealed; then makes a new store directory and a new registry, neither there
+before, whose first line is a **store continuation**; then, still under the hold, marks the old store
+**rotated away from** (below). The old store is otherwise left as it is, for its operator to archive or
+delete whole. On the PostgreSQL kind a rotation is to a new database, or a new schema the
+migration login owns, never a new instance on the same database (ADR-0035), whose instances share one
+registry chain; that kind rotates to a new database (`docs/postgresql-store.md`, "Rotating the
+store"), its continuation this one, byte for byte, read through `gateway export`.
+
+| Member | Form | Statement |
+|---|---|---|
+| `kind` | `"store-continuation"` | |
+| `continuationVersion` | the string `"1"` | |
+| `continuedAt` | `YYYY-MM-DDThh:mm:ssZ`, the form of `rotatedAt` | the gateway's clock when it rotated |
+| `keyId` | 32 lowercase hexadecimal characters | the key id of the key in force, which signs it |
+| `previousLines` | an integer from 0 to 2⁵³−1 | the old registry's line count |
+| `previousDigest` | 64 lowercase hexadecimal characters | the SHA-256 of the old registry's bytes, whole |
+| `signature` | 128 lowercase hexadecimal characters | Ed25519 over `"judgment-pack-gateway/store-continuation/1:"` and `canon` of the statement without `signature` |
+
+A registry's **line count** is the number of pieces its bytes split into at each `0x0A`, a last piece
+that is empty not counted; its **digest** is the SHA-256 of all its bytes, blank lines and a torn last
+line among them, of no bytes for a registry of none: the continuation names the registry exactly as it
+ends, and a line blanked or changed anywhere in it is another registry.
+
+**The mark.** A store rotated away from carries the mark `store-rotated:` followed by the lowercase
+hexadecimal SHA-256 of the new registry's first line, the continuation, without its `0x0A`. On the
+filesystem kind it is a file beside the registry, the registry's path with `.rotated` appended, holding
+the mark and a `0x0A`, synced before its directory; on the PostgreSQL kind it is the one row of
+`gateway.rotated`, holding the hexadecimal digest (`docs/postgresql-store.md`, "Rotating the store").
+The mark is outside the registry's bytes, so it is not in the digest, and a verifier never reads it. Every later
+hold of the old registry -- a gateway's start, `seal-open`, `remove-artifact`, `remove-scope`,
+`rotate-key` and its `--resume`, a second `store rotate` --
+refuses the store by the mark's name: *the store was rotated away from (store-rotated:...)*. A rotation
+stopped by a crash is finished by running it again: a new store directory that is empty, or holds only
+what the rotation left, does not refuse it, the new registry is written whole beside its place and
+renamed into it, and a new registry already there whose only line is the old registry's continuation, by
+its count and digest under the key in force, is kept, and only the mark is written.
+
+**Reading it.** A registry line is a store continuation when §1.1's parser reads it as one JSON object
+whose `kind` is `"store-continuation"`. It is never a seal or a rotation statement. At the registry's
+first line (the first piece of §3b's split) it **loads** when it has exactly the members above, each once
+and of its form, its `keyId` is the current key's (§3b: the key pinned) and its signature verifies under
+that key; otherwise the registry is **`continuation-forged`**. At any other line it loads nothing and the
+registry is **`continuation-misplaced`**. A registry reports at most one of the two, `{status}`, naming
+no session; a gateway's own reading (§3b) refuses either. A continuation that loads is no finding: the
+report carries the **observation** `continues-from`, `{observation, previousLines, previousDigest}`,
+since the store before it may have been deleted under retention.
+
+**Crossing a rotation.** `gateway verify --previous <registry>` (after `--artifacts`, before the store
+root) also reads the registry of the store before, absent or unreadable no verdict, and holds the link:
+no continuation loads and neither finding above stands → **`continuation-missing`**; `previousLines` is
+not its line count → **`continuation-count-mismatch`**; otherwise `previousDigest` is not its digest →
+**`continuation-digest-mismatch`**; otherwise the continuation's `keyId` is not the key that registry's
+rotations end at → **`continuation-key-mismatch`**. That registry is walked as a gateway walks its own
+(§3b): from the key its first `key-continuation` names as `previous`, where it holds one, and from the
+key pinned otherwise; a walk that finds one of §3b's findings ends at no key, and is that finding too.
+The keyId that registry's last seal states -- its last line that is one JSON object holding a string
+`sessionId` and a string `keyId`, and no rotation statement or store continuation -- must also be the
+key in force at that line, or the link is **`continuation-key-mismatch`**: a registry that never rotated
+is so held to the key its seals name, and one holding no seal to its walk's last key alone. Each link
+is checked pairwise: the store before is verified under its own pin, in its own run, and this run
+reads its registry for the link alone. Each is `{status}`, and the verdict then fails. `--previous`
+is given at most once, naming one registry: a second is a usage error. Each store is verified on its own,
+with its own run, so a sequence is verified pairwise, each store with the registry of the one before it;
+a verdict over a sequence is `ok` only when every store's is and every link holds. A receipt is never read across stores.
+
+**Older verifiers.** A verifier written before this section reads a store continuation as a line that
+is not a rotation statement, and so as a seal (§4 step 2), which loads nothing: it reports no finding and
+no observation of it, verifies the rest of the store as before, so a continued store is `ok` to it where
+it is `ok` here and a misplaced or forged continuation goes unreported; and it refuses `--previous` as a
+usage error, giving no verdict.
+
 ## 4. Registry-anchored verification
 
 `verify_with_registry(verify_store, store_root, key, registry_path, authority)`:
@@ -2380,7 +2456,10 @@ status:
 
 A gateway whose configuration names a receipt sink (§6a) has one more answer. It is **`503`**
 with `code` `receipt_not_forwarded` beside the fixed sentence of §6a, and it is the one refused
-acquisition after which a receipt is in the store.
+acquisition after which a receipt is in the store. Where it forwards seals as well
+(`receiptSink.seals`, engine version 37), `/seal` has the same status and code beside the
+seal's fixed sentence of §6a, and it is the one refused seal after which a seal is in the
+registry.
 
 An acquisition is one receipted read, however many runs of its adapter it takes: a token
 step's token request, the request, and the token request and run once more after a sealed
@@ -3066,9 +3145,10 @@ path, version 0.28.0 or later.
 
 A gateway whose engine configuration names `receiptSink` (engine version 35,
 `docs/design/engine-config.md`; ADR-0049) delivers each receipt `/acquire` mints to that one
-endpoint. `/acquire` answers only once the sink has acknowledged the receipt. Nothing here
-changes a receipt, a seal or the registry, and a receipt verifies (§4) with or without the
-sink.
+endpoint. `/acquire` answers only once the sink has acknowledged the receipt. Where
+`receiptSink.seals` is `true` (engine version 37), each seal goes to the same endpoint too,
+after its session's receipts ("Seals", below). Nothing here changes a receipt, a seal or the
+registry, and a receipt or a seal verifies (§4) with or without the sink.
 
 **The endpoint.** `receiptSink.url` is `https`, or plain `http` to a loopback address written
 as one: 127.0.0.0/8 in dotted decimal, or `[::1]`. A name, `localhost` included, is refused
@@ -3136,9 +3216,46 @@ start) only once each receipt the store holds of it, oldest first, has been deli
 acknowledged; one whose receipts are not all acknowledged is left open and named (ADR-0049,
 consequences).
 
+**Seals (engine version 37).** A gateway whose `receiptSink.seals` is `true` delivers each seal
+it appends to the same endpoint: the seal `/seal` appends, and a seal made after an
+interruption (§3c) at the start or by `gateway seal-open --config`. Without the member, or
+under engine version 35, no seal is delivered.
+- **The delivery.** One `POST` per seal, `Content-Type: application/json`. The body is the
+  canonical JSON (§1.1) of exactly these members:
+  - `deliveryVersion`, `"2"`;
+  - `seal`, the seal record, whole;
+  - `sealDigest`, `sha256:` followed by the lowercase hexadecimal SHA-256 of the seal's
+    canonical bytes (its registry line without the line feed).
+
+  A sink tells a seal's delivery from a receipt's by `deliveryVersion` alone.
+- **The acknowledgment.** A `200` whose body is exactly `{"acknowledged":"<sealDigest>"}`,
+  optionally followed by one line feed, under the bounds of a receipt's acknowledgment.
+  Anything else is not an acknowledgment.
+- **Order and at least once.** A seal is appended only once every receipt of its session has
+  been acknowledged, and is delivered after them. It is sent, in the same bytes, until it is
+  acknowledged, under the retries and deadlines above. A sink keeps each `sealDigest` once.
+- **When the sink does not acknowledge.** `/seal` answers `503`, `Content-Type:
+  application/json`, with no `Retry-After` and exactly this body:
+
+  `{"error":"seal not forwarded: the receipt sink did not acknowledge the session's seal; the session is sealed in the registry, nothing was answered, and the seal is held to be delivered again before the session's next seal, at the next start, or by gateway seal-open","code":"receipt_not_forwarded"}`
+
+  The seal is in the registry, and held. The session's next `/seal` delivers it again, and
+  answers it once it is acknowledged; a `/seal` after that is answered as one of a sealed
+  session. While a receipt of the session is held, `/seal` is refused with the receipt's
+  sentence, and no seal is appended.
+- **A seal pending forwarding.** The gateway records in the store, before it appends a seal,
+  that the seal is pending forwarding, and removes the record once the sink acknowledges
+  the seal: on the filesystem kind a file under `seal-forwarding/` in the store's root, on
+  the PostgreSQL kind a document of no scope (ADR-0049, amendment). The start, whether or not
+  it seals sessions left open, and `gateway seal-open --config` deliver each pending seal the
+  registry holds before they serve or seal, and name each one the sink does not acknowledge,
+  which stays pending. The record is not part of the store's verified form, and no verifier
+  reads it.
+
 **What is not forwarded.** These are unchanged:
 - an action's receipt minted by `/act`;
-- a seal and every other registry line;
+- a seal, where `receiptSink.seals` is not `true`;
+- every other registry line;
 - a removal record.
 
 ## 7. Conformance

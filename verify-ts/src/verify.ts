@@ -35,7 +35,7 @@ import {
 } from "./inputs.ts";
 import { TooLarge, count, hasDuplicate, integerDigits, maxValues, member, parse } from "./json.ts";
 import type { NumberValue, ObjectValue, Value } from "./json.ts";
-import { RegistryWalk } from "./rotation.ts";
+import { RegistryWalk, rotationKind } from "./rotation.ts";
 import type { ReachedKey, RotationStatus } from "./rotation.ts";
 import { isScopeIdentifier, structureV2, structureV3 } from "./structure.ts";
 import { descriptorStatus } from "./descriptors.ts";
@@ -1022,7 +1022,7 @@ export function verifyStore(
   authority: string,
   decisionRecordsPath: string | undefined,
   publicKey: Uint8Array,
-  options: { readonly ordinarySealsOnly?: boolean; readonly artifacts?: string; readonly scope?: string } = {},
+  options: { readonly ordinarySealsOnly?: boolean; readonly artifacts?: string; readonly scope?: string; readonly previous?: string } = {},
 ): Verdict {
   const ordinarySealsOnly = options.ordinarySealsOnly === true;
   // A verdict by scope names a scope identifier of its form, and reads no
@@ -1068,7 +1068,13 @@ export function verifyStore(
   // least a seal made after an interruption; the first still anchors.
   const conflicted = new Set<string>();
   const walk = new RegistryWalk(publicKey, (k) => budget.charge(entryCost + size(k.keyId) + 64, "the keys the registry's rotations reached"));
+  // §3d: the store continuation, which loads only as the registry's first
+  // line, and is never a seal or a rotation statement.
+  let lineAt = -1;
+  let continuation: { readonly keyId: string; readonly lines: bigint; readonly digest: string } | null = null;
+  let continuationFinding: string | null = null;
   eachRegistryLine(registry, (line) => {
+    lineAt++;
     if (line.bytes === null) {
       if (line.opensObject) {
         throw new NoVerdict(`a registry line of more than ${documentBound} bytes cannot be read for a seal`);
@@ -1083,6 +1089,19 @@ export function verifyStore(
       }
       return null;
     });
+    if (isContinuation(read)) {
+      // the line after a key-rotation that is no continuation of it
+      walk.take(null);
+      if (lineAt > 0) {
+        continuationFinding ??= "continuation-misplaced";
+      } else {
+        continuation = continuationOf(read!, walk.current());
+        if (continuation === null) {
+          continuationFinding = "continuation-forged";
+        }
+      }
+      return;
+    }
     if (walk.take(read)) {
       return;
     }
@@ -1106,6 +1125,27 @@ export function verifyStore(
     }
   });
   walk.end();
+  // §3d: under --previous, the link to the registry before this one.
+  let linkFinding: string | null = null;
+  if (options.previous !== undefined) {
+    let before: Buffer;
+    try {
+      before = fs.readFileSync(options.previous);
+    } catch (e) {
+      throw new NoVerdict(`the previous registry cannot be read: ${options.previous}`);
+    }
+    const link = registryLink(before);
+    const c = continuation as { readonly keyId: string; readonly lines: bigint; readonly digest: string } | null;
+    if (c === null) {
+      linkFinding = continuationFinding === null ? "continuation-missing" : null;
+    } else if (c.lines !== link.lines) {
+      linkFinding = "continuation-count-mismatch";
+    } else if (c.digest !== link.digest) {
+      linkFinding = "continuation-digest-mismatch";
+    } else if (lastKeyOf(options.previous, publicKey) !== c.keyId) {
+      linkFinding = "continuation-key-mismatch";
+    }
+  }
   testHooks.sample?.("registry");
   const keys = walk.keys;
   // §1.3a: the removal records, under the keys the walk reached.
@@ -1458,12 +1498,26 @@ export function verifyStore(
         ["rotation", walk.finding.rotation],
       ];
     }
+    // §3d: a store continuation that does not load where it stands, and
+    // under --previous a link that does not hold.
+    if (continuationFinding !== null) {
+      yield [["status", continuationFinding]];
+    }
+    if (linkFinding !== null) {
+      yield [["status", linkFinding]];
+    }
   }
   // The observations, in the order the reference reports them: §1.2b's of
   // each uncertain action; §4 step 3's of each open session; and §4 step
   // 8's of each action whose record was found and is not a runtime
   // evaluation record, which is not compared.
   function* everyObservation(): Generator<Finding> {
+    // §3d's, of a registry whose first line is a store continuation that
+    // loads.
+    const c = continuation as { readonly keyId: string; readonly lines: bigint; readonly digest: string } | null;
+    if (c !== null) {
+      yield [["observation", "continues-from"], ["previousLines", c.lines], ["previousDigest", c.digest]];
+    }
     // §1.3a's, of each receipt that passed with no bytes re-digested.
     for (const [session, judged] of sessions) {
       for (const j of judged) {
@@ -1734,4 +1788,124 @@ export function writeVerdict(v: Verdict, write: (text: string) => void): void {
   const rotations = v.rotations === null ? "" : `,"rotations":${JSON.stringify({ count: v.rotations.count, keyId: v.rotations.keyId })}`;
   const cut = v.cut === undefined ? "" : `,"cut":${JSON.stringify({ scope: v.cut.scope, sessions: v.cut.sessions, unattributed: v.cut.unattributed })}`;
   write(`]${rotations}${cut}}\n`);
+}
+
+// §3d: a registry line is a store continuation when it is one JSON object,
+// no name given twice, whose kind is store-continuation.
+function isContinuation(v: Value | null): boolean {
+  if (v === null || v.type !== "object" || hasDuplicate(v)) {
+    return false;
+  }
+  const kind = member(v, "kind");
+  return kind?.type === "string" && kind.value === "store-continuation";
+}
+
+const continuationMembers = ["kind", "continuationVersion", "continuedAt", "keyId", "previousLines", "previousDigest", "signature"];
+
+// continuationOf is a store continuation that holds its form and is signed
+// by the key in force at its line, or null.
+function continuationOf(v: Value, key: ReachedKey): { readonly keyId: string; readonly lines: bigint; readonly digest: string } | null {
+  if (v.type !== "object" || v.members.length !== continuationMembers.length || !v.members.every((m) => continuationMembers.includes(m.name))) {
+    return null;
+  }
+  const s = (name: string, form: RegExp): string | null => {
+    const m = member(v, name);
+    return m?.type === "string" && form.test(m.value) ? m.value : null;
+  };
+  const version = s("continuationVersion", /^1$/);
+  const at = s("continuedAt", /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
+  const keyId = s("keyId", /^[0-9a-f]{32}$/);
+  const last = s("previousDigest", /^[0-9a-f]{64}$/);
+  const signature = s("signature", /^[0-9a-f]{128}$/);
+  const lines = member(v, "previousLines");
+  if (version === null || at === null || keyId === null || last === null || signature === null || lines?.type !== "number" || !/^(0|[1-9][0-9]*)$/.test(lines.text)) {
+    return null;
+  }
+  const body = canonical({ type: "object", members: v.members.filter((m) => m.name !== "signature") });
+  if (keyId !== key.keyId || body === null) {
+    return null;
+  }
+  const signed = Buffer.concat([Buffer.from("judgment-pack-gateway/store-continuation/1:", "utf8"), body]);
+  if (!crypto.verify(null, signed, key.key, Buffer.from(signature, "hex"))) {
+    return null;
+  }
+  return { keyId, lines: BigInt(lines.text), digest: last };
+}
+
+// registryLink is what a store continuation names of a registry (§3d): its
+// line count, an empty piece after the last line feed no line, and the
+// SHA-256 of its bytes, whole.
+function registryLink(data: Buffer): { readonly lines: bigint; readonly digest: string } {
+  const digest = crypto.createHash("sha256").update(data).digest("hex");
+  if (data.length === 0) {
+    return { lines: 0n, digest };
+  }
+  const end = data[data.length - 1] === 0x0a ? data.length - 1 : data.length;
+  let count = 1n;
+  for (let i = 0; i < end; i++) {
+    if (data[i] === 0x0a) {
+      count++;
+    }
+  }
+  return { lines: count, digest };
+}
+
+// lastKeyOf is the key id the registry at previous's rotations end at (§3d, under
+// --previous), walked as a gateway walks its own (§3b): from the previous key
+// its first key-continuation names, where it has one, and from the key pinned
+// otherwise; null where the walk finds a rotation finding, or where the
+// keyId its last seal states is not the key in force at that seal's line, so
+// that a registry that never rotated is held to the key its seals name. A
+// registry holding no seal is held by its walk's last key alone.
+function lastKeyOf(previous: string, pinned: Uint8Array): string | null {
+  const values: (Value | null)[] = [];
+  eachRegistryLine({ absent: false, path: previous }, (line) => {
+    if (line.bytes === null) {
+      if (line.opensObject) {
+        throw new NoVerdict(`a line of the previous registry of more than ${documentBound} bytes cannot be read`);
+      }
+      values.push(null);
+      return;
+    }
+    const bytes = line.bytes;
+    values.push(
+      parseOr(bytes, () => {
+        if (opensObject(bytes)) {
+          throw new NoVerdict(`a line of the previous registry of more than ${maxValues} values cannot be read`);
+        }
+        return null;
+      }),
+    );
+  });
+  let start: Uint8Array = pinned;
+  for (const v of values) {
+    const statement = rotationKind(v);
+    if (statement?.kind !== "key-continuation") {
+      continue;
+    }
+    const previous = member(statement.value, "previous");
+    if (previous?.type === "string" && /^[0-9a-fA-F]{64}$/.test(previous.value)) {
+      start = Buffer.from(previous.value, "hex");
+    }
+    break;
+  }
+  const walk = new RegistryWalk(start, () => {});
+  // the last seal: the keyId it states, and the key in force at its line
+  let lastSeal: { readonly stated: string; readonly inForce: string } | null = null;
+  for (const v of values) {
+    if (walk.take(isContinuation(v) ? null : v) || isContinuation(v) || rotationKind(v) !== null || v === null || v.type !== "object") {
+      continue;
+    }
+    const keyId = member(v, "keyId");
+    const session = member(v, "sessionId");
+    if (keyId?.type === "string" && session?.type === "string") {
+      lastSeal = { stated: keyId.value, inForce: walk.current().keyId };
+    }
+  }
+  walk.end();
+  const seal = lastSeal as { readonly stated: string; readonly inForce: string } | null;
+  if (walk.finding !== null || (seal !== null && seal.stated !== seal.inForce)) {
+    return null;
+  }
+  return walk.current().keyId;
 }

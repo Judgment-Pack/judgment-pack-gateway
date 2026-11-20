@@ -1,0 +1,377 @@
+package main
+
+// `gateway store rotate` (ADR-0048, S2; SPEC.md §3d): a store let go of by
+// starting another. With the gateway stopped, the registry held as a
+// gateway holds it while it serves (holdEngineRegistry), every session left
+// open in the old store is sealed after the interruption, as seal-open --all
+// seals it (SPEC.md §3c); then a new registry is made, in a new store
+// directory the operator names, whose first line is a store continuation
+// naming the old registry's line count and the SHA-256 of its bytes, signed
+// by the key in force; then the old store is marked rotated away from, which
+// every later hold of its registry refuses. The old store and its registry
+// are otherwise left as they are, for the operator to archive or delete
+// whole.
+
+import (
+	"bytes"
+	"crypto/ed25519"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+const storeRotateUsage = `usage:
+  gateway store rotate (--config <engine.json> | --store <dir> --seed <file> --registry <file> --authority <authority>) --new-store <dir> --new-registry <file>
+  gateway store rotate --config <engine.json> (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> [--timeout <seconds>]
+Rotates the store, the gateway stopped: seals every session left open in
+it, as seal-open --all does, then makes the new store directory and the new
+registry, whose first line names the old registry's line count and the
+SHA-256 of its bytes, signed by the key in force (SPEC.md §3d); then marks
+the old store rotated away from, in a file beside its registry, and nothing
+starts on it again. Neither new path may be there already, but an empty new
+store directory, or what a rotation stopped by a crash left, which a rerun
+finishes. A session that cannot be sealed refuses the rotation, and nothing
+new is made. The old store is not changed but by the seals and the mark; it
+is the operator's to archive or delete whole. Prints each seal appended,
+then the new registry's first line.
+With the PostgreSQL kind (--config alone names it) the new store is a new
+database, which the migration login's connection string names, as gateway
+store migrate takes it: the database is to hold no store, and is migrated
+and given the registry in one transaction. The start lease of the old
+database is taken first: an instance serving it refuses the rotation.`
+
+// storeRotateTargetFlags are the flags of the new store: its directory and
+// registry on the filesystem kind, its database on the PostgreSQL kind.
+var (
+	storeRotateFsFlags = []string{"--new-store", "--new-registry"}
+	storeRotatePgFlags = []string{"--connection-file", "--connection-env", "--owner", "--runtime", "--timeout"}
+)
+
+func cmdStoreRotate(args []string, stdout, stderr io.Writer) int {
+	return cmdStoreRotateAt(args, stdout, stderr, nowStamp)
+}
+
+// cmdStoreRotateAt is the command, each line it writes stamped by stamp.
+func cmdStoreRotateAt(args []string, stdout, stderr io.Writer, stamp func() string) int {
+	var rest []string
+	targets := map[string]string{}
+	for i := 0; i < len(args); i++ {
+		if name := args[i]; contains(storeRotateFsFlags, name) || contains(storeRotatePgFlags, name) {
+			if i+1 >= len(args) || args[i+1] == "" {
+				fmt.Fprintln(stderr, storeRotateUsage)
+				return 2
+			}
+			if _, given := targets[name]; given {
+				fmt.Fprintf(stderr, "store rotate: %s is given twice\n%s\n", name, storeRotateUsage)
+				return 2
+			}
+			targets[name] = args[i+1]
+			i++
+			continue
+		}
+		if args[i] == "--all" || args[i] == "--session" {
+			fmt.Fprintln(stderr, storeRotateUsage)
+			return 2
+		}
+		rest = append(rest, args[i])
+	}
+	o, msg := parseSealOpen(append(rest, "--all"))
+	switch msg {
+	case "ok":
+	case "":
+		fmt.Fprintln(stderr, storeRotateUsage)
+		return 2
+	default:
+		fmt.Fprintf(stderr, "store rotate: %s\n%s\n", msg, storeRotateUsage)
+		return 2
+	}
+	// each kind's flags of the new store, and none of the other's
+	own, other := storeRotateFsFlags, storeRotatePgFlags
+	if o.storage != nil {
+		own, other = other, own
+	}
+	for _, name := range other {
+		if _, given := targets[name]; given {
+			fmt.Fprintf(stderr, "store rotate: %s is not of the storage kind the configuration names\n%s\n", name, storeRotateUsage)
+			return 2
+		}
+	}
+	var sealed []*vObject
+	var continuation []byte
+	var err error
+	if o.storage != nil {
+		var given []string
+		for _, name := range own {
+			if value, ok := targets[name]; ok {
+				given = append(given, name, value)
+			}
+		}
+		flags, code := storeFlags(given, own, "store rotate", storeRotateUsage, stderr)
+		if code != 0 {
+			return code
+		}
+		timeout, ok := storeTimeout(flags, "store rotate", storeRotateUsage, stderr)
+		if !ok {
+			return 2
+		}
+		spec, code := storeConnectionSpec(flags, "store rotate", stderr)
+		if code != 0 {
+			return code
+		}
+		target := pgRotationTarget{spec: spec, roles: pgRoles{owner: flags["--owner"], runtime: flags["--runtime"]}, timeout: timeout}
+		sealed, continuation, err = storeRotatePostgres(o, target, stamp, stderr)
+	} else {
+		if targets["--new-store"] == "" || targets["--new-registry"] == "" {
+			fmt.Fprintln(stderr, storeRotateUsage)
+			return 2
+		}
+		sealed, continuation, err = storeRotate(o, targets["--new-store"], targets["--new-registry"], stamp)
+	}
+	for _, record := range sealed {
+		fmt.Fprintf(stdout, "%s\n", canon(record))
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "store rotate:", err)
+		return 1
+	}
+	stdout.Write(continuation)
+	return 0
+}
+
+// storeRotate is the command on the filesystem kind: the old registry held,
+// what was left open sealed, and the new store and registry made under the
+// hold, the registry's bytes read after the last seal appended; then the old
+// store marked rotated away from, still under the hold. A rerun after a
+// crash finds the new registry whole or not there: whole, and its only line
+// the continuation of the old registry as it stands, only the mark is
+// written.
+func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() string) ([]*vObject, []byte, error) {
+	if err := newStoreFree(newStore, newRegistry); err != nil {
+		return nil, nil, err
+	}
+	seed, err := loadSeed(o.seedNames[0])
+	if err != nil {
+		return nil, nil, fmt.Errorf("seed: %w", err)
+	}
+	if _, present, err := readRegistryBytes(o.registry); err != nil {
+		return nil, nil, fmt.Errorf("registry: %w", err)
+	} else if !present {
+		return nil, nil, fmt.Errorf("the registry is not there: %s; there is no store to rotate", o.registry)
+	}
+	// the key in force signs the seals and the continuation: the key
+	// service's key version the configuration names, held to
+	// signingPublicKey, or else the seed's (ADR-0050)
+	sig, err := commandSigner(o.keyVersion, o.keyPublic, seed)
+	if err != nil {
+		return nil, nil, err
+	}
+	key := newSigningKey(sig)
+	hold, err := holdEngineRegistryKey(o.seedNames, o.registry, key.public)
+	if err != nil {
+		if errors.Is(err, errRegistryHeld) {
+			return nil, nil, fmt.Errorf("%w; stop the gateway, then rotate", err)
+		}
+		return nil, nil, err
+	}
+	defer hold.Close()
+	data, present, err := readRegistryBytes(o.registry)
+	if err != nil || !present {
+		return nil, nil, fmt.Errorf("registry: the registry could not be read under the hold: %v", err)
+	}
+	pub := key.public
+	walk, err := engineWalk(data, pub)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := heldUnderAnotherKey(data, walk.keys, pub, newFsKind(fsLayout{store: o.store}).receipts()); err != nil {
+		return nil, nil, err
+	}
+	if made, present, err := readRegistryBytes(newRegistry); err != nil {
+		return nil, nil, fmt.Errorf("the new registry: %w", err)
+	} else if present {
+		// a rerun: the new registry is this one's continuation alone, made
+		// by a rotation stopped before its mark, or it is refused
+		if !continuesAlone(made, data, pub) {
+			return nil, nil, fmt.Errorf("%s is there already; a rotation starts a new store and registry, and nothing was changed", newRegistry)
+		}
+		if err := markRotated(o.registry, made); err != nil {
+			return nil, nil, err
+		}
+		return nil, made, nil
+	}
+	writer, err := newRegistryWriterWith(o.registry, seed, newSignerHolder(sig), func() (bool, error) { return true, nil })
+	if err != nil {
+		return nil, nil, err
+	}
+	sealed, refused, err := sealOpenUnderSink(fsSealOpenStore{o.store}, o.authority, writer, data, "", sealedViaCommand, stamp, o.sink())
+	if err != nil {
+		return sealed, nil, fmt.Errorf("%v; the store is not rotated", err)
+	}
+	if len(refused) > 0 {
+		return sealed, nil, fmt.Errorf("a session left open could not be sealed, so the store is not rotated: %s", refused[0])
+	}
+	// the bytes are read after the seals, under the hold, and walked again
+	// as the gateway walks them: the continuation names the registry as it
+	// ends
+	data, present, err = readRegistryBytes(o.registry)
+	if err != nil || !present {
+		return sealed, nil, fmt.Errorf("registry: the registry could not be read after sealing: %v", err)
+	}
+	if _, err := engineWalk(data, pub); err != nil {
+		return sealed, nil, err
+	}
+	line, err := newContinuationLine(key, data, stamp())
+	if err != nil {
+		return sealed, nil, fmt.Errorf("the continuation could not be signed: %v; the store is not rotated, and the seals appended stay in the old registry", err)
+	}
+	if err := os.Mkdir(newStore, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return sealed, nil, fmt.Errorf("the new store: %w", err)
+	}
+	if err := writeNewRegistry(newRegistry, line); err != nil {
+		return sealed, nil, fmt.Errorf("the new registry: %w", err)
+	}
+	if err := markRotated(o.registry, line); err != nil {
+		return sealed, line, err
+	}
+	return sealed, line, nil
+}
+
+// newStoreFree refuses a rotation into a new store that is there already:
+// the directory may be absent, or hold nothing but what a rotation stopped
+// by a crash leaves in it -- the new registry, which the rerun holds to the
+// old one, or the file the new registry is written to before it is renamed
+// into place -- and the new registry, if there, is held under the hold.
+func newStoreFree(newStore, newRegistry string) error {
+	info, err := os.Lstat(newStore)
+	if absent(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	there := fmt.Errorf("%s is there already; a rotation starts a new store and registry, and nothing was changed", newStore)
+	if !info.IsDir() {
+		return there
+	}
+	entries, err := os.ReadDir(newStore)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		path := filepath.Join(newStore, e.Name())
+		if path != filepath.Clean(newRegistry) && path != newRegistryTemp(newRegistry) {
+			return there
+		}
+	}
+	return nil
+}
+
+// continuesAlone is whether made is one line, a store continuation that
+// loads under the key and names previous's line count and digest.
+func continuesAlone(made, previous []byte, key ed25519.PublicKey) bool {
+	w := walkRegistry(made, key)
+	lines, digest := registryLink(previous)
+	return bytes.Count(made, []byte("\n")) == 1 && bytes.HasSuffix(made, []byte("\n")) && w.continuation != nil &&
+		w.continuationFinding == nil && w.continuation.previousLines == lines && w.continuation.previousDigest == digest
+}
+
+// newRegistryTemp is the file a new registry is written to, beside it, before
+// it is renamed into place.
+// syncRotationDirectory syncs the directory at path, so an entry made or
+// renamed in it is durable: where Unix syncs a directory (connect_unix.go),
+// as the store's other directories are; elsewhere a directory is not synced
+// (connect_other.go), and the file's own sync is what is durable.
+func syncRotationDirectory(path string) error {
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return syncDirectory(root, ".")
+}
+
+func newRegistryTemp(path string) string {
+	return filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".rotating")
+}
+
+// writeNewRegistry makes the registry at path, which is not there, holding
+// line alone, durably: written whole and synced in a file beside it, renamed
+// into place, and the directory that names it synced. A crash leaves the
+// registry whole or not there.
+func writeNewRegistry(path string, line []byte) error {
+	temp := newRegistryTemp(path)
+	f, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(line); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temp, path); err != nil {
+		return err
+	}
+	return syncRotationDirectory(filepath.Dir(path))
+}
+
+// rotatedMarkPath is the file beside a registry that marks its store rotated
+// away from (SPEC.md §3d). It is outside the registry's bytes.
+func rotatedMarkPath(registryPath string) string { return registryPath + ".rotated" }
+
+// markRotated writes the mark of the rotation whose continuation is line
+// beside the old registry, durably.
+func markRotated(registryPath string, line []byte) error {
+	path := rotatedMarkPath(registryPath)
+	err := writeFileSynced(path, []byte(rotatedMark(line)+"\n"))
+	if err == nil {
+		err = syncRotationDirectory(filepath.Dir(path))
+	}
+	if err != nil {
+		return fmt.Errorf("the new registry is made, but the old store could not be marked rotated away from (%v); rerun the same rotation to mark it", err)
+	}
+	return nil
+}
+
+// writeFileSynced writes data to a new file at path and syncs it before it
+// is closed, so the bytes are durable before the directory is.
+func writeFileSynced(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// refuseRotatedStore refuses a registry whose store is marked rotated away
+// from, by the mark's name.
+func refuseRotatedStore(registryPath string) error {
+	data, err := os.ReadFile(rotatedMarkPath(registryPath))
+	if absent(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("the store's rotation mark %s cannot be read: %w", rotatedMarkPath(registryPath), err)
+	}
+	mark := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(mark, rotatedMarkPrefix) || !isLowerHexOfLen(strings.TrimPrefix(mark, rotatedMarkPrefix), 64) {
+		mark = rotatedMarkPrefix + "?"
+	}
+	return errStoreRotated(mark)
+}
