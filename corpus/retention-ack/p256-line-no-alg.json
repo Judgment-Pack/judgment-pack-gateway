@@ -1,0 +1,15 @@
+{
+  "name": "p256-line-no-alg",
+  "note": "A P-256 signature under the P-256 key id with no alg: a line without the member is Ed25519, and the key listed is P-256.",
+  "acknowledgedBy": [
+    "fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b",
+    {
+      "alg": "ES256",
+      "key": "026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16"
+    }
+  ],
+  "line": "{\"acknowledgedAt\":\"2026-08-02T00:00:00Z\",\"finalCount\":1,\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"kind\":\"retention-ack\",\"sealSignature\":\"ff0fc5fa51eb21d9d4496f09f22f805f6c58a0cb94597f96e3bdceb64ac4505257578242b837e534e13b707d91eb08056bc1a8a29c2414761da006877da1a90b\",\"sessionId\":\"s1\",\"signature\":\"d4e7e398073a58cc58b2a4843908a41c6eb06e881d86013cd3303c8704d4b11c7c1f1f9a92071649cb8c0120f2918e5a8b7404d0a02cc72bfd68958cbdf98b3e\"}",
+  "expected": {
+    "refused": "does not verify under retention.acknowledgedBy, key dbdb99c64b3d511f72c88fb6c054da73"
+  }
+}

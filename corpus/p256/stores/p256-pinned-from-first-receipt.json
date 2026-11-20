@@ -1,0 +1,21 @@
+{
+  "name": "p256-pinned-from-first-receipt",
+  "note": "A store signed by the P-256 test key from its first receipt, with no rotation: the version 3 receipt of p256-receipt-sealed and its five-member seal, verified under the P-256 test key pinned with --public-key-alg ES256 (ADR-0053 §11).",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"alg\":\"ES256\",\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"053877cca28af86e5fb47dcdcec70d88fabfd9952baadfa2d192e188747629d50a5a46cea9b4a83170e3328353d37b86b98d2178445a8abec4661d62434a0488\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"alg\":\"ES256\",\"finalCount\":1,\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"4ae055c5494bfe7228ec5f43668b66b1c7fa97b1287d883225239512200942c920aa4826fc2d44fec57720f819c61df569d8bc76f191d764882849a25d43de46\"}\n",
+  "publicKeyAlg": "ES256",
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      }
+    ]
+  }
+}

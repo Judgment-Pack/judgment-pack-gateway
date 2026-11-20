@@ -109,9 +109,20 @@ func corpusEntries(corpusDir string) error {
 		// verify-ts/test/corpus.test.ts), since the process contract carries
 		// no raw signature.
 		"ed25519-vectors.json": "",
+		// The P-256 test key and its signature vectors (ADR-0053 §11): the
+		// scalar for building vectors alone, the public key the vectors of
+		// p256/stores pin with "publicKeyAlg": "ES256".
+		"TEST-P256-SCALAR":     "",
+		"TEST-P256-PUBLIC-KEY": "",
+		"p256-vectors.json":    "",
 		"stores":               "*.json",
 		"v3":                   "stores",
-		"witness":              "*.json",
+		"p256":                 "stores",
+		// The acknowledgment lines gateway retain reads (ADR-0053 §11):
+		// run in process (conform_retention_ack.go), outside the process
+		// contract, since no verifier reads them.
+		"retention-ack": "*.json",
+		"witness":       "*.json",
 		// The witness's own storage: read by this implementation's runner
 		// alone (conform_witness_recovery.go), outside the process
 		// contract, since no reader of a chain reads it.
@@ -247,6 +258,8 @@ var (
 	statedV3       = regexp.MustCompile("\\*\\*`v3/stores/\\*\\.json`\\*\\* — (\\d+) vectors")
 	statedWitness  = regexp.MustCompile("\\*\\*`witness/\\*\\.json`\\*\\* — (\\d+) vectors")
 	statedRecovery = regexp.MustCompile("\\*\\*`witness-recovery/\\*\\.json`\\*\\* — (\\d+) vectors")
+	statedP256     = regexp.MustCompile("\\*\\*`p256/stores/\\*\\.json`\\*\\* — (\\d+) vectors")
+	statedAck      = regexp.MustCompile("\\*\\*`retention-ack/\\*\\.json`\\*\\* — (\\d+) vectors")
 	statedFamilies = regexp.MustCompile("(?m)^\\| `([a-z-]+)` \\| (\\d+) \\|")
 )
 
@@ -294,6 +307,8 @@ func corpusStatedCounts(corpusDir string) error {
 	}
 	stores, _ := filepath.Glob(filepath.Join(corpusDir, "stores", "*.json"))
 	v3, _ := filepath.Glob(filepath.Join(corpusDir, "v3", "stores", "*.json"))
+	p256, _ := filepath.Glob(filepath.Join(corpusDir, "p256", "stores", "*.json"))
+	acks, _ := filepath.Glob(filepath.Join(corpusDir, "retention-ack", "*.json"))
 	witness, err := witnessVectorPaths(corpusDir)
 	if err != nil {
 		return err
@@ -312,6 +327,8 @@ func corpusStatedCounts(corpusDir string) error {
 		{statedV3, "v3/stores/*.json vectors", len(v3)},
 		{statedWitness, "witness/*.json vectors", len(witness)},
 		{statedRecovery, "witness-recovery/*.json vectors", len(recovery)},
+		{statedP256, "p256/stores/*.json vectors", len(p256)},
+		{statedAck, "retention-ack/*.json vectors", len(acks)},
 	} {
 		n, err := stated(c.re, c.what)
 		if err != nil {

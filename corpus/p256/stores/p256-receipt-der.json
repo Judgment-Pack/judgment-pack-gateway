@@ -1,0 +1,24 @@
+{
+  "name": "p256-receipt-der",
+  "note": "p256-receipt-sealed with the receipt's signature written as DER, 140 to 144 hexadecimal characters: not of version 3's signature form, so malformed (SPEC.md §1.2a).",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"alg\":\"ES256\",\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"30440220053877cca28af86e5fb47dcdcec70d88fabfd9952baadfa2d192e188747629d502200a5a46cea9b4a83170e3328353d37b86b98d2178445a8abec4661d62434a0488\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"key-rotation\",\"next\":\"026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16\",\"nextAlg\":\"ES256\",\"nextKeyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"aed4b43988b90f939ff52a2cf89b94b6b8e8c9cb26f77ec585aa4c4358c8f5c30d30233492a427e8843a5d9855c2498e26cb4fab73bd16c64598e8e0e5536905\"}\n{\"alg\":\"ES256\",\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"kind\":\"key-continuation\",\"previous\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\",\"previousKeyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"a9871938d22e5cdac854ae2bb19d4ce62f782190a378e1b26c976cba214ba28a553afd2ea043a2ccf723cb6cf333e5774abdde48f12c186bd3d3b1987678baca\"}\n{\"alg\":\"ES256\",\"finalCount\":1,\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"50d4b5661afd8c1cd5e14a8a061f4508bebcb28003ac09b11a3271152495202157969c278634246fb9c3c290300598621b557e2ba756e6c80aa0268d759b1bba\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "file": "0.json",
+        "status": "malformed"
+      }
+    ],
+    "rotations": {
+      "count": 1,
+      "keyId": "dbdb99c64b3d511f72c88fb6c054da73"
+    }
+  }
+}

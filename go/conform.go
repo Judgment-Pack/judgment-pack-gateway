@@ -358,7 +358,13 @@ type storeVector struct {
 	// contract then passes --previous <file>, after --artifacts and before
 	// the store root. Absent means the option is not passed.
 	PreviousRegistry *string `json:"previousRegistry"`
-	Expected         struct {
+	// PublicKeyAlg pins the P-256 test key (ADR-0053 §11): "ES256" runs
+	// the vector under --public-key-alg ES256, given first, standard input
+	// the 66 lowercase hexadecimal characters of TEST-P256-PUBLIC-KEY.
+	// Absent pins TEST-PUBLIC-KEY, Ed25519's 32 raw bytes; any other value
+	// refuses the run.
+	PublicKeyAlg string `json:"publicKeyAlg"`
+	Expected     struct {
 		OK       bool             `json:"ok"`
 		Findings []map[string]any `json:"findings"`
 		// Witnesses are SPEC.md §4's witnesses, compared as a set; absent
@@ -424,8 +430,8 @@ type implementation interface {
 	// verify answers the verdict the process contract gives (SPEC.md §4),
 	// under --ordinary-seals-only when ordinarySealsOnly is set, with
 	// --artifacts supplied when supplied is not "", and cut by --scope scope
-	// when scope is not "".
-	verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, publicKey []byte) (contractVerdict, error)
+	// when scope is not "", under the key pin pins with its algorithm.
+	verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, pin heldKey) (contractVerdict, error)
 	// witness reads one chain of witness statements (SPEC.md §8.6) from
 	// files, and answers with the verdict the process contract gives.
 	witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error)
@@ -444,8 +450,8 @@ func (inProcess) canon(source string) ([]byte, bool) {
 	return out, true
 }
 
-func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, publicKey []byte) (contractVerdict, error) {
-	rep, err := verifierBy(ordinarySealsOnly, scope, previous)(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey)
+func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, pin heldKey) (contractVerdict, error) {
+	rep, err := verifierByPin(ordinarySealsOnly, scope, previous)(storeRoot, registryPath, authority, decisionRecords, supplied, pin)
 	if err != nil {
 		return contractVerdict{}, err
 	}
@@ -483,6 +489,25 @@ func verifierBy(ordinarySealsOnly bool, scope string, previous ...string) func(s
 			return rep, err
 		}
 		if err := linkPrevious(rep, previous[0], edKey(publicKey)); err != nil {
+			return nil, err
+		}
+		return rep, nil
+	}
+}
+
+// verifierByPin is verifierBy's verdict under a key pinned with its
+// algorithm, as gateway verify --public-key-alg pins it (ADR-0053 §11): an
+// Ed25519 pin is verifierBy's, unchanged.
+func verifierByPin(ordinarySealsOnly bool, scope string, previous ...string) func(storeRoot, registryPath, authority, decisionRecords, supplied string, pin heldKey) (*report, error) {
+	return func(storeRoot, registryPath, authority, decisionRecords, supplied string, pin heldKey) (*report, error) {
+		if pin.alg == algEd25519 {
+			return verifierBy(ordinarySealsOnly, scope, previous...)(storeRoot, registryPath, authority, decisionRecords, supplied, pin.key)
+		}
+		rep, err := verifySuppliedPin(storeRoot, registryPath, authority, decisionRecords, supplied, pin, ordinarySealsOnly, scope)
+		if err != nil || len(previous) == 0 {
+			return rep, err
+		}
+		if err := linkPrevious(rep, previous[0], pin); err != nil {
 			return nil, err
 		}
 		return rep, nil
@@ -530,8 +555,16 @@ func (s subprocess) canon(source string) ([]byte, bool) {
 	return stdout.Bytes(), true
 }
 
-func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, publicKey []byte) (contractVerdict, error) {
+func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, pin heldKey) (contractVerdict, error) {
 	args := append(append([]string{}, s.argv[1:]...), "verify")
+	stdin := pin.key
+	if pin.alg == algES256 {
+		// First, before every other option (corpus/README.md): passed
+		// exactly when the vector pins the P-256 test key, whose 66
+		// lowercase hexadecimal characters are then standard input.
+		args = append(args, "--public-key-alg", algES256)
+		stdin = []byte(hex.EncodeToString(pin.key))
+	}
 	if scope != "" {
 		// First, before every other option (corpus/README.md): passed
 		// exactly when the vector is a verdict by scope.
@@ -559,7 +592,7 @@ func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords, 
 		args = append(args, decisionRecords)
 	}
 	cmd := exec.Command(s.argv[0], args...)
-	cmd.Stdin = bytes.NewReader(publicKey)
+	cmd.Stdin = bytes.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -799,8 +832,42 @@ func corpusPublicKey(corpusDir string) ([]byte, error) {
 	return hex.DecodeString(strings.TrimSpace(string(raw)))
 }
 
+// corpusP256PublicKey is TEST-P256-PUBLIC-KEY, the P-256 test key a vector
+// pins with "publicKeyAlg": "ES256" (ADR-0053 §11): 66 lowercase hexadecimal
+// characters of a compressed point that holds the key rule.
+func corpusP256PublicKey(corpusDir string) (heldKey, error) {
+	raw, err := os.ReadFile(filepath.Join(corpusDir, "TEST-P256-PUBLIC-KEY"))
+	if err != nil {
+		return heldKey{}, err
+	}
+	key := decodeKeyHex(algES256, strings.TrimSpace(string(raw)))
+	if key == nil || !keySoundFor(algES256, key) {
+		return heldKey{}, errors.New("TEST-P256-PUBLIC-KEY is not the 66 lowercase hexadecimal characters of a P-256 point")
+	}
+	return heldKey{alg: algES256, key: key}, nil
+}
+
+// vectorPin is the key a store vector pins: TEST-PUBLIC-KEY's, or the P-256
+// test key's where it gives "publicKeyAlg": "ES256", read once.
+func vectorPin(corpusDir string, vector storeVector, ed []byte, p256 *heldKey) (heldKey, error) {
+	switch vector.PublicKeyAlg {
+	case "":
+		return edKey(ed), nil
+	case algES256:
+		if p256.key == nil {
+			key, err := corpusP256PublicKey(corpusDir)
+			if err != nil {
+				return heldKey{}, err
+			}
+			*p256 = key
+		}
+		return *p256, nil
+	}
+	return heldKey{}, fmt.Errorf("publicKeyAlg is %q, and its one value is \"ES256\"", vector.PublicKeyAlg)
+}
+
 // corpusCounts is how many vectors of each family a run read.
-type corpusCounts struct{ canon, stores, witness, recovery int }
+type corpusCounts struct{ canon, stores, witness, recovery, retentionAck int }
 
 func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, error) {
 	var failures []string
@@ -870,7 +937,17 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 		return nil, counts, err
 	}
 	counts.recovery = recoveryCount
-	return append(failures, recoveryFailures...), counts, nil
+	failures = append(failures, recoveryFailures...)
+
+	// The acknowledgment lines are read by gateway retain alone, never by a
+	// verifier, so they are run in process whatever implementation is
+	// under test (ADR-0053 §11).
+	ackFailures, ackCount, err := runRetentionAckVectors(corpusDir)
+	if err != nil {
+		return nil, counts, err
+	}
+	counts.retentionAck = ackCount
+	return append(failures, ackFailures...), counts, nil
 }
 
 // runStoreVectors holds an implementation to every store vector, of both
@@ -881,6 +958,7 @@ func runStoreVectors(corpusDir string, impl implementation) ([]string, int, erro
 	if err != nil {
 		return nil, 0, err
 	}
+	var p256 heldKey
 	// Both directories arbitrate: the version 2 vectors and, since the
 	// version 3 verifier, the version 3 vectors staged beside them.
 	paths, err := storeVectorPaths(corpusDir)
@@ -903,20 +981,26 @@ func runStoreVectors(corpusDir string, impl implementation) ([]string, int, erro
 		if err != nil {
 			return nil, 0, fmt.Errorf("%s: %v", path, err)
 		}
+		pin, err := vectorPin(corpusDir, vector, publicKey, &p256)
+		if err != nil {
+			return nil, 0, fmt.Errorf("%s: %v", path, err)
+		}
 		root, storeRoot, registryPath, decisionRecords, err := materializeVector(vector)
 		if err != nil {
 			return nil, 0, err
 		}
-		verdict, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, suppliedOf(vector, root), vector.Scope, vector.OrdinarySealsOnly, previousOf(vector, root), publicKey)
+		verdict, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, suppliedOf(vector, root), vector.Scope, vector.OrdinarySealsOnly, previousOf(vector, root), pin)
 		os.RemoveAll(root)
 		var refused noVerdict
-		if err != nil && (vector.OrdinarySealsOnly || vector.SuppliedArtifacts != nil || vector.Scope != "" || vector.PreviousRegistry != nil) && errors.As(err, &refused) {
+		if err != nil && (vector.OrdinarySealsOnly || vector.SuppliedArtifacts != nil || vector.Scope != "" || vector.PreviousRegistry != nil || vector.PublicKeyAlg != "") && errors.As(err, &refused) {
 			// A verifier written before the option refuses one it does not
 			// know: that is its answer to this vector, a disagreement, and
 			// the run goes on (SPEC.md §7). No verdict for a vector run
 			// without any option still stops it.
 			option := "--ordinary-seals-only"
 			switch {
+			case vector.PublicKeyAlg != "":
+				option = "--public-key-alg"
 			case vector.Scope != "":
 				option = "--scope"
 			case vector.PreviousRegistry != nil:
@@ -980,10 +1064,10 @@ func runStoreVectors(corpusDir string, impl implementation) ([]string, int, erro
 }
 
 // storeVectorPaths lists every store vector the runner answers to, in a fixed
-// order: corpus/stores/ and corpus/v3/stores/.
+// order: corpus/stores/, corpus/v3/stores/ and corpus/p256/stores/.
 func storeVectorPaths(corpusDir string) ([]string, error) {
 	var paths []string
-	for _, dir := range []string{filepath.Join(corpusDir, "stores"), filepath.Join(corpusDir, "v3", "stores")} {
+	for _, dir := range []string{filepath.Join(corpusDir, "stores"), filepath.Join(corpusDir, "v3", "stores"), filepath.Join(corpusDir, "p256", "stores")} {
 		found, err := filepath.Glob(filepath.Join(dir, "*.json"))
 		if err != nil {
 			return nil, err
@@ -1029,6 +1113,7 @@ func cmdConform(args []string) int {
 	} else {
 		fmt.Printf("%d witness recovery vectors read and not run: they hold this reference witness's own storage, outside the process contract\n", counts.recovery)
 	}
+	fmt.Printf("this implementation's retain vs corpus: %d acknowledgment-line vectors, run in process\n", counts.retentionAck)
 	for _, failure := range failures {
 		fmt.Printf("  FAIL %s\n", failure)
 	}
