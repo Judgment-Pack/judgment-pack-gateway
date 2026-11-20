@@ -80,6 +80,10 @@ func cmdStoreRotateAt(args []string, stdout, stderr io.Writer, stamp func() stri
 		return 2
 	}
 	if o.storage != nil {
+		// The PostgreSQL kind's rotation (#546) must also carry the key
+		// history of the database rotated from into the new one, as
+		// storeRotate carries it beside the new registry (carriedHistoryOf;
+		// ADR-0051), for gatewayService.carriedKeyHistory to read there.
 		fmt.Fprintln(stderr, "store rotate: the PostgreSQL kind is rotated to a new database or schema, which this release does not yet do; nothing was changed")
 		return 1
 	}
@@ -137,6 +141,15 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 		if !continuesAlone(made, data, pub) {
 			return nil, nil, fmt.Errorf("%s is there already; a rotation starts a new store and registry, and nothing was changed", newRegistry)
 		}
+		// the history is written before the registry; one a rotation made
+		// before histories were carried is carried now, from the same bytes
+		if _, there, err := readCarriedKeyHistory(newRegistry); err != nil {
+			return nil, nil, fmt.Errorf("the new registry's key history: %w", err)
+		} else if !there {
+			if err := carryKeyHistory(o.registry, data, pub, newRegistry); err != nil {
+				return nil, nil, err
+			}
+		}
 		if err := markRotated(o.registry, made); err != nil {
 			return nil, nil, err
 		}
@@ -163,9 +176,18 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	if _, err := engineWalk(data, pub); err != nil {
 		return sealed, nil, err
 	}
+	history, err := carriedHistoryOf(o.registry, data, pub)
+	if err != nil {
+		return sealed, nil, fmt.Errorf("%v; the store is not rotated", err)
+	}
 	line := newContinuationLine(priv, data, stamp())
 	if err := os.Mkdir(newStore, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return sealed, nil, fmt.Errorf("the new store: %w", err)
+	}
+	// the key history is carried into the new store before its registry is
+	// made, so a new registry that is there has its history beside it
+	if err := writeNewRegistry(keyHistoryBeside(newRegistry), history); err != nil {
+		return sealed, nil, fmt.Errorf("the new registry's key history: %w", err)
 	}
 	if err := writeNewRegistry(newRegistry, line); err != nil {
 		return sealed, nil, fmt.Errorf("the new registry: %w", err)
@@ -179,8 +201,9 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 // newStoreFree refuses a rotation into a new store that is there already:
 // the directory may be absent, or hold nothing but what a rotation stopped
 // by a crash leaves in it -- the new registry, which the rerun holds to the
-// old one, or the file the new registry is written to before it is renamed
-// into place -- and the new registry, if there, is held under the hold.
+// old one, its key history, or the file either is written to before it is
+// renamed into place -- and the new registry, if there, is held under the
+// hold.
 func newStoreFree(newStore, newRegistry string) error {
 	info, err := os.Lstat(newStore)
 	if absent(err) {
@@ -199,7 +222,8 @@ func newStoreFree(newStore, newRegistry string) error {
 	}
 	for _, e := range entries {
 		path := filepath.Join(newStore, e.Name())
-		if path != filepath.Clean(newRegistry) && path != newRegistryTemp(newRegistry) {
+		history := keyHistoryBeside(filepath.Clean(newRegistry))
+		if path != filepath.Clean(newRegistry) && path != newRegistryTemp(newRegistry) && path != history && path != newRegistryTemp(history) {
 			return there
 		}
 	}
@@ -310,4 +334,35 @@ func refuseRotatedStore(registryPath string) error {
 		mark = rotatedMarkPrefix + "?"
 	}
 	return errStoreRotated(mark)
+}
+
+// carriedHistoryOf is the key history a store rotation carries into the new
+// store (SPEC.md §3e; ADR-0051): the history of the old registry's bytes as
+// the rotation names them, walked from the key in force, with what was
+// carried into the old store in its turn -- the answer the old store's
+// gateway gives, which the new store's continues. A history that does not
+// hold refuses the rotation.
+func carriedHistoryOf(registryPath string, data []byte, key ed25519.PublicKey) ([]byte, error) {
+	carried, present, err := readCarriedKeyHistory(registryPath)
+	if err != nil {
+		return nil, fmt.Errorf("the key history carried into the store: %w", err)
+	}
+	entries, err := registryKeyHistory(data, key, carried, present)
+	if err != nil {
+		return nil, fmt.Errorf("the store's key history: %w", err)
+	}
+	return keyHistoryDocument(entries), nil
+}
+
+// carryKeyHistory writes the history carriedHistoryOf gives beside the new
+// registry, durably.
+func carryKeyHistory(registryPath string, data []byte, key ed25519.PublicKey, newRegistry string) error {
+	history, err := carriedHistoryOf(registryPath, data, key)
+	if err != nil {
+		return err
+	}
+	if err := writeNewRegistry(keyHistoryBeside(newRegistry), history); err != nil {
+		return fmt.Errorf("the new registry's key history: %w", err)
+	}
+	return nil
 }

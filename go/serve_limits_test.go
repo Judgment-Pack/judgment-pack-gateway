@@ -54,7 +54,7 @@ func TestALoopbackListenerIsServedAsBefore(t *testing.T) {
 			if service.listening != net.Addr(addr) {
 				t.Fatalf("listening %v, want %v", service.listening, addr)
 			}
-			for _, path := range []string{"/registry", "/publickey", "/verify"} {
+			for _, path := range []string{"/registry", "/publickey", keyHistoryRoute, "/verify"} {
 				rec := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
 				server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 				if rec.Code != http.StatusOK || len(rec.deadlines) != 0 {
@@ -89,7 +89,7 @@ func TestAListenerOtherHostsCanReachIsServedUnderLimits(t *testing.T) {
 			for _, tc := range []struct {
 				path string
 				open bool
-			}{{"/registry", true}, {"/publickey", true}, {"/verify", false}, {"/registry/", false}, {"/nothing", false}} {
+			}{{"/registry", true}, {"/publickey", true}, {keyHistoryRoute, true}, {"/verify", false}, {"/registry/", false}, {"/publickey/history/", false}, {"/nothing", false}} {
 				before := time.Now()
 				rec := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
 				server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
