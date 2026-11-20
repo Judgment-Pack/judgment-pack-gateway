@@ -295,13 +295,22 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 		out.refused = append(refused, "nothing was removed")
 		return out, nil
 	}
-	if len(plan.sessions) == 0 && len(plan.empty) == 0 {
-		out.notes = append(out.notes, "no session of the scope identifier is in the store; nothing was removed")
-		return out, nil
-	}
-	// every label of the scope's namespace goes with its sessions (ADR-0051)
+	// every label of the scope's namespace goes with its sessions (ADR-0051),
+	// and where the scope holds no session, as where a label was minted and
+	// its source failed, alone: a label is the caller's words
 	if plan.labels, err = labelFilesOf(fsLabels{root: storeRoot}, o.scope, nil); err != nil {
 		return out, fmt.Errorf("the store's session labels could not be read, and nothing was removed: %v", err)
+	}
+	if len(plan.sessions) == 0 && len(plan.empty) == 0 {
+		if len(plan.labels) == 0 {
+			out.notes = append(out.notes, "no session of the scope identifier is in the store; nothing was removed")
+			return out, nil
+		}
+		if err := removeLabelFiles(storeRoot, plan.labels); err != nil {
+			return out, fmt.Errorf("a session label could not be removed: %v; a second run completes the removal", err)
+		}
+		out.notes = append(out.notes, fmt.Sprintf("no session of the scope identifier is in the store; its %d session label(s), naming no session, are removed", len(plan.labels)))
+		return out, nil
 	}
 
 	// Every record first, each read back as a verifier reads it, then

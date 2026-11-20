@@ -551,3 +551,34 @@ func TestTheStartAtLabelsVersionRefusesASessionLeftFromBefore(t *testing.T) {
 	}
 	closeHolds()
 }
+
+// remove-scope takes the labels of a scope that holds labels and no
+// session, as a label minted for a source that failed leaves, and leaves
+// every other namespace's.
+func TestRemoveScopeTakesTheLabelsOfAScopeWithNoSession(t *testing.T) {
+	g, seedPath := scopeStore(t)
+	keeper := fsLabels{root: g.storeRoot}
+	orphan, err := mintSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, err := mintSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range [][2]string{{"scope-c", orphan}, {otherScope, kept}} {
+		if _, err := keeper.recordLabel(l[0], "failed-run", l[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, stdout, stderr := removeScopeOn(t, g, seedPath, "--scope", "scope-c", "--by", "operator-1")
+	if code != 0 || !strings.Contains(stdout+stderr, "its 1 session label(s), naming no session, are removed") {
+		t.Fatalf("remove-scope: %d %q %q", code, stdout, stderr)
+	}
+	if id, err := keeper.labelSession("scope-c", "failed-run"); err != nil || id != "" {
+		t.Fatalf("the scope's label after the removal: %q %v", id, err)
+	}
+	if id, err := keeper.labelSession(otherScope, "failed-run"); err != nil || id != kept {
+		t.Fatalf("another scope's label after the removal: %q %v", id, err)
+	}
+}
