@@ -112,7 +112,7 @@ func registryKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, pres
 	case w.continuation == nil:
 		return nil, errors.New("a key history is carried beside a registry that continues no store")
 	case !present:
-		return nil, fmt.Errorf("the store continuation names the key history %s, and none is carried beside the registry", w.continuation.keyHistoryDigest)
+		return nil, fmt.Errorf("the store continuation names the key history %s, and none is carried into the store", w.continuation.keyHistoryDigest)
 	}
 	if got := keyHistoryDigestOf(carried); got != w.continuation.keyHistoryDigest {
 		return nil, fmt.Errorf("the key history carried into the store is %s, not the history %s the store continuation names", got, w.continuation.keyHistoryDigest)
@@ -297,16 +297,24 @@ func readCarriedKeyHistory(registryPath string) ([]byte, bool, error) {
 // serves, and whether there is one.
 func (g *gatewayService) carriedKeyHistory() ([]byte, bool, error) {
 	if g.kind != nil {
-		// The PostgreSQL kind's store rotation names the old database's key
-		// history in the continuation it writes (storeRotatePostgres) but
-		// does not yet carry its bytes into the new database. Until it
-		// does and this reads them there, a rotated database's history
-		// names a history none carries, and is answered 500: never a
-		// shorter history.
+		// read through the kind, so that every instance on one database
+		// answers the same; a kind that carries none answers none, and a
+		// continuation naming one is answered 500, never a shorter history
+		if carrier, carries := g.kind.(keyHistoryCarrier); carries {
+			return carrier.carriedKeyHistory()
+		}
 		return nil, false, nil
 	}
 	return readCarriedKeyHistory(g.regPath)
 }
+
+// keyHistoryCarrier is a kind that keeps the key history a store rotation
+// carried into it: the PostgreSQL kind, in gateway.key_history.
+type keyHistoryCarrier interface {
+	carriedKeyHistory() ([]byte, bool, error)
+}
+
+var _ keyHistoryCarrier = (*pgKind)(nil)
 
 // keyHistoryAnswer is an answer to GET /publickey/history and what it was
 // made of: the SHA-256 of the registry's bytes, the carried history's, and

@@ -409,6 +409,13 @@ func refuseRotatedStore(registryPath string) error {
 // hold refuses the rotation.
 func carriedHistoryOf(registryPath string, data []byte, key ed25519.PublicKey) ([]byte, error) {
 	carried, present, err := readCarriedKeyHistory(registryPath)
+	return historyToCarry(data, key, carried, present, err)
+}
+
+// historyToCarry is the key history a store rotation carries, from the old
+// registry's bytes and the history carried into the old store, read with
+// err: the answer the old store's gateway gives.
+func historyToCarry(data []byte, key ed25519.PublicKey, carried []byte, present bool, err error) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the key history carried into the store: %w", err)
 	}

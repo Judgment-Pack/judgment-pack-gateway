@@ -1629,9 +1629,13 @@ is the carried one's, its `validTo` the rotation from it, if any. A continued re
 carried beside it, or one whose bytes are not the ones named -- changed, or cut to a later stretch that
 holds on its own -- or that does not so hold, and a history carried beside a registry that continues no
 store, are each answered `500` as above, never as a shorter history. On the PostgreSQL kind, every instance
-answers the walk of the one registry they share. Its store rotation (§3d) names the old database's history
-in the continuation but does not yet carry the bytes into the new database, so a rotated database's
-history is answered `500` as above.
+answers the walk of the one registry they share, with the history carried into their database: the one
+row of `gateway.key_history`, which the store rotation (§3d) writes, as the owner, in the transaction
+that makes the new database's registry holding the continuation, so that the two commit together or not
+at all. The history it carries is the old database's answer, its registry's with what was carried into
+it in its turn; a rerun holds a row there to the bytes named, and writes a missing one only where it is
+the history named. The run-time role reads the row and cannot change it. A continued database whose row
+is missing or not the bytes named is answered `500` as above.
 
 **Checking it.** A consumer that pinned a key holds the answer, read by §1.1's parser, to: exactly the
 members above, each of its form; the first entry's `publicKey` the key pinned, with no `validFrom`,
