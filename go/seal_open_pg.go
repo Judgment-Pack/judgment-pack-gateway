@@ -56,6 +56,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 )
 
 // sealOpenOnKind seals what may be sealed on the kind -- the session named,
@@ -330,6 +331,46 @@ func namedPayload(data []byte) (string, bool) {
 // the start lease taken -- refused at once while an instance serves -- and
 // held until the command ends, and what may be sealed sealed under it.
 func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([]*vObject, []string, error) {
+	return sealOpenPostgresHeld(o, stamp, said, pgLeaseCommand{as: "seal-open", verb: "seal"})
+}
+
+// pgLeaseCommand is a command that seals under the start lease, as
+// seal-open does: as names it where its lease is said to be left to expire,
+// and verb what its refusal says to do once the gateway is stopped. Where
+// alone is set the lease is taken in the one-instance mode, whatever
+// storage.instances says, so the command is refused while any instance
+// serves, of either mode, and no instance starts while it holds the lease.
+// then, where it is not nil, runs once what may be sealed is sealed, the
+// lease still held, with the seed, the sessions refused and the hold.
+type pgLeaseCommand struct {
+	as, verb string
+	alone    bool
+	// before runs under the lease, the registry writer made, and before
+	// anything is sealed: a refusal there leaves the store as it was
+	before func(kind *pgKind, key *signingKey) error
+	then   func(kind *pgKind, key *signingKey, refused []string, held *kindStart) error
+}
+
+// holding is whether the hold has the start lease still, with margin of it
+// to spare by this process's clock: no loss reported by its renewal, which
+// is left for the stop to say, and the lease held for longer than margin
+// from now. A write elsewhere that the lease is to cover checks it last,
+// before its commit.
+func (s *kindStart) holding(margin time.Duration) error {
+	select {
+	case err := <-s.lost:
+		s.lost <- err
+		return err
+	default:
+	}
+	if left := time.Until(s.lease.heldUntil()); left <= margin {
+		return fmt.Errorf("%w: gateway instance %s's start lease is held for %s more by this process's clock, not more than the %s a commit is given", errStartLeaseLost, s.lease.holder, left.Round(time.Millisecond), margin)
+	}
+	return nil
+}
+
+// sealOpenPostgresHeld is sealOpenPostgres as the command c.
+func sealOpenPostgresHeld(o sealOpenOptions, stamp func() string, said io.Writer, c pgLeaseCommand) ([]*vObject, []string, error) {
 	seed, err := loadSeed(o.seedNames[0])
 	if err != nil {
 		return nil, nil, fmt.Errorf("seed: %w", err)
@@ -360,6 +401,9 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 		return nil, nil, err
 	}
 	kind.instance = instanceForKey(&spec, sig.publicKey(), o.authority)
+	if c.alone {
+		kind.instance.several = false
+	}
 	holder, err := newStartLeaseHolder()
 	if err != nil {
 		kind.close()
@@ -369,11 +413,11 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 	if err != nil {
 		kind.close()
 		if errors.Is(err, errStartLeaseHeld) {
-			return nil, nil, fmt.Errorf("%w; stop the gateway, then seal", err)
+			return nil, nil, fmt.Errorf("%w; stop the gateway, then %s", err, c.verb)
 		}
 		return nil, nil, err
 	}
-	held := &kindStart{kind: kind, lease: lease, as: "seal-open"}
+	held := &kindStart{kind: kind, lease: lease, as: c.as}
 	held.renew()
 	defer held.stop(said)
 	if _, err := kind.registry().readLog(0); faultOf(err) == faultAbsent {
@@ -386,7 +430,16 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 	if err != nil {
 		return nil, nil, err
 	}
+	if c.before != nil {
+		if err := c.before(kind, writer.signing.key()); err != nil {
+			return nil, nil, err
+		}
+	}
 	// a seal is appended only while the lease is held: once it is lost,
 	// each append fails at its fence and the command ends with that failure
-	return sealOpenOnKindSink(kind, o.authority, writer, o.session, sealedViaCommand, stamp, o.sink())
+	sealed, refused, err := sealOpenOnKindSink(kind, o.authority, writer, o.session, sealedViaCommand, stamp, o.sink())
+	if err != nil || c.then == nil {
+		return sealed, refused, err
+	}
+	return sealed, refused, c.then(kind, writer.signing.key(), refused, held)
 }

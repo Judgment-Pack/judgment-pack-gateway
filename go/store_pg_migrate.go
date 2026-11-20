@@ -168,6 +168,21 @@ const pgMigrationLock = 0x6761746577617931 // "gateway1" in ASCII, a constant of
 // login dsn names, and answers the versions it applied: none on a second
 // run. Nothing is applied unless every condition below holds.
 func migratePostgres(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout time.Duration) ([]int, error) {
+	return migratePostgresThen(dsn, set, roles, timeout, nil, true)
+}
+
+// migratePostgresThen is migratePostgres with then, where it is not nil,
+// run in the migration's transaction once the definitions hold and before
+// the commit -- as the owner, under the migration's lock -- its failure
+// rolling the migration back; and, where commit is not set, the
+// transaction rolled back at its end, so nothing is kept: a migration tried
+// (gateway store rotate holds the database it rotates into to this before
+// it seals anything).
+// errPgCommitUncertain is a migration's COMMIT that failed as it was sent
+// or answered: whether it committed is not known here.
+var errPgCommitUncertain = errors.New("the migration's COMMIT did not answer, and whether it committed is not known")
+
+func migratePostgresThen(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout time.Duration, then func(pgTx) error, commit bool) ([]int, error) {
 	if !pgRoleName(roles.owner) || !pgRoleName(roles.runtime) {
 		return nil, errors.New("store: a role's name is 1 to 63 bytes with no NUL and no double quote")
 	}
@@ -271,9 +286,20 @@ func migratePostgres(dsn pgDSN, set pgMigrationSet, roles pgRoles, timeout time.
 			return failed(fmt.Errorf("%w; the migration was rolled back", err))
 		}
 	}
+	if then != nil {
+		if err := then(pgTx{c}); err != nil {
+			return failed(err)
+		}
+	}
+	if !commit {
+		if _, err := c.exec("ROLLBACK"); err != nil {
+			return nil, err
+		}
+		return applied, nil
+	}
 	done, err := c.exec("COMMIT")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errPgCommitUncertain, err)
 	}
 	if done.tag != "COMMIT" {
 		return nil, errors.New("store: the database rolled the migration back")
@@ -445,10 +471,11 @@ var pgPrivileges = map[string][]string{
 	"start_lease":       {"SELECT", "INSERT", "UPDATE"},
 	"scope_identifiers": {"SELECT", "INSERT"},
 	"removal_records":   {"SELECT"},
+	"rotated":           {"SELECT", "INSERT"},
 }
 
 // pgTables are the schema's tables, in the order the start reads them.
-var pgTables = []string{"blobs", "documents", "entries", "log_records", "logs", "removal_records", "schema_migrations", "scope_identifiers", "secrets", "series", "series_holders", "start_lease"}
+var pgTables = []string{"blobs", "documents", "entries", "log_records", "logs", "removal_records", "rotated", "schema_migrations", "scope_identifiers", "secrets", "series", "series_holders", "start_lease"}
 
 // pgScopedTables are the tables whose rows carry a scope identifier: row
 // security is enabled and forced on each. The scope identifiers' rows
