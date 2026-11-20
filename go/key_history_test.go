@@ -102,6 +102,28 @@ func TestTheKeyHistoryFollowsEachRotationWhileServing(t *testing.T) {
 	}
 }
 
+// Two rotations in one second, as two SIGHUPs back to back make them, are
+// written and walked, and the history the gateway serves for them holds:
+// it is answered 200, by the consumer's check too, not 500 for good.
+func TestTwoRotationsInOneSecondServeAHistoryThatHolds(t *testing.T) {
+	standInKeyService(t)
+	one, two := mustKeyServiceSigner(t, ksVersion1), mustKeyServiceSigner(t, ksVersion2)
+	g, _, _ := ksService(t, nil)
+	seedKey := seedKeyOf(testSeed)
+	at := "2026-11-19T00:00:00Z"
+	if _, err := g.registry.rotateTo(one, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.registry.rotateTo(two, at); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := askKeyHistory(t, g); code != http.StatusOK {
+		t.Fatalf("two rotations in one second: %d %s", code, body)
+	}
+	entries, _ := historyPinned(t, g, seedKey)
+	wantKeys(t, entries, []ed25519.PublicKey{seedKey, one.publicKey(), two.publicKey()}, []string{at, at})
+}
+
 // An entry the registry's chain does not prove is never served: a rotation
 // the key in force did not sign stops the history, which is answered 500
 // with a fixed sentence and none of the keys reached before it.
@@ -461,10 +483,11 @@ func TestAKeyHistoryThatDoesNotHoldIsWalkedOncePerChange(t *testing.T) {
 	}
 }
 
-// The rotatedAt of each rotation in a history is after the one before it: a
-// chain whose second rotation is at the first's time, or before it, holds
-// signature by signature and is refused by the check all the same.
-func TestTheKeyHistoryCheckRefusesARotationNotAfterTheOneBefore(t *testing.T) {
+// The rotatedAt of each rotation in a history is not before the one before
+// it: a chain whose second rotation is before the first holds signature by
+// signature and is refused by the check all the same; one of the first's
+// second holds, since the writers make it.
+func TestTheKeyHistoryCheckRefusesARotationBeforeTheOneBefore(t *testing.T) {
 	first, second, third := ed25519.NewKeyFromSeed(historySeed("1")), ed25519.NewKeyFromSeed(historySeed("2")), ed25519.NewKeyFromSeed(historySeed("3"))
 	for _, at := range []string{"2026-11-19T00:00:01Z", "2026-11-19T00:00:00Z", "2026-11-19T00:00:02Z"} {
 		data := rotationRecord(nil, 1, "2026-11-19T00:00:01Z", first, second)
@@ -474,8 +497,8 @@ func TestTheKeyHistoryCheckRefusesARotationNotAfterTheOneBefore(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err = checkKeyHistory(keyHistoryDocument(entries), first.Public().(ed25519.PublicKey))
-		want := "entry 2: the rotation's rotatedAt is not after the rotatedAt of the rotation before it"
-		if at == "2026-11-19T00:00:02Z" {
+		want := "entry 2: the rotation's rotatedAt is before the rotatedAt of the rotation before it"
+		if at != "2026-11-19T00:00:00Z" {
 			if err != nil {
 				t.Errorf("a rotation after the one before it: %v", err)
 			}
@@ -487,7 +510,7 @@ func TestTheKeyHistoryCheckRefusesARotationNotAfterTheOneBefore(t *testing.T) {
 
 // A store continuation is made while the key in force at the store rotation
 // is: its continuedAt at or after that key's validFrom in the history
-// carried, and before the new registry's first rotation from it, if any.
+// carried, and not after the new registry's first rotation from it, if any.
 func TestAStoreContinuationIsMadeWhileTheKeyItCarriesIsInForce(t *testing.T) {
 	first, second, third := ed25519.NewKeyFromSeed(historySeed("1")), ed25519.NewKeyFromSeed(historySeed("2")), ed25519.NewKeyFromSeed(historySeed("3"))
 	old := rotationRecord(nil, 1, "2026-11-19T00:00:05Z", first, second)
@@ -506,11 +529,11 @@ func TestAStoreContinuationIsMadeWhileTheKeyItCarriesIsInForce(t *testing.T) {
 		return registryKeyHistory(data, own, history, true)
 	}
 	before := "the store continuation's continuedAt is before the validFrom of the key in force at the store rotation"
-	after := "the store continuation's continuedAt is not before the validTo of the key in force at the store rotation"
+	after := "the store continuation's continuedAt is after the validTo of the key in force at the store rotation"
 	for _, c := range []struct{ at, rotatedAt, want string }{
 		{"2026-11-19T00:00:04Z", "", before},
 		{"2026-11-19T00:00:05Z", "", ""},
-		{"2026-11-19T00:00:06Z", "2026-11-19T00:00:06Z", after},
+		{"2026-11-19T00:00:06Z", "2026-11-19T00:00:06Z", ""},
 		{"2026-11-19T00:00:07Z", "2026-11-19T00:00:06Z", after},
 		{"2026-11-19T00:00:06Z", "2026-11-19T00:00:07Z", ""},
 	} {

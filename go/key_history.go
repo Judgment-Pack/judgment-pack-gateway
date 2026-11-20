@@ -130,13 +130,14 @@ func registryKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, pres
 	// the key in force at the store rotation is one key, its entry the
 	// carried one's, and its end the registry's first rotation, if any; the
 	// rotation was made while that key was in force: at or after its
-	// validFrom, and before its validTo
+	// validFrom, and not after its validTo. Two of one second are not
+	// told apart, since the writers hold the clock's form alone
 	at := w.continuation.continuedAt
 	if last.validFrom != "" && at < last.validFrom {
 		return nil, errors.New("the store continuation's continuedAt is before the validFrom of the key in force at the store rotation")
 	}
-	if entries[0].validTo != "" && at >= entries[0].validTo {
-		return nil, errors.New("the store continuation's continuedAt is not before the validTo of the key in force at the store rotation")
+	if entries[0].validTo != "" && at > entries[0].validTo {
+		return nil, errors.New("the store continuation's continuedAt is after the validTo of the key in force at the store rotation")
 	}
 	last.validTo = entries[0].validTo
 	return append(append(before[:len(before)-1], last), entries[1:]...), nil
@@ -200,9 +201,11 @@ func checkKeyHistory(doc []byte, pinned ed25519.PublicKey) ([]keyHistoryEntry, e
 			if e.validFrom != at || before.validTo != at {
 				return nil, fmt.Errorf("entry %d: validFrom, and the validTo before it, are not the rotation's rotatedAt %s", i, at)
 			}
-			// rotatedAt's form is fixed-width, so its order is its bytes'
-			if before.validFrom != "" && at <= before.validFrom {
-				return nil, fmt.Errorf("entry %d: the rotation's rotatedAt is not after the rotatedAt of the rotation before it", i)
+			// rotatedAt's form is fixed-width, so its order is its bytes';
+			// two rotations of one second, which the writers make (two
+			// SIGHUPs, or a clock stepped back to the same second), hold
+			if before.validFrom != "" && at < before.validFrom {
+				return nil, fmt.Errorf("entry %d: the rotation's rotatedAt is before the rotatedAt of the rotation before it", i)
 			}
 		}
 		if (e.validTo == "") != (i == len(keys)-1) {
