@@ -454,10 +454,44 @@ func (g *gatewayService) sealLabelled(label string, asked requestedScope, reach 
 // unlabelledOpen is, from labelsVersion, the sessions the store holds open
 // that no label names: sessions named before the version, which a label
 // never addresses. The start refuses while there is one (labelsAtStart).
+//
+// The sessions are read first and the labels second. An instance already
+// serving records a label before its session's first receipt, so a session
+// it opens between the two reads is either not among the sessions read or
+// named by a label read after them: a live labelled session is never taken
+// for one left from before the version.
 func (g *gatewayService) unlabelledOpen() ([]string, error) {
 	seals, err := g.engineSeals()
 	if err != nil {
 		return nil, err
+	}
+	var candidates []string
+	if pg, onKind := g.kind.(*pgKind); onKind {
+		// every series of every scope that holds a receipt, in one snapshot
+		held, err := pg.seriesHoldingEntries()
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range held {
+			if _, sealed := seals[s]; !sealed {
+				candidates = append(candidates, s)
+			}
+		}
+	} else if g.kind != nil {
+		return nil, errors.New("the store's kind lists no sessions to ask whether a label names them")
+	} else {
+		sessions, err := listSessions(g.storeRoot)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range sessions {
+			if _, sealed := seals[s]; !sealed {
+				candidates = append(candidates, s)
+			}
+		}
+	}
+	if unlabelledOpenBetweenReads != nil {
+		unlabelledOpenBetweenReads()
 	}
 	entries, err := g.labels.labelEntries()
 	if err != nil {
@@ -468,36 +502,21 @@ func (g *gatewayService) unlabelledOpen() ([]string, error) {
 		labelled[e.sessionID] = true
 	}
 	var open []string
-	if pg, onKind := g.kind.(*pgKind); onKind {
-		// every series of every scope that holds a receipt, in one snapshot
-		held, err := pg.seriesHoldingEntries()
-		if err != nil {
-			return nil, err
-		}
-		for _, s := range held {
-			if _, sealed := seals[s]; !sealed && !labelled[s] {
-				open = append(open, s)
-			}
-		}
-		return open, nil
-	}
-	if g.kind != nil {
-		return nil, errors.New("the store's kind lists no sessions to ask whether a label names them")
-	}
-	sessions, err := listSessions(g.storeRoot)
-	if err != nil {
-		return nil, err
-	}
-	for _, s := range sessions {
-		if _, sealed := seals[s]; sealed || labelled[s] {
+	for _, s := range candidates {
+		if labelled[s] {
 			continue
 		}
-		if g.leftInStoreRefusal(s, "", false) != "" {
-			open = append(open, s)
+		if g.kind == nil && g.leftInStoreRefusal(s, "", false) == "" {
+			continue
 		}
+		open = append(open, s)
 	}
 	return open, nil
 }
+
+// unlabelledOpenBetweenReads, in tests, runs between unlabelledOpen's read
+// of the sessions and its read of the labels.
+var unlabelledOpenBetweenReads func()
 
 // labelsAtStart refuses a start from labelsVersion while the store holds a
 // session open that no label names, naming gateway seal-open --all: such a
@@ -519,7 +538,7 @@ func labelsAtStart(service *gatewayService) error {
 	if len(named) > 5 {
 		named = named[:5]
 	}
-	return fmt.Errorf("engine configuration version %s reads the session a request names as a label in its scope (ADR-0051), and the store holds %d session(s) open that no label names, left from before that version (%s); such a session is sealed before the upgrade: stop the gateway, run gateway seal-open --all, and start again; the gateway does not start", labelsVersion, len(open), strings.Join(named, ", "))
+	return fmt.Errorf("engine configuration version %s reads the session a request names as a label in its scope (ADR-0051), and the store holds %d session(s) open that no label names, left from before that version (%s): if a gateway remove-scope or gateway store remove-scope was cut off, run it again; otherwise such a session is sealed before the upgrade: stop the gateway, run gateway seal-open --all, and start again; the gateway does not start", labelsVersion, len(open), strings.Join(named, ", "))
 }
 
 const sessionsUsage = `usage: gateway sessions --config <engine.json> (--scope <identifier> | --no-scope) [--label <label>]

@@ -362,7 +362,7 @@ records itself as the session's holder when it admits the call, before the sourc
   The comparison is with live instances alone: once every instance has stopped and its lease has
   run out, a start is compared with none, as in the one-instance mode. A key changed then is still
   refused, by the start's walk of the registry, unless the registry's rotations end at it
-  (`gateway rotate-key`); an authority changed then is not, so keep one authority for the
+  (`gateway store rotate-key`, "Rotating the signing key"); an authority changed then is not, so keep one authority for the
   database's life. The sources are not compared: give every instance the same ones, or a session's
   later calls may meet a source its holder lacks.
 - **Connections:** `connections` + 1 for each instance in the server's connection budget.

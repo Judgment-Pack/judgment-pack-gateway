@@ -505,6 +505,12 @@ func continuationOrderRefusal(registryPath string, data []byte, key ed25519.Publ
 	if err != nil {
 		return fmt.Errorf("the key history carried into the store: %w; the store is not rotated", err)
 	}
+	return continuationOrderRefusalOf(data, key, carried, present, at)
+}
+
+// continuationOrderRefusalOf is continuationOrderRefusal over the history
+// carried into the store as read, on either kind.
+func continuationOrderRefusalOf(data []byte, key ed25519.PublicKey, carried []byte, present bool, at string) error {
 	entries, err := registryKeyHistory(data, key, carried, present)
 	if err != nil {
 		return fmt.Errorf("the store's key history: %w; the store is not rotated", err)
