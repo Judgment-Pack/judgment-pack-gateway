@@ -61,6 +61,16 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	if err := requireSession(sessionID); err != nil {
 		return nil, actRefusal{"session", err.Error()}
 	}
+	// From labelsVersion the session is a label in the namespace of none,
+	// the scope of every action (ADR-0026, ADR-0051), minted on its first
+	// use there; cites[].sessionId stays a session id.
+	if g.labels != nil {
+		id, err := g.sessionOfLabel(sessionID, "")
+		if err != nil {
+			return nil, actRefusal{"session", err.Error()}
+		}
+		sessionID = id
+	}
 	if reason := g.sessionOpen(sessionID); reason != "" {
 		return nil, actRefusal{"session", reason}
 	}

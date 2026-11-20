@@ -256,3 +256,24 @@ func (s *mcpServer) toolList(sess *mcpSession, token string) []json.RawMessage {
 	}
 	return s.held.assemble(names)
 }
+
+// sealTakesScope is whether the seal tool takes a scope argument: in the
+// caller form, from labelsVersion, where a label is looked up in the
+// namespace the seal names (ADR-0051).
+func (s *mcpServer) sealTakesScope() bool {
+	return s.cfg.mcp.scopeFromCaller && versionAtLeast(s.cfg.version, labelsVersion)
+}
+
+// sealScopeArgument is the seal tool's scope argument: the scope identifier,
+// whether it is given, and whether it is a non-empty string where it is.
+func sealScopeArgument(args map[string]json.RawMessage) (string, bool, bool) {
+	raw, named := args["scope"]
+	if !named {
+		return "", false, true
+	}
+	var scope string
+	if !isString(raw) || json.Unmarshal(raw, &scope) != nil || scope == "" {
+		return "", true, false
+	}
+	return scope, true, true
+}

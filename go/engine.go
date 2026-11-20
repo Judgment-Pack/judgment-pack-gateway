@@ -129,10 +129,16 @@ import (
 // acknowledgment signed under a pinned key names, once a window has passed
 // (docs/adr/0048-retention-by-acknowledgment-and-store-rotation.md; retain.go):
 // a file with the member is refused under an earlier version, and with no
-// member nothing is removed by age.
-const engineVersion = retentionVersion
+// member nothing is removed by age. Version 39 (labelsVersion) reads the
+// session a request to /acquire, /seal or /act names as a label in its
+// scope's namespace, mapped to a session id the gateway mints and keeps in
+// the store (docs/adr/0051-a-session-name-is-a-label-in-its-scope-mapped-to-a-minted-session-id.md;
+// session_labels.go): it adds no member, and the start refuses while the
+// store holds a session open that no label names. connect raises no file to
+// 39 either.
+const engineVersion = labelsVersion
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -2765,7 +2771,7 @@ func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, e
 // engineServeOptions is what `serve` runs for a configuration: the derived
 // sources, the receipt version the design assumes, and the defaults.
 func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec, identity *identityConfig) serveOptions {
-	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed, receiptSink: cfg.receiptSink}
+	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed, receiptSink: cfg.receiptSink, labels: versionAtLeast(cfg.version, labelsVersion)}
 }
 
 // maxKeySetBytes bounds the issuer's key file.

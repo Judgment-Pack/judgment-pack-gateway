@@ -48,7 +48,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | seal-open | remove-artifact | remove-scope | retain | journal | store | mcp | posture | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | seal-open | remove-artifact | remove-scope | retain | sessions | journal | store | mcp | posture | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -82,6 +82,8 @@ func main() {
 		os.Exit(cmdRetain(os.Args[2:], os.Stdout, os.Stderr))
 	case "remove-scope":
 		os.Exit(cmdRemoveScope(os.Args[2:], os.Stdout, os.Stderr))
+	case "sessions":
+		os.Exit(cmdSessions(os.Args[2:], os.Stdout, os.Stderr))
 	case "journal":
 		os.Exit(cmdJournal(os.Args[2:], os.Stdout, os.Stderr))
 	case "store":
@@ -438,6 +440,9 @@ func applyServeOptions(service *gatewayService, opts serveOptions) {
 	if opts.receiptSink != nil {
 		service.forwarder = newReceiptForwarder(opts.receiptSink)
 	}
+	if opts.labels && service.kind == nil {
+		service.labels = fsLabels{root: service.storeRoot}
+	}
 }
 
 // engineStart is what serve --config judges before it loads the seed, in
@@ -606,6 +611,11 @@ func cmdServeEngine(args []string) int {
 	// under the hold, before anything is served (SPEC.md §3c), and the
 	// seals pending forwarding delivered (seal_sink.go)
 	if err := sealsAtStart(service, os.Stderr, nowStamp, cfg.sealOpenAtStart); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	// from labelsVersion, refused while a session named before it is open
+	if err := labelsAtStart(service); err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
@@ -863,6 +873,9 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 		served.signer = r.signer
 		service, err = buildServiceOn(kind, seed, cfg.authority, served)
 	}
+	if err == nil && versionAtLeast(cfg.version, labelsVersion) && service.labels == nil {
+		err = storageUnsupported("session labels (engineVersion " + labelsVersion + ", ADR-0051), kept on disk,")
+	}
 	if err == nil {
 		_, err = service.kindRegistryWalk()
 	}
@@ -985,6 +998,9 @@ type serveOptions struct {
 	// left open, after the interruption (--seal-open-at-start; serve
 	// --config reads the configuration's sealOpenAtStart; SPEC.md §3c).
 	sealOpenAtStart bool
+	// labels is whether the session a request names is a label in its
+	// scope (labelsVersion, ADR-0051)
+	labels bool
 }
 
 // validateEnvKey accepts what an environment variable name can be on the
