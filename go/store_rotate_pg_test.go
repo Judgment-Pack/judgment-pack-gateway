@@ -398,3 +398,31 @@ func TestStoreRotateTakesEachKindsFlagsOfTheNewStoreAlone(t *testing.T) {
 		t.Fatalf("a refused rotation made something: %v", entries)
 	}
 }
+
+// A database that holds a key history carried but no other row, or a row of
+// a store but no key history, holds a store all the same: each is refused
+// as a database to rotate into, by name, before anything is sealed.
+func TestAPostgresStoreRotationIsRefusedIntoADatabaseHoldingKeyHistoryOrRowsAlone(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	dir := tempDirAt(t, 0o700)
+	config, cfg := sealOpenPgConfig(t, db, dir, "engine.json", false, "")
+	stop := sealOpenPgLeaveOpen(t, cfg, sealOpenPgSources(t), []string{`{"session":"s-1","source":"plain","arguments":{"q":"acme"}}`})
+	stop()
+	before := pgRegistryOf(t, db)
+	for name, row := range map[string]string{
+		"a key history alone":          `INSERT INTO gateway.key_history (history) VALUES ('\x7b7d')`,
+		"a row of a store, no history": `INSERT INTO gateway.series (scope, name) VALUES ('none', 'held')`,
+	} {
+		target := pgTestDBBeside(t, db)
+		target.migrate(t)
+		asOwnerIn(t, target, pgNoScope, row)
+		code, stdout, stderr := rotatePg(t, config, target, dir)
+		if code != 1 || stdout != "" || stderr != "store rotate: the new database: it holds rows of a store; a rotation starts a new store in a database that holds none; nothing was changed\n" {
+			t.Errorf("%s: a rotation into it: %d %q %q", name, code, stdout, stderr)
+		}
+		if pgRegistryOf(t, db) != before {
+			t.Fatalf("%s: a refused rotation appended to the old registry", name)
+		}
+	}
+}
