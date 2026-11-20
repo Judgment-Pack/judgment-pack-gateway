@@ -78,10 +78,10 @@ type labelKeeper interface {
 	// labelsOf is the labels of scope's namespace alone, in label order.
 	labelsOf(scope string) ([]labelEntry, error)
 	// idLabelled is whether a label already names the session id id: on
-	// the filesystem kind a label of any namespace; on the PostgreSQL kind
-	// one of scope's namespace, read through its view alone, where the
-	// table's UNIQUE series refuses the record of an id another
-	// namespace's label names.
+	// the PostgreSQL kind one of scope's namespace, read through its view
+	// alone, where the table's UNIQUE series refuses the record of an id
+	// another namespace's label names; on the filesystem kind no read
+	// (fsLabels.idLabelled).
 	idLabelled(scope, id string) (bool, error)
 }
 
@@ -306,18 +306,13 @@ func (l fsLabels) labelsOf(scope string) ([]labelEntry, error) {
 	return of, nil
 }
 
-func (l fsLabels) idLabelled(_, id string) (bool, error) {
-	entries, err := l.labelEntries()
-	if err != nil {
-		return false, err
-	}
-	for _, e := range entries {
-		if e.sessionID == id {
-			return true, nil
-		}
-	}
-	return false, nil
-}
+// idLabelled on the filesystem kind reads no label: a scan of every label
+// file would make each new label cost the size of the store, against a
+// collision of 2⁻¹²⁸ per pair. A minted id that is a session already is
+// refused by the g.sessions and receipts/<id> checks (sessionTaken); one
+// only another label names, its session holding no receipt yet, stands at
+// 2⁻¹²⁸ (ADR-0051, decision 1). PostgreSQL's UNIQUE series refuses it.
+func (l fsLabels) idLabelled(_, _ string) (bool, error) { return false, nil }
 
 // removeLabelFiles removes the named files of labels/ and syncs it: the
 // labels of sessions a removal's records, already durable, name.

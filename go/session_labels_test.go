@@ -740,28 +740,3 @@ func TestAnActWhoseLabelAnotherRecordsFirstJoinsThatSession(t *testing.T) {
 		t.Fatalf("the label: %q %v", id, err)
 	}
 }
-
-// A minted id that a label already names, of any namespace, whose session
-// holds no receipt yet, is minted again: two labels never name one session.
-func TestAMintedIDALabelNamesAlreadyIsMintedAgain(t *testing.T) {
-	g, server, _ := labelledStore(t)
-	taken, err := mintSessionID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := g.labels.recordLabel(otherScope, "first", taken); err != nil {
-		t.Fatal(err)
-	}
-	ids := []string{taken}
-	g.mintID = func() (string, error) {
-		if len(ids) > 0 {
-			id := ids[0]
-			ids = ids[1:]
-			return id, nil
-		}
-		return mintSessionID()
-	}
-	if id, _ := labelAcquire(t, server, "second", "a", testScope); id == taken {
-		t.Fatalf("the second label names the first label's session %s", id)
-	}
-}
