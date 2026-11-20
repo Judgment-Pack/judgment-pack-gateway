@@ -477,3 +477,35 @@ func TestAPostgresARefusedAcquisitionLeavesNoLabel(t *testing.T) {
 		t.Fatalf("the label once admitted: at %v", index)
 	}
 }
+
+// A minted id that a label of the namespace already names, whose session
+// holds no receipt yet, is minted again on the PostgreSQL kind too: two
+// labels never name one session.
+func TestAPostgresAMintedIDALabelNamesAlreadyIsMintedAgain(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	_, cfg := labelsPgConfig(t, db, tempDirAt(t, 0o700), labelsVersion, false, "")
+	started, server, _ := labelsPgServe(t, cfg, sealOpenPgSources(t))
+	taken, err := mintSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := started.service.labels.recordLabel("scope-a", "first", taken); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{taken}
+	started.service.mintID = func() (string, error) {
+		if len(ids) > 0 {
+			id := ids[0]
+			ids = ids[1:]
+			return id, nil
+		}
+		return mintSessionID()
+	}
+	if id, _ := labelAcquire(t, server, "second", "screening-a", "scope-a"); id == taken {
+		t.Fatalf("the second label names the first label's session %s", id)
+	}
+	if got := pgLabelRowsIn(t, db, pgRowScope("scope-a")); len(got) != 2 {
+		t.Fatalf("the labels kept: %v", got)
+	}
+}

@@ -3330,10 +3330,11 @@ acquisition and the action run nothing and mint nothing, and the session is not 
 receipt is never answered to any caller.
 
 Held receipts are kept in the serving process's memory, and each is in the store. A session
-left open by a stop or a crash is sealed after the interruption (§3c, by `seal-open` or at the
-start) only once each receipt the store holds of it, oldest first, has been delivered and
-acknowledged; one whose receipts are not all acknowledged is left open and named (ADR-0049,
-consequences).
+left open by a stop or a crash is sealed after the interruption (§3c, by `seal-open --config` or
+by the start's own seal, `sealOpenAtStart`) only once each receipt the store holds of it, oldest
+first, has been delivered and acknowledged; one whose receipts are not all acknowledged is left
+open and named (ADR-0049, consequences). A start without `sealOpenAtStart` delivers no receipt
+the store holds, and the sessions it finds open stay open.
 
 **Seals (engine version 37).** A gateway whose `receiptSink.seals` is `true` delivers each seal
 it appends to the same endpoint: the seal `/seal` appends, and a seal made after an

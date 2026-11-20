@@ -2836,7 +2836,9 @@ Version 39 adds no member. It changes what the `session` of a request is
   `gateway.session_labels` per label (schema version 9), inserted `ON CONFLICT DO NOTHING` so
   every instance on one database agrees on one id (docs/postgresql-store.md, "Session labels").
   On both kinds an acquisition records a label it minted only once it is admitted, immediately
-  before its source starts, so a call refused before then leaves no label.
+  before its source starts, and an action (`/act`) once it is admitted, before its dispatch is
+  claimed, so a call refused before then leaves no label. An id a label names already is not
+  minted for another label.
 - **What a caller is answered.** `/seal` looks a label up in the namespace it names alone. A
   label not there is answered `no such session: <label>`, and nothing else is read: not the
   registry, and nothing of another scope. A label whose session is sealed is refused as a sealed

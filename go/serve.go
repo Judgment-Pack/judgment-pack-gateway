@@ -320,6 +320,9 @@ type gatewayService struct {
 	// label in its scope's namespace. nil before that version, and the name
 	// a request sends is then the session id, as it always was.
 	labels labelKeeper
+	// mintID, when a test sets it, mints a label's session id in place of
+	// mintSessionID, so a test can hand it an id that is taken
+	mintID func() (string, error)
 	// decisionRecords is where an action's cited decision record is looked
 	// for (executor.md); empty refuses every action.
 	decisionRecords string

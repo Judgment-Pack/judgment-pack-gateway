@@ -68,7 +68,11 @@ secret, and it keeps every signed form as it is.
 - **Session ids.** On a label's first use in its scope, the gateway mints a session id: 32
   lowercase hexadecimal characters from 128 random bits (`crypto/rand`). It is of the session
   id form, so the store, the registry and the verifiers read it as any other. If a minted id
-  is already a session of the store (probability 2⁻¹²⁸ per pair), it is minted again.
+  is already a session of the store (probability 2⁻¹²⁸ per pair), it is minted again. On the
+  PostgreSQL kind the table's unique `series` also refuses an id another label names. On the
+  filesystem kind, an id only another label names, its session holding no receipt yet, is not
+  read for: a scan of every label file per new label would cost the size of the store, and the
+  case stands at 2⁻¹²⁸ per pair (amended 2026-11-20).
 - **The namespace.** A label's namespace is the scope the session is of, as ADR-0036 fixes it:
   the scope identifier of the source, or the `scope` the request names where the source is of
   several, or **none**. A session of no scope identifier has a namespace of its own, `none`.

@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -541,5 +544,139 @@ func TestAStoreContinuationIsMadeWhileTheKeyItCarriesIsInForce(t *testing.T) {
 		if c.want == "" && err != nil || c.want != "" && (err == nil || err.Error() != c.want) {
 			t.Errorf("continued at %s, rotated from at %q: %v, not %q", c.at, c.rotatedAt, err, c.want)
 		}
+	}
+}
+
+// clockBehind is the refusal of a rotation stamped at before the key
+// history's last rotation last.
+func clockBehind(at, last string) string {
+	return "the rotation's rotatedAt " + at + " is before the key history's last rotation " + last + "; correct this host's clock and run again; nothing was written"
+}
+
+// Every writer's record is held to the key history before it is written
+// (keyHistoryWriteRefusal): a stamp before the last rotation is the clock,
+// said as such; any other finding of the history with the record is the
+// record's; two of one second hold.
+func TestAWritersRecordIsHeldToTheKeyHistoryOneCauseEach(t *testing.T) {
+	before := []keyHistoryEntry{{keyID: "a", validTo: "2026-11-19T00:00:05Z"}, {keyID: "b", validFrom: "2026-11-19T00:00:05Z"}}
+	found := errors.New("the walk's finding")
+	fails := func() error { return found }
+	if err := keyHistoryWriteRefusal(before, "2026-11-19T00:00:04Z", storeRotateKeyBefore, keyHistoryRotationFault, fails); err == nil || err.Error() != clockBehind("2026-11-19T00:00:04Z", "2026-11-19T00:00:05Z") {
+		t.Fatalf("a stamp before the last rotation: %v", err)
+	}
+	if err := keyHistoryWriteRefusal(before, "2026-11-19T00:00:05Z", storeRotateKeyBefore, keyHistoryRotationFault, fails); !errors.Is(err, found) || err.Error() != "the rotation's record would not hold in the key history: the walk's finding" {
+		t.Fatalf("a record whose history does not hold for another cause: %v", err)
+	}
+	if err := keyHistoryWriteRefusal(before, "2026-11-19T00:00:05Z", storeRotateKeyBefore, keyHistoryRotationFault, func() error { return nil }); err != nil {
+		t.Fatalf("a stamp in the last rotation's second: %v", err)
+	}
+	if err := keyHistoryWriteRefusal(before[:1], "2026-11-19T00:00:01Z", storeRotateKeyBefore, keyHistoryRotationFault, nil); err != nil {
+		t.Fatalf("a history of no rotation: %v", err)
+	}
+}
+
+// A rotation while serving (SIGHUP's rotateTo) stamped before the key
+// history's last rotation is refused before the append, the registry and
+// the key in force unchanged; one in the same second is made, and the
+// history it leaves is answered.
+func TestARotationWhileServingStampedBeforeTheLastIsRefused(t *testing.T) {
+	standInKeyService(t)
+	one, two := mustKeyServiceSigner(t, ksVersion1), mustKeyServiceSigner(t, ksVersion2)
+	g, _, registry := ksService(t, nil)
+	if _, err := g.registry.rotateTo(one, "2026-11-19T00:00:05Z"); err != nil {
+		t.Fatal(err)
+	}
+	before := readFile(t, registry)
+	_, err := g.registry.rotateTo(two, "2026-11-19T00:00:04Z")
+	if err == nil || err.Error() != clockBehind("2026-11-19T00:00:04Z", "2026-11-19T00:00:05Z") || readFile(t, registry) != before {
+		t.Fatalf("a rotation stamped before the last: %v", err)
+	}
+	if g.publicKeyDocument()["keyId"] != keyIDFor(one.publicKey()) {
+		t.Fatal("the refused rotation switched the key")
+	}
+	if _, err := g.registry.rotateTo(two, "2026-11-19T00:00:05Z"); err != nil {
+		t.Fatalf("a rotation in the last one's second: %v", err)
+	}
+	if code, body := askKeyHistory(t, g); code != http.StatusOK {
+		t.Fatalf("the history after: %d %s", code, body)
+	}
+}
+
+// readsCounted counts the reads of r.
+type readsCounted struct {
+	r io.Reader
+	n int
+}
+
+func (c *readsCounted) Read(p []byte) (int, error) {
+	c.n++
+	return c.r.Read(p)
+}
+
+// gateway rotate-key stamped before the key history's last rotation is
+// refused before the next seed is made, the registry unchanged and nothing
+// left beside the seed; one in the same second is made.
+func TestRotateKeyStampedBeforeTheLastRotationIsRefused(t *testing.T) {
+	root := t.TempDir()
+	seedPath, registry := filepath.Join(root, "gateway.seed"), filepath.Join(root, "registry.jsonl")
+	writeTestSeed(t, seedPath, testSeed)
+	if _, err := newGatewayService(filepath.Join(root, "store"), testSeed, "gateway:test", registry, map[string]sourceSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:05Z"), rand.Reader); err != nil {
+		t.Fatal(err)
+	}
+	before := readFile(t, registry)
+	read := &readsCounted{r: rand.Reader}
+	_, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:04Z"), read)
+	if err == nil || err.Error() != clockBehind("2026-10-25T00:00:04Z", "2026-10-25T00:00:05Z") || readFile(t, registry) != before {
+		t.Fatalf("a rotation stamped before the last: %v", err)
+	}
+	if read.n != 0 {
+		t.Fatal("the refused rotation made a next seed")
+	}
+	for _, left := range []string{seedPath + nextSeedSuffix, seedPath + recordSuffix, seedPath + ".rotated-2"} {
+		if exists(left) {
+			t.Fatalf("the refused rotation left %s", left)
+		}
+	}
+	if _, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:05Z"), rand.Reader); err != nil {
+		t.Fatalf("a rotation in the last one's second: %v", err)
+	}
+}
+
+// gateway store rotate whose continuation is stamped before the last
+// rotation of the history it carries is refused before anything is sealed
+// or written: the old registry unchanged, an open session left open, and
+// no new store. One in the same second rotates, and a rotation of the new
+// store stamped before that rotation is refused in its turn.
+func TestAStoreRotationStampedBeforeTheLastRotationIsRefused(t *testing.T) {
+	g, _, registry := ksService(t, nil)
+	seed2, seed3 := historySeed("2"), historySeed("3")
+	if _, err := g.registry.rotateTo(newSeedSigner(seed2), "2026-11-19T00:00:05Z"); err != nil {
+		t.Fatal(err)
+	}
+	mustAcquire(t, g, "left-open")
+	before := readFile(t, registry)
+	dir := t.TempDir()
+	newStore, newRegistry := filepath.Join(dir, "store"), filepath.Join(dir, "registry.jsonl")
+	seedFile := writeSeedFile(t, t.TempDir(), seed2)
+	code, stdout, stderr := rotateOn(t, g, seedFile, newStore, newRegistry, "2026-11-19T00:00:04Z")
+	want := "the store continuation's continuedAt 2026-11-19T00:00:04Z is before the key history's last rotation 2026-11-19T00:00:05Z; correct this host's clock and run again; nothing was written"
+	if code != 1 || !strings.Contains(stderr, want) || readFile(t, registry) != before || exists(newStore) || exists(newRegistry) {
+		t.Fatalf("a store rotation stamped before the last: %d %q %q", code, stdout, stderr)
+	}
+	if code, stdout, stderr := rotateOn(t, g, seedFile, newStore, newRegistry, "2026-11-19T00:00:05Z"); code != 0 {
+		t.Fatalf("a store rotation in the last one's second: %d %q %q", code, stdout, stderr)
+	}
+	g2, err := newGatewayServiceSigned(newStore, seed2, nil, "gateway:test", newRegistry, ksSources())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g2.registry.rotateTo(newSeedSigner(seed3), "2026-11-19T00:00:04Z"); err == nil || err.Error() != clockBehind("2026-11-19T00:00:04Z", "2026-11-19T00:00:05Z") {
+		t.Fatalf("a rotation of the new store stamped before the carried last: %v", err)
+	}
+	if code, body := askKeyHistory(t, g2); code != http.StatusOK {
+		t.Fatalf("the new store's history: %d %s", code, body)
 	}
 }

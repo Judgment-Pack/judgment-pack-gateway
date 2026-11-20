@@ -405,3 +405,44 @@ func walkKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, present 
 	}
 	return doc, nil
 }
+
+// keyHistoryRotationFault is a key rotation's refusal of
+// keyHistoryWriteRefusal (SPEC.md §3b) for any finding of the history with
+// the rotation's record at the registry's end but its rotatedAt's order,
+// which storeRotateKeyBefore says.
+const keyHistoryRotationFault = "the rotation's record would not hold in the key history: %w"
+
+// keyHistoryContinuationOrder and keyHistoryContinuationFault are a store
+// rotation's (SPEC.md §3d): the continuation's continuedAt before the last
+// rotation of the history it carries, and any other finding of the new
+// registry's history.
+const (
+	keyHistoryContinuationOrder = "the store continuation's continuedAt %s is before the key history's last rotation %s; correct this host's clock and run again; nothing was written"
+	keyHistoryContinuationFault = "the store continuation would not hold in the key history: %w"
+)
+
+// keyHistoryWriteRefusal is why a writer's record stamped at would leave a
+// key history that the consumer's check refuses (SPEC.md §3e), or nil; the
+// cause is decided here alone, for every writer of a rotation or a store
+// continuation, before anything is written. before is the history as
+// /publickey/history makes it now (registryKeyHistory, with what was
+// carried into the store); at before its last rotation, the validFrom of
+// the key in force, is the writer's clock, said by order with at and that
+// rotation; two of one second hold, as checkKeyHistory holds them. after,
+// where it is given, makes the history the route would make with the record
+// in place (walkKeyHistory), and any finding of it is said by fault. The
+// registry is append-only, so a history refused here would be answered 500
+// by the route for good.
+func keyHistoryWriteRefusal(before []keyHistoryEntry, at, order, fault string, after func() error) error {
+	if len(before) > 0 {
+		if last := before[len(before)-1].validFrom; last != "" && at < last {
+			return fmt.Errorf(order, at, last)
+		}
+	}
+	if after != nil {
+		if err := after(); err != nil {
+			return fmt.Errorf(fault, err)
+		}
+	}
+	return nil
+}

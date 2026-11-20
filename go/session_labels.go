@@ -19,10 +19,12 @@ package main
 // (session_labels_pg.go).
 //
 // An acquisition records a label it mints only once the acquisition is
-// admitted, immediately before its source starts (acquireWithScope): a call
-// refused before then -- its session sealed, the reservation refused, the
-// delegation or its grant refused -- leaves no label, so a caller cannot
-// grow the store's labels by calls that are refused.
+// admitted, immediately before its source starts (acquireWithScope), and an
+// action once it is admitted, before its dispatch is claimed (actKeyed): a
+// call refused before then -- its platform, tool or requesters, its session
+// sealed, the reservation refused, the delegation or its grant refused --
+// leaves no label, so a caller cannot grow the store's labels by calls that
+// are refused.
 
 import (
 	"crypto/rand"
@@ -75,6 +77,12 @@ type labelKeeper interface {
 	labelEntries() ([]labelEntry, error)
 	// labelsOf is the labels of scope's namespace alone, in label order.
 	labelsOf(scope string) ([]labelEntry, error)
+	// idLabelled is whether a label already names the session id id: on
+	// the PostgreSQL kind one of scope's namespace, read through its view
+	// alone, where the table's UNIQUE series refuses the record of an id
+	// another namespace's label names; on the filesystem kind no read
+	// (fsLabels.idLabelled).
+	idLabelled(scope, id string) (bool, error)
 }
 
 // labelEntry is one label as the store keeps it; file is its name in
@@ -298,6 +306,14 @@ func (l fsLabels) labelsOf(scope string) ([]labelEntry, error) {
 	return of, nil
 }
 
+// idLabelled on the filesystem kind reads no label: a scan of every label
+// file would make each new label cost the size of the store, against a
+// collision of 2⁻¹²⁸ per pair. A minted id that is a session already is
+// refused by the g.sessions and receipts/<id> checks (sessionTaken); one
+// only another label names, its session holding no receipt yet, stands at
+// 2⁻¹²⁸ (ADR-0051, decision 1). PostgreSQL's UNIQUE series refuses it.
+func (l fsLabels) idLabelled(_, _ string) (bool, error) { return false, nil }
+
 // removeLabelFiles removes the named files of labels/ and syncs it: the
 // labels of sessions a removal's records, already durable, name.
 func removeLabelFiles(storeRoot string, files []string) error {
@@ -333,20 +349,11 @@ func labelFilesOf(keeper labelKeeper, scope string, sessions []string) ([]string
 	return files, nil
 }
 
-// sessionOfLabel is the session id label names in scope's namespace, minted
-// and recorded on the label's first use there (/act).
-func (g *gatewayService) sessionOfLabel(label, scope string) (string, error) {
-	id, minted, err := g.labelledSession(label, scope)
-	if err != nil || !minted {
-		return id, err
-	}
-	return g.recordMinted(label, scope, id)
-}
-
 // labelledSession is the session id label names in scope's namespace, and
 // minted false; or, where it names none there, a session id minted for its
 // first use, not recorded yet, and minted true: a new id is minted again
-// where it is a session this process or the store holds already. The
+// where it is a session this process or the store holds already, or one a
+// label names already. The
 // caller records a minted id (recordMinted) before the session's first
 // receipt, and an acquisition only once it is admitted.
 func (g *gatewayService) labelledSession(label, scope string) (string, bool, error) {
@@ -358,11 +365,19 @@ func (g *gatewayService) labelledSession(label, scope string) (string, bool, err
 		return id, false, nil
 	}
 	for attempt := 0; attempt < 4; attempt++ {
-		fresh, err := mintSessionID()
+		mint := mintSessionID
+		if g.mintID != nil {
+			mint = g.mintID
+		}
+		fresh, err := mint()
 		if err != nil {
 			return "", false, fmt.Errorf(refusalLabelUnstored, label)
 		}
-		if g.sessionTaken(fresh) {
+		taken, err := g.sessionTaken(scope, fresh)
+		if err != nil {
+			return "", false, fmt.Errorf(refusalLabelUnread, label)
+		}
+		if taken {
 			continue
 		}
 		return fresh, true, nil
@@ -382,20 +397,25 @@ func (g *gatewayService) recordMinted(label, scope, id string) (string, error) {
 }
 
 // sessionTaken is whether a minted id is a session already: one this
-// process holds, or one the store holds anything of, or cannot show.
-func (g *gatewayService) sessionTaken(id string) bool {
+// process holds, or one the store holds anything of, or cannot show; or
+// one a label names already, where the label's session holds no receipt
+// yet (a crash after the label, or a source that failed), which a second
+// label must not name too. A store whose labels cannot be read is an error.
+func (g *gatewayService) sessionTaken(scope, id string) (bool, error) {
 	g.mu.Lock()
 	_, held := g.sessions[id]
 	g.mu.Unlock()
 	if held {
-		return true
+		return true, nil
 	}
 	if g.kind != nil {
-		_, err := g.store.receipts.listEntries(id)
-		return faultOf(err) != faultAbsent
+		if _, err := g.store.receipts.listEntries(id); faultOf(err) != faultAbsent {
+			return true, nil
+		}
+	} else if _, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", id)); !(err != nil && absent(err)) {
+		return true, nil
 	}
-	_, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", id))
-	return !(err != nil && absent(err))
+	return g.labels.idLabelled(scope, id)
 }
 
 // sealLabelled is /seal from labelsVersion: the label looked up in the

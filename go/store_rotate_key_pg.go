@@ -49,7 +49,9 @@ made, and changes nothing, or makes it.`
 // storeRotateKeyBefore refuses a rotation whose rotatedAt, this host's
 // clock, is before the key history's last rotation: the registry is
 // append-only, so a history its own check refuses (SPEC.md §3e) would be
-// answered 500 by /publickey/history for good.
+// answered 500 by /publickey/history for good. Every writer of a rotation
+// says it (keyHistoryWriteRefusal): this command, SIGHUP's rotateTo and
+// gateway rotate-key.
 const storeRotateKeyBefore = "the rotation's rotatedAt %s is before the key history's last rotation %s; correct this host's clock and run again; nothing was written"
 
 const storeRotateKeyOpen = "session %s holds a receipt and is not sealed: a rotation seals nothing; seal every session left open first, under the key in force, with gateway seal-open --config <the configuration naming it> --all, then rotate"
@@ -325,7 +327,6 @@ func rotateKeyRows(dsn pgDSN, roles pgRoles, from, to *signingKey, timeout time.
 	if err != nil {
 		return failed(fmt.Errorf("the key history before the rotation does not hold: %w", err))
 	}
-	last := before[len(before)-1].validFrom
 	ordinal := walk.followed() + 1
 	record, err := rotationRecordSigned(data, ordinal, at, from, to)
 	if err != nil {
@@ -353,11 +354,11 @@ func rotateKeyRows(dsn pgDSN, roles pgRoles, from, to *signingKey, timeout time.
 	if _, err := engineWalk(again, to.public); err != nil {
 		return failed(fmt.Errorf("the rotation's record would not walk to the next key: %w", err))
 	}
-	if _, err := walkKeyHistory(again, to.public, carried, carriedPresent); err != nil {
-		if last == "" {
-			last = "(none)"
-		}
-		return failed(fmt.Errorf(storeRotateKeyBefore, at, last))
+	if err := keyHistoryWriteRefusal(before, at, storeRotateKeyBefore, keyHistoryRotationFault, func() error {
+		_, err := walkKeyHistory(again, to.public, carried, carriedPresent)
+		return err
+	}); err != nil {
+		return failed(err)
 	}
 	if rotateKeyBeforeCommit != nil {
 		rotateKeyBeforeCommit(c)

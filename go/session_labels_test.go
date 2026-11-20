@@ -638,3 +638,105 @@ func TestRemoveScopeTakesTheLabelsOfAScopeWithNoSession(t *testing.T) {
 		t.Fatalf("another scope's label after the removal: %q %v", id, err)
 	}
 }
+
+// actUnderLabelSetup is a gateway at labelsVersion with a write platform
+// and a decision record citing an acquisition under the label acquired: the
+// token, the acquisition's minted session, and the body of an /act under a
+// label citing it.
+func actUnderLabelSetup(t *testing.T, acquired string) (*gatewayService, *httptest.Server, string, string, func(label, platform string) string) {
+	t.Helper()
+	image := "--image=x@sha256:" + strings.Repeat("0", 64)
+	service, server := testService(t)
+	service.labels = fsLabels{root: service.storeRoot}
+	env, _ := goodEnvelope()
+	t.Setenv(envSourceEnvelope, envelopeText(t, env))
+	service.sources["boards/write"] = sourceSpec{argv: []string{os.Args[0], image, "--tools=update"}, env: helperEnv, tools: []string{"update"}, shape: "mcp", endpoint: "h"}
+	service.decisionRecords = t.TempDir()
+	issuer := newIssuer(t)
+	id := identityFor(t, issuer)
+	service.identity = &id
+	token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
+	code, first := authed(t, server, "/acquire", `{"session":"`+acquired+`","source":"screening","arguments":{"q":"example"}}`, token)
+	if code != http.StatusOK {
+		t.Fatalf("acquire: %d %v", code, first)
+	}
+	receipt := first["receipt"].(map[string]any)
+	minted, signature := receipt["sessionId"].(string), receipt["signature"].(string)
+	cite := `{"sessionId":"` + minted + `","callIndex":0,"signature":"` + signature + `"}`
+	line := `{"kind":"evaluation","cites":[` + cite + `]}`
+	if err := os.WriteFile(filepath.Join(service.decisionRecords, "evaluations.jsonl"), []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := func(label, platform string) string {
+		return `{"session":"` + label + `","platform":"` + platform + `","tool":"update","arguments":{"id":42},` +
+			`"decision":{"recordDigest":"sha256:` + hexOf([]byte(line)) + `","packDigest":"sha256:` + strings.Repeat("b", 64) + `"},"cites":[` + cite + `]}`
+	}
+	return service, server, token, minted, body
+}
+
+// An /act refused before it is admitted -- at its platform, or at the
+// requesters its tool is held to -- leaves no label in the namespace of
+// none: a label it mints is recorded only once the action is admitted. Its
+// use once the action is admitted mints the session.
+func TestARefusedActLeavesNoLabel(t *testing.T) {
+	service, server, token, _, body := actUnderLabelSetup(t, "act-cited")
+	before, err := service.labels.labelEntries()
+	if err != nil || len(before) != 1 {
+		t.Fatalf("the labels before: %v %v", before, err)
+	}
+	if code, out := authed(t, server, "/act", body("act-refused", "nowhere"), token); code == http.StatusOK {
+		t.Fatalf("an action on a platform that allows no writes: %d %v", code, out)
+	}
+	spec := service.sources["boards/write"]
+	spec.requesters = &writeRequesters{platform: map[requesterRef]bool{}}
+	service.sources["boards/write"] = spec
+	if code, out := authed(t, server, "/act", body("act-refused", "boards"), token); code == http.StatusOK || !strings.Contains(fmt.Sprint(out), writeRequestersRefusal) {
+		t.Fatalf("an action by a requester the tool's list does not name: %d %v", code, out)
+	}
+	if after, err := service.labels.labelEntries(); err != nil || len(after) != 1 {
+		t.Fatalf("a refused action left the labels %v %v", after, err)
+	}
+	spec.requesters = nil
+	service.sources["boards/write"] = spec
+	code, acted := authed(t, server, "/act", body("act-refused", "boards"), token)
+	if code != http.StatusOK {
+		t.Fatalf("the action once admitted: %d %v", code, acted)
+	}
+	id, err := service.labels.labelSession("", "act-refused")
+	if err != nil || id == "" || acted["receipt"].(map[string]any)["sessionId"] != id {
+		t.Fatalf("the label once admitted: %q %v %v", id, err, acted["receipt"])
+	}
+}
+
+// An /act under a new label that another request records first, between
+// the lookup and the action's own record, is admitted into the session the
+// label names: its receipt is that session's next, the minted session's
+// directory is given up, and the store keeps the one label.
+func TestAnActWhoseLabelAnotherRecordsFirstJoinsThatSession(t *testing.T) {
+	service, server, token, minted, body := actUnderLabelSetup(t, "act-cited")
+	var mintedHere string
+	service.beforeAdmit = func() {
+		service.beforeAdmit = nil
+		if _, err := service.labels.recordLabel("", "act-racing", minted); err != nil {
+			t.Error(err)
+		}
+	}
+	service.mintID = func() (string, error) {
+		id, err := mintSessionID()
+		mintedHere = id
+		return id, err
+	}
+	code, acted := authed(t, server, "/act", body("act-racing", "boards"), token)
+	if code != http.StatusOK {
+		t.Fatalf("act: %d %v", code, acted)
+	}
+	if got := fmt.Sprint(acted["receipt"].(map[string]any)["sessionId"], "/", acted["receipt"].(map[string]any)["callIndex"]); got != minted+"/1" {
+		t.Fatalf("the action receipt is at %s, not %s/1", got, minted)
+	}
+	if mintedHere == "" || exists(filepath.Join(service.storeRoot, "receipts", mintedHere)) {
+		t.Fatalf("the minted session %q was not given up", mintedHere)
+	}
+	if id, err := service.labels.labelSession("", "act-racing"); err != nil || id != minted {
+		t.Fatalf("the label: %q %v", id, err)
+	}
+}
