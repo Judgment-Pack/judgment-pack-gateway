@@ -129,7 +129,7 @@ secret, and it keeps every signed form as it is.
 - **Operator commands** take session ids, as today: `seal-open --session`, `remove-artifact
   --receipt`, `export`, `verify`. One new command maps the other way:
   `gateway sessions --config <c> --scope <s|none> [--label <l>]` prints `label sessionId` lines
-  for the scope. It reads the store with the gateway running or stopped, and writes nothing.
+  for the scope (amended 2026-11-20, below: `--no-scope` names none). It reads the store with the gateway running or stopped, and writes nothing.
 
 ### 4. The upgrade
 
@@ -138,7 +138,7 @@ secret, and it keeps every signed form as it is.
   retention 38).
 - At an older version nothing changes, and the name a caller sends is the session id.
 - At the new version, the start refuses while any session is open, and names
-  `gateway seal-open --all`. Sealed sessions keep their ids and need no mapping, since nothing
+  `gateway seal-open --all` (amended 2026-11-20, below: a session open that no label names). Sealed sessions keep their ids and need no mapping, since nothing
   is acquired into them again. So no existing session is ever addressed by both a name and a
   label.
 - On the PostgreSQL kind, every instance moves together: stop all, seal-open, start all on the
@@ -160,7 +160,8 @@ secret, and it keeps every signed form as it is.
 ### 5. Removal, retention, export and rotation
 
 - **`remove-scope`** and **`gateway store remove-scope`** remove the scope's label entries
-  with its sessions, after the session-removal records are durable and the receipts gone.
+  with its sessions, after the session-removal records are durable and the receipts gone
+  (amended 2026-11-20, below: before the receipts).
   A crash between the two leaves labels naming removed sessions. A label naming a session
   recorded as removed is refused as a sealed one is, and the rerun the removal already asks
   for removes the labels.
@@ -205,6 +206,43 @@ secret, and it keeps every signed form as it is.
   is by design: the namespace is the scope, and a scope's callers reach the same sessions.
 - Revisit when a caller needs a label to name "the current session" across seals. That would
   be a pointer moved by `/seal`, with its own rules for which session a label then means.
+
+## Amended 2026-11-20
+
+Settled by the maintainer at the build of the filesystem kind (#550).
+
+1. **The start refuses a session open that no label names** (point 4). A session the gateway
+   minted for a label is named by that label in the store from before its first receipt, so
+   the start refuses only a session left open from before version 39, named by its caller.
+   On the first start at version 39 there is no label yet, so that is every open session. After
+   it, a session a labelled gateway left open at a crash does not refuse the start: it is
+   refused at use as any session another process left open is, and `gateway seal-open` seals
+   it. Refusing every open session would refuse every start after a crash, and on the
+   PostgreSQL kind a second instance beside a first that holds sessions. An operator seals
+   each session left open from before version 39 before the upgrade: stop the gateway, run
+   `gateway seal-open --all`, raise `engineVersion` to `"39"`, and start. The start's refusal
+   says so.
+2. **A removal takes the labels before the receipts** (point 5). `remove-scope`, `gateway store
+   remove-scope`, `gateway retain` and `gateway store retain` remove the labels once the
+   removal's records are durable, and before the payloads and the receipts. `remove-scope`
+   removes open sessions too, which get no session-removal record of their own, so a label
+   left naming a removed open session could not be told from a mapping whose session has no
+   receipt yet, and its next use would start a chain under the removed id. With the labels
+   first, a removal cut off at any step leaves no label naming a session it removed: the
+   label is free, and its next use mints a new id. The rerun the removal asks for completes
+   it. Both commands run with the gateway stopped, so no request uses a label in between.
+3. **`gateway sessions` names none by `--no-scope`** (point 3):
+   `gateway sessions --config <c> (--scope <identifier> | --no-scope) [--label <l>]`.
+   `--scope none` names the scope identifier `none`, which is a valid identifier and may be in
+   a store already.
+
+### Implementation note
+
+The filesystem kind is built first (#550, the first pull request). The PostgreSQL kind follows
+in a second: migration 0009, `gateway.session_labels`, the `labels` column of
+`gateway.start_lease` and its comparison, and the label removal of `gateway store
+remove-scope` and `gateway store retain`. Until it lands, a configuration of version 39 on the
+PostgreSQL kind is refused at the start, by a sentence naming that follow-up.
 
 ## More information
 
