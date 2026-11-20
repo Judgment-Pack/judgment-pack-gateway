@@ -62,6 +62,10 @@ type sessionState struct {
 	// registry line; the seal's digest is taken over it. "" until drawn, and
 	// for a session of no scope.
 	scopeSalt string
+	// forward holds the session's receipts minted and not yet acknowledged
+	// by the receipt sink (receipt_sink.go, ADR-0049), oldest first; nil
+	// until the first receipt is minted where a sink is configured.
+	forward *forwardQueue
 }
 
 // scopeSaltOf is the session's scope salt, drawn the first time it is
@@ -297,6 +301,10 @@ type gatewayService struct {
 	// receiptVersion is what acquire mints: "3" unless the operator asked
 	// for "2" to keep a consumer not yet updated working (SPEC.md §1.2a).
 	receiptVersion string
+	// forwarder delivers each receipt /acquire mints to the configured
+	// receipt sink before /acquire answers (ADR-0049); nil where none is
+	// configured, and the gateway is then as it was before.
+	forwarder *receiptForwarder
 	// decisionRecords is where an action's cited decision record is looked
 	// for (executor.md); empty refuses every action.
 	decisionRecords string
@@ -1308,6 +1316,14 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	}
 	defer g.release(sessionID)
 
+	// What the session holds for the receipt sink goes first (ADR-0049): a
+	// receipt minted and not acknowledged is delivered again before the
+	// source runs, the delegation counts or the grant is asked, and while it
+	// is not acknowledged nothing else of the session proceeds.
+	if err := g.redeliver(sessionID); err != nil {
+		return nil, err
+	}
+
 	// A call under a delegation is admitted here, immediately before the
 	// source starts (SPEC.md §11.5); a read-back of a delegated action is not
 	// a call under the delegation, and records who sent it instead (§11.7).
@@ -1396,7 +1412,14 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	}
 
 	g.mu.Lock()
-	defer g.mu.Unlock()
+	// unlocked by the return, or before the receipt is delivered to the sink,
+	// which is never done under the gateway's lock
+	locked := true
+	defer func() {
+		if locked {
+			g.mu.Unlock()
+		}
+	}()
 	// The session is known because admission reserved it, and it cannot have
 	// been sealed since: sealing refuses while an acquisition is in flight.
 	state := g.sessions[sessionID]
@@ -1477,6 +1500,17 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	if err != nil {
 		return nil, err
 	}
+	// Held for the sink in the hold that stamped it, so the session's
+	// receipts are held, and delivered, in the order of their indexes.
+	var forwarding *forwardQueue
+	minted := state.index
+	if g.forwarder != nil {
+		if state.forward == nil {
+			state.forward = newForwardQueue()
+		}
+		state.forward.add(g.forwarder.held(minted, stored, resultDigest, result, spec.notRetained))
+		forwarding = state.forward
+	}
 	state.index++
 	state.prev = signature
 	if made {
@@ -1503,6 +1537,18 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	}
 	if salts != nil {
 		response["salts"] = salts
+	}
+	if forwarding != nil {
+		// Delivered before the answer, outside the gateway's lock and under
+		// the session's admission, which a seal waits for: an answer is
+		// written only once the sink has acknowledged this receipt and every
+		// one before it. One not acknowledged stays held, and the caller is
+		// told the fixed sentence and nothing of the receipt.
+		g.mu.Unlock()
+		locked = false
+		if err := g.forwarder.deliver(g.forwardingContext(), forwarding, minted); err != nil {
+			return nil, err
+		}
 	}
 	return response, nil
 }
@@ -2162,6 +2208,11 @@ func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string
 	if refusal := g.sealedElsewhere(sessionID); refusal != "" {
 		return nil, badRequest{errors.New(refusal)}
 	}
+	// What the session holds for the receipt sink is delivered before the
+	// seal (ADR-0049), for a session the caller reaches alone.
+	if err := g.redeliverReached(sessionID, reach); err != nil {
+		return nil, err
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	state, seen := g.sessions[sessionID]
@@ -2187,6 +2238,12 @@ func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string
 		return nil, badRequest{fmt.Errorf(
 			"session has %d acquisition(s) in flight, retry after they finish: %s",
 			state.inFlight, sessionID)}
+	}
+	// A session is not sealed while a receipt of it is unacknowledged: one
+	// an acquisition minted since the delivery above is delivered by that
+	// acquisition, or held, and the seal is asked again.
+	if state.forward.unacknowledged() {
+		return nil, receiptNotForwarded{}
 	}
 	// a session of a scope identifier is sealed naming it (ADR-0036), over
 	// the scope salt its receipts carry (ADR-0042), one of no scope in §3's
@@ -2321,6 +2378,13 @@ func (g *gatewayService) handler() http.Handler {
 		// A source whose endpoint answered 410 (source_reference_expired.go):
 		// that class, as a throttled source's is answered with its own, the
 		// code a caller acts on, and the gateway's sentence.
+		// A receipt the sink did not acknowledge (receipt_sink.go,
+		// ADR-0049): one sentence and its code, whatever went wrong.
+		var unforwarded receiptNotForwarded
+		if errors.As(err, &unforwarded) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": unforwarded.Error(), "code": receiptNotForwardedCode})
+			return
+		}
 		var expired *sourceReferenceExpired
 		if errors.As(err, &expired) {
 			writeJSON(w, http.StatusGone, map[string]any{"error": expired.Error(), "code": sourceReferenceExpiredCode})
