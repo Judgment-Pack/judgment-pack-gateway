@@ -2832,8 +2832,9 @@ Version 39 adds no member. It changes what the `session` of a request is
   Receipts, seals, the registry and the verifiers are as before.
 - **Where it is kept.** On the filesystem kind, one file per label at
   `<store>/labels/<hex>.json`, written exclusively and synced before the session's first
-  receipt. The verifiers pass `labels/` over. The PostgreSQL kind does not yet keep labels, and
-  a configuration of version 39 on it is refused at the start.
+  receipt. The verifiers pass `labels/` over. The PostgreSQL kind does not yet keep labels: it
+  follows in a second change of #550, and until then a configuration of version 39 on it is
+  refused at the start, by a sentence naming that follow-up. Keep it at version 38.
 - **What a caller is answered.** `/seal` looks a label up in the namespace it names alone. A
   label not there is answered `no such session: <label>`, and nothing else is read: not the
   registry, and nothing of another scope. A label whose session is sealed is refused as a sealed
@@ -2842,18 +2843,23 @@ Version 39 adds no member. It changes what the `session` of a request is
   in its own scope.
 - **The MCP front.** In the caller form the seal tool takes an optional `scope`, held to the
   caller's token and forwarded as `/seal`'s.
-- **Operators.** `gateway sessions --config <engine.json> --scope <identifier|none>
+- **Operators.** `gateway sessions --config <engine.json> (--scope <identifier> | --no-scope)
   [--label <label>]` prints `label sessionId` lines for one namespace, with the gateway running
-  or stopped, and writes nothing. Every other command takes session ids, as before.
+  or stopped, and writes nothing. `--no-scope` names the namespace of none; `--scope none` names
+  the scope identifier `none`. Every other command takes session ids, as before.
   `gateway remove-scope` removes the scope's labels and `gateway retain` the label of each
-  session it removes, once their records are durable; the label is then free, and its next use
-  starts a new session. `gateway export` carries no labels, and `gateway store rotate` starts
+  session it removes, once their records are durable and before the receipts, so a run cut off
+  leaves no label naming a session it removed; the label is then free, and its next use starts
+  a new session. `gateway export` carries no labels, and `gateway store rotate` starts
   the new store with none.
 
 **Upgrading.** A file of version 38 or earlier loads as before, and the name a request sends is
-the session id. To move to labels, stop the gateway, seal what is open with
-`gateway seal-open --all`, raise `engineVersion` to `"39"` and start. The start refuses while
-the store holds a session open that no label names, and names `gateway seal-open --all`. Going
+the session id. A session left open from before version 39 is sealed before the upgrade: stop
+the gateway, run `gateway seal-open --all`, raise `engineVersion` to `"39"` and start. The start
+refuses while the store holds a session open that no label names, and its refusal says the same.
+A session a gateway at version 39 left open, at a crash, is named by its label and does not
+refuse the start; it is refused at use as any session another process left open is, and
+`gateway seal-open` seals it. Going
 back needs every session sealed first, too; the older engine then passes `labels/` over.
 
 ## Keyed actions (engine version 14 and later)
