@@ -63,13 +63,19 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	}
 	// From labelsVersion the session is a label in the namespace of none,
 	// the scope of every action (ADR-0026, ADR-0051), minted on its first
-	// use there; cites[].sessionId stays a session id.
+	// use there; cites[].sessionId stays a session id. The label is looked
+	// up here and a minted id is not recorded yet: it is recorded once the
+	// action is admitted, before anything is claimed or sent (below), so an
+	// action refused before then -- at its platform, its tool, its
+	// requesters, its evidence, its session's admission, its delegation or
+	// its grant -- leaves no label, as an acquisition leaves none.
+	label, labelMinted := "", false
 	if g.labels != nil {
-		id, err := g.sessionOfLabel(sessionID, "")
+		id, minted, err := g.labelledSession(sessionID, "")
 		if err != nil {
 			return nil, actRefusal{"session", err.Error()}
 		}
-		sessionID = id
+		label, sessionID, labelMinted = sessionID, id, minted
 	}
 	if reason := g.sessionOpen(sessionID); reason != "" {
 		return nil, actRefusal{"session", reason}
@@ -431,6 +437,13 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 				if prior.outcome == "response" {
 					return prior.response, nil
 				}
+				// the read-back is receipted in the request's session, so a
+				// label minted for it is recorded before the read-back runs
+				if labelMinted {
+					if sessionID, err = g.recordMinted(label, "", sessionID); err != nil {
+						return nil, actRefusal{"session", err.Error()}
+					}
+				}
 				return g.reconcileAction(sessionID, platform, arguments, who, key, recovery, prior.response, true)
 			}
 			if !errors.Is(readErr, os.ErrNotExist) {
@@ -502,7 +515,9 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	if err := g.admitAction(sessionID); err != nil {
 		return nil, err
 	}
-	defer g.release(sessionID)
+	// held is the session the reservation is of, released on every way out
+	held := sessionID
+	defer func() { g.release(held) }()
 
 	// What the session holds for the receipt sink goes first (ADR-0049), as
 	// it does for /acquire: a receipt of the session not yet acknowledged is
@@ -576,6 +591,34 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 				return nil, refusal
 			}
 			delegationMember = member
+		}
+	}
+	// The action admitted, a label minted for it is recorded before the
+	// dispatch is claimed or anything is sent or minted, as an acquisition
+	// records one (acquireWithScope). Where another request recorded the
+	// label first, the action is admitted into the session the label names
+	// instead: the minted session's directory and reservation given up,
+	// and the session the label names judged, reserved and delivered for.
+	if labelMinted {
+		recorded, err := g.recordMinted(label, "", sessionID)
+		if err != nil {
+			g.abandonUnminted(sessionID)
+			return nil, actRefusal{"session", err.Error()}
+		}
+		if recorded != sessionID {
+			g.abandonUnminted(sessionID)
+			g.release(held)
+			held, sessionID = "", recorded
+			if reason := g.sessionOpen(sessionID); reason != "" {
+				return nil, actRefusal{"session", reason}
+			}
+			if err := g.admitAction(sessionID); err != nil {
+				return nil, err
+			}
+			held = sessionID
+			if err := g.redeliver(sessionID); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if claim != nil && !uncertain {

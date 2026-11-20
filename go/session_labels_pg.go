@@ -95,6 +95,23 @@ func (l pgLabels) recordLabel(scope, label, id string) (string, error) {
 	return recorded, nil
 }
 
+func (l pgLabels) idLabelled(scope, id string) (bool, error) {
+	view, err := l.labelView(scope)
+	if err != nil {
+		return false, err
+	}
+	var named bool
+	err = view.transact(pgRead, func(tx pgTx) error {
+		rows, err := tx.exec(`SELECT label FROM gateway.session_labels WHERE scope = $1 AND series = $2`, view.row, id)
+		named = len(rows.rows) > 0
+		return err
+	})
+	if err != nil {
+		return false, pgFailure("label", false, err)
+	}
+	return named, nil
+}
+
 // pgLabelRows is the labels of one namespace's rows, as a transaction of
 // that scope reads them.
 func pgLabelRows(tx pgTx, row string) ([]labelEntry, error) {
