@@ -289,7 +289,7 @@ func TestTheDocumentedAcknowledgmentLineVerifies(t *testing.T) {
 	if hex.EncodeToString(key.Public().(ed25519.PublicKey)) != public {
 		t.Fatal("the synthetic key is not the documented one")
 	}
-	cfg, err := parseRetentionConfig(mustParse(t, `{"window":30,"acknowledgedBy":["`+public+`"]}`))
+	cfg, err := parseRetentionConfig(mustParse(t, `{"window":30,"acknowledgedBy":["`+public+`"]}`), retentionVersion)
 	if err != nil {
 		t.Fatal(err)
 	}

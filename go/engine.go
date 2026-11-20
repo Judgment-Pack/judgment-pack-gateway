@@ -631,7 +631,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		if !versionAtLeast(version, retentionVersion) {
 			return engineConfig{}, fmt.Errorf("engine configuration: retention is a version-%s member; engineVersion %s has no retention", retentionVersion, version)
 		}
-		r, err := parseRetentionConfig(value)
+		r, err := parseRetentionConfig(value, version)
 		if err != nil {
 			return engineConfig{}, err
 		}
