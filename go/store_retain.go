@@ -117,9 +117,41 @@ func storeRetain(spec *storageSpec, roles pgRoles, o retainOptions, timeout time
 }
 
 // pgRetainEntry is one receipt row the call read.
-type pgRetainEntry struct {
-	row, series string
-	data        []byte
+// retainPageRows bounds the receipt rows gateway store retain holds at
+// once: it reads them in keyset pages of this many, by (series, name), so
+// what it holds is bounded by the page and by the largest session it
+// removes, not by the store. A test makes it small.
+var retainPageRows = 256
+
+// retainEachEntry calls fn on each receipt row of the row scope -- of the
+// one series where series is not "", of every series otherwise -- in
+// (series, name) order, retainPageRows rows at a time, in the transaction
+// the caller holds under the row scope's row security.
+func retainEachEntry(tx pgTx, row, series string, fn func(series string, data []byte)) error {
+	// the key's columns are COLLATE "C", so ('', '') is below every row
+	afterSeries, afterName := "", ""
+	for {
+		var page pgRows
+		var err error
+		if series != "" {
+			page, err = tx.exec(`SELECT series, name, data FROM gateway.entries WHERE scope = $1 AND series = $2 AND name > $3 ORDER BY name LIMIT $4`,
+				row, series, afterName, int64(retainPageRows))
+		} else {
+			page, err = tx.exec(`SELECT series, name, data FROM gateway.entries WHERE scope = $1 AND (series, name) > ($2, $3) ORDER BY series, name LIMIT $4`,
+				row, afterSeries, afterName, int64(retainPageRows))
+		}
+		if err != nil {
+			return err
+		}
+		for _, e := range page.rows {
+			fn(string(e[0]), e[2])
+		}
+		if len(page.rows) < retainPageRows {
+			return nil
+		}
+		last := page.rows[len(page.rows)-1]
+		afterSeries, afterName = string(last[0]), string(last[1])
+	}
 }
 
 func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig, acks []retentionAck, priv *signingKey,
@@ -218,7 +250,8 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 	ret := &retention{removals: loaded.artifacts, sessions: loaded.sessions}
 
 	// Every row scope there is -- no scope, and each identifier recorded --
-	// and the sessions and receipts of each, read under its row security.
+	// and the sessions of each, read under its row security. The receipts
+	// are read later, a page at a time (retainEachEntry).
 	ids, err := tx.exec(`SELECT identifier FROM gateway.scope_identifiers ORDER BY identifier`)
 	if err != nil {
 		return failed(err)
@@ -228,7 +261,6 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 		rowScopes = append(rowScopes, string(r[0]))
 	}
 	seriesRow := map[string]string{}
-	var entries []pgRetainEntry
 	for _, row := range rowScopes {
 		if err := inScope(row); err != nil {
 			return failed(err)
@@ -239,13 +271,6 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 		}
 		for _, s := range series.rows {
 			seriesRow[string(s[0])] = row
-		}
-		rows, err := tx.exec(`SELECT series, data FROM gateway.entries WHERE scope = $1 ORDER BY series, name`, row)
-		if err != nil {
-			return failed(err)
-		}
-		for _, e := range rows.rows {
-			entries = append(entries, pgRetainEntry{row: row, series: string(e[0]), data: e[1]})
 		}
 	}
 	choice := chooseRetained(acks, walk, cfg, now, o.scope, removedUnder(ret), func(session string) retentionHold {
@@ -288,15 +313,26 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 	// remove may cite it: its citation would no longer resolve. Its bytes
 	// are judged by what they spell, which refuses where a citation would.
 	var refused []string
-	for _, e := range entries {
-		if _, taken := gone[e.series]; taken {
-			continue
+	names := make([][]byte, len(sessions))
+	for i, session := range sessions {
+		names[i] = append([]byte(`"sessionId":`), canon(vString(session))...)
+	}
+	for _, row := range rowScopes {
+		if err := inScope(row); err != nil {
+			return failed(err)
 		}
-		for _, session := range sessions {
-			if bytes.Contains(e.data, append([]byte(`"sessionId":`), canon(vString(session))...)) {
-				refused = append(refused, fmt.Sprintf("a receipt of session %s names session %s, which the call would remove; its citation would no longer resolve", e.series, session))
-				break
+		if err := retainEachEntry(tx, row, "", func(series string, data []byte) {
+			if _, taken := gone[series]; taken {
+				return
 			}
+			for i, session := range sessions {
+				if bytes.Contains(data, names[i]) {
+					refused = append(refused, fmt.Sprintf("a receipt of session %s names session %s, which the call would remove; its citation would no longer resolve", series, session))
+					return
+				}
+			}
+		}); err != nil {
+			return failed(err)
 		}
 	}
 	if len(refused) > 0 {
@@ -331,18 +367,17 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 		// the payloads only this session's receipts name, in its scope
 		digests := map[string]bool{}
 		var held int64
-		for _, e := range entries {
-			if e.series != session {
-				continue
-			}
+		if err := retainEachEntry(tx, row, session, func(_ string, data []byte) {
 			held++
-			if v, err := parseJSON(e.data); err == nil {
+			if v, err := parseJSON(data); err == nil {
 				if obj, ok := v.(*vObject); ok {
 					if d, ok := memberString(obj, "resultDigest"); ok && strings.HasPrefix(d, "sha256:") {
 						digests[d] = true
 					}
 				}
 			}
+		}); err != nil {
+			return failed(err)
 		}
 		done, err := c.exec(`DELETE FROM gateway.entries WHERE scope = $1 AND series = $2`, row, session)
 		if err != nil {
@@ -361,22 +396,23 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 		if done.tag != "DELETE 1" {
 			return failed(errors.New("the session's rows changed while they were removed"))
 		}
-		names := make([]string, 0, len(digests))
+		payloadNames := make([]string, 0, len(digests))
 		for d := range digests {
-			names = append(names, d)
+			payloadNames = append(payloadNames, d)
 		}
-		sort.Strings(names)
-		for _, digest := range names {
+		sort.Strings(payloadNames)
+		for _, digest := range payloadNames {
 			hexSum := []byte(strings.TrimPrefix(digest, "sha256:"))
-			shared := false
-			for _, e := range entries {
-				if e.row == row && e.series != session && bytes.Contains(e.data, hexSum) {
-					if _, taken := gone[e.series]; !taken || e.series > session {
-						shared = true
-						break
-					}
-				}
+			// a receipt of its scope left in the store that names it keeps
+			// it: one of a session the call keeps, or of one it removes
+			// later in this order, whose rows are not deleted yet; the
+			// sessions removed before this one name nothing now
+			other, err := tx.exec(`SELECT count(*)::int8 FROM gateway.entries WHERE scope = $1 AND series <> $2 AND pg_catalog.position(data, pg_catalog.convert_to($3, 'UTF8')) > 0`, row, session, string(hexSum))
+			if err != nil {
+				return failed(err)
 			}
+			n, ok := pgInt8(other.rows[0][0])
+			shared := !ok || n > 0
 			if !shared {
 				doc, err := tx.exec(`SELECT count(*)::int8 FROM gateway.documents WHERE scope = $1 AND pg_catalog.position(data, pg_catalog.convert_to($2, 'UTF8')) > 0`, row, string(hexSum))
 				if err != nil {

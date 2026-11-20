@@ -160,7 +160,7 @@ func TestASessionLeftOpenIsSealedOverItsSalt(t *testing.T) {
 	salt := service.sessions["left-open"].scopeSalt
 	seedPath := writeSeedFile(t, t.TempDir(), testSeed)
 	var stdout, stderr bytes.Buffer
-	if code := cmdSealOpenAt([]string{"--store", service.storeRoot, "--seed", seedPath, "--registry", service.regPath, "--authority", service.authority, "--session", "left-open"},
+	if code := cmdSealOpenAt([]string{"--store", service.storeRoot, "--seed", seedPath, "--registry", service.regPath, "--authority", service.authority, "--no-sink", "--session", "left-open"},
 		&stdout, &stderr, fixedStamp("2026-11-18T00:00:00Z")); code != 0 {
 		t.Fatalf("seal-open: %d %s %s", code, stdout.String(), stderr.String())
 	}

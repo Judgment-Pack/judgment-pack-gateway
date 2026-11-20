@@ -50,6 +50,9 @@ type connectRequest struct {
 	// lock connect holds (the publisher record, publisher.go); nil for
 	// none. Its error is connect's, the configuration written.
 	afterWrite func(*configFile) error
+	// repinned names the other platforms on the binding replaced, which
+	// --replace re-pins to the same file in the same write; set by connect.
+	repinned []string
 }
 
 // connectOutcome is what connect has to say: the statements the
@@ -276,13 +279,29 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		// may be repairing. Every other platform is.
 		cfg.platforms = append(cfg.platforms[:index:index], cfg.platforms[index+1:]...)
 	}
-	// Every platform kept is resolved too: a pin the catalog no longer
-	// digests to is found here, not at the next start.
-	bindings, err := resolveEngineConfig(&cfg, host.account)
+	ref, b, err := pinBinding(cfg.catalog, req.binding)
 	if err != nil {
 		return out, err
 	}
-	ref, b, err := pinBinding(cfg.catalog, req.binding)
+	// On --replace, every other platform naming the binding replaced is
+	// re-pinned to the same catalog file in the same write: a binding's
+	// file that changed leaves each of them on the old digest, which the
+	// resolve below would refuse, so no one of them could be replaced in
+	// turn. Each is then resolved against the new file like any platform
+	// kept, and named in the output.
+	if previous != nil {
+		for i := range cfg.platforms {
+			p := &cfg.platforms[i]
+			if name, _, _ := strings.Cut(p.binding, "@"); name == req.binding && p.binding != ref {
+				p.binding = ref
+				req.repinned = append(req.repinned, p.name)
+			}
+		}
+		sort.Strings(req.repinned)
+	}
+	// Every platform kept is resolved too: a pin the catalog no longer
+	// digests to is found here, not at the next start.
+	bindings, err := resolveEngineConfig(&cfg, host.account)
 	if err != nil {
 		return out, err
 	}
@@ -606,9 +625,23 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	}
 	if previous != nil {
 		written.descriptors = pin
-		out.after = restartLines(*previous, written)
+		out.after = repinLines(restartLines(*previous, written), req, ref)
 	}
 	return out, nil
+}
+
+// repinLines is the restart lines of a --replace, with a line for each
+// platform re-pinned with the one replaced: the signer reads each one's
+// binding, so a re-pin restarts both processes.
+func repinLines(after []string, req connectRequest, ref string) []string {
+	if len(req.repinned) == 0 {
+		return after
+	}
+	lines := []string{"restart: what the signer reads changed (the binding of a platform re-pinned); restart both processes"}
+	for _, name := range req.repinned {
+		lines = append(lines, name+": re-pinned to "+ref+", the binding "+req.platform+" was replaced on")
+	}
+	return lines
 }
 
 // pinBinding reads a catalog entry by name and pins it: the reference the
@@ -1009,6 +1042,14 @@ func renderPlatformEntry(data []byte, req connectRequest, ref, pin string, param
 		}
 	}
 	platforms.set(req.platform, entry)
+	for _, name := range req.repinned {
+		raw, _ := platforms.get(name)
+		kept, err := requireObject(raw, "platform "+name)
+		if err != nil {
+			return nil, err
+		}
+		kept.set("binding", vString(ref))
+	}
 	var sb strings.Builder
 	formatValue(&sb, obj, "")
 	sb.WriteByte('\n')

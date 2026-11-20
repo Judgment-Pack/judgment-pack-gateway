@@ -52,12 +52,23 @@ const (
 	sealForwardingDocument = "seal-forwarding."
 )
 
+// sealAppendedHook runs once a seal is appended to the registry, by /seal
+// and by seal-open, before anything else of it; a test stops the process
+// there, past the append, to hold that the seal's marker is already in the
+// store (the marker is written before the append).
+var sealAppendedHook = func(sessionID string) {}
+
+// sealDeliveredHook runs once /seal has delivered what the session holds
+// for the sink and before it takes the gateway's lock to seal; a test holds
+// a receipt there, which the seal under the lock refuses.
+var sealDeliveredHook = func(sessionID string) {}
+
 // sealNotForwarded is the refusal of a seal the sink did not acknowledge,
 // whatever went wrong: the seal is in the registry, and is held.
 type sealNotForwarded struct{}
 
 func (sealNotForwarded) Error() string {
-	return "seal not forwarded: the receipt sink did not acknowledge the session's seal; the session is sealed in the registry, nothing was answered, and the seal is held to be delivered again before the session's next seal, at the next start, or by gateway seal-open"
+	return "seal not forwarded: the receipt sink did not acknowledge the session's seal; the session is sealed in the registry, nothing was answered, and the seal is held to be delivered again by the session's next seal while the gateway that sealed it runs, and after a restart only by the next start or by gateway seal-open"
 }
 
 // sealHeldRefusal names, for the start and seal-open, a session whose seal

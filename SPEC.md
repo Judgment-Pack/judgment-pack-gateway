@@ -1367,6 +1367,17 @@ beside the seed refuse that start. A seed switched by hand, with them removed, s
 gateway under a key no verifier pinning the first key reaches; the switch is never made
 by hand.
 
+A rotation to a key service's key version (`docs/adr/0050-an-external-signer-in-a-key-service.md`,
+"A rotation whose append failed") writes no next seed and no kept record, so `--resume` does not
+settle it. Its append failing, in part or whole, switches nothing and stops the gateway; its operator
+reads the registry's end and settles it by the same three cases. The two statements whole, the walk
+ending at the next key: the gateway starts under the configuration naming the next key version.
+Nothing of the record appended, or a `key-rotation` torn before its end: the registry reads, under
+either key, as one with no rotation, and the gateway starts under the key rotated from and is rotated
+again. Any other part of the record: the walk refuses a start under either key until that part is cut,
+from its first byte and nothing more, by its operator, as `--resume` cuts it; the gateway then starts
+under the key rotated from and is rotated again. No other byte of the registry is cut.
+
 **The gateway's own reading.** A gateway pins no key out of band for itself. It walks
 its registry from the key its first rotation rotated from — the `previous` of the
 registry's first `key-continuation` statement — or from its own key when the registry
@@ -1625,7 +1636,9 @@ missing is written again, from the same bytes, only where it is the history name
 line is a store continuation that loads answers the history carried beside it, whose bytes must be the
 ones its `keyHistoryDigest` names, and which must hold by the check below from its own first key and end
 at the key that signed the continuation, then the keys the registry's own rotations reach; that key's entry
-is the carried one's, its `validTo` the rotation from it, if any. A continued registry with no history
+is the carried one's, its `validTo` the rotation from it, if any. The continuation's `continuedAt` falls
+while that key is in force: at or after its `validFrom`, if it has one, and not after its `validTo`, if it
+has one; one outside is answered `500` as above. A continued registry with no history
 carried beside it, or one whose bytes are not the ones named -- changed, or cut to a later stretch that
 holds on its own -- or that does not so hold, and a history carried beside a registry that continues no
 store, are each answered `500` as above, never as a shorter history. On the PostgreSQL kind, every instance
@@ -1645,7 +1658,10 @@ holding its form (§3b) whose `keyId` is the entry before's and whose signature 
 naming this entry's key as `next`, and `keyContinuation` a `key-continuation` statement holding its form,
 of the same `rotation` and `rotatedAt`, whose `keyId` is this entry's and whose signature verifies under its
 key, naming the entry before's key as `previous`; that `rotatedAt` this entry's `validFrom` and the entry
-before's `validTo`; and every entry but the last with a `validTo`, the last without one. The `rotation`
+before's `validTo`, and not earlier than the entry before's `validFrom`, if it has one, so that each
+rotation's `rotatedAt` is not before the one before it (the form is fixed-width, so its order is its
+bytes'; two rotations of one second hold); and every
+entry but the last with a `validTo`, the last without one. The `rotation`
 ordinal is held to its form alone: it counts within one registry, and starts again at 1 after a store
 continuation. A receipt then verifies under the entry whose `keyId` it names. What a key's `validFrom` and
 `validTo` bound is the gateway's clock at each rotation, as `rotatedAt` is (§3b), and nothing more: an
@@ -3307,11 +3323,12 @@ under engine version 35, no seal is delivered.
 - **When the sink does not acknowledge.** `/seal` answers `503`, `Content-Type:
   application/json`, with no `Retry-After` and exactly this body:
 
-  `{"error":"seal not forwarded: the receipt sink did not acknowledge the session's seal; the session is sealed in the registry, nothing was answered, and the seal is held to be delivered again before the session's next seal, at the next start, or by gateway seal-open","code":"receipt_not_forwarded"}`
+  `{"error":"seal not forwarded: the receipt sink did not acknowledge the session's seal; the session is sealed in the registry, nothing was answered, and the seal is held to be delivered again by the session's next seal while the gateway that sealed it runs, and after a restart only by the next start or by gateway seal-open","code":"receipt_not_forwarded"}`
 
   The seal is in the registry, and held. The session's next `/seal` delivers it again, and
   answers it once it is acknowledged; a `/seal` after that is answered as one of a sealed
-  session. While a receipt of the session is held, `/seal` is refused with the receipt's
+  session. A `/seal` that waits past its deadline behind a delivery of the session's seal
+  still in flight is answered with this body too. While a receipt of the session is held, `/seal` is refused with the receipt's
   sentence, and no seal is appended.
 - **A seal pending forwarding.** The gateway records in the store, before it appends a seal,
   that the seal is pending forwarding, and removes the record once the sink acknowledges
