@@ -438,17 +438,22 @@ func heldUnderAnotherKey(registry []byte, keys []reachedKey, own ed25519.PublicK
 	// the first receipt of every series that holds one: a series left
 	// empty is passed over, and the next is read, so no series is skipped
 	// because an earlier one holds nothing
+	// a series that cannot be read is not passed over: what it is under is
+	// not known, and it is named
+	unread := func(s string, err error) error {
+		return fmt.Errorf("session %s could not be read to find the key its receipts are under, and nothing was signed: %w", s, err)
+	}
 	for _, s := range series {
 		entries, err := receipts.listEntries(s)
 		if err != nil {
-			return err
+			return unread(s, err)
 		}
 		if len(entries) == 0 {
 			continue
 		}
 		data, err := receipts.getEntry(s, entries[0])
 		if err != nil {
-			return err
+			return unread(s, err)
 		}
 		v, err := parseJSON(data)
 		if obj, ok := v.(*vObject); err == nil && ok {
