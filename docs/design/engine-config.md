@@ -2680,7 +2680,7 @@ of the seed's key ([ADR-0050](../adr/0050-an-external-signer-in-a-key-service.md
   - The call is authenticated by the gateway's own access token from the metadata server at its fixed link-local address.
   - One signing is bounded by 5 seconds.
   - A key service that cannot be reached, refuses (a 429 or 503 among the refusals) or answers a signature that does not verify fails the acquisition or the seal with a fixed sentence, and nothing is written.
-- **The commands under a key service.** `gateway remove-artifact`, `remove-scope`, `seal-open`, `export` and `connect`'s descriptor capture sign through the key version the configuration names, held to `signingPublicKey`. `gateway rotate-key` stays seed-only and refuses through the registry's walk. A key service's key is rotated by SIGHUP on the file kind; on the PostgreSQL kind every instance is stopped first (ADR-0050).
+- **The commands under a key service.** `gateway remove-artifact`, `remove-scope`, `seal-open`, `export` and `connect`'s descriptor capture sign through the key version the configuration names, held to `signingPublicKey`. `gateway rotate-key` stays seed-only and refuses through the registry's walk. A key service's key is rotated by SIGHUP on the file kind. On the PostgreSQL kind this release writes no rotation record: a key service works there on a fresh database only, and the stopped-gateway rotation that moves an existing store from the seed, or from one key version to the next, is #563 (ADR-0050, decision 3(a)).
 
 ## Seals at the receipt sink (engine version 37)
 
