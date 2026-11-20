@@ -800,6 +800,8 @@ owner-supplied contract; a provider name alone establishes no guarantee.
 <root>/artifacts/<hex>                          the retained bytes; <hex> is resultDigest's hex
 <root>/artifact-removals.jsonl                  optional: one removal record per line (§1.3a),
                                                 of a payload or of a session
+<root>/labels/<hex>.json                        optional: the reference gateway's session labels
+                                                (§3a); a verifier passes the directory over
 ```
 
 The registry is a separate file: one canonical seal object per line, newline
@@ -1221,6 +1223,18 @@ receipts that verification could never enumerate**, so `/verify` would answer `o
 for a store missing sessions the gateway had itself signed — silently voiding §4's
 coverage guarantee. The store enforces the same rule on write, so the guarantee does
 not rest on the HTTP layer alone.
+
+**Labels.** From the reference gateway's engine configuration version 39 (ADR-0051), the
+`session` a caller sends to `/acquire`, `/seal` and `/act` (§6) is a **label** of the same
+form, in the namespace of the session's scope (its scope identifier, or none), and the gateway
+mints the session id: 32 lowercase hexadecimal characters from 128 random bits, on the label's
+first use there. Receipts, seals and the registry carry the session id as before, and a
+verifier reads them as before. The filesystem kind keeps each label at
+`<root>/labels/<hex>.json`, where `<hex>` is the lowercase hexadecimal SHA-256 over
+`"judgment-pack-gateway/session-label/1:" + canon({"label": <label>, "scope": <identifier or
+null>})`, holding `canon({"label", "scope", "sessionId"})` and a line feed. A verifier does
+not read `labels/`: it passes the directory over, and a store holding it verifies exactly as
+the same store without it.
 
 ## 3b. Key rotation: the continuity statement
 
@@ -2222,6 +2236,16 @@ HTTP: the gateway terminates no TLS on either form.
 |--------|-------------|---------------|
 | POST   | `/acquire`  | `{session, source, arguments, trail, scope}`, `trail` and `scope` optional → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, an empty registry and any discarded line establishing no seal — so a seal stays final across a restart; a seal made after an interruption (§3c) is such a seal. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal — and so is a registry that is not there, since the gateway made it when it started (§3); a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. A session this process does not hold and the registry does not seal is then looked up in the store, and is refused `400` before the source runs where the store holds a receipt in it — any entry of its directory whose name ends in `.json`, whatever it holds — where the store holds it as anything but a directory, a link included, and where the store cannot show it, which is never taken for empty: a gateway keeps a session's chain in memory, so one another process left open is not continued from the store, whose last receipts may have been taken away (§2), and stays `unregistered-session` (§4 step 3). A session directory that holds no receipt is taken up. Where gateway instances serve one store beside one another (the reference gateway's PostgreSQL storage kind, by its configuration), a session is held by the instance that admitted its first call, which keeps its chain: a session another instance holds while that instance still serves is refused `409` before the source runs, with a fixed sentence that names no instance, and the caller sends the session's calls to the instance that holds it; once that instance has stopped, the session is judged as one another process left open, and one that holds no receipt is taken up. |
 | POST   | `/seal`     | `{session, scope}`, `scope` optional and read only where some source is fixed to a scope identifier, as `/acquire` reads it ("Caller scope identifiers", below) → seals the session's final count; returns the seal record. A session this process does not hold is refused `400`: one sealed in the registry as sealed, the registry read as for `/acquire` (one that cannot be read refuses), one the store holds receipts in, or holds as anything but a directory, or cannot show, as `/acquire` refuses it — its count is not sealed from the store, for the reason `/acquire` does not continue it; `gateway seal-open`, with the gateway stopped — or, where gateway instances serve one store beside one another, once the instance that held it no longer serves — seals it as a seal made after an interruption (§3c) — and any other as no such session. Where gateway instances serve one store beside one another, a session another instance holds while that instance still serves is refused `409` with the fixed sentence `/acquire` gives, and is not sealed. |
+
+**Session labels (engine configuration version 39, ADR-0051).** From that version `/acquire`,
+`/seal` and `/act` read `session` as a label (§3a): `/acquire` in the namespace of the source's
+scope, `/act` in none's, and `/seal` in the namespace of the `scope` it names, or none's where it
+names none. Every refusal and answer above then holds of the session the label names, and the
+receipt or seal answered carries its minted `sessionId`. A label `/seal` finds no session for in
+that namespace, or a namespace the caller does not reach, is answered `400` `no such session:
+<label>`, with nothing else read: neither the registry nor anything of another scope, so no seal
+of another scope's session is said to be one. `cites[].sessionId` in `/act` stays a session id.
+Below that version `session` is the session id, as described above.
 
 A gateway minting version 3 receipts answers `/acquire` with `{result, receipt,
 salts}`: `salts` is an object with one member per commitment the receipt

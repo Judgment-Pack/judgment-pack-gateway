@@ -2804,6 +2804,46 @@ stopped.
 `engineVersion` to `"38"` and add the member. A gateway older than this one refuses a
 version-38 file by its version.
 
+## Session labels (engine version 39)
+
+Version 39 adds no member. It changes what the `session` of a request is
+([ADR-0051](../adr/0051-a-session-name-is-a-label-in-its-scope-mapped-to-a-minted-session-id.md),
+#550): a **label** in its scope's namespace, mapped to a session id the gateway mints.
+
+- **The label.** It has the form a session id has (SPEC.md §3a), so every name a client sends
+  today is a valid label. Its namespace is the scope the session is of: the scope identifier of
+  the source `/acquire` names, the `scope` `/seal` names, or **none** (a source fixed to no
+  scope, `/act`, and `/seal` naming no scope). The same label in two scopes is two sessions.
+- **The session id.** On a label's first use in its namespace the gateway mints 32 lowercase
+  hexadecimal characters from 128 random bits. The receipt `/acquire` answers carries it, and
+  so does the seal `/seal` answers: a caller verifying, exporting or citing reads it there.
+  Receipts, seals, the registry and the verifiers are as before.
+- **Where it is kept.** On the filesystem kind, one file per label at
+  `<store>/labels/<hex>.json`, written exclusively and synced before the session's first
+  receipt. The verifiers pass `labels/` over. The PostgreSQL kind does not yet keep labels, and
+  a configuration of version 39 on it is refused at the start.
+- **What a caller is answered.** `/seal` looks a label up in the namespace it names alone. A
+  label not there is answered `no such session: <label>`, and nothing else is read: not the
+  registry, and nothing of another scope. A label whose session is sealed is refused as a sealed
+  session is: a label names one session for its life, so a job labels each run. Callers of one
+  scope share its namespace, and one of them can learn by that refusal that a label is in use
+  in its own scope.
+- **The MCP front.** In the caller form the seal tool takes an optional `scope`, held to the
+  caller's token and forwarded as `/seal`'s.
+- **Operators.** `gateway sessions --config <engine.json> --scope <identifier|none>
+  [--label <label>]` prints `label sessionId` lines for one namespace, with the gateway running
+  or stopped, and writes nothing. Every other command takes session ids, as before.
+  `gateway remove-scope` removes the scope's labels and `gateway retain` the label of each
+  session it removes, once their records are durable; the label is then free, and its next use
+  starts a new session. `gateway export` carries no labels, and `gateway store rotate` starts
+  the new store with none.
+
+**Upgrading.** A file of version 38 or earlier loads as before, and the name a request sends is
+the session id. To move to labels, stop the gateway, seal what is open with
+`gateway seal-open --all`, raise `engineVersion` to `"39"` and start. The start refuses while
+the store holds a session open that no label names, and names `gateway seal-open --all`. Going
+back needs every session sealed first, too; the older engine then passes `labels/` over.
+
 ## Keyed actions (engine version 14 and later)
 
 Version 14 and every later version require a caller-chosen `actionKey` on `/act`: 64 lowercase hex
