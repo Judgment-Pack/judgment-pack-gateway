@@ -65,7 +65,7 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 	}
 	var line []byte
 	sealed, _, err := sealOpenPostgresHeld(o, stamp, said, pgLeaseCommand{as: "store rotate", verb: "rotate", alone: true,
-		then: func(kind *pgKind, seed []byte, refused []string, held *kindStart) error {
+		then: func(kind *pgKind, key *signingKey, refused []string, held *kindStart) error {
 			if len(refused) > 0 {
 				return fmt.Errorf("a session left open could not be sealed, so the store is not rotated: %s", refused[0])
 			}
@@ -76,14 +76,20 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 			if err != nil {
 				return err
 			}
-			priv := ed25519.NewKeyFromSeed(seed)
-			if _, err := engineWalk(data, priv.Public().(ed25519.PublicKey)); err != nil {
+			// the key in force signs the continuation (ADR-0050): the
+			// registry walks to it, and holds nothing under a key the walk
+			// did not reach
+			walk, err := engineWalk(data, key.public)
+			if err != nil {
+				return err
+			}
+			if err := heldUnderAnotherKey(data, walk.keys, key.public, nil); err != nil {
 				return err
 			}
 			if prior != nil {
 				// the rerun: the new database holds the continuation of
 				// this registry as it ends, and the old one is marked
-				if err := continuesRegistry(prior, data, priv.Public().(ed25519.PublicKey)); err != nil {
+				if err := continuesRegistry(prior, data, key.public); err != nil {
 					return fmt.Errorf("the new database: it holds a registry; %v; a rotation starts a new store in a database that holds none", err)
 				}
 				if err := pgMarkRotated(kind, prior); err != nil {
@@ -92,7 +98,10 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 				line = prior
 				return nil
 			}
-			made := newContinuationLine(priv, data, stamp())
+			made, err := newContinuationLine(key, data, stamp())
+			if err != nil {
+				return fmt.Errorf("the continuation could not be signed: %v; the store is not rotated, and the seals appended stay in the old registry", err)
+			}
 			_, err = migratePostgresThen(dsn, set, target.roles, target.timeout, func(tx pgTx) error {
 				if err := pgRotationTargetEmpty(tx); err != nil {
 					return err

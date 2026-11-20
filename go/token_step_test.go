@@ -148,12 +148,12 @@ func unreadVersion() string {
 // (metadataTokenVersion).
 func TestEngineVersionsRunUnbrokenToTheNewest(t *testing.T) {
 	n, err := strconv.Atoi(engineVersion)
-	if err != nil || len(engineVersions) != n || !versionAtLeast(engineVersion, metadataTokenVersion) {
+	if err != nil || len(engineVersions)+len(reservedEngineVersions) != n || !versionAtLeast(engineVersion, metadataTokenVersion) {
 		t.Fatalf("engineVersion %q, %d versions read, metadataTokenVersion %q", engineVersion, len(engineVersions), metadataTokenVersion)
 	}
 	for i := 1; i <= n; i++ {
-		if !engineVersions[strconv.Itoa(i)] {
-			t.Fatalf("version %d is not read", i)
+		if v := strconv.Itoa(i); engineVersions[v] == (reservedEngineVersions[v] != "") {
+			t.Fatalf("version %d is not read, or is read and reserved", i)
 		}
 	}
 }

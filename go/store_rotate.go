@@ -162,7 +162,15 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	} else if !present {
 		return nil, nil, fmt.Errorf("the registry is not there: %s; there is no store to rotate", o.registry)
 	}
-	hold, err := holdEngineRegistry(o.seedNames, o.registry, seed)
+	// the key in force signs the seals and the continuation: the key
+	// service's key version the configuration names, held to
+	// signingPublicKey, or else the seed's (ADR-0050)
+	sig, err := commandSigner(o.keyVersion, o.keyPublic, seed)
+	if err != nil {
+		return nil, nil, err
+	}
+	key := newSigningKey(sig)
+	hold, err := holdEngineRegistryKey(o.seedNames, o.registry, key.public)
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
 			return nil, nil, fmt.Errorf("%w; stop the gateway, then rotate", err)
@@ -174,8 +182,14 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	if err != nil || !present {
 		return nil, nil, fmt.Errorf("registry: the registry could not be read under the hold: %v", err)
 	}
-	priv := ed25519.NewKeyFromSeed(seed)
-	pub := priv.Public().(ed25519.PublicKey)
+	pub := key.public
+	walk, err := engineWalk(data, pub)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := heldUnderAnotherKey(data, walk.keys, pub, newFsKind(fsLayout{store: o.store}).receipts()); err != nil {
+		return nil, nil, err
+	}
 	if made, present, err := readRegistryBytes(newRegistry); err != nil {
 		return nil, nil, fmt.Errorf("the new registry: %w", err)
 	} else if present {
@@ -189,11 +203,11 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 		}
 		return nil, made, nil
 	}
-	writer, err := newRegistryWriter(o.registry, seed, func() (bool, error) { return true, nil })
+	writer, err := newRegistryWriterWith(o.registry, seed, newSignerHolder(sig), func() (bool, error) { return true, nil })
 	if err != nil {
 		return nil, nil, err
 	}
-	sealed, refused, err := sealOpenUnder(fsSealOpenStore{o.store}, o.authority, writer, data, "", sealedViaCommand, stamp)
+	sealed, refused, err := sealOpenUnderSink(fsSealOpenStore{o.store}, o.authority, writer, data, "", sealedViaCommand, stamp, o.sink())
 	if err != nil {
 		return sealed, nil, fmt.Errorf("%v; the store is not rotated", err)
 	}
@@ -210,7 +224,10 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	if _, err := engineWalk(data, pub); err != nil {
 		return sealed, nil, err
 	}
-	line := newContinuationLine(priv, data, stamp())
+	line, err := newContinuationLine(key, data, stamp())
+	if err != nil {
+		return sealed, nil, fmt.Errorf("the continuation could not be signed: %v; the store is not rotated, and the seals appended stay in the old registry", err)
+	}
 	if err := os.Mkdir(newStore, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return sealed, nil, fmt.Errorf("the new store: %w", err)
 	}

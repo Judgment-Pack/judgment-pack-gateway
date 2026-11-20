@@ -121,7 +121,7 @@ func TestStoreRotateSealsWhatIsOpenAndLinksTheNewRegistry(t *testing.T) {
 func TestAStoreContinuationIsTheFirstLineOrAFinding(t *testing.T) {
 	priv := ed25519.NewKeyFromSeed(testSeed)
 	pub := priv.Public().(ed25519.PublicKey)
-	line := newContinuationLine(priv, []byte("x\n"), "2026-11-19T00:00:00Z")
+	line := seedContinuation(t, priv, []byte("x\n"), "2026-11-19T00:00:00Z")
 	if w := walkRegistry(line, pub); w.continuation == nil || w.continuationFinding != nil {
 		t.Fatalf("at the first line: %+v", w)
 	}
@@ -140,7 +140,7 @@ func TestAStoreContinuationIsTheFirstLineOrAFinding(t *testing.T) {
 		t.Fatalf("continued: %v", next.continuationFinding)
 	}
 	other := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, 32))
-	if w := walkRegistry(newContinuationLine(other, nil, "2026-11-19T00:00:00Z"), pub); w.continuationFinding["status"] != statusContinuationForged {
+	if w := walkRegistry(seedContinuation(t, other, nil, "2026-11-19T00:00:00Z"), pub); w.continuationFinding["status"] != statusContinuationForged {
 		t.Fatalf("signed by another key: %v", w.continuationFinding)
 	}
 }
@@ -271,7 +271,7 @@ func TestALinkHoldsTheContinuationToTheOldRegistrysLastKey(t *testing.T) {
 		if err := os.WriteFile(previous, tc.old, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(registry, newContinuationLine(priv, tc.old, "2026-11-19T00:00:00Z"), 0o600); err != nil {
+		if err := os.WriteFile(registry, seedContinuation(t, priv, tc.old, "2026-11-19T00:00:00Z"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		f := linkOf(t, registry, previous)
@@ -292,4 +292,15 @@ func sealLineBy(key ed25519.PrivateKey, session string) []byte {
 	obj.set("sessionId", vString(session))
 	obj.set("signature", vString(hex.EncodeToString(ed25519.Sign(key, sealSigningInput(session, 1, at, keyID)))))
 	return append(canon(obj), '\n')
+}
+
+// seedContinuation is the store continuation a rotation under priv's seed
+// writes after previous.
+func seedContinuation(t *testing.T, priv ed25519.PrivateKey, previous []byte, at string) []byte {
+	t.Helper()
+	line, err := newContinuationLine(newSigningKey(newSeedSigner(priv.Seed())), previous, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return line
 }

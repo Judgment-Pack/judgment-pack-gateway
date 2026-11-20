@@ -174,7 +174,9 @@ func TestTheStartDoesNotServeWhenASessionCannotBeRead(t *testing.T) {
 				g.stop()
 				t.Fatal("the gateway started")
 			}
-			want := "start: sealing the sessions left open: session locked could not be read, and nothing was sealed: open " + locked + ": permission denied; the gateway does not start\n"
+			// the key the store is under (ADR-0050) is looked for before
+			// anything is sealed, and a session it cannot read is named
+			want := "start: session locked could not be read to find the key its receipts are under, and nothing was signed: open " + locked + ": permission denied\n"
 			if g.code != 1 || !strings.Contains(g.stderr(), want) {
 				t.Fatalf("exit %d: %s", g.code, g.stderr())
 			}

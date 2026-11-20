@@ -136,6 +136,12 @@ func rotationPendingBesideAny(seedPaths []string, registryPath string) error {
 // returned holds the lock until it is closed; nil where the platform locks
 // no registry.
 func holdEngineRegistry(seedPaths []string, registryPath string, seed []byte) (io.Closer, error) {
+	return holdEngineRegistryKey(seedPaths, registryPath, ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey))
+}
+
+// holdEngineRegistryKey is holdEngineRegistry for the gateway's key own,
+// the seed's or a key service's (ADR-0050).
+func holdEngineRegistryKey(seedPaths []string, registryPath string, own ed25519.PublicKey) (io.Closer, error) {
 	lock, err := lockRegistry(registryPath)
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
@@ -151,7 +157,7 @@ func holdEngineRegistry(seedPaths []string, registryPath string, seed []byte) (i
 	if err == nil {
 		var data []byte
 		if data, _, err = readRegistryBytes(registryPath); err == nil {
-			_, err = engineWalk(data, ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey))
+			_, err = engineWalk(data, own)
 		}
 	}
 	if err != nil {

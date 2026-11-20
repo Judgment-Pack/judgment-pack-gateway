@@ -50,7 +50,7 @@ func TestSealOpenSealsNothingWhenASessionCannotBeRead(t *testing.T) {
 	seedPath := writeSeedFile(t, t.TempDir(), testSeed)
 	registry := readFile(t, g.regPath)
 	code, stdout, stderr := sealOpenOn(t, g, seedPath, "2026-11-10T00:00:01Z", "--all")
-	want := "seal-open: session locked could not be read, and nothing was sealed: open " + locked + ": permission denied\n"
+	want := "seal-open: session locked could not be read to find the key its receipts are under, and nothing was signed: open " + locked + ": permission denied\n"
 	if code != 1 || stdout != "" || stderr != want || readFile(t, g.regPath) != registry {
 		t.Fatalf("exit %d\nstdout %q\nstderr %q\nwant   %q", code, stdout, stderr, want)
 	}

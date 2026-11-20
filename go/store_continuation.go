@@ -155,9 +155,9 @@ func errStoreRotated(mark string) error {
 
 // newContinuationLine is the store continuation a rotation writes as the new
 // registry's first line, signed by priv, naming the tail of previous.
-func newContinuationLine(priv ed25519.PrivateKey, previous []byte, at string) []byte {
+func newContinuationLine(key *signingKey, previous []byte, at string) ([]byte, error) {
 	lines, last := registryLink(previous)
-	pub := priv.Public().(ed25519.PublicKey)
+	pub := key.public
 	obj := newObject()
 	obj.set("continuationVersion", vString(continuationVersion))
 	obj.set("continuedAt", vString(at))
@@ -165,8 +165,12 @@ func newContinuationLine(priv ed25519.PrivateKey, previous []byte, at string) []
 	obj.set("kind", vString(continuationKind))
 	obj.set("previousDigest", vString(last))
 	obj.set("previousLines", vInt(lines))
-	obj.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, continuationSigningInput(obj)))))
-	return append(canon(obj), '\n')
+	signature, err := key.signVerified(continuationSigningInput(obj))
+	if err != nil {
+		return nil, err
+	}
+	obj.set("signature", vString(hex.EncodeToString(signature)))
+	return append(canon(obj), '\n'), nil
 }
 
 // linkPrevious holds a verdict's store continuation to the registry before
