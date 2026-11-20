@@ -43,7 +43,7 @@ func exportSelection(in exportInputs, cut *storeCut, removals []byte, present bo
 	if cut.logPresent {
 		log = cut.log
 	}
-	walk, err := engineWalk(log, in.publicKey)
+	walk, err := engineWalk(log, heldKey{alg: in.keyAlg, key: in.publicKey})
 	if err != nil {
 		return nil, fmt.Errorf("an export by scope walks the registry: %w", err)
 	}

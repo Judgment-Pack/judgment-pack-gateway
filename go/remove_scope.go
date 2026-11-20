@@ -63,6 +63,7 @@ type removeScopeOptions struct {
 	// keyVersion and keyPublic are the configuration's signingKeyVersion
 	// and signingPublicKey: the key service's key version the command signs
 	// through, "" where the seed signs (ADR-0050)
+	keyAlg                     string
 	keyVersion, keyPublic      string
 	store, registry, authority string
 	seedNames                  []string
@@ -114,7 +115,7 @@ func parseRemoveScope(args []string) (removeScopeOptions, string) {
 		if cfg.storage != nil {
 			return removeScopeOptions{}, fmt.Errorf("%w: gateway remove-scope removes the files of a store on disk; on the PostgreSQL kind, gateway store remove-scope removes a scope identifier's rows", errStorageKindUnsupported).Error()
 		}
-		o.keyVersion, o.keyPublic = cfg.signingKeyVersion, cfg.signingPublicKey
+		o.keyVersion, o.keyPublic, o.keyAlg = cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm
 		o.store, o.registry, o.authority, o.seedNames = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}
 		if resolved, err := filepath.EvalSymlinks(cfg.seed); err == nil && resolved != cfg.seed {
 			o.seedNames = append(o.seedNames, resolved)
@@ -183,12 +184,12 @@ func removeScope(o removeScopeOptions, stamp func() string) (out removalOutcome,
 	} else if !present {
 		return out, false, absentRegistry
 	}
-	sig, err := commandSigner(o.keyVersion, o.keyPublic, seed)
+	sig, err := commandSigner(o.keyVersion, o.keyPublic, o.keyAlg, seed)
 	if err != nil {
 		return out, false, err
 	}
 	key := newSigningKey(sig)
-	hold, err := holdEngineRegistryKey(o.seedNames, o.registry, key.public)
+	hold, err := holdEngineRegistryKey(o.seedNames, o.registry, key.held())
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
 			return out, false, fmt.Errorf("%w; stop the gateway, then remove", err)
@@ -204,7 +205,7 @@ func removeScope(o removeScopeOptions, stamp func() string) (out removalOutcome,
 	if !present {
 		return out, unlocked, absentRegistry
 	}
-	walk, err := engineWalk(data, key.public)
+	walk, err := engineWalk(data, key.held())
 	if err != nil {
 		return out, unlocked, err
 	}
@@ -456,6 +457,7 @@ func signedSessionRemoval(priv *signingKey, keys []reachedKey, session string, s
 	}
 	record.set("sealSignature", vString(s.signature))
 	record.set("sessionId", vString(session))
+	setAlg(record, "alg", priv.alg)
 	signature, err := priv.signVerified(recordSigningInput(sessionRemovalContext, record))
 	if err != nil {
 		return nil, nil, err
@@ -487,6 +489,7 @@ func signedScopeRemoval(priv *signingKey, keys []reachedKey, scope, by, at strin
 	record.set("removedBy", vString(by))
 	record.set("scope", vString(scope))
 	record.set("sealedSessions", vInt(n.sealed))
+	setAlg(record, "alg", priv.alg)
 	signature, err := priv.signVerified(recordSigningInput(scopeRemovalContext, record))
 	if err != nil {
 		return nil, nil, err

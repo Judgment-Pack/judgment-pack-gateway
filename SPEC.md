@@ -1145,7 +1145,7 @@ makes a signature again in order to compare it with one made before.
 
 **Choosing the algorithm.** A verifier verifies a record's signature by the algorithm its `alg` names,
 Ed25519 where it holds none. A receipt of version 2 is the one kind that may not hold `alg`: holding it,
-of any value, it is `malformed` (§1.2), and it is never verified as ES256. It does so under the key the record's `keyId` names among the keys it
+of any value, it is `malformed` (§1.2), and it is never verified as ES256. A verifier does so under the key the record's `keyId` names among the keys it
 holds, and only where that key is of that algorithm.
 
 A key carries the algorithm it was given with, and its length or form is only held to that algorithm,

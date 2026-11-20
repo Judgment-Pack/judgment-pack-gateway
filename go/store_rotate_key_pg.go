@@ -31,11 +31,12 @@ import (
 	"time"
 )
 
-const storeRotateKeyUsage = `  gateway store rotate-key (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> --config <engine.json> [--from-key-version <name> --from-public-key <hex>] [--timeout <seconds>]
+const storeRotateKeyUsage = `  gateway store rotate-key (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> --config <engine.json> [--from-key-version <name> --from-public-key <hex> [--from-key-algorithm ES256]] [--timeout <seconds>]
 Rotates the PostgreSQL kind's signing key, every instance stopped, to the key
 service's key version the configuration names (signingKeyVersion, held to
 signingPublicKey), from the key the registry's walk ends at: the seed's key, or
-the key version --from-key-version names, held to --from-public-key. As the
+the key version --from-key-version names, held to --from-public-key, of
+the algorithm --from-key-algorithm names (ES256; absent, Ed25519). As the
 migration login acting as the owner role, under the migration's lock and every
 row of the start lease, it appends SPEC.md §3b's key-rotation, signed by the key
 rotated from, and key-continuation, signed by the next key, in one transaction.
@@ -78,7 +79,7 @@ func cmdStoreRotateKey(args []string, stdout, stderr io.Writer) int {
 func cmdStoreRotateKeyAt(args []string, stdout, stderr io.Writer, stamp func() string) int {
 	const command = "store rotate-key"
 	usage := "usage:\n" + storeRotateKeyUsage
-	flags, code := storeFlags(args, []string{"--connection-file", "--connection-env", "--owner", "--runtime", "--config", "--from-key-version", "--from-public-key", "--timeout"}, command, usage, stderr)
+	flags, code := storeFlags(args, []string{"--connection-file", "--connection-env", "--owner", "--runtime", "--config", "--from-key-version", "--from-public-key", "--from-key-algorithm", "--timeout"}, command, usage, stderr)
 	if code != 0 {
 		return code
 	}
@@ -86,15 +87,24 @@ func cmdStoreRotateKeyAt(args []string, stdout, stderr io.Writer, stamp func() s
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
-	fromVersion, fromPublic := flags["--from-key-version"], flags["--from-public-key"]
+	fromVersion, fromPublic, fromAlg := flags["--from-key-version"], flags["--from-public-key"], flags["--from-key-algorithm"]
 	switch {
+	case fromAlg != "" && fromAlg != algES256:
+		fmt.Fprintf(stderr, "%s: --from-key-algorithm is ES256, for a P-256 key version rotated from, or absent for Ed25519\n%s\n", command, usage)
+		return 2
+	case fromAlg != "" && fromVersion == "":
+		fmt.Fprintf(stderr, "%s: --from-key-algorithm names the algorithm of --from-key-version's key version, and is not given without it: the seed's key is Ed25519\n%s\n", command, usage)
+		return 2
+	case fromAlg == algES256 && !isLowerHexOfLen(fromPublic, publicKeyHexLen(algES256)):
+		fmt.Fprintf(stderr, "%s: --from-public-key is the key version's P-256 public key under --from-key-algorithm ES256, its compressed point in 66 lowercase hexadecimal characters\n%s\n", command, usage)
+		return 2
 	case (fromVersion == "") != (fromPublic == ""):
 		fmt.Fprintf(stderr, "%s: --from-key-version and --from-public-key name the key version rotated from together, as signingKeyVersion and signingPublicKey do; the seed's key is rotated from with neither\n%s\n", command, usage)
 		return 2
 	case fromVersion != "" && !keyVersionForm.MatchString(fromVersion):
 		fmt.Fprintf(stderr, "%s: --from-key-version is one key version's resource name, %s\n%s\n", command, keyVersionFormText, usage)
 		return 2
-	case fromPublic != "" && !signingPublicKeyForm.MatchString(fromPublic):
+	case fromAlg == algEd25519 && fromPublic != "" && !signingPublicKeyForm.MatchString(fromPublic):
 		fmt.Fprintf(stderr, "%s: --from-public-key is the key version's Ed25519 public key, 64 lowercase hexadecimal characters\n%s\n", command, usage)
 		return 2
 	}
@@ -120,7 +130,7 @@ func cmdStoreRotateKeyAt(args []string, stdout, stderr io.Writer, stamp func() s
 	if code != 0 {
 		return code
 	}
-	out, err := storeRotateKey(spec, pgRoles{owner: flags["--owner"], runtime: flags["--runtime"]}, cfg, fromVersion, fromPublic, timeout, stamp)
+	out, err := storeRotateKey(spec, pgRoles{owner: flags["--owner"], runtime: flags["--runtime"]}, cfg, fromVersion, fromPublic, fromAlg, timeout, stamp)
 	if err != nil {
 		fmt.Fprintln(stderr, command+":", err)
 		return 1
@@ -130,6 +140,9 @@ func cmdStoreRotateKeyAt(args []string, stdout, stderr io.Writer, stamp func() s
 		return 0
 	}
 	stdout.Write(bytes.TrimLeft(out.record, "\n"))
+	if out.from.alg == algES256 && out.to.alg == algEd25519 {
+		fmt.Fprintf(stderr, "%s: %s\n", command, hsmToSoftwareLine)
+	}
 	fmt.Fprintf(stderr, "%s: rotation %d: key %s rotated to key %s, the key service's key version %s; start every instance under the configuration naming it\n", command, out.ordinal, out.from.keyID, out.to.keyID, cfg.signingKeyVersion)
 	return 0
 }
@@ -138,7 +151,7 @@ func cmdStoreRotateKeyAt(args []string, stdout, stderr io.Writer, stamp func() s
 // from -- the seed's, or the key version named, held to its public key --
 // and the next, the configuration's key version held to signingPublicKey,
 // each read and checked as at the start, then the rotation (rotateKeyRows).
-func storeRotateKey(spec *storageSpec, roles pgRoles, cfg engineConfig, fromVersion, fromPublic string, timeout time.Duration, stamp func() string) (keyRotationOutcome, error) {
+func storeRotateKey(spec *storageSpec, roles pgRoles, cfg engineConfig, fromVersion, fromPublic, fromAlg string, timeout time.Duration, stamp func() string) (keyRotationOutcome, error) {
 	if cfg.signingKeyVersion == "" {
 		return keyRotationOutcome{}, errors.New("the engine configuration names no signingKeyVersion: a rotation on the PostgreSQL kind is to a key service's key version, which the configuration names beside signingPublicKey; nothing was changed")
 	}
@@ -154,11 +167,11 @@ func storeRotateKey(spec *storageSpec, roles pgRoles, cfg engineConfig, fromVers
 	if err != nil {
 		return keyRotationOutcome{}, err
 	}
-	from, err := commandSigner(fromVersion, fromPublic, seed)
+	from, err := commandSigner(fromVersion, fromPublic, fromAlg, seed)
 	if err != nil {
 		return keyRotationOutcome{}, fmt.Errorf("the key rotated from: %w; nothing was changed", err)
 	}
-	next, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, seed)
+	next, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm, seed)
 	if err != nil {
 		return keyRotationOutcome{}, fmt.Errorf("the next key: %w; nothing was changed", err)
 	}
@@ -252,22 +265,23 @@ func rotateKeyRows(dsn pgDSN, roles pgRoles, from, to *signingKey, timeout time.
 	}
 	// the walk as the gateway's own reading makes it, from the key its
 	// first rotation rotated from; anything it finds refuses
-	walk := walkRegistry(data, registryFirstKey(data, from.public))
-	if err := walk.ownReading(walk.current().key); err != nil {
+	walk := walkRegistryFrom(data, registryFirstKey(data, from.held()))
+	if err := walk.ownReading(walk.current().held()); err != nil {
 		return failed(err)
 	}
+	// keys are compared with their algorithms, never by key id alone
 	end := walk.current()
-	if end.keyID == to.keyID {
+	if end.held().is(to.held()) {
 		// a rerun after a COMMIT that did not answer: the rotation from
 		// the key rotated from to the next key is the walk's last
-		if n := len(walk.keys); n >= 2 && walk.keys[n-2].keyID == from.keyID {
+		if n := len(walk.keys); n >= 2 && walk.keys[n-2].held().is(from.held()) {
 			rollback()
 			out.ordinal = n - 1
 			return out, nil
 		}
 		return failed(fmt.Errorf("the next key, key id %s, is the key in force already: the registry's walk ends at it; a rotation is to a key other than the one in force", to.keyID))
 	}
-	if end.keyID != from.keyID {
+	if !end.held().is(from.held()) {
 		return failed(fmt.Errorf("the registry's walk ends at key id %s, not at the key rotated from, key id %s: the key rotated from is the key in force, the seed's with no --from-key-version, or the key version --from-key-version and --from-public-key name", end.keyID, from.keyID))
 	}
 	// the key rotated from is the key in force: nothing in the registry,
@@ -323,7 +337,7 @@ func rotateKeyRows(dsn pgDSN, roles pgRoles, from, to *signingKey, timeout time.
 	if carriedPresent {
 		carried = carriedRows.rows[0][0]
 	}
-	before, err := registryKeyHistory(data, from.public, carried, carriedPresent)
+	before, err := registryKeyHistory(data, from.held(), carried, carriedPresent)
 	if err != nil {
 		return failed(fmt.Errorf("the key history before the rotation does not hold: %w", err))
 	}
@@ -351,11 +365,11 @@ func rotateKeyRows(dsn pgDSN, roles pgRoles, from, to *signingKey, timeout time.
 	if !bytes.Equal(again, append(bytes.Clone(data), record...)) {
 		return failed(errors.New("the registry read back is not the registry walked with the rotation's record at its end"))
 	}
-	if _, err := engineWalk(again, to.public); err != nil {
+	if _, err := engineWalk(again, to.held()); err != nil {
 		return failed(fmt.Errorf("the rotation's record would not walk to the next key: %w", err))
 	}
 	if err := keyHistoryWriteRefusal(before, at, storeRotateKeyBefore, keyHistoryRotationFault, func() error {
-		_, err := walkKeyHistory(again, to.public, carried, carriedPresent)
+		_, err := walkKeyHistory(again, to.held(), carried, carriedPresent)
 		return err
 	}); err != nil {
 		return failed(err)

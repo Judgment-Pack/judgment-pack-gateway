@@ -7,7 +7,9 @@ package main
 // file, signing as it always has, byte for byte; and a key version in a key
 // service, asked to sign over its API (key_service_signer.go), whose private
 // key the gateway never holds. Both are Ed25519 (SPEC.md §1.2): receipts,
-// seals and verifiers are the same whichever kind signed.
+// seals and verifiers are the same whichever kind signed. A key version may
+// instead be ECDSA P-256 at the service's HSM protection level (ADR-0053),
+// whose records carry alg: "ES256".
 
 import (
 	"crypto/ed25519"
@@ -15,10 +17,14 @@ import (
 	"sync/atomic"
 )
 
-// signer signs with one Ed25519 key.
+// signer signs with one key: Ed25519, or a key service's P-256 key version
+// (ADR-0053).
 type signer interface {
-	// publicKey is the key every signature of this signer verifies under.
-	publicKey() ed25519.PublicKey
+	// publicKey is the key every signature of this signer verifies under:
+	// 32 bytes of Ed25519, or a P-256 key's 33-byte compressed point.
+	publicKey() []byte
+	// algorithm is the key's alg: algEd25519 or algES256.
+	algorithm() string
 	// sign answers the Ed25519 signature of message, or why there is none.
 	sign(message []byte) ([]byte, error)
 }
@@ -31,9 +37,12 @@ func newSeedSigner(seed []byte) seedSigner {
 	return seedSigner{private: ed25519.NewKeyFromSeed(seed)}
 }
 
-func (s seedSigner) publicKey() ed25519.PublicKey {
+func (s seedSigner) publicKey() []byte {
 	return s.private.Public().(ed25519.PublicKey)
 }
+
+// algorithm is the seed's, always Ed25519 (ADR-0053 §10).
+func (s seedSigner) algorithm() string { return algEd25519 }
 
 func (s seedSigner) sign(message []byte) ([]byte, error) {
 	return ed25519.Sign(s.private, message), nil
@@ -56,24 +65,29 @@ func (f signingFailure) Unwrap() error { return f.cause }
 // no other's.
 type signingKey struct {
 	signer signer
-	public ed25519.PublicKey
+	public []byte
+	alg    string
 	keyID  string
 }
 
+// held is the key with its algorithm.
+func (k *signingKey) held() heldKey { return heldKey{alg: k.alg, key: k.public} }
+
 func newSigningKey(s signer) *signingKey {
 	public := s.publicKey()
-	return &signingKey{signer: s, public: public, keyID: keyIDFor(public)}
+	return &signingKey{signer: s, public: public, alg: s.algorithm(), keyID: keyIDFor(public)}
 }
 
 // signVerified signs message and holds the signature to the key before
 // anything is written with it: a signature of another length, or one that
-// does not verify under the key, is errSignatureNotVerified.
+// does not verify under the key by its algorithm -- for ES256 a high-S one
+// among them -- is errSignatureNotVerified.
 func (k *signingKey) signVerified(message []byte) ([]byte, error) {
 	signature, err := k.signer.sign(message)
 	if err != nil {
 		return nil, signingFailure{err}
 	}
-	if len(signature) != ed25519.SignatureSize || !ed25519.Verify(k.public, message, signature) {
+	if !verifyByAlgorithm(k.alg, k.held(), message, signature) {
 		return nil, signingFailure{errSignatureNotVerified}
 	}
 	return signature, nil
@@ -106,6 +120,14 @@ func (g *gatewayService) ownKey() ed25519.PublicKey {
 		return g.store.signing.key().public
 	}
 	return g.publicKey
+}
+
+// ownHeld is ownKey with its algorithm.
+func (g *gatewayService) ownHeld() heldKey {
+	if g.store != nil && g.store.signing != nil {
+		return g.store.signing.key().held()
+	}
+	return edKey(g.publicKey)
 }
 
 // ownKeyID is ownKey's key id.

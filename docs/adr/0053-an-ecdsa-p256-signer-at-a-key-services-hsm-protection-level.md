@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-20
 deciders: maintainer
 ---
@@ -12,7 +12,8 @@ ADR-0050 signs with a Cloud KMS key version of `EC_SIGN_ED25519`, which the serv
 software protection level (FIPS 140-2 Level 1). Its hardware protection level (Level 3, an HSM key)
 holds elliptic-curve keys of P-256, P-384 and secp256k1 only. ADR-0050 left Level 3 as a later change,
 because it needs a second signature algorithm in the format and in every verifier (#562). This record
-fixes that signed format before anything is built. It is a design record, and nothing here is built yet.
+fixes that signed format before anything is built. The gateway's signer, the `alg` member, the Go verifier, the pin
+and rotation across algorithms are built (#562); verify-ts, the corpus vectors and the `acknowledgedBy` object form follow.
 
 **Decided by the maintainer on 2026-11-20.**
 

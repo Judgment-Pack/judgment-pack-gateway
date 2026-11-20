@@ -679,6 +679,14 @@ canonical JSON (SPEC.md §1.1), so two answers compare byte for byte:
   whose `scope_ids` names a scope identifier the configuration does not grant is refused `401`),
   `not-enforced` where `callerScopes` is `"unchecked"` or no `identity` is configured, naming no
   subject and no scope identifier.
+- Last, `/posture` of a gateway that signs through a key service's key version (`signingKeyVersion`,
+  ADR-0050 and ADR-0053) adds `signing-key-custody`: the key's algorithm (`Ed25519` or `ES256`) and
+  the protection level the service answered at start, named in one sentence, naming neither the key
+  version nor the key. It is `enforced` at every level the service answers, since the gateway holds
+  no private key at any of them; `partial` only where the level is unstated, or for a P-256 key away
+  from `HSM`, which the start refuses. It is read at each request, so after a serving
+  rotation it names the key then in force. A gateway that signs with the seed reports no such line,
+  and `gateway posture`, which calls no key service, reports none.
 
 Windows has no shipped restricted-command backend. Engine versions 13 and later
 wrap every configured source adapter, including adapters for remote and container
@@ -2868,6 +2876,37 @@ refuse the start; it is refused at use as any session another process left open 
 `gateway seal-open --all`, `gateway store migrate` (schema version 9), and start all at version
 39; an instance at version 39 is refused beside one at an earlier version, by name. Going
 back needs every session sealed first, too; the older engine then passes `labels/` over.
+
+## A P-256 key version at the HSM level (engine version 40)
+
+Version 40 adds one member, `signingKeyAlgorithm` (ADR-0053). Its one value is `"ES256"`: the key
+version `signingKeyVersion` names is an ECDSA P-256 key, `EC_SIGN_P256_SHA256`, at the key service's
+`HSM` protection level. Absent, the key version is Ed25519, as from version 36.
+
+```json
+"signingKeyVersion": "projects/example-project/locations/global/keyRings/receipts/cryptoKeys/hsm/cryptoKeyVersions/1",
+"signingPublicKey": "<the compressed point, 66 lowercase hexadecimal characters>",
+"signingKeyAlgorithm": "ES256"
+```
+
+- **Only beside `signingKeyVersion`.** The seed stays Ed25519, so the member beside the seed alone is
+  refused by name; so is any other value, and the member before version 40.
+- **The pin follows the member.** `signingPublicKey` is 64 lowercase hexadecimal characters for an
+  Ed25519 key version and 66, the compressed point, under `"ES256"`. Each form is refused under the
+  other.
+- **The start checks the key version.** The service's answer must name `EC_SIGN_P256_SHA256` and the
+  `HSM` protection level. `SOFTWARE`, `EXTERNAL` and `EXTERNAL_VPC` are refused, naming the level
+  answered and the one required. An Ed25519 key version keeps its software level.
+- **What changes in the records.** Every record the key signs carries `alg: "ES256"` inside what it
+  signs, and the gateway mints version 3 receipts alone under it. `/publickey` answers
+  `"algorithm": "ES256"` with the compressed point. The witness is still refused beside
+  `signingKeyVersion`.
+- **Rotation.** On the file kind, SIGHUP reads `signingKeyVersion`, `signingPublicKey` and
+  `signingKeyAlgorithm` again; on the PostgreSQL kind, `gateway store rotate-key` names the key rotated
+  from with `--from-key-algorithm ES256` where it is a P-256 key. A rotation from a P-256 key to an
+  Ed25519 one is allowed and named on the standard error.
+
+An earlier gateway refuses a version-40 file by its version.
 
 ## Keyed actions (engine version 14 and later)
 

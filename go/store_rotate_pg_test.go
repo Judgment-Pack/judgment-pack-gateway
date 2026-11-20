@@ -121,7 +121,7 @@ func pgVerifyPrevious(t *testing.T, out, previous string) *report {
 	if err != nil {
 		t.Fatalf("no verdict for %s: %v", out, err)
 	}
-	if err := linkPrevious(rep, previous, ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey)); err != nil {
+	if err := linkPrevious(rep, previous, edKey(ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey))); err != nil {
 		t.Fatal(err)
 	}
 	return rep
@@ -195,7 +195,7 @@ func TestAPostgresStoreRotationSealsWhatIsOpenAndLinksTheNewDatabase(t *testing.
 		t.Fatalf("the new registry is %q, not the continuation printed", got)
 	}
 	lines, last := registryLink([]byte(old))
-	walk, err := engineWalk([]byte(out[2]+"\n"), ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey))
+	walk, err := engineWalk([]byte(out[2]+"\n"), edKey(ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey)))
 	if err != nil || walk.continuation == nil || walk.continuation.previousLines != lines || walk.continuation.previousDigest != last {
 		t.Fatalf("the new registry's own reading: %v %+v, want %d %s", err, walk, lines, last)
 	}

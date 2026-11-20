@@ -53,6 +53,11 @@ const (
 	// adds (caller_scopes.go): whether a caller is held to the scope
 	// identifiers its token and the configuration allow.
 	protectionCallerScopes = "caller-scope-identifiers"
+	// The line a gateway signing through a key service adds (ADR-0053 §6):
+	// the key version's algorithm and the protection level the service
+	// answered at start. A gateway signing with the seed reports no such
+	// line.
+	protectionSigningKey = "signing-key-custody"
 )
 
 // envPostureProbe and the two probe arguments together select the probe
@@ -112,6 +117,49 @@ type postureInput struct {
 	// less, as /acquire does not tell them from unknown ones. nil judges
 	// and lists every source.
 	reach *scopeReach
+	// signing is the key service's key the gateway signs with, which adds
+	// its line; nil, the seed's key, adds none.
+	signing *signingPosture
+}
+
+// signingPosture is what posture reads of a key service's signer: the key
+// version's algorithm and the protection level the service answered. It
+// names neither the key version nor the key.
+type signingPosture struct{ alg, level string }
+
+// signingPostureOf is the posture of the key k signs with: nil for the
+// seed's key, which no line reports.
+func signingPostureOf(k *signingKey) *signingPosture {
+	if k == nil {
+		return nil
+	}
+	ks, ok := k.signer.(*keyServiceSigner)
+	if !ok {
+		return nil
+	}
+	return &signingPosture{alg: ks.alg, level: ks.level}
+}
+
+// signingKeyLines is the key service's line. Its control is that the
+// gateway signs through a key service and holds no private key, which holds
+// at any level, so the level is named, not graded: enforced at every level
+// the service answered, ADR-0050's software Ed25519 key included. partial
+// is kept for a level the service did not state, and for a P-256 key away
+// from HSM, which the start refuses (ADR-0053 §6), so it is a guard.
+func signingKeyLines(s *signingPosture) []postureLine {
+	if s == nil {
+		return nil
+	}
+	named := "Ed25519"
+	if s.alg == algES256 {
+		named = algES256
+	}
+	reason := fmt.Sprintf("the gateway signs through a key service's key version, %s at protection level %s, and holds no private key", named, s.level)
+	state := postureEnforced
+	if s.level == "unstated" || (s.alg == algES256 && s.level != "HSM") {
+		state = posturePartial
+	}
+	return []postureLine{{protectionSigningKey, state, reason}}
 }
 
 // listenerReach is what posture reads of the gateway's listener: whether
@@ -279,7 +327,7 @@ func hostPosture(in postureInput) postureReport {
 		seedPosture(in),
 		programConfinementPosture(programs),
 		listenerPosture(in),
-	}, append(append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources, in.reach != nil)...), readOnlyCredentialsLines(in.sources)...)...),
+	}, append(append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources, in.reach != nil)...), append(readOnlyCredentialsLines(in.sources), signingKeyLines(in.signing)...)...)...),
 		readOnly: readOnlySourcePostures(in.sources)}
 	return report
 }

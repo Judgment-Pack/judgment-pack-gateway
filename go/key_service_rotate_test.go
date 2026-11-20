@@ -19,7 +19,7 @@ func linkOfUnder(t *testing.T, registry, previous string, pub ed25519.PublicKey)
 	t.Helper()
 	walk := walkRegistry([]byte(readFile(t, registry)), pub)
 	rep := &report{OK: true, continuation: walk.continuation, continuationRefused: walk.continuationFinding != nil}
-	if err := linkPrevious(rep, previous, pub); err != nil {
+	if err := linkPrevious(rep, previous, edKey(pub)); err != nil {
 		t.Fatal(err)
 	}
 	return rep.Findings

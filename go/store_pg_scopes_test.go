@@ -433,7 +433,7 @@ func TestThePostgresKindServesScopedPlatformsAndExportsWhatTheFilesystemKindWoul
 	if err != nil {
 		t.Fatal(err)
 	}
-	walk, err := engineWalk(data, started.service.publicKey)
+	walk, err := engineWalk(data, edKey(started.service.publicKey))
 	if err != nil || len(walk.seals) != 3 {
 		t.Fatalf("the registry after the seals: %v %v\n%s", walk, err, data)
 	}

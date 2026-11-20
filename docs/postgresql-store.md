@@ -895,7 +895,7 @@ write-ahead log, base backups and replicas under the operator's own retention.
 ## Rotating the signing key
 
 ```text
-gateway store rotate-key --config <engine.json> (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> [--from-key-version <name> --from-public-key <hex>] [--timeout <seconds>]
+gateway store rotate-key --config <engine.json> (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> [--from-key-version <name> --from-public-key <hex> [--from-key-algorithm ES256]] [--timeout <seconds>]
 ```
 
 On this kind the gateway's signing key is rotated with every instance stopped
@@ -920,6 +920,15 @@ from the seed to a key service's key version, or from one key version to the nex
   that public key. The pair is given together or not at all, as `signingKeyVersion` and
   `signingPublicKey` are. A configuration naming no `signingKeyVersion` is refused: a rotation on
   this kind is to a key service.
+- **Across algorithms** (engine version 40, ADR-0053). The next key's algorithm is the
+  configuration's `signingKeyAlgorithm`. A key rotated from that is a P-256 key version is named
+  with `--from-key-algorithm ES256` beside `--from-key-version`, and its `--from-public-key` is then
+  the 66-character compressed point; without the option the key rotated from is Ed25519. Ed25519 to
+  P-256, P-256 to P-256 and P-256 back to Ed25519 are each one rotation: the `key-rotation` names
+  the next key's algorithm in `nextAlg`, the `key-continuation` the previous key's in `previousAlg`,
+  and each statement a P-256 key signs carries `alg`. A move from the HSM key back to an Ed25519 key
+  is allowed, so that a rollback is never blocked, and is named on one line of the standard error;
+  the key history records it as any rotation.
 - **How it runs.** The connection is the migration login's. The command acts as the owner, in one
   transaction that holds the migration's lock and every row of the start lease, as `gateway store
   retain` does. In that transaction it reads the registry under the log's append lock, as every

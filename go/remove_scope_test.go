@@ -181,7 +181,7 @@ func TestRemoveScopeRemovesTheScopesSessionsBesideAnother(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	walk, err := engineWalk([]byte(readFile(t, g.regPath)), g.publicKey)
+	walk, err := engineWalk([]byte(readFile(t, g.regPath)), edKey(g.publicKey))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -47,6 +47,14 @@ var rotationMembers = map[string]map[string]bool{
 	rotationKindReverse: {"kind": true, "rotationVersion": true, "rotation": true, "rotatedAt": true, "keyId": true, "previous": true, "previousKeyId": true, "signature": true},
 }
 
+// rotationOptional are the members a statement holds beside those exactly
+// where a P-256 key signs it (alg) or is the key it names (nextAlg,
+// previousAlg), each then "ES256" (ADR-0053 §1, §7).
+var rotationOptional = map[string]map[string]bool{
+	rotationKindForward: {"alg": true, "nextAlg": true},
+	rotationKindReverse: {"alg": true, "previousAlg": true},
+}
+
 // rotationStatement is one rotation statement that holds its form.
 type rotationStatement struct {
 	kind      string
@@ -55,10 +63,12 @@ type rotationStatement struct {
 	keyID     string
 	// named is the key the statement names: next on a key-rotation,
 	// previous on a key-continuation.
-	named     ed25519.PublicKey
-	namedID   string
-	signature []byte
-	obj       *vObject
+	named   []byte
+	namedID string
+	// alg is the signer's algorithm, namedAlg the named key's.
+	alg, namedAlg string
+	signature     []byte
+	obj           *vObject
 }
 
 // rotationKindOf is the kind of a registry line that is a rotation
@@ -84,19 +94,23 @@ func rotationKindOf(line string) (string, *vObject) {
 // members of its kind, each of its form, and the key id it carries beside
 // the key it names the key id of that key.
 func rotationStatementOf(kind string, obj *vObject) (*rotationStatement, bool) {
-	allowed := rotationMembers[kind]
-	if len(obj.byName) != len(allowed) {
-		return nil, false
-	}
-	for name := range obj.byName {
-		if !allowed[name] {
+	allowed, optional := rotationMembers[kind], rotationOptional[kind]
+	for name := range allowed {
+		if _, present := obj.get(name); !present {
 			return nil, false
 		}
 	}
-	named, namedID := "next", "nextKeyId"
-	if kind == rotationKindReverse {
-		named, namedID = "previous", "previousKeyId"
+	for name := range obj.byName {
+		if !allowed[name] && !optional[name] {
+			return nil, false
+		}
 	}
+	named, namedID, namedAlgMember := "next", "nextKeyId", "nextAlg"
+	if kind == rotationKindReverse {
+		named, namedID, namedAlgMember = "previous", "previousKeyId", "previousAlg"
+	}
+	alg, okAlg := recordAlg(obj, "alg")
+	namedAlg, okNamedAlg := recordAlg(obj, namedAlgMember)
 	st := &rotationStatement{kind: kind, obj: obj}
 	version, _ := memberString(obj, "rotationVersion")
 	rotatedAt, okAt := memberString(obj, "rotatedAt")
@@ -108,7 +122,8 @@ func rotationStatementOf(kind string, obj *vObject) (*rotationStatement, bool) {
 	rotation, okRotation := rotationV.(vInt)
 	if version != rotationVersion || !okAt || !witnessTimeForm.MatchString(rotatedAt) ||
 		!okID || !isLowerHexOfLen(keyID, 32) ||
-		!okNamed || !isLowerHexOfLen(namedHex, 64) ||
+		!okAlg || !okNamedAlg ||
+		!okNamed || !isLowerHexOfLen(namedHex, publicKeyHexLen(namedAlg)) ||
 		!okNamedID || !isLowerHexOfLen(namedKeyID, 32) ||
 		!okSig || !isLowerHexOfLen(signatureHex, 128) ||
 		!okRotation || int64(rotation) < 1 || int64(rotation) > maxRotation {
@@ -120,6 +135,7 @@ func rotationStatementOf(kind string, obj *vObject) (*rotationStatement, bool) {
 	}
 	st.signature, _ = hex.DecodeString(signatureHex)
 	st.rotation, st.rotatedAt, st.keyID, st.namedID = int64(rotation), rotatedAt, keyID, namedKeyID
+	st.alg, st.namedAlg = alg, namedAlg
 	return st, true
 }
 
@@ -142,23 +158,29 @@ func rotationSigningInput(obj *vObject) []byte {
 	return append([]byte(rotationContext), canon(covered)...)
 }
 
-// signedBy reports whether the statement's signature verifies under key,
-// by §8.4's equation, which crypto/ed25519 verifies.
-func (st *rotationStatement) signedBy(key ed25519.PublicKey) bool {
-	return len(key) == ed25519.PublicKeySize && ed25519.Verify(key, st.signingInput(), st.signature)
+// signedBy reports whether the statement's signature verifies under key by
+// the algorithm the statement's alg names, which key must be of.
+func (st *rotationStatement) signedBy(key heldKey) bool {
+	return verifyByAlgorithm(st.alg, key, st.signingInput(), st.signature)
 }
 
 // reachedKey is a key the walk reached: the key pinned, at position 0, or a
 // key a followed rotation rotated to, at its rotation's ordinal.
 type reachedKey struct {
-	key   ed25519.PublicKey
+	key   []byte
 	keyID string
+	// alg is the algorithm the key was reached with: the pin's, or its
+	// rotation's nextAlg (ADR-0053 §1).
+	alg string
 	// rotatedAt, forward and reverse are, for a key a rotation rotated to,
 	// that rotation's rotatedAt and its two statements' lines as the
 	// registry holds them: what the key history serves of it (SPEC.md §3e).
 	// They are "" for the key pinned.
 	rotatedAt, forward, reverse string
 }
+
+// held is the key with its algorithm.
+func (k reachedKey) held() heldKey { return heldKey{alg: k.alg, key: k.key} }
 
 // registryWalk is what the walk of a registry establishes (SPEC.md §3b and
 // §4 step 2): the seals that load, first of a session first, in the order
@@ -212,7 +234,12 @@ func (w *registryWalk) position(keyID string) int {
 // its reverse on the line after it; and the first statement that is not so
 // stops the walk with its finding.
 func walkRegistry(data []byte, pinned ed25519.PublicKey) *registryWalk {
-	w := &registryWalk{seals: map[string]seal{}, conflicted: map[string]bool{}, keys: []reachedKey{{key: pinned, keyID: keyIDFor(pinned)}}}
+	return walkRegistryFrom(data, edKey(pinned))
+}
+
+// walkRegistryFrom is walkRegistry from a key pinned with its algorithm.
+func walkRegistryFrom(data []byte, pinned heldKey) *registryWalk {
+	w := &registryWalk{seals: map[string]seal{}, conflicted: map[string]bool{}, keys: []reachedKey{{key: pinned.key, alg: pinned.alg, keyID: pinned.keyID()}}}
 	w.walkLines(data)
 	return w
 }
@@ -313,13 +340,17 @@ func (w *registryWalk) follow(obj *vObject, line, nextLine string) string {
 		return statusRotationBreak
 	}
 	current := w.current()
-	if st.keyID != current.keyID || !st.signedBy(current.key) {
+	// the signer's algorithm is the current key's, and its signature
+	// verifies by it (ADR-0053 §7, check 2)
+	if st.keyID != current.keyID || st.alg != current.alg || !st.signedBy(current.held()) {
 		return statusRotationForged
 	}
 	if st.rotation != int64(w.followed()+1) {
 		return statusRotationOrder
 	}
-	if publicKeyFault(st.named) != keySound || w.position(st.namedID) >= 0 {
+	// the key named holds nextAlg's key rule, and its key id is none of a
+	// key reached, of either algorithm (check 4)
+	if !keySoundFor(st.namedAlg, st.named) || w.position(st.namedID) >= 0 {
 		return statusRotationKeyRefused
 	}
 	kind, reverseObj := rotationKindOf(nextLine)
@@ -327,11 +358,15 @@ func (w *registryWalk) follow(obj *vObject, line, nextLine string) string {
 		return statusRotationBreak
 	}
 	reverse, ok := rotationStatementOf(rotationKindReverse, reverseObj)
+	// the pair (check 5): the continuation's alg is the rotation's nextAlg,
+	// its previous and previousAlg the current key's bytes and algorithm,
+	// and it verifies under next by that algorithm
 	if !ok || reverse.rotation != st.rotation || reverse.rotatedAt != st.rotatedAt ||
-		!bytes.Equal(reverse.named, current.key) || reverse.keyID != st.namedID || !reverse.signedBy(st.named) {
+		reverse.alg != st.namedAlg || reverse.namedAlg != current.alg ||
+		!bytes.Equal(reverse.named, current.key) || reverse.keyID != st.namedID || !reverse.signedBy(heldKey{alg: st.namedAlg, key: st.named}) {
 		return statusRotationBreak
 	}
-	w.keys = append(w.keys, reachedKey{key: st.named, keyID: st.namedID, rotatedAt: st.rotatedAt, forward: line, reverse: nextLine})
+	w.keys = append(w.keys, reachedKey{key: st.named, alg: st.namedAlg, keyID: st.namedID, rotatedAt: st.rotatedAt, forward: line, reverse: nextLine})
 	return ""
 }
 
@@ -366,6 +401,13 @@ func (w *registryWalk) loadSeal(line string) {
 	if !ok {
 		return
 	}
+	// alg (ADR-0053 §1): absent, Ed25519, whose signature's hex stays
+	// lenient of case, as it always was; "ES256", whose signature is 128
+	// lowercase hexadecimal characters; any other value loads nothing
+	alg, okAlg := recordAlg(obj, "alg")
+	if !okAlg || alg == algES256 && !isLowerHexOfLen(sigHex, 128) {
+		return
+	}
 	sig, err := hex.DecodeString(sigHex)
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return
@@ -378,10 +420,10 @@ func (w *registryWalk) loadSeal(line string) {
 	// receipt-level key-id check. After a rotation the current key is the key
 	// rotated to: a seal the key rotated from signs afterwards loads nothing.
 	current := w.current()
-	if keyID != current.keyID {
+	if keyID != current.keyID || alg != current.alg {
 		return
 	}
-	if !ed25519.Verify(current.key, sealSigningInput(sessionID, int64(count), sealedAt, keyID), sig) {
+	if !verifyByAlgorithm(alg, current.held(), sealSigningInputFor(alg, sessionID, int64(count), sealedAt, keyID), sig) {
 		return
 	}
 	w.take(seal{sessionID: sessionID, sealedAt: sealedAt, finalCount: int64(count), signature: hex.EncodeToString(sig), keyPos: len(w.keys) - 1})
@@ -424,6 +466,7 @@ const (
 var interruptionSealMembers = map[string]bool{
 	"finalCount": true, "headSignature": true, "keyId": true, "kind": true,
 	"sealedAt": true, "sealedVia": true, "sessionId": true, "signature": true,
+	"alg": true,
 }
 
 // A seal of version 2 (ADR-0036; SPEC.md §3, "A seal of version 2"): the
@@ -461,6 +504,7 @@ const (
 var scopedSealMembers = map[string]bool{
 	"finalCount": true, "keyId": true, "scopeDigest": true, "sealVersion": true,
 	"sealedAt": true, "sessionId": true, "signature": true,
+	"alg": true,
 }
 
 // sealScopeDigest is what a seal of version 2 names a session's scope by
@@ -594,7 +638,8 @@ func (w *registryWalk) loadVersionedSeal(obj *vObject) {
 		return
 	}
 	current := w.current()
-	if keyID != current.keyID || !ed25519.Verify(current.key, signedOver(versionedSealContext(obj), obj), signature) {
+	alg, okAlg := recordAlg(obj, "alg")
+	if !okAlg || keyID != current.keyID || alg != current.alg || !verifyByAlgorithm(alg, current.held(), signedOver(versionedSealContext(obj), obj), signature) {
 		return
 	}
 	s.signature, s.keyPos = hex.EncodeToString(signature), len(w.keys)-1
@@ -689,7 +734,8 @@ func (w *registryWalk) loadInterruptionSeal(obj *vObject) {
 		return
 	}
 	current := w.current()
-	if keyID != current.keyID || !ed25519.Verify(current.key, interruptionSealSigningInput(obj), signature) {
+	alg, okAlg := recordAlg(obj, "alg")
+	if !okAlg || keyID != current.keyID || alg != current.alg || !verifyByAlgorithm(alg, current.held(), interruptionSealSigningInput(obj), signature) {
 		return
 	}
 	s.signature, s.keyPos = hex.EncodeToString(signature), len(w.keys)-1
@@ -702,15 +748,18 @@ func (w *registryWalk) loadInterruptionSeal(obj *vObject) {
 // statement, or own when it holds no rotation statement. A first rotation
 // statement that names no key it can read gives own, and the walk from it
 // then finds what it finds.
-func registryFirstKey(data []byte, own ed25519.PublicKey) ed25519.PublicKey {
+func registryFirstKey(data []byte, own heldKey) heldKey {
 	for _, line := range strings.Split(string(data), "\n") {
 		kind, obj := rotationKindOf(line)
 		if kind != rotationKindReverse {
 			continue
 		}
+		// with its previousAlg (ADR-0053 §7, "The gateway's own reading")
 		previous, _ := memberString(obj, "previous")
-		if key, err := hex.DecodeString(previous); err == nil && len(key) == ed25519.PublicKeySize {
-			return key
+		if alg, ok := recordAlg(obj, "previousAlg"); ok {
+			if key, err := hex.DecodeString(previous); err == nil && 2*len(key) == publicKeyHexLen(alg) {
+				return heldKey{alg: alg, key: key}
+			}
 		}
 		return own
 	}
@@ -741,8 +790,8 @@ func registryRefusal(err error) string {
 // a key-rotation and no key-continuation is walked from the gateway's own
 // key, so it is refused under the key rotated from (rotation-break) and
 // under the key rotated to (rotation-forged) alike.
-func engineWalk(data []byte, own ed25519.PublicKey) (*registryWalk, error) {
-	w := walkRegistry(data, registryFirstKey(data, own))
+func engineWalk(data []byte, own heldKey) (*registryWalk, error) {
+	w := walkRegistryFrom(data, registryFirstKey(data, own))
 	if err := w.ownReading(own); err != nil {
 		return nil, err
 	}
@@ -751,15 +800,16 @@ func engineWalk(data []byte, own ed25519.PublicKey) (*registryWalk, error) {
 
 // ownReading is engineWalk's judgment of a walk: a refusal where it found
 // something, or ends at a key other than own.
-func (w *registryWalk) ownReading(own ed25519.PublicKey) error {
+func (w *registryWalk) ownReading(own heldKey) error {
 	if w.finding != nil {
 		return rotationWalkError{fmt.Sprintf("the registry's rotations do not hold: %s at rotation %d; a rotation whose append was interrupted is finished by gateway rotate-key --resume, and nothing else", w.finding["status"], w.finding["rotation"])}
 	}
 	if w.continuationFinding != nil {
 		return rotationWalkError{fmt.Sprintf("the registry's store continuation does not hold: %s; a store continuation is a registry's first line, signed by the key in force when the store was rotated", w.continuationFinding["status"])}
 	}
-	if !bytes.Equal(w.current().key, own) {
-		return rotationWalkError{fmt.Sprintf("the registry's rotations end at key %s, not this gateway's key %s: a gateway does not start under a key its registry rotated from, and a rotation pending its switch is finished by gateway rotate-key --resume", w.current().keyID, keyIDFor(own))}
+	// the key and its algorithm, as a pair (ADR-0053 §7)
+	if !w.current().held().is(own) {
+		return rotationWalkError{fmt.Sprintf("the registry's rotations end at key %s, not this gateway's key %s: a gateway does not start under a key its registry rotated from, and a rotation pending its switch is finished by gateway rotate-key --resume", w.current().keyID, own.keyID())}
 	}
 	return nil
 }

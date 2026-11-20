@@ -148,7 +148,7 @@ func exportEngine(configPath, out string, observations []string, scope string) (
 	}
 	// the gateway's key: the key service's key version where the
 	// configuration names one (ADR-0050), else the seed's
-	sig, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, seed)
+	sig, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm, seed)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +187,7 @@ func exportEngine(configPath, out string, observations []string, scope string) (
 		kind = pgEveryScope{pg}
 	}
 	in := exportInputs{
-		authority: cfg.authority, keyID: keyID, publicKey: publicKey, kind: kind, storeRoot: cfg.store,
+		authority: cfg.authority, keyID: keyID, publicKey: publicKey, keyAlg: sig.algorithm(), kind: kind, storeRoot: cfg.store,
 		decisionRecords: cfg.decisionRecords, pins: pins, observations: journals,
 	}
 	if scope != "" {
@@ -335,7 +335,9 @@ type exportInputs struct {
 	// publicKey is the signer's key, by which the registry's first key is
 	// found when the registry holds a rotation (SPEC.md §3b); nil names none.
 	publicKey ed25519.PublicKey
-	kind      storeKind
+	// keyAlg is publicKey's algorithm (ADR-0053).
+	keyAlg string
+	kind   storeKind
 	// storeRoot is the directory the store's removal records are kept in
 	// (SPEC.md §1.3a, artifact-removals.jsonl); "" reads none.
 	storeRoot       string
@@ -590,7 +592,7 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 	// After a rotation (SPEC.md §3b) the signer's key is not the key a
 	// verifier pins: the manifest names the registry's first key beside it.
 	if cut.logPresent && in.publicKey != nil {
-		if first := keyIDFor(registryFirstKey(cut.log, in.publicKey)); first != in.keyID {
+		if first := registryFirstKey(cut.log, heldKey{alg: in.keyAlg, key: in.publicKey}).keyID(); first != in.keyID {
 			manifest.set("firstKeyId", vString(first))
 		}
 	}

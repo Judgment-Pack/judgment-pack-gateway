@@ -170,7 +170,7 @@ func holdToSignature(record *runtimeRecord, recordDigest string, evidence sideca
 				continue
 			}
 			trusted = true
-			if ed25519.Verify(signer.key, signed, line.signature) {
+			if verifyByAlgorithm(algEd25519, edKey(signer.key), signed, line.signature) {
 				return nil
 			}
 		}

@@ -648,7 +648,7 @@ func newServiceAround(st *store, reg *registryWriter, storeRoot, registryPath, a
 // the kind keeps.
 func (g *gatewayService) engineSeals() (map[string]seal, error) {
 	if g.kind == nil {
-		return loadEngineSeals(g.regPath, g.ownKey())
+		return loadEngineSeals(g.regPath, g.ownHeld())
 	}
 	w, err := g.kindRegistryWalk()
 	if err != nil {
@@ -668,7 +668,7 @@ func (g *gatewayService) kindRegistryWalk() (*registryWalk, error) {
 	if err != nil {
 		return nil, err
 	}
-	return engineWalk(data, g.ownKey())
+	return engineWalk(data, g.ownHeld())
 }
 
 // provenanceKeys is the registry's reached keys for descriptor provenance,
@@ -2466,7 +2466,7 @@ func (g *gatewayService) verifyReport() (*report, error) {
 	if g.kind != nil {
 		return nil, storageUnsupported("/verify, which verifies the store on disk; export the store and verify the export,")
 	}
-	return verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.ownKey())
+	return verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.ownHeld())
 }
 
 // verdictMap is a verdict as the JSON object /verify answers.
@@ -2484,7 +2484,7 @@ func verdictMap(rep *report) (map[string]any, error) {
 // auditing this same gateway proves consistency, not authenticity (SPEC.md §5).
 func (g *gatewayService) publicKeyDocument() map[string]any {
 	return map[string]any{
-		"algorithm": "ed25519", "keyId": g.ownKeyID(),
+		"algorithm": algName(g.ownHeld().alg), "keyId": g.ownKeyID(),
 		"publicKey": hex.EncodeToString(g.ownKey()), "authority": g.authority,
 	}
 }
@@ -3067,6 +3067,11 @@ func (g *gatewayService) handler() http.Handler {
 		}
 		if g.delegation != nil {
 			in.delegation = &delegationPosture{bearerReadOnly: g.delegation.bearerReadOnly}
+		}
+		// The key read at each request: a serving rotation (SIGHUP) may
+		// have moved it to another key or algorithm.
+		if g.store != nil && g.store.signing != nil {
+			in.signing = signingPostureOf(g.store.signing.key())
 		}
 		report := hostPosture(in)
 		w.Header().Set("Content-Type", "application/json")

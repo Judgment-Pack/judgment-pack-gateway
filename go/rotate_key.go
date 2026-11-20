@@ -136,12 +136,12 @@ func rotationPendingBesideAny(seedPaths []string, registryPath string) error {
 // returned holds the lock until it is closed; nil where the platform locks
 // no registry.
 func holdEngineRegistry(seedPaths []string, registryPath string, seed []byte) (io.Closer, error) {
-	return holdEngineRegistryKey(seedPaths, registryPath, ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey))
+	return holdEngineRegistryKey(seedPaths, registryPath, edKey(ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)))
 }
 
 // holdEngineRegistryKey is holdEngineRegistry for the gateway's key own,
 // the seed's or a key service's (ADR-0050).
-func holdEngineRegistryKey(seedPaths []string, registryPath string, own ed25519.PublicKey) (io.Closer, error) {
+func holdEngineRegistryKey(seedPaths []string, registryPath string, own heldKey) (io.Closer, error) {
 	lock, err := lockRegistry(registryPath)
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
@@ -282,7 +282,7 @@ func rotateKey(seedPath, registryPath string, stamp func() string, random io.Rea
 	}
 	private := ed25519.NewKeyFromSeed(seed)
 	from := private.Public().(ed25519.PublicKey)
-	walk, err := engineWalk(data, from)
+	walk, err := engineWalk(data, edKey(from))
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +300,7 @@ func rotateKey(seedPath, registryPath string, stamp func() string, random io.Rea
 	if err != nil {
 		return nil, fmt.Errorf("the key history carried into the store: %w; nothing was written", err)
 	}
-	before, err := registryKeyHistory(data, from, carried, carriedPresent)
+	before, err := registryKeyHistory(data, edKey(from), carried, carriedPresent)
 	if err != nil {
 		return nil, fmt.Errorf("the key history before the rotation does not hold: %w; nothing was written", err)
 	}
@@ -331,7 +331,7 @@ func rotateKey(seedPath, registryPath string, stamp func() string, random io.Rea
 	// bytes are the rotation's.
 	record := rotationRecord(data, ordinal, at, private, nextPrivate)
 	if err := keyHistoryWriteRefusal(before, at, storeRotateKeyBefore, keyHistoryRotationFault, func() error {
-		_, err := walkKeyHistory(append(bytes.Clone(data), record...), to, carried, carriedPresent)
+		_, err := walkKeyHistory(append(bytes.Clone(data), record...), edKey(to), carried, carriedPresent)
 		return err
 	}); err != nil {
 		os.Remove(nextPath)
@@ -483,7 +483,7 @@ func resumeRotation(seedPath, registryPath string, _ func() string, _ io.Reader)
 	if !ok || !bytes.Equal(rotationRecord(before, k.rotation, at, from, next), k.record) {
 		return nil, fmt.Errorf("the kept record is not the record this rotation writes; nothing was changed")
 	}
-	if w, err := engineWalk(before, from.Public().(ed25519.PublicKey)); err != nil || w.followed()+1 != k.rotation {
+	if w, err := engineWalk(before, edKey(from.Public().(ed25519.PublicKey))); err != nil || w.followed()+1 != k.rotation {
 		return nil, fmt.Errorf("the registry before the rotation's place does not end at the key rotated from; nothing was changed")
 	}
 	if !bytes.Equal(tail, k.record) {
@@ -529,7 +529,7 @@ func resumeWithoutRecord(seedPath, registryPath string) error {
 	if err != nil {
 		return fmt.Errorf("registry: %w", err)
 	}
-	if _, err := engineWalk(data, ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)); err != nil {
+	if _, err := engineWalk(data, edKey(ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey))); err != nil {
 		return fmt.Errorf("%s is there with no record kept, and the registry does not end at the seed's key: %w", nextPath, err)
 	}
 	if err := os.Remove(nextPath); err != nil {

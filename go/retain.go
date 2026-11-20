@@ -218,7 +218,7 @@ func retentionAckOf(line []byte, cfg *retentionConfig) (retentionAck, string) {
 	if !listed {
 		return retentionAck{}, "names a key that retention.acknowledgedBy does not list"
 	}
-	if !ed25519.Verify(key, recordSigningInput(retentionAckContext, obj), sig) {
+	if !verifyByAlgorithm(algEd25519, edKey(key), recordSigningInput(retentionAckContext, obj), sig) {
 		return retentionAck{}, fmt.Sprintf("does not verify under retention.acknowledgedBy, key %s", keyID)
 	}
 	return retentionAck{sessionID: session, sealSignature: sealSig, finalCount: int64(count), acknowledgedAt: when}, ""
@@ -511,12 +511,12 @@ func retain(o retainOptions, stamp func() string, now time.Time) (out removalOut
 	// the key in force signs the records: the key service's key version the
 	// configuration names, held to signingPublicKey, or else the seed's
 	// (ADR-0050)
-	sig, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, seed)
+	sig, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm, seed)
 	if err != nil {
 		return out, false, err
 	}
 	key := newSigningKey(sig)
-	hold, err := holdEngineRegistryKey(seedNames, cfg.registry, key.public)
+	hold, err := holdEngineRegistryKey(seedNames, cfg.registry, key.held())
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
 			return out, false, fmt.Errorf("%w; stop the gateway, then retain", err)
@@ -529,7 +529,7 @@ func retain(o retainOptions, stamp func() string, now time.Time) (out removalOut
 	if err != nil {
 		return out, unlocked, fmt.Errorf("registry: %w", err)
 	}
-	walk, err := engineWalk(data, key.public)
+	walk, err := engineWalk(data, key.held())
 	if err != nil {
 		return out, unlocked, err
 	}

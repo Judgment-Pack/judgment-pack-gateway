@@ -395,7 +395,7 @@ func sealOpenPostgresHeld(o sealOpenOptions, stamp func() string, said io.Writer
 	if err != nil {
 		return nil, nil, err
 	}
-	sig, err := commandSigner(o.keyVersion, o.keyPublic, seed)
+	sig, err := commandSigner(o.keyVersion, o.keyPublic, o.keyAlg, seed)
 	if err != nil {
 		kind.close()
 		return nil, nil, err

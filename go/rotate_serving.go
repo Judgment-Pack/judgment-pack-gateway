@@ -14,7 +14,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -42,13 +41,13 @@ var errRotationBesideWitness = errors.New("this gateway serves as a witness, who
 // its key before the record is answered. Under two seeds' keys it is
 // rotationRecord's bytes.
 func rotationRecordSigned(before []byte, ordinal int, at string, from, to *signingKey) ([]byte, error) {
-	forward := rotationStatementObject(rotationKindForward, ordinal, at, from.keyID, to.public)
+	forward := rotationStatementObjectAlg(rotationKindForward, ordinal, at, from.keyID, from.alg, to.public, to.alg)
 	signature, err := from.signVerified(rotationSigningInput(forward))
 	if err != nil {
 		return nil, err
 	}
 	forward.set("signature", vString(hex.EncodeToString(signature)))
-	reverse := rotationStatementObject(rotationKindReverse, ordinal, at, to.keyID, from.public)
+	reverse := rotationStatementObjectAlg(rotationKindReverse, ordinal, at, to.keyID, to.alg, from.public, from.alg)
 	if signature, err = to.signVerified(rotationSigningInput(reverse)); err != nil {
 		return nil, err
 	}
@@ -60,6 +59,27 @@ func rotationRecordSigned(before []byte, ordinal int, at string, from, to *signi
 	record = append(append(record, canon(forward)...), '\n')
 	return append(append(record, canon(reverse)...), '\n'), nil
 }
+
+// rotationStatementObjectAlg is rotationStatementObject naming, where a
+// P-256 key signs it, the signer's algorithm in alg, and, where the key it
+// names is one, that key's in nextAlg or previousAlg (ADR-0053 §7). Under
+// two Ed25519 keys it is rotationStatementObject's object.
+func rotationStatementObjectAlg(kind string, ordinal int, at, keyID, alg string, named []byte, namedAlg string) *vObject {
+	obj := rotationStatementObject(kind, ordinal, at, keyID, named)
+	setAlg(obj, "alg", alg)
+	member := "nextAlg"
+	if kind == rotationKindReverse {
+		member = "previousAlg"
+	}
+	setAlg(obj, member, namedAlg)
+	return obj
+}
+
+// hsmToSoftwareLine is the one line a rotation from a P-256 key, taken at
+// the key service's HSM protection level alone, to an Ed25519 key says on
+// the standard error (ADR-0053 §7): allowed, since refusing it would block
+// a rollback, and named.
+const hsmToSoftwareLine = "this rotation moves the gateway from an HSM key (ES256, protection level HSM) to a key that is not one (Ed25519): allowed, and recorded in the key history as any rotation (ADR-0053)"
 
 // rotateTo hands the gateway's key on to next, stamped at, while it serves.
 // Under the writer's switching hold, which every seal takes: the registry
@@ -86,7 +106,7 @@ func (w *registryWriter) rotateTo(next signer, at string) (*signingKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("registry %s: %w", w.path, err)
 	}
-	walk, err := engineWalk(existing, from.public)
+	walk, err := engineWalk(existing, from.held())
 	if err != nil {
 		return nil, fmt.Errorf("registry %s: %w", w.path, err)
 	}
@@ -94,12 +114,12 @@ func (w *registryWriter) rotateTo(next signer, at string) (*signingKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := engineWalk(append(bytes.Clone(existing), record...), to.public); err != nil {
+	if _, err := engineWalk(append(bytes.Clone(existing), record...), to.held()); err != nil {
 		return nil, fmt.Errorf("the rotation's record would not walk to the next key; nothing was changed: %w", err)
 	}
 	// the key history /publickey/history would make with the record, held
 	// before the append: no rotation is written that the history refuses
-	if err := rotationHoldsInKeyHistory(w.path, existing, record, from.public, to.public, at); err != nil {
+	if err := rotationHoldsInKeyHistory(w.path, existing, record, from.held(), to.held(), at); err != nil {
 		return nil, err
 	}
 	if n, err := w.log.appendRecord(record); err != nil {
@@ -119,7 +139,7 @@ func (w *registryWriter) rotateTo(next signer, at string) (*signingKey, error) {
 // it, with what a store rotation carried beside the registry at
 // registryPath. A history that does not hold before the rotation refuses it
 // too. Nothing is written.
-func rotationHoldsInKeyHistory(registryPath string, data, record []byte, from, to ed25519.PublicKey, at string) error {
+func rotationHoldsInKeyHistory(registryPath string, data, record []byte, from, to heldKey, at string) error {
 	carried, present, err := readCarriedKeyHistory(registryPath)
 	if err != nil {
 		return fmt.Errorf("the key history carried into the store: %w; nothing was written", err)
@@ -167,9 +187,16 @@ func installRotationOnHangup(ctx context.Context, g *gatewayService, said io.Wri
 // with it, for the gateway does not serve on over a registry that may hold
 // part of a rotation it did not switch to. It answers whether it stopped.
 func (g *gatewayService) answerHangup(stamp func() string, said io.Writer, stop func(error)) bool {
+	var fromAlg string
+	if g.registry != nil {
+		fromAlg = g.registry.signing.key().alg
+	}
 	line, err := g.rotateOnHangup(stamp)
 	if err == nil {
 		fmt.Fprintln(said, "rotate:", line)
+		if fromAlg == algES256 && g.registry.signing.key().alg == algEd25519 {
+			fmt.Fprintln(said, "rotate:", hsmToSoftwareLine)
+		}
 		return false
 	}
 	fmt.Fprintln(said, "rotate:", err)
@@ -207,7 +234,7 @@ func (g *gatewayService) rotateOnHangup(stamp func() string) (string, error) {
 	if cfg.signingKeyVersion == "" {
 		return "", errors.New("the configuration names no signingKeyVersion; a rotation while serving is to a key service's key version; nothing was changed")
 	}
-	next, _, err := newKeyServiceSignerPinned(cfg.signingKeyVersion, cfg.signingPublicKey)
+	next, _, err := newKeyServiceSignerPinned(cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm)
 	if err != nil {
 		return "", fmt.Errorf("%w; nothing was changed", err)
 	}

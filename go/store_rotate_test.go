@@ -30,7 +30,7 @@ func linkOf(t *testing.T, registry, previous string) []finding {
 	pub := ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey)
 	walk := walkRegistry([]byte(readFile(t, registry)), pub)
 	rep := &report{OK: true, continuation: walk.continuation, continuationRefused: walk.continuationFinding != nil}
-	if err := linkPrevious(rep, previous, pub); err != nil {
+	if err := linkPrevious(rep, previous, edKey(pub)); err != nil {
 		t.Fatal(err)
 	}
 	return rep.Findings
@@ -70,7 +70,7 @@ func TestStoreRotateSealsWhatIsOpenAndLinksTheNewRegistry(t *testing.T) {
 		t.Fatalf("the old store changed: %d files, was %d", len(after), len(receipts))
 	}
 	lines, last := registryLink([]byte(old))
-	walk, err := engineWalk([]byte(readFile(t, newRegistry)), ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey))
+	walk, err := engineWalk([]byte(readFile(t, newRegistry)), edKey(ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey)))
 	if err != nil || walk.continuation == nil || walk.continuation.previousLines != lines || walk.continuation.previousDigest != last {
 		t.Fatalf("the new registry's own reading: %v %+v, want %d %s", err, walk, lines, last)
 	}
@@ -133,7 +133,7 @@ func TestAStoreContinuationIsTheFirstLineOrAFinding(t *testing.T) {
 		if w.continuationFinding["status"] != statusContinuationMisplaced {
 			t.Fatalf("%q: %v", data, w.continuationFinding)
 		}
-		if _, err := engineWalk(data, pub); err == nil {
+		if _, err := engineWalk(data, edKey(pub)); err == nil {
 			t.Fatalf("%q: the gateway's own reading took it", data)
 		}
 	}

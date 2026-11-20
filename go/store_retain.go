@@ -105,7 +105,7 @@ func storeRetain(spec *storageSpec, roles pgRoles, o retainOptions, timeout time
 	// the key in force signs the records: the key service's key version the
 	// configuration names, held to signingPublicKey, or else the seed's
 	// (ADR-0050); the instances are held before the registry is read
-	sig, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, seed)
+	sig, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm, seed)
 	if err != nil {
 		return removalOutcome{}, err
 	}
@@ -232,7 +232,7 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 	if !present {
 		return failed(errors.New("the registry is not there; a gateway makes it when it starts, and its walk names the key the records are signed under"))
 	}
-	walk, err := engineWalk(data, priv.public)
+	walk, err := engineWalk(data, priv.held())
 	if err != nil {
 		return failed(err)
 	}

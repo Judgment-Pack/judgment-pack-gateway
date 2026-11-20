@@ -354,7 +354,7 @@ func forwardPendingSealsAtStart(service *gatewayService, stderr io.Writer) error
 	if err != nil {
 		return fmt.Errorf("registry: %w", err)
 	}
-	walk, err := engineWalk(data, service.registry.signing.key().public)
+	walk, err := engineWalk(data, service.registry.signing.key().held())
 	if err != nil {
 		return err
 	}
