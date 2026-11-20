@@ -431,6 +431,19 @@ func heldUnderAnotherKey(registry []byte, keys []reachedKey, own ed25519.PublicK
 	if receipts == nil {
 		return nil
 	}
+	if reader, reads := receipts.(firstEntriesReader); reads {
+		// the first receipt of every series that holds one, in one read
+		firsts, err := reader.firstEntries()
+		if err != nil {
+			return fmt.Errorf("the store's sessions could not be read to find the key their receipts are under, and nothing was signed: %w", err)
+		}
+		for _, f := range firsts {
+			if keyID := receiptKeyID(f.data); keyID != "" && !reached(keyID) {
+				return refuse("store holds a receipt that", keyID)
+			}
+		}
+		return nil
+	}
 	series, err := receipts.listSeries()
 	if err != nil {
 		return err
@@ -455,12 +468,36 @@ func heldUnderAnotherKey(registry []byte, keys []reachedKey, own ed25519.PublicK
 		if err != nil {
 			return unread(s, err)
 		}
-		v, err := parseJSON(data)
-		if obj, ok := v.(*vObject); err == nil && ok {
-			if keyID, _ := memberString(obj, "keyId"); keyID != "" && !reached(keyID) {
-				return refuse("store holds a receipt that", keyID)
-			}
+		if keyID := receiptKeyID(data); keyID != "" && !reached(keyID) {
+			return refuse("store holds a receipt that", keyID)
 		}
 	}
 	return nil
 }
+
+// receiptKeyID is the keyId a receipt's bytes name, "" where they are not
+// one JSON object naming one.
+func receiptKeyID(data []byte) string {
+	v, err := parseJSON(data)
+	if obj, ok := v.(*vObject); err == nil && ok {
+		keyID, _ := memberString(obj, "keyId")
+		return keyID
+	}
+	return ""
+}
+
+// seriesFirst is a series' first entry, the lowest of its names, sorted as
+// listEntries sorts them.
+type seriesFirst struct {
+	series string
+	data   []byte
+}
+
+// firstEntriesReader is a receipts space that reads the first entry of
+// every series that holds one in one read, in the order of listSeries: the
+// PostgreSQL kind, where a series at a time is two round trips.
+type firstEntriesReader interface {
+	firstEntries() ([]seriesFirst, error)
+}
+
+var _ firstEntriesReader = pgIndexed{}

@@ -83,7 +83,9 @@ func keyHistoryDocument(entries []keyHistoryEntry) []byte {
 // line is a store continuation continues the history carried beside it
 // (present), whose bytes must be the ones the continuation names by its
 // keyHistoryDigest, and which must hold from its own first key and end at
-// the key that signed the continuation; a continued registry with none
+// the key that signed the continuation, the continuation's continuedAt
+// within that key's validity -- at or after its validFrom, and before its
+// validTo, the registry's first rotation, if any; a continued registry with none
 // carried is refused, as is one carried beside a registry that continues
 // none: a history cut short, or lost, is never answered as the whole.
 func registryKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, present bool) ([]keyHistoryEntry, error) {
@@ -126,7 +128,16 @@ func registryKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, pres
 		return nil, fmt.Errorf("the key history carried into the store ends at key %s, not key %s, which signed the store continuation", last.keyID, keyIDFor(first))
 	}
 	// the key in force at the store rotation is one key, its entry the
-	// carried one's, and its end the registry's first rotation, if any
+	// carried one's, and its end the registry's first rotation, if any; the
+	// rotation was made while that key was in force: at or after its
+	// validFrom, and before its validTo
+	at := w.continuation.continuedAt
+	if last.validFrom != "" && at < last.validFrom {
+		return nil, errors.New("the store continuation's continuedAt is before the validFrom of the key in force at the store rotation")
+	}
+	if entries[0].validTo != "" && at >= entries[0].validTo {
+		return nil, errors.New("the store continuation's continuedAt is not before the validTo of the key in force at the store rotation")
+	}
 	last.validTo = entries[0].validTo
 	return append(append(before[:len(before)-1], last), entries[1:]...), nil
 }
@@ -140,8 +151,9 @@ func registryKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, pres
 // form from the entry before it to it -- the key-rotation signed by the key
 // before and naming this one, the key-continuation signed by this key and
 // naming the one before, the two of one ordinal and one rotatedAt -- that
-// rotatedAt its validFrom and the validTo of the entry before; and only the
-// last entry without a validTo. The rotation's ordinal is held to its form
+// rotatedAt its validFrom and the validTo of the entry before, and after
+// the rotatedAt of the rotation before it, if any; and only the last entry
+// without a validTo. The rotation's ordinal is held to its form
 // alone: it is a count within one registry, and starts again at 1 after a
 // store continuation (§3d).
 func checkKeyHistory(doc []byte, pinned ed25519.PublicKey) ([]keyHistoryEntry, error) {
@@ -187,6 +199,10 @@ func checkKeyHistory(doc []byte, pinned ed25519.PublicKey) ([]keyHistoryEntry, e
 			}
 			if e.validFrom != at || before.validTo != at {
 				return nil, fmt.Errorf("entry %d: validFrom, and the validTo before it, are not the rotation's rotatedAt %s", i, at)
+			}
+			// rotatedAt's form is fixed-width, so its order is its bytes'
+			if before.validFrom != "" && at <= before.validFrom {
+				return nil, fmt.Errorf("entry %d: the rotation's rotatedAt is not after the rotatedAt of the rotation before it", i)
 			}
 		}
 		if (e.validTo == "") != (i == len(keys)-1) {
@@ -318,20 +334,25 @@ var _ keyHistoryCarrier = (*pgKind)(nil)
 
 // keyHistoryAnswer is an answer to GET /publickey/history and what it was
 // made of: the SHA-256 of the registry's bytes, the carried history's, and
-// the gateway's key.
+// the gateway's key. The answer is the document, or the finding that the
+// history does not hold (err), answered 500.
 type keyHistoryAnswer struct {
 	registry, carried [sha256.Size]byte
 	present           bool
 	own               string
 	doc               []byte
+	err               error
 }
 
-// keyHistoryKept is the last answer made, kept for the requests after it
-// while what it was made of is the same: the route is open, and a walk
-// parses every line and checks each rotation's signatures.
+// keyHistoryKept is the last answer made, a document or a finding, kept for
+// the requests after it while what it was made of is the same: the route is
+// open, and a walk parses every line and checks each rotation's signatures,
+// so a registry whose history does not hold is walked once per change of
+// it, not once per request. walks counts the walks made.
 type keyHistoryKept struct {
-	mu   sync.Mutex
-	last *keyHistoryAnswer
+	mu    sync.Mutex
+	last  *keyHistoryAnswer
+	walks int
 }
 
 // keyHistory is the answer to GET /publickey/history: the history of the
@@ -339,7 +360,8 @@ type keyHistoryKept struct {
 // consumer's check from its own first key before it is answered, so that an
 // entry the chain does not prove is never served. The registry and the
 // carried history are read at each request; the answer is made again
-// whenever a byte of either, or the gateway's key, is not the last answer's.
+// whenever a byte of either, or the gateway's key, is not the last answer's;
+// a finding is kept the same way as a document.
 func (g *gatewayService) keyHistory() ([]byte, error) {
 	data, err := g.registry.log.readLog(0)
 	if faultOf(err) == faultAbsent {
@@ -358,8 +380,18 @@ func (g *gatewayService) keyHistory() ([]byte, error) {
 	defer g.keyHistoryKept.mu.Unlock()
 	if last := g.keyHistoryKept.last; last != nil && last.registry == made.registry && last.carried == made.carried &&
 		last.present == made.present && last.own == made.own {
-		return last.doc, nil
+		return last.doc, last.err
 	}
+	g.keyHistoryKept.walks++
+	made.doc, made.err = walkKeyHistory(data, own, carried, present)
+	g.keyHistoryKept.last = &made
+	return made.doc, made.err
+}
+
+// walkKeyHistory is the key history document of a registry, with what was
+// carried into its store, held to the consumer's check from its own first
+// key, or the finding that it does not hold.
+func walkKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, present bool) ([]byte, error) {
 	entries, err := registryKeyHistory(data, own, carried, present)
 	if err != nil {
 		return nil, err
@@ -368,7 +400,5 @@ func (g *gatewayService) keyHistory() ([]byte, error) {
 	if _, err := checkKeyHistory(doc, entries[0].key); err != nil {
 		return nil, fmt.Errorf("the key history does not hold: %w", err)
 	}
-	made.doc = doc
-	g.keyHistoryKept.last = &made
 	return doc, nil
 }

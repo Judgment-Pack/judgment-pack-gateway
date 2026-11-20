@@ -412,3 +412,111 @@ func TestACarriedKeyHistoryEndsAtTheKeyThatSignedTheContinuation(t *testing.T) {
 		t.Fatalf("a carried history ending at the key that signed the continuation: %d %s", code, body)
 	}
 }
+
+// A history that does not hold is walked once per change of what it is made
+// of: two requests to a registry with a forged rotation are one walk, both
+// answered 500; the registry changed is walked again.
+func TestAKeyHistoryThatDoesNotHoldIsWalkedOncePerChange(t *testing.T) {
+	g, _, registry := ksService(t, nil)
+	mustAcquire(t, g, "a")
+	mustSeal(t, g, "a")
+	data, err := os.ReadFile(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := rotationRecord(data, 1, "2026-11-19T00:00:00Z", ed25519.NewKeyFromSeed(historySeed("other")), ed25519.NewKeyFromSeed(historySeed("next")))
+	if err := os.WriteFile(registry, append(bytes.Clone(data), forged...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	walks := func() int {
+		g.keyHistoryKept.mu.Lock()
+		defer g.keyHistoryKept.mu.Unlock()
+		return g.keyHistoryKept.walks
+	}
+	before := walks()
+	for i := 0; i < 2; i++ {
+		if code, body := askKeyHistory(t, g); code != http.StatusInternalServerError {
+			t.Fatalf("request %d: a history past a forged rotation: %d %s", i, code, body)
+		}
+	}
+	if got := walks() - before; got != 1 {
+		t.Fatalf("two requests to one registry that does not hold made %d walks, not 1", got)
+	}
+	other := rotationRecord(data, 1, "2026-11-19T00:00:00Z", ed25519.NewKeyFromSeed(historySeed("another")), ed25519.NewKeyFromSeed(historySeed("next")))
+	if err := os.WriteFile(registry, append(bytes.Clone(data), other...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := askKeyHistory(t, g); code != http.StatusInternalServerError {
+		t.Fatalf("a history past another forged rotation: %d", code)
+	}
+	if got := walks() - before; got != 2 {
+		t.Fatalf("a changed registry made %d walks in all, not 2", got)
+	}
+	// the registry as it was holds again, and is answered
+	if err := os.WriteFile(registry, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := askKeyHistory(t, g); code != http.StatusOK {
+		t.Fatalf("the registry restored: %d %s", code, body)
+	}
+}
+
+// The rotatedAt of each rotation in a history is after the one before it: a
+// chain whose second rotation is at the first's time, or before it, holds
+// signature by signature and is refused by the check all the same.
+func TestTheKeyHistoryCheckRefusesARotationNotAfterTheOneBefore(t *testing.T) {
+	first, second, third := ed25519.NewKeyFromSeed(historySeed("1")), ed25519.NewKeyFromSeed(historySeed("2")), ed25519.NewKeyFromSeed(historySeed("3"))
+	for _, at := range []string{"2026-11-19T00:00:01Z", "2026-11-19T00:00:00Z", "2026-11-19T00:00:02Z"} {
+		data := rotationRecord(nil, 1, "2026-11-19T00:00:01Z", first, second)
+		data = append(data, rotationRecord(data, 2, at, second, third)...)
+		entries, err := registryKeyHistory(data, third.Public().(ed25519.PublicKey), nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = checkKeyHistory(keyHistoryDocument(entries), first.Public().(ed25519.PublicKey))
+		want := "entry 2: the rotation's rotatedAt is not after the rotatedAt of the rotation before it"
+		if at == "2026-11-19T00:00:02Z" {
+			if err != nil {
+				t.Errorf("a rotation after the one before it: %v", err)
+			}
+		} else if err == nil || err.Error() != want {
+			t.Errorf("a second rotation at %s: %v", at, err)
+		}
+	}
+}
+
+// A store continuation is made while the key in force at the store rotation
+// is: its continuedAt at or after that key's validFrom in the history
+// carried, and before the new registry's first rotation from it, if any.
+func TestAStoreContinuationIsMadeWhileTheKeyItCarriesIsInForce(t *testing.T) {
+	first, second, third := ed25519.NewKeyFromSeed(historySeed("1")), ed25519.NewKeyFromSeed(historySeed("2")), ed25519.NewKeyFromSeed(historySeed("3"))
+	old := rotationRecord(nil, 1, "2026-11-19T00:00:05Z", first, second)
+	entries, err := registryKeyHistory(old, second.Public().(ed25519.PublicKey), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := keyHistoryDocument(entries)
+	continued := func(at, rotatedAt string) ([]keyHistoryEntry, error) {
+		data := seedContinuation(t, second, old, history, at)
+		own := second.Public().(ed25519.PublicKey)
+		if rotatedAt != "" {
+			data = append(data, rotationRecord(data, 1, rotatedAt, second, third)...)
+			own = third.Public().(ed25519.PublicKey)
+		}
+		return registryKeyHistory(data, own, history, true)
+	}
+	before := "the store continuation's continuedAt is before the validFrom of the key in force at the store rotation"
+	after := "the store continuation's continuedAt is not before the validTo of the key in force at the store rotation"
+	for _, c := range []struct{ at, rotatedAt, want string }{
+		{"2026-11-19T00:00:04Z", "", before},
+		{"2026-11-19T00:00:05Z", "", ""},
+		{"2026-11-19T00:00:06Z", "2026-11-19T00:00:06Z", after},
+		{"2026-11-19T00:00:07Z", "2026-11-19T00:00:06Z", after},
+		{"2026-11-19T00:00:06Z", "2026-11-19T00:00:07Z", ""},
+	} {
+		_, err := continued(c.at, c.rotatedAt)
+		if c.want == "" && err != nil || c.want != "" && (err == nil || err.Error() != c.want) {
+			t.Errorf("continued at %s, rotated from at %q: %v, not %q", c.at, c.rotatedAt, err, c.want)
+		}
+	}
+}
