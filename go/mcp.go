@@ -79,6 +79,9 @@ type mcpTool struct {
 	tool     string
 	binding  string
 	seal     bool
+	// sealScope is whether the seal tool takes and advertises an optional
+	// scope: the caller form from labelsVersion (sealTakesScope).
+	sealScope bool
 	// scope is the scope identifier the tool's platform is fixed to
 	// (ADR-0026); "" for a platform of none and for the seal tool.
 	scope string
@@ -249,7 +252,7 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		s.order = append(s.order, t.name)
 		return nil
 	}
-	if err := add(mcpTool{name: mcpSealTool, seal: true, taxonomy: ToolTaxonomy{Operation: "act", Effect: "act"}}); err != nil {
+	if err := add(mcpTool{name: mcpSealTool, seal: true, sealScope: s.sealTakesScope(), taxonomy: ToolTaxonomy{Operation: "act", Effect: "act"}}); err != nil {
 		return nil, err
 	}
 	for _, p := range served { // in name order

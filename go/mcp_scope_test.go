@@ -35,6 +35,13 @@ var scopedCallers = callerScopes{entries: map[string]callerEntry{
 // platform does not enable. Each source echoes the arguments it was given.
 func scopedMCPFixture(t *testing.T, form mcpConfig) *mcpFixture {
 	t.Helper()
+	return scopedMCPFixtureAt(t, form, "")
+}
+
+// scopedMCPFixtureAt is scopedMCPFixture under an engine configuration of
+// version ("" none).
+func scopedMCPFixtureAt(t *testing.T, form mcpConfig, version string) *mcpFixture {
+	t.Helper()
 	t.Setenv(envSourceHelper, "1")
 	t.Setenv(envSourceEchoStdin, "1")
 	root := t.TempDir()
@@ -56,6 +63,7 @@ func scopedMCPFixture(t *testing.T, form mcpConfig) *mcpFixture {
 	m := form
 	m.listen, m.resource, m.sessions, m.idleSeconds, m.concurrency, m.callsPerMinute = "127.0.0.1:0", "https://engine.test/mcp", 8, 60, 4, 100
 	cfg := engineConfig{
+		version:   version,
 		authority: "gateway:test",
 		listen:    u.String(),
 		identity:  &identitySpec{issuer: id.issuer, audience: id.audience, keys: "/keys.json", callers: scopedCallers},

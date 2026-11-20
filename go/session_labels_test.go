@@ -541,7 +541,7 @@ func TestTheStartAtLabelsVersionRefusesASessionLeftFromBefore(t *testing.T) {
 		return startOnStore(cfg, testSeed, []string{seedPath}, engineServeOptions(cfg, nil, nil))
 	}
 	_, _, err := start(labelsVersion)
-	if err == nil || !strings.Contains(err.Error(), "engine configuration version 39") || !strings.Contains(err.Error(), "(named-1); such a session is sealed before the upgrade: stop the gateway, run gateway seal-open --all") {
+	if err == nil || !strings.Contains(err.Error(), "engine configuration version 39") || !strings.Contains(err.Error(), "(named-1): if a gateway remove-scope or gateway store remove-scope was cut off, run it again; otherwise such a session is sealed before the upgrade: stop the gateway, run gateway seal-open --all") {
 		t.Fatalf("the start at version 39: %v", err)
 	}
 	// the holds were released: the same store starts at version 38
@@ -738,5 +738,62 @@ func TestAnActWhoseLabelAnotherRecordsFirstJoinsThatSession(t *testing.T) {
 	}
 	if id, err := service.labels.labelSession("", "act-racing"); err != nil || id != minted {
 		t.Fatalf("the label: %q %v", id, err)
+	}
+}
+
+// A session an instance already serving opens between the start's read of
+// the sessions and its read of the labels is not taken for one left from
+// before labelsVersion: the sessions are read first, and its label, recorded
+// before its first receipt, is read after them.
+func TestASessionOpenedBetweenTheStartsReadsIsNotLeftFromBefore(t *testing.T) {
+	g, server, _ := labelledStore(t)
+	labelAcquire(t, server, "before-the-reads", "a", testScope)
+	t.Cleanup(func() { unlabelledOpenBetweenReads = nil })
+	var during string
+	unlabelledOpenBetweenReads = func() {
+		unlabelledOpenBetweenReads = nil
+		during, _ = labelAcquire(t, server, "between-the-reads", "a", testScope)
+	}
+	// the instance starting is another service on the same store
+	starting, err := newGatewayService(g.storeRoot, testSeed, "gateway:test", g.regPath, map[string]sourceSpec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	starting.labels = fsLabels{root: starting.storeRoot}
+	open, err := starting.unlabelledOpen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if during == "" {
+		t.Fatal("the hook did not run")
+	}
+	if len(open) != 0 {
+		t.Fatalf("labelled live sessions taken for ones left from before: %v", open)
+	}
+}
+
+// From labelsVersion the caller form's seal tool advertises scope in its
+// input schema, as it takes one: a client following the schema can seal a
+// label of a scoped source's namespace. Before the version, and in the
+// fixed form, it advertises session alone.
+func TestTheCallerFormSealToolListsItsScope(t *testing.T) {
+	schemaOf := func(f *mcpFixture) map[string]any {
+		t.Helper()
+		f.token = tokenFor(t, f.issuer, subjectEvery, nil)
+		sid := f.open(t)
+		_, _, body := f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":3,"method":"tools/list"}`, nil)
+		for _, tool := range resultOf(t, body)["tools"].([]any) {
+			if entry := tool.(map[string]any); entry["name"] == mcpSealTool {
+				return entry["inputSchema"].(map[string]any)["properties"].(map[string]any)
+			}
+		}
+		t.Fatal("no seal tool listed")
+		return nil
+	}
+	if props := schemaOf(scopedMCPFixtureAt(t, mcpConfig{scopeFromCaller: true}, labelsVersion)); props["scope"] == nil || props["session"] == nil {
+		t.Fatalf("the caller form at %s lists %v", labelsVersion, props)
+	}
+	if props := schemaOf(scopedMCPFixtureAt(t, mcpConfig{scopeFromCaller: true}, "38")); props["scope"] != nil {
+		t.Fatalf("the caller form at 38 lists %v", props)
 	}
 }

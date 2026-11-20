@@ -85,6 +85,17 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 			if err := heldUnderAnotherKey(data, walk.keys, key.public, kind.receipts()); err != nil {
 				return err
 			}
+			// a continuation stamped before the last rotation of the history
+			// it would carry, a clock behind, refuses it before anything is
+			// sealed, as on the filesystem kind; continuationHolds holds it
+			// again after the seals
+			carried, present, err := kind.carriedKeyHistory()
+			if err != nil {
+				return fmt.Errorf("the key history carried into the store: %w; the store is not rotated", err)
+			}
+			if err := continuationOrderRefusalOf(data, key.public, carried, present, stamp()); err != nil {
+				return err
+			}
 			// a seal held for the sink that this rotation does not deliver
 			// refuses it, before anything is sealed
 			return refuseSealsPending(pgSealForwarding{kind.ofNoScope().documents()}, o.forwardsSeals())

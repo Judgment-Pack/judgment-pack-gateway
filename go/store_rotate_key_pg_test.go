@@ -421,3 +421,36 @@ func TestStoreRotateKeyNamesTheFilesystemKindsRotation(t *testing.T) {
 		}
 	}
 }
+
+// gateway store rotate on the PostgreSQL kind whose continuation is stamped
+// before the key history's last rotation, a clock behind, is refused before
+// anything is sealed, as on the filesystem kind: the session left open stays
+// open and the registry is unchanged.
+func TestAPostgresStoreRotationStampedBeforeTheLastRotationIsRefusedBeforeTheSeals(t *testing.T) {
+	standInKeyService(t)
+	one := mustKeyServiceSigner(t, ksVersion1)
+	s := newRkStore(t)
+	a := s.start(t, "", nil)
+	server := httptest.NewServer(a.service.handler())
+	rkCall(t, server, "rk-sealed", "plain", true)
+	server.Close()
+	a.stop(&s.said)
+	if code, stdout, stderr := s.rotateAt(t, "2026-12-01T12:00:00Z", ksVersion1); code != 0 {
+		t.Fatalf("the seed to key version 1: %d %q %q", code, stdout, stderr)
+	}
+	b := s.start(t, ksVersion1, one)
+	server = httptest.NewServer(b.service.handler())
+	rkCall(t, server, "rk-left-open", "plain", false)
+	server.Close()
+	b.stop(&s.said)
+	target := pgTestDBBeside(t, s.db)
+	before := pgRegistryOf(t, s.db)
+	code, stdout, stderr := rotatePgAt(t, s.versions[ksVersion1], target, s.dir, func() string { return "2026-12-01T11:59:59Z" })
+	want := "the store continuation's continuedAt 2026-12-01T11:59:59Z is before the key history's last rotation 2026-12-01T12:00:00Z"
+	if code != 1 || stdout != "" || !strings.Contains(stderr, want) {
+		t.Fatalf("a store rotation stamped before the last: %d %q %q", code, stdout, stderr)
+	}
+	if after := pgRegistryOf(t, s.db); after != before || strings.Contains(after, `"sessionId":"rk-left-open"`) {
+		t.Fatal("a refused rotation sealed a session")
+	}
+}

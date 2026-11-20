@@ -473,6 +473,13 @@ func listingEntry(t mcpTool, p *servedPlatform, limit int) (json.RawMessage, err
 			"description": "Seal a receipt session at its final count, so it can be verified. Takes the session name; answers the seal record. A session with an acquisition still in flight is refused by the engine.",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"session": map[string]any{"type": "string"}}, "required": []string{"session"}, "additionalProperties": false},
 		}
+		if t.sealScope {
+			// the caller form from labelsVersion (ADR-0051): a label is
+			// sealed in the namespace of the scope named, so a client
+			// following the schema can seal a session of a scoped source
+			entry["description"] = "Seal a receipt session at its final count, so it can be verified. Takes the session label and, for a session of a scope identifier, that scope; answers the seal record. A session with an acquisition still in flight is refused by the engine."
+			entry["inputSchema"] = map[string]any{"type": "object", "properties": map[string]any{"session": map[string]any{"type": "string"}, "scope": map[string]any{"type": "string"}}, "required": []string{"session"}, "additionalProperties": false}
+		}
 	} else {
 		description, ok := describePlatformToolWithin(t, p, limit)
 		if !ok {
