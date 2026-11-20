@@ -10,7 +10,9 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -291,5 +293,64 @@ func TestDescriptorCaptureSignsThroughTheKeyService(t *testing.T) {
 	asked := standIn.requests
 	if _, err := retainConnectedCapture(cfg, []byte(goodSnapshot), "live"); err != nil || standIn.requests <= asked+1 {
 		t.Fatalf("the capture through the key service: %v, %d requests after %d", err, standIn.requests, asked)
+	}
+}
+
+// gateway retain signs its session-removal records through the key service
+// the configuration names, held to signingPublicKey; and with the seed alone
+// over that store it is refused before anything is written.
+func TestRetainSignsThroughTheKeyService(t *testing.T) {
+	standIn := standInKeyService(t)
+	one := mustKeyServiceSigner(t, ksVersion1)
+	t.Setenv(envSourceHelper, "1")
+	root := t.TempDir()
+	store, registry := filepath.Join(root, "store"), filepath.Join(root, "registry.jsonl")
+	g, err := newGatewayServiceSigned(store, testSeed, one, "gateway:test", registry,
+		map[string]sourceSpec{"a": {argv: []string{os.Args[0]}, env: helperEnv, scope: testScope}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(g.handler())
+	if code, out := post(t, server, "/acquire", `{"session":"kept-1","source":"a","scope":`+jsonText(t, testScope)+`,"arguments":{"q":"x"}}`); code != http.StatusOK {
+		t.Fatalf("acquire: %d %v", code, out)
+	}
+	if code, out := post(t, server, "/seal", `{"session":"kept-1","scope":`+jsonText(t, testScope)+`}`); code != http.StatusOK {
+		t.Fatalf("seal: %d %v", code, out)
+	}
+	server.Close()
+	seedPath := filepath.Join(t.TempDir(), "seed")
+	if err := os.WriteFile(seedPath, testSeed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := sealOf(t, registry, one.publicKey(), "kept-1")
+	acks := writeAcks(t, retentionAckLine(retentionAckKey, "kept-1", s.signature, s.finalCount, stampOf(sealTime(t, s))))
+	now := sealTime(t, s).Add(31 * 24 * time.Hour)
+	config := func(keyService string) string {
+		path := filepath.Join(t.TempDir(), "engine.json")
+		body := fmt.Sprintf(`{"engineVersion":%q,"authority":"gateway:test","seed":%q,"store":%q,"registry":%q,"decisionRecords":%q,"listen":"127.0.0.1:8787","catalog":%q,"platforms":{}%s,"retention":{"window":30,"acknowledgedBy":[%q]}}`,
+			retentionVersion, seedPath, store, registry, filepath.Join(root, "decisions"), filepath.Join(root, "catalog"), keyService,
+			hex.EncodeToString(retentionAckKey.Public().(ed25519.PublicKey)))
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	if code, stdout, stderr := runRetain(config(""), acks, now); code != 1 || stdout != "" || !strings.Contains(stderr, "no rotation in the registry leads from it") {
+		t.Fatalf("the seed over a key service's store: %d %q %q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(store, removalsFile)); !os.IsNotExist(err) {
+		t.Fatal("the seed's refusal wrote a removal file")
+	}
+	asked := standIn.requests
+	pinned := fmt.Sprintf(`,"signingKeyVersion":%q,"signingPublicKey":%q`, ksVersion1, hex.EncodeToString(one.publicKey()))
+	code, stdout, stderr := runRetain(config(pinned), acks, now)
+	if code != 0 || strings.Count(stdout, `"kind":"session-removal"`) != 1 || standIn.requests <= asked {
+		t.Fatalf("retain through the key service: %d %q %q, %d requests after %d", code, stdout, stderr, standIn.requests, asked)
+	}
+	if !strings.Contains(stdout, `"keyId":"`+keyIDFor(one.publicKey())+`"`) {
+		t.Fatalf("the removal record is not under the key service's key: %s", stdout)
+	}
+	if rep, err := verifyWithRegistry(store, registry, "gateway:test", one.publicKey()); err != nil || !rep.OK {
+		t.Fatalf("the store after retain: %v %+v", err, rep)
 	}
 }

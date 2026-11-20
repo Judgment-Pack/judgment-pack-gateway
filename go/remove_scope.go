@@ -286,7 +286,7 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 	if err != nil {
 		return out, fmt.Errorf("the store's receipts could not be read, and nothing was removed: %v", err)
 	}
-	plan, refused := planScopeRemoval(storeRoot, all, sessions, walk, ret, o.scope)
+	plan, refused := planScopeRemoval(storeRoot, all, sessions, walk, ret, func(string) (string, bool) { return o.scope, true })
 	if len(refused) > 0 {
 		out.refused = append(refused, "nothing was removed")
 		return out, nil
@@ -338,16 +338,29 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 		}
 	}
 
-	// Then the payloads, while the receipts that name them are still there
-	// for a second run to find, and then the sessions.
+	if err := carryOutRemoval(storeRoot, plan); err != nil {
+		return out, err
+	}
+	for _, session := range plan.empty {
+		out.notes = append(out.notes, fmt.Sprintf("session %s was recorded as removed already, and its directory held no receipt; the directory is removed now", session))
+	}
+	out.notes = append(out.notes, fmt.Sprintf("removed %d session(s), %d sealed, holding %d receipt(s), and %d payload(s)", len(plan.sessions), plan.sealed, len(plan.receipts), len(plan.payloads)))
+	return out, nil
+}
+
+// carryOutRemoval removes what a plan names, its records already appended
+// and made durable: the payloads, while the receipts that name them are
+// still there for a second run to find, and then the sessions. remove-scope
+// and retain both carry a plan out so.
+func carryOutRemoval(storeRoot string, plan scopeRemovalPlan) error {
 	root, err := os.OpenRoot(storeRoot)
 	if err != nil {
-		return out, fmt.Errorf("the store: %v; the records stand, and a second run completes the removal", err)
+		return fmt.Errorf("the store: %v; the records stand, and a second run completes the removal", err)
 	}
 	defer root.Close()
 	for _, hexSum := range plan.payloads {
 		if err := root.Remove(filepath.Join("artifacts", hexSum)); err != nil && !absent(err) {
-			return out, fmt.Errorf("a payload could not be removed: %v; the records stand, and a second run completes the removal", err)
+			return fmt.Errorf("a payload could not be removed: %v; the records stand, and a second run completes the removal", err)
 		}
 	}
 	if len(plan.payloads) > 0 {
@@ -363,19 +376,15 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 	for _, session := range append(append([]string{}, plan.sessions...), plan.empty...) {
 		for _, name := range files[session] {
 			if err := root.Remove(filepath.Join("receipts", session, name)); err != nil && !absent(err) {
-				return out, fmt.Errorf("session %s could not be removed: %v; the records stand, and a second run completes the removal", session, err)
+				return fmt.Errorf("session %s could not be removed: %v; the records stand, and a second run completes the removal", session, err)
 			}
 		}
 		if err := root.Remove(filepath.Join("receipts", session)); err != nil && !absent(err) {
-			return out, fmt.Errorf("session %s could not be removed: %v; the records stand, and a second run completes the removal", session, err)
+			return fmt.Errorf("session %s could not be removed: %v; the records stand, and a second run completes the removal", session, err)
 		}
 	}
 	syncDir(filepath.Join(storeRoot, "receipts"))
-	for _, session := range plan.empty {
-		out.notes = append(out.notes, fmt.Sprintf("session %s was recorded as removed already, and its directory held no receipt; the directory is removed now", session))
-	}
-	out.notes = append(out.notes, fmt.Sprintf("removed %d session(s), %d sealed, holding %d receipt(s), and %d payload(s)", len(plan.sessions), plan.sealed, len(plan.receipts), len(plan.payloads)))
-	return out, nil
+	return nil
 }
 
 // carriedSalt is the scope salt the session's receipts carry (ADR-0042), as
@@ -478,8 +487,10 @@ func readsBackAsScopeRemoval(line []byte, keys []reachedKey) bool {
 
 // planScopeRemoval is what the call would remove, or every reason it
 // refuses, each naming a session or a receipt and never the scope
-// identifier.
-func planScopeRemoval(storeRoot string, all []*storedReceipt, sessions []string, walk *registryWalk, ret *retention, scope string) (plan scopeRemovalPlan, refused []string) {
+// identifier. scopeFor is the scope identifier a session is removed under,
+// and whether the call takes it at all: remove-scope takes every session
+// under its one, and retain only those the acknowledgments chose.
+func planScopeRemoval(storeRoot string, all []*storedReceipt, sessions []string, walk *registryWalk, ret *retention, scopeFor func(session string) (string, bool)) (plan scopeRemovalPlan, refused []string) {
 	// The removal goes through the store's root, which refuses a path that
 	// leads out of it: artifacts/ or receipts/ that is a symbolic link, or
 	// not a directory, refuses the call here, before anything is written,
@@ -498,6 +509,10 @@ func planScopeRemoval(storeRoot string, all []*storedReceipt, sessions []string,
 	}
 	planned := map[string]bool{}
 	for _, session := range sessions {
+		scope, take := scopeFor(session)
+		if !take {
+			continue
+		}
 		receipts := held[session]
 		if len(receipts) == 0 {
 			// a directory holding no receipt: removed only where it is a

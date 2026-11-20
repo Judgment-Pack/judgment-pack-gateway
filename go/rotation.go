@@ -384,7 +384,7 @@ func (w *registryWalk) loadSeal(line string) {
 	if !ed25519.Verify(current.key, sealSigningInput(sessionID, int64(count), sealedAt, keyID), sig) {
 		return
 	}
-	w.take(seal{sessionID: sessionID, finalCount: int64(count), signature: hex.EncodeToString(sig), keyPos: len(w.keys) - 1})
+	w.take(seal{sessionID: sessionID, sealedAt: sealedAt, finalCount: int64(count), signature: hex.EncodeToString(sig), keyPos: len(w.keys) - 1})
 }
 
 // take keeps a seal that loaded. SPEC.md §3 refuses re-sealing a session,
@@ -558,7 +558,7 @@ func scopedSealOf(obj *vObject) (seal, string, []byte, bool) {
 		return seal{}, "", nil, false
 	}
 	signature, _ := hex.DecodeString(signatureHex)
-	return seal{sessionID: sessionID, finalCount: int64(count), scopeDigest: scopeDigest, salted: version == sealVersionSalted}, keyID, signature, true
+	return seal{sessionID: sessionID, sealedAt: sealedAt, finalCount: int64(count), scopeDigest: scopeDigest, salted: version == sealVersionSalted}, keyID, signature, true
 }
 
 // versionedSealContext is the prefix a seal holding sealVersion is signed
@@ -661,7 +661,7 @@ func interruptionSealOf(obj *vObject) (seal, string, []byte, bool) {
 		return seal{}, "", nil, false
 	}
 	signature, _ := hex.DecodeString(signatureHex)
-	return seal{sessionID: sessionID, finalCount: int64(count), interrupted: true, head: head, scopeDigest: scopeDigest, salted: salted}, keyID, signature, true
+	return seal{sessionID: sessionID, sealedAt: sealedAt, finalCount: int64(count), interrupted: true, head: head, scopeDigest: scopeDigest, salted: salted}, keyID, signature, true
 }
 
 // interruptionSealSigningInput is what such a seal's signature covers: the

@@ -231,6 +231,9 @@ func (r *receipt) signingInput() []byte {
 type seal struct {
 	sessionID  string
 	finalCount int64
+	// sealedAt is the time the seal states (SPEC.md §3), which retention
+	// measures its window from (ADR-0048).
+	sealedAt string
 	// interrupted is a seal made after an interruption (SPEC.md §3c), and
 	// head the signature of the last receipt it seals.
 	interrupted bool
