@@ -396,7 +396,7 @@ func TestACarriedKeyHistoryEndsAtTheKeyThatSignedTheContinuation(t *testing.T) {
 		if err := os.WriteFile(keyHistoryBeside(newRegistry), history, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(newRegistry, newContinuationLine(signer, []byte("x\n"), history, "2026-11-19T00:00:00Z"), 0o600); err != nil {
+		if err := os.WriteFile(newRegistry, seedContinuation(t, signer, []byte("x\n"), history, "2026-11-19T00:00:00Z"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		g, err := newGatewayServiceSigned(newStore, testSeed, nil, "gateway:test", newRegistry, ksSources())

@@ -144,7 +144,7 @@ func registryLink(data []byte) (int64, string) {
 // rotatedMarkPrefix begins what marks a store rotated away from (SPEC.md
 // §3d): "store-rotated:" and the SHA-256 of the continuation line the
 // rotation wrote, without its 0x0A -- on the filesystem kind a file beside
-// the registry, on the PostgreSQL kind a start-lease holder.
+// the registry, on the PostgreSQL kind the one row of gateway.rotated.
 const rotatedMarkPrefix = "store-rotated:"
 
 // rotatedMark is the mark of a rotation whose new registry's first line is
@@ -168,11 +168,11 @@ func keyHistoryDigestOf(history []byte) string {
 }
 
 // newContinuationLine is the store continuation a rotation writes as the new
-// registry's first line, signed by priv, naming the tail of previous and the
+// registry's first line, signed by key, naming the tail of previous and the
 // key history carried beside the new registry, by its exact bytes.
-func newContinuationLine(priv ed25519.PrivateKey, previous, history []byte, at string) []byte {
+func newContinuationLine(key *signingKey, previous, history []byte, at string) ([]byte, error) {
 	lines, last := registryLink(previous)
-	pub := priv.Public().(ed25519.PublicKey)
+	pub := key.public
 	obj := newObject()
 	obj.set("continuationVersion", vString(continuationVersion))
 	obj.set("continuedAt", vString(at))
@@ -181,8 +181,12 @@ func newContinuationLine(priv ed25519.PrivateKey, previous, history []byte, at s
 	obj.set("kind", vString(continuationKind))
 	obj.set("previousDigest", vString(last))
 	obj.set("previousLines", vInt(lines))
-	obj.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, continuationSigningInput(obj)))))
-	return append(canon(obj), '\n')
+	signature, err := key.signVerified(continuationSigningInput(obj))
+	if err != nil {
+		return nil, err
+	}
+	obj.set("signature", vString(hex.EncodeToString(signature)))
+	return append(canon(obj), '\n'), nil
 }
 
 // linkPrevious holds a verdict's store continuation to the registry before

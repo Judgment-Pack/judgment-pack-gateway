@@ -1517,7 +1517,8 @@ before, whose first line is a **store continuation**; then, still under the hold
 **rotated away from** (below). The old store is otherwise left as it is, for its operator to archive or
 delete whole. On the PostgreSQL kind a rotation is to a new database, or a new schema the
 migration login owns, never a new instance on the same database (ADR-0035), whose instances share one
-registry chain; this release refuses the PostgreSQL kind by name.
+registry chain; that kind rotates to a new database (`docs/postgresql-store.md`, "Rotating the
+store"), its continuation this one, byte for byte, read through `gateway export`.
 
 | Member | Form | Statement |
 |---|---|---|
@@ -1538,7 +1539,9 @@ ends, and a line blanked or changed anywhere in it is another registry.
 **The mark.** A store rotated away from carries the mark `store-rotated:` followed by the lowercase
 hexadecimal SHA-256 of the new registry's first line, the continuation, without its `0x0A`. On the
 filesystem kind it is a file beside the registry, the registry's path with `.rotated` appended, holding
-the mark and a `0x0A`, synced before its directory. The mark is outside the registry's bytes, so it is not in the digest, and a verifier never reads it. Every later
+the mark and a `0x0A`, synced before its directory; on the PostgreSQL kind it is the one row of
+`gateway.rotated`, holding the hexadecimal digest (`docs/postgresql-store.md`, "Rotating the store").
+The mark is outside the registry's bytes, so it is not in the digest, and a verifier never reads it. Every later
 hold of the old registry -- a gateway's start, `seal-open`, `remove-artifact`, `remove-scope`,
 `rotate-key` and its `--resume`, a second `store rotate` --
 refuses the store by the mark's name: *the store was rotated away from (store-rotated:...)*. A rotation
@@ -1625,9 +1628,10 @@ at the key that signed the continuation, then the keys the registry's own rotati
 is the carried one's, its `validTo` the rotation from it, if any. A continued registry with no history
 carried beside it, or one whose bytes are not the ones named -- changed, or cut to a later stretch that
 holds on its own -- or that does not so hold, and a history carried beside a registry that continues no
-store, are each answered `500` as above, never as a shorter history. On the PostgreSQL kind, whose store
-rotation this release refuses (§3d), a registry continues no store, and every instance answers the walk of
-the one registry they share.
+store, are each answered `500` as above, never as a shorter history. On the PostgreSQL kind, every instance
+answers the walk of the one registry they share. Its store rotation (§3d) names the old database's history
+in the continuation but does not yet carry the bytes into the new database, so a rotated database's
+history is answered `500` as above.
 
 **Checking it.** A consumer that pinned a key holds the answer, read by §1.1's parser, to: exactly the
 members above, each of its form; the first entry's `publicKey` the key pinned, with no `validFrom`,

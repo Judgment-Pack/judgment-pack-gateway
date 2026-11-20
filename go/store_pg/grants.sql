@@ -29,5 +29,6 @@ BEGIN
     EXECUTE pg_catalog.format('GRANT SELECT, INSERT, UPDATE, DELETE ON gateway.documents TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT, INSERT, UPDATE ON gateway.start_lease TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT ON gateway.removal_records TO %I', runtime);
+    EXECUTE pg_catalog.format('GRANT SELECT, INSERT ON gateway.rotated TO %I', runtime);
 END
 $grants$;

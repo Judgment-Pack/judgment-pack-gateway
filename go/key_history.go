@@ -297,13 +297,12 @@ func readCarriedKeyHistory(registryPath string) ([]byte, bool, error) {
 // serves, and whether there is one.
 func (g *gatewayService) carriedKeyHistory() ([]byte, bool, error) {
 	if g.kind != nil {
-		// The PostgreSQL kind's store rotation (#546) must carry the key
-		// history of the database rotated from into the new one, as the
-		// filesystem kind's carries it beside the new registry (storeRotate,
-		// ADR-0052), name it in the continuation (newContinuationLine), and
-		// this must read it there. Until it does, a PostgreSQL registry
-		// continues no store, and its walk is its whole history; one that
-		// did would name a history none carries, and be answered 500.
+		// The PostgreSQL kind's store rotation names the old database's key
+		// history in the continuation it writes (storeRotatePostgres) but
+		// does not yet carry its bytes into the new database. Until it
+		// does and this reads them there, a rotated database's history
+		// names a history none carries, and is answered 500: never a
+		// shorter history.
 		return nil, false, nil
 	}
 	return readCarriedKeyHistory(g.regPath)

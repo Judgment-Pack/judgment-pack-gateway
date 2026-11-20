@@ -305,6 +305,16 @@ func (k *pgKind) takeStartLease(holder string, period, every time.Duration) (*pg
 				return nil
 			}
 		}
+		// a store rotated away from starts nothing again: its mark is
+		// read before the lease's rows, and refused by name
+		mark, err := tx.exec(`SELECT continuation FROM gateway.rotated`)
+		if err != nil {
+			return err
+		}
+		if len(mark.rows) > 0 {
+			refusal = errStoreRotated(rotatedMarkPrefix + string(mark.rows[0][0]))
+			return nil
+		}
 		read, err := tx.exec(pgStartLeaseRows)
 		if err != nil {
 			return err
@@ -418,6 +428,22 @@ func pgHoldEveryInstance(c *pgConn, what string) error {
 	}
 	if n, _ := pgInt8(rows.rows[0][0]); n > 0 {
 		return fmt.Errorf("%w: a gateway instance serves the database by a start lease that is live (%d in all); stop the gateway, then %s", errStartLeaseHeld, n, what)
+	}
+	return nil
+}
+
+// pgRefuseRotated refuses, by name, a database a store rotation marked
+// rotated away from (gateway.rotated): a removal appended to its registry
+// would break the link the new store's continuation names. The commands
+// that hold every row of the lease without taking it (store remove-scope)
+// call it after pgHoldEveryInstance, in the same transaction.
+func pgRefuseRotated(c *pgConn) error {
+	mark, err := c.exec(`SELECT continuation FROM gateway.rotated`)
+	if err != nil {
+		return err
+	}
+	if len(mark.rows) > 0 {
+		return errStoreRotated(rotatedMarkPrefix + string(mark.rows[0][0]))
 	}
 	return nil
 }

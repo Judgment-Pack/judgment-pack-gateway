@@ -24,7 +24,9 @@ import (
 	"strings"
 )
 
-const storeRotateUsage = `usage: gateway store rotate (--config <engine.json> | --store <dir> --seed <file> --registry <file> --authority <authority>) --new-store <dir> --new-registry <file>
+const storeRotateUsage = `usage:
+  gateway store rotate (--config <engine.json> | --store <dir> --seed <file> --registry <file> --authority <authority>) --new-store <dir> --new-registry <file>
+  gateway store rotate --config <engine.json> (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> [--timeout <seconds>]
 Rotates the store, the gateway stopped: seals every session left open in
 it, as seal-open --all does, then makes the new store directory and the new
 registry, whose first line names the old registry's line count and the
@@ -35,7 +37,19 @@ store directory, or what a rotation stopped by a crash left, which a rerun
 finishes. A session that cannot be sealed refuses the rotation, and nothing
 new is made. The old store is not changed but by the seals and the mark; it
 is the operator's to archive or delete whole. Prints each seal appended,
-then the new registry's first line.`
+then the new registry's first line.
+With the PostgreSQL kind (--config alone names it) the new store is a new
+database, which the migration login's connection string names, as gateway
+store migrate takes it: the database is to hold no store, and is migrated
+and given the registry in one transaction. The start lease of the old
+database is taken first: an instance serving it refuses the rotation.`
+
+// storeRotateTargetFlags are the flags of the new store: its directory and
+// registry on the filesystem kind, its database on the PostgreSQL kind.
+var (
+	storeRotateFsFlags = []string{"--new-store", "--new-registry"}
+	storeRotatePgFlags = []string{"--connection-file", "--connection-env", "--owner", "--runtime", "--timeout"}
+)
 
 func cmdStoreRotate(args []string, stdout, stderr io.Writer) int {
 	return cmdStoreRotateAt(args, stdout, stderr, nowStamp)
@@ -46,7 +60,7 @@ func cmdStoreRotateAt(args []string, stdout, stderr io.Writer, stamp func() stri
 	var rest []string
 	targets := map[string]string{}
 	for i := 0; i < len(args); i++ {
-		if name := args[i]; name == "--new-store" || name == "--new-registry" {
+		if name := args[i]; contains(storeRotateFsFlags, name) || contains(storeRotatePgFlags, name) {
 			if i+1 >= len(args) || args[i+1] == "" {
 				fmt.Fprintln(stderr, storeRotateUsage)
 				return 2
@@ -65,10 +79,6 @@ func cmdStoreRotateAt(args []string, stdout, stderr io.Writer, stamp func() stri
 		}
 		rest = append(rest, args[i])
 	}
-	if targets["--new-store"] == "" || targets["--new-registry"] == "" {
-		fmt.Fprintln(stderr, storeRotateUsage)
-		return 2
-	}
 	o, msg := parseSealOpen(append(rest, "--all"))
 	switch msg {
 	case "ok":
@@ -79,17 +89,48 @@ func cmdStoreRotateAt(args []string, stdout, stderr io.Writer, stamp func() stri
 		fmt.Fprintf(stderr, "store rotate: %s\n%s\n", msg, storeRotateUsage)
 		return 2
 	}
+	// each kind's flags of the new store, and none of the other's
+	own, other := storeRotateFsFlags, storeRotatePgFlags
 	if o.storage != nil {
-		// The PostgreSQL kind's rotation (#546) must also carry the key
-		// history of the database rotated from into the new one, as
-		// storeRotate carries it beside the new registry (carriedHistoryOf;
-		// ADR-0052), name its bytes in the continuation it writes
-		// (newContinuationLine), and gatewayService.carriedKeyHistory must
-		// read it there.
-		fmt.Fprintln(stderr, "store rotate: the PostgreSQL kind is rotated to a new database or schema, which this release does not yet do; nothing was changed")
-		return 1
+		own, other = other, own
 	}
-	sealed, continuation, err := storeRotate(o, targets["--new-store"], targets["--new-registry"], stamp)
+	for _, name := range other {
+		if _, given := targets[name]; given {
+			fmt.Fprintf(stderr, "store rotate: %s is not of the storage kind the configuration names\n%s\n", name, storeRotateUsage)
+			return 2
+		}
+	}
+	var sealed []*vObject
+	var continuation []byte
+	var err error
+	if o.storage != nil {
+		var given []string
+		for _, name := range own {
+			if value, ok := targets[name]; ok {
+				given = append(given, name, value)
+			}
+		}
+		flags, code := storeFlags(given, own, "store rotate", storeRotateUsage, stderr)
+		if code != 0 {
+			return code
+		}
+		timeout, ok := storeTimeout(flags, "store rotate", storeRotateUsage, stderr)
+		if !ok {
+			return 2
+		}
+		spec, code := storeConnectionSpec(flags, "store rotate", stderr)
+		if code != 0 {
+			return code
+		}
+		target := pgRotationTarget{spec: spec, roles: pgRoles{owner: flags["--owner"], runtime: flags["--runtime"]}, timeout: timeout}
+		sealed, continuation, err = storeRotatePostgres(o, target, stamp, stderr)
+	} else {
+		if targets["--new-store"] == "" || targets["--new-registry"] == "" {
+			fmt.Fprintln(stderr, storeRotateUsage)
+			return 2
+		}
+		sealed, continuation, err = storeRotate(o, targets["--new-store"], targets["--new-registry"], stamp)
+	}
 	for _, record := range sealed {
 		fmt.Fprintf(stdout, "%s\n", canon(record))
 	}
@@ -124,7 +165,15 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	} else if !present {
 		return nil, nil, fmt.Errorf("the registry is not there: %s; there is no store to rotate", o.registry)
 	}
-	hold, err := holdEngineRegistry(o.seedNames, o.registry, seed)
+	// the key in force signs the seals and the continuation: the key
+	// service's key version the configuration names, held to
+	// signingPublicKey, or else the seed's (ADR-0050)
+	sig, err := commandSigner(o.keyVersion, o.keyPublic, seed)
+	if err != nil {
+		return nil, nil, err
+	}
+	key := newSigningKey(sig)
+	hold, err := holdEngineRegistryKey(o.seedNames, o.registry, key.public)
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
 			return nil, nil, fmt.Errorf("%w; stop the gateway, then rotate", err)
@@ -136,8 +185,14 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	if err != nil || !present {
 		return nil, nil, fmt.Errorf("registry: the registry could not be read under the hold: %v", err)
 	}
-	priv := ed25519.NewKeyFromSeed(seed)
-	pub := priv.Public().(ed25519.PublicKey)
+	pub := key.public
+	walk, err := engineWalk(data, pub)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := heldUnderAnotherKey(data, walk.keys, pub, newFsKind(fsLayout{store: o.store}).receipts()); err != nil {
+		return nil, nil, err
+	}
 	if made, present, err := readRegistryBytes(newRegistry); err != nil {
 		return nil, nil, fmt.Errorf("the new registry: %w", err)
 	} else if present {
@@ -158,11 +213,11 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 		}
 		return nil, made, nil
 	}
-	writer, err := newRegistryWriter(o.registry, seed, func() (bool, error) { return true, nil })
+	writer, err := newRegistryWriterWith(o.registry, seed, newSignerHolder(sig), func() (bool, error) { return true, nil })
 	if err != nil {
 		return nil, nil, err
 	}
-	sealed, refused, err := sealOpenUnder(fsSealOpenStore{o.store}, o.authority, writer, data, "", sealedViaCommand, stamp)
+	sealed, refused, err := sealOpenUnderSink(fsSealOpenStore{o.store}, o.authority, writer, data, "", sealedViaCommand, stamp, o.sink())
 	if err != nil {
 		return sealed, nil, fmt.Errorf("%v; the store is not rotated", err)
 	}
@@ -183,7 +238,10 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	if err != nil {
 		return sealed, nil, fmt.Errorf("%v; the store is not rotated", err)
 	}
-	line := newContinuationLine(priv, data, history, stamp())
+	line, err := newContinuationLine(key, data, history, stamp())
+	if err != nil {
+		return sealed, nil, fmt.Errorf("the continuation could not be signed: %v; the store is not rotated, and the seals appended stay in the old registry", err)
+	}
 	if err := os.Mkdir(newStore, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return sealed, nil, fmt.Errorf("the new store: %w", err)
 	}
