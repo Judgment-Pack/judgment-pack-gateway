@@ -63,7 +63,7 @@ func TestAPostgresStoreRetainRemovesAnAcknowledgedSession(t *testing.T) {
 
 	text := readFile(t, config)
 	text = strings.Replace(text, `"engineVersion":"24"`, `"engineVersion":"`+retentionVersion+`"`, 1)
-	text = strings.TrimSuffix(strings.TrimSpace(text), "}") + `,"retention":{"window":30,"acknowledgedBy":"` + hex.EncodeToString(retentionAckKey.Public().(ed25519.PublicKey)) + `"}}`
+	text = strings.TrimSuffix(strings.TrimSpace(text), "}") + `,"retention":{"window":30,"acknowledgedBy":["` + hex.EncodeToString(retentionAckKey.Public().(ed25519.PublicKey)) + `"]}}`
 	if err := os.WriteFile(config, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -2676,29 +2676,74 @@ Version 37 adds the optional `retention` member
 (docs/adr/0048-retention-by-acknowledgment-and-store-rotation.md, options A1 and R1):
 
 ```json
-"retention": { "window": 30, "acknowledgedBy": "<64 lowercase hexadecimal characters>" }
+"retention": { "window": 30, "acknowledgedBy": ["<64 lowercase hexadecimal characters>"] }
 ```
 
 - `window` is a whole number of days, from 7 to 36500; a shorter window is refused at load.
   30 is recommended.
-- `acknowledgedBy` is the Ed25519 public key of the external audit log, or of the operator's
-  shipper on its behalf, that acknowledges a session it holds.
+- `acknowledgedBy` is a list of 1 to 4 distinct Ed25519 public keys, each 64 lowercase
+  hexadecimal characters: the keys of the external audit log, or of the operator's shipper on
+  its behalf, that acknowledges a session it holds. A single string is not read. A key listed
+  twice, a key that is not a sound Ed25519 public key, an empty list and a fifth key are
+  refused at load, by their place in the list.
 
 With no `retention` member nothing is removed by age, as before; nothing runs on a timer, and
 a schedule is the operator's scheduler running the command. A file of version 36 or earlier
 with the member is refused by name: `retention is a version-37 member`.
 
-**An acknowledgment line.** The acknowledgment file holds one canonical JSON object per line,
-each under 4096 bytes, at most 10000 lines, read whole:
+**An acknowledgment line.** The acknowledgment file holds one canonical JSON object per line
+(SPEC.md §1.1: members sorted, no whitespace), each ending in a line feed and under 4096
+bytes, at most 10000 lines, read whole. Each line has exactly these seven members:
 
-```json
-{"acknowledgedAt":"2026-11-19T00:00:00Z","finalCount":2,"keyId":"<32 hex>","kind":"retention-ack","sealSignature":"<128 hex>","sessionId":"<session>","signature":"<128 hex>"}
+| Member | Value |
+|---|---|
+| `acknowledgedAt` | when the log acknowledged the seal: UTC, to the second, `YYYY-MM-DDThh:mm:ssZ`; no earlier than the seal's `sealedAt`, no later than the command's clock |
+| `finalCount` | the seal's `finalCount`, as the seal record carries it |
+| `keyId` | the id of the key the line is signed under, one `acknowledgedBy` lists: the first 32 lowercase hexadecimal characters of the SHA-256 of its 32 raw public-key bytes (as SPEC.md §1.2 derives a key id) |
+| `kind` | `"retention-ack"` |
+| `sealSignature` | the seal's `signature`, 128 lowercase hexadecimal characters, as the seal record carries it |
+| `sessionId` | the session's id, as its receipts and its seal carry it |
+| `signature` | Ed25519, 128 lowercase hexadecimal characters, over the bytes `judgment-pack-gateway/retention-ack/1:` followed by the canonical JSON of the object without `signature` |
+
+A line names a seal by the seal's own `signature` and `finalCount`, copied as the seal record
+carries them, so an audit log that holds the seal fills both without computing anything over
+it. A line names no scope identifier: the gateway reads the session's scope from its own store,
+and `--scope` narrows the call.
+
+A line that is not of this form, names a key `acknowledgedBy` does not list, or does not
+verify under the key it names refuses the whole call, as does a file that names one session
+twice. A session the store already records as removed is noted, not refused, so a cumulative
+file can be given again.
+
+**A worked example, with a synthetic key.** The key below is derived from a seed of 32 bytes
+`0x07`, for testing only; nothing should ever be signed under it. Its public key is
+`ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c`, and its key id is
+`fe812c12f3ab4ce6ac5db69ac352f906`. Configured as
+`"acknowledgedBy": ["ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"]`, a
+line acknowledging session `example-session-1`, sealed with `finalCount` 3 and a seal signature
+of `ab` repeated 64 times, at 2026-11-20T10:00:00Z, is signed over these bytes (one line, no
+line feed; SHA-256 `15f96ff96474c89c31f1675f7f300e42184f3eeb6e34a7d0294f9149726b18b4`):
+
+```text
+judgment-pack-gateway/retention-ack/1:{"acknowledgedAt":"2026-11-20T10:00:00Z","finalCount":3,"keyId":"fe812c12f3ab4ce6ac5db69ac352f906","kind":"retention-ack","sealSignature":"abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab","sessionId":"example-session-1"}
 ```
 
-`keyId` is the acknowledging key's id; `sealSignature` and `finalCount` are the seal's, as the
-registry holds it; `signature` is Ed25519, under `acknowledgedBy`, over
-`judgment-pack-gateway/retention-ack/1:` followed by the canonical JSON of the object without
-its `signature`. A file that names one session twice is refused.
+and the line is (followed by one line feed):
+
+```json
+{"acknowledgedAt":"2026-11-20T10:00:00Z","finalCount":3,"keyId":"fe812c12f3ab4ce6ac5db69ac352f906","kind":"retention-ack","sealSignature":"abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab","sessionId":"example-session-1","signature":"828e0a5478f544ff5e6a083964b1e3b8dce742c8eadc44bb07bb2853b8508dce5b6678b17a0d348310313ccdba19bda520266e11affc462ec2d23191411b8204"}
+```
+
+Ed25519 signatures are deterministic, so an implementation that signs the same bytes under
+the same key produces this signature exactly. `go/retain_test.go`
+(`TestTheDocumentedAcknowledgmentLineVerifies`) holds this page to it.
+
+**Rotating the acknowledging key.** Because one line that does not verify refuses the whole
+call:
+1. add the new key to `acknowledgedBy`, beside the old one;
+2. have the log sign new lines under the new key;
+3. remove the old key only once the file the command is given carries no line under it:
+   re-sign those lines under the new key, or leave out the sessions already removed.
 
 **`gateway retain --config <engine.json> --acknowledgments <file> [--scope <identifier>] --by <label>`**,
 the gateway stopped, on the filesystem kind; `gateway store retain` on the PostgreSQL kind

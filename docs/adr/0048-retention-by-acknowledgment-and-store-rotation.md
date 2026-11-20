@@ -126,6 +126,10 @@ The narrowest form, to be built in a later milestone:
 1. **Configuration.** A `retention` member: `window` (a duration) and `acknowledgedBy` (an
    Ed25519 public key, 64 hexadecimal characters). It needs an engine configuration version
    of its own when built. With no `retention` member, nothing is removed by age, as today.
+   *Amended at the build (#535):* `acknowledgedBy` is a list of 1 to 4 distinct keys, so the
+   acknowledging log's old and new keys overlap while it rotates; a line's `keyId` names the
+   key it verifies under. The line's exact form, with a worked example, is in
+   `docs/design/engine-config.md` ("Retention by acknowledgment").
 2. **`gateway retain --acknowledgments <file> [--scope <identifier>] --by <label>`**, the gateway
    stopped. It removes each sealed session that meets all four conditions:
    - it is of a scope identifier, the one `--scope` names if given;

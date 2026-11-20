@@ -27,6 +27,7 @@ import (
 	"io"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -48,19 +49,39 @@ const (
 	// removal record is, and at most this many lines
 	maxRetentionAckLines = 10000
 	maxRetentionAckBytes = maxRetentionAckLines * removalLineBound
+	// acknowledgedBy lists from one to this many keys: the acknowledging
+	// log's key in force, and the ones it overlaps while it rotates
+	maxAcknowledgingKeys = 4
 )
 
 // retentionConfig is the configuration's retention member.
 type retentionConfig struct {
-	window         time.Duration
-	windowDays     int64
-	acknowledgedBy ed25519.PublicKey
-	keyID          string
+	window     time.Duration
+	windowDays int64
+	// acknowledgedBy is each key a line may be signed under, in the
+	// configuration's order, and keyIDs their key ids, in the same order
+	acknowledgedBy []ed25519.PublicKey
+	keyIDs         []string
+}
+
+// keyFor is the listed key whose id a line names, if one is.
+func (c *retentionConfig) keyFor(keyID string) (ed25519.PublicKey, bool) {
+	found := -1
+	for i, id := range c.keyIDs {
+		if subtle.ConstantTimeCompare([]byte(keyID), []byte(id)) == 1 {
+			found = i
+		}
+	}
+	if found < 0 {
+		return nil, false
+	}
+	return c.acknowledgedBy[found], true
 }
 
 // parseRetentionConfig holds the member to its form: window, a whole number
-// of days from 7, and acknowledgedBy, an Ed25519 public key in 64 lowercase
-// hexadecimal characters.
+// of days from 7, and acknowledgedBy, a list of one to four distinct Ed25519
+// public keys, each 64 lowercase hexadecimal characters, so the acknowledging
+// log's old and new keys overlap while it rotates.
 func parseRetentionConfig(v value) (*retentionConfig, error) {
 	obj, ok := v.(*vObject)
 	if !ok {
@@ -74,18 +95,30 @@ func parseRetentionConfig(v value) (*retentionConfig, error) {
 	if !ok || days < minRetentionWindowDays || days > maxRetentionWindowDays {
 		return nil, fmt.Errorf("engine configuration: retention.window is a whole number of days from %d to %d; a shorter window is refused", minRetentionWindowDays, maxRetentionWindowDays)
 	}
-	keyHex, _ := memberString(obj, "acknowledgedBy")
-	if !isLowerHexOfLen(keyHex, 64) {
-		return nil, errors.New("engine configuration: retention.acknowledgedBy is an Ed25519 public key, 64 lowercase hexadecimal characters")
+	listed, _ := obj.get("acknowledgedBy")
+	keys, ok := listed.(vArray)
+	if !ok || len(keys) < 1 || len(keys) > maxAcknowledgingKeys {
+		return nil, fmt.Errorf("engine configuration: retention.acknowledgedBy is a list of 1 to %d Ed25519 public keys, each 64 lowercase hexadecimal characters", maxAcknowledgingKeys)
 	}
-	key, _ := hex.DecodeString(keyHex)
-	if publicKeyFault(key) != keySound {
-		return nil, errors.New("engine configuration: retention.acknowledgedBy is not a sound Ed25519 public key")
+	cfg := &retentionConfig{window: time.Duration(days) * 24 * time.Hour, windowDays: int64(days)}
+	seen := map[string]bool{}
+	for i, each := range keys {
+		keyHex, isString := each.(vString)
+		if !isString || !isLowerHexOfLen(string(keyHex), 64) {
+			return nil, fmt.Errorf("engine configuration: retention.acknowledgedBy[%d] is an Ed25519 public key, 64 lowercase hexadecimal characters", i)
+		}
+		key, _ := hex.DecodeString(string(keyHex))
+		if publicKeyFault(key) != keySound {
+			return nil, fmt.Errorf("engine configuration: retention.acknowledgedBy[%d] is not a sound Ed25519 public key", i)
+		}
+		if seen[string(keyHex)] {
+			return nil, fmt.Errorf("engine configuration: retention.acknowledgedBy[%d] is listed twice", i)
+		}
+		seen[string(keyHex)] = true
+		cfg.acknowledgedBy = append(cfg.acknowledgedBy, ed25519.PublicKey(key))
+		cfg.keyIDs = append(cfg.keyIDs, keyIDFor(key))
 	}
-	return &retentionConfig{
-		window: time.Duration(days) * 24 * time.Hour, windowDays: int64(days),
-		acknowledgedBy: ed25519.PublicKey(key), keyID: keyIDFor(key),
-	}, nil
+	return cfg, nil
 }
 
 // retentionAck is one acknowledgment line that verified.
@@ -181,9 +214,12 @@ func retentionAckOf(line []byte, cfg *retentionConfig) (retentionAck, string) {
 		return retentionAck{}, "is not of an acknowledgment's form"
 	}
 	sig, _ := hex.DecodeString(sigHex)
-	if subtle.ConstantTimeCompare([]byte(keyID), []byte(cfg.keyID)) != 1 ||
-		!ed25519.Verify(cfg.acknowledgedBy, recordSigningInput(retentionAckContext, obj), sig) {
-		return retentionAck{}, fmt.Sprintf("does not verify under retention.acknowledgedBy, key %s", cfg.keyID)
+	key, listed := cfg.keyFor(keyID)
+	if !listed {
+		return retentionAck{}, "names a key that retention.acknowledgedBy does not list"
+	}
+	if !ed25519.Verify(key, recordSigningInput(retentionAckContext, obj), sig) {
+		return retentionAck{}, fmt.Sprintf("does not verify under retention.acknowledgedBy, key %s", keyID)
 	}
 	return retentionAck{sessionID: session, sealSignature: sealSig, finalCount: int64(count), acknowledgedAt: when}, ""
 }
@@ -301,10 +337,11 @@ func removedUnder(ret *retention) func(string, seal) bool {
 
 // retentionSummary is the call's summary, the last thing it says: what it
 // removed, the SHA-256 of the acknowledgment file it read and the
-// acknowledging key's id, so the call can be traced to the acknowledgments
-// it acted on though no record in the store names them (R1).
-func retentionSummary(removed int, sum, keyID string) string {
-	return fmt.Sprintf("removed %d session(s) under the acknowledgments %s, acknowledged by key %s", removed, sum, keyID)
+// acknowledging keys' ids, each the configuration lists, so the call can be
+// traced to the acknowledgments it acted on though no record in the store
+// names them (R1).
+func retentionSummary(removed int, sum string, keyIDs []string) string {
+	return fmt.Sprintf("removed %d session(s) under the acknowledgments %s, acknowledged by key(s) %s", removed, sum, strings.Join(keyIDs, ", "))
 }
 
 const retainUsage = `usage: gateway retain --config <engine.json> --acknowledgments <file> [--scope <identifier>] --by <label>
@@ -472,7 +509,7 @@ func retain(o retainOptions, stamp func() string, now time.Time) (out removalOut
 	}
 	out, err = retainFrom(cfg.store, cfg.authority, key, walk, acks, cfg.retention, o, stamp, now)
 	if err == nil && len(out.refused) == 0 {
-		out.notes = append(out.notes, retentionSummary(len(out.appended), sum, cfg.retention.keyID))
+		out.notes = append(out.notes, retentionSummary(len(out.appended), sum, cfg.retention.keyIDs))
 	}
 	return out, unlocked, err
 }

@@ -104,7 +104,7 @@ func storeRetain(spec *storageSpec, roles pgRoles, o retainOptions, timeout time
 	}
 	out, err := retainRows(dsn, roles, o, cfg.retention, acks, newSigningKey(newSeedSigner(seed)), timeout, stamp, now)
 	if err == nil && len(out.refused) == 0 {
-		out.notes = append(out.notes, retentionSummary(len(out.appended), sum, cfg.retention.keyID))
+		out.notes = append(out.notes, retentionSummary(len(out.appended), sum, cfg.retention.keyIDs))
 	}
 	return out, err
 }
