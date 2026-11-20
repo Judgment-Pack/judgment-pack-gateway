@@ -34,7 +34,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io"
@@ -194,7 +193,7 @@ func storeRemoveScope(spec *storageSpec, o storeRemoveScopeOptions, stamp func()
 	if err != nil {
 		return removalOutcome{}, err
 	}
-	return removeScopeRows(dsn, o, ed25519.NewKeyFromSeed(seed), stamp)
+	return removeScopeRows(dsn, o, newSigningKey(newSeedSigner(seed)), stamp)
 }
 
 // pgScopeRows is what one scope identifier holds in the scoped tables.
@@ -212,7 +211,7 @@ func (h pgScopeRows) none() bool {
 
 // removeScopeRows is the command's transaction. Out carries the records
 // only once the transaction committed them.
-func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv ed25519.PrivateKey, stamp func() string) (out removalOutcome, err error) {
+func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, stamp func() string) (out removalOutcome, err error) {
 	roles := o.roles
 	if !pgRoleName(roles.owner) || !pgRoleName(roles.runtime) {
 		return out, errors.New("store: a role's name is 1 to 63 bytes with no NUL and no double quote")
@@ -281,8 +280,13 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv ed25519.PrivateK
 	if !present {
 		return failed(errors.New("the registry is not there; a gateway makes it when it starts, and its walk names the key the records are signed under"))
 	}
-	walk, err := engineWalk(data, priv.Public().(ed25519.PublicKey))
+	walk, err := engineWalk(data, priv.public)
 	if err != nil {
+		return failed(err)
+	}
+	// the seed signs here: a registry holding records under a key the walk
+	// did not reach, a key service's among them, is refused (ADR-0050)
+	if err := heldUnderAnotherKey(data, walk.keys, priv.public, nil); err != nil {
 		return failed(err)
 	}
 	_, next, err := pgRemovalFile(tx)
