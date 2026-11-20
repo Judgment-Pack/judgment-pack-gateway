@@ -227,7 +227,8 @@ opt-in that a version-35 sink never sees.
    answers `503`, `code` `receipt_not_forwarded`, with the seal's own fixed sentence:
    `seal not forwarded: the receipt sink did not acknowledge the session's seal; the session
    is sealed in the registry, nothing was answered, and the seal is held to be delivered again
-   before the session's next seal, at the next start, or by gateway seal-open`. The code is
+   by the session's next seal while the gateway that sealed it runs, and after a restart only
+   by the next start or by gateway seal-open`. The code is
    the receipts' code, since a caller acts on both alike, by asking `/seal` again; the
    sentence says the session is sealed. The seal is held in the serving process's memory,
    after the session's receipts. The session's next `/seal` delivers it again, and answers it

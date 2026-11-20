@@ -3307,11 +3307,12 @@ under engine version 35, no seal is delivered.
 - **When the sink does not acknowledge.** `/seal` answers `503`, `Content-Type:
   application/json`, with no `Retry-After` and exactly this body:
 
-  `{"error":"seal not forwarded: the receipt sink did not acknowledge the session's seal; the session is sealed in the registry, nothing was answered, and the seal is held to be delivered again before the session's next seal, at the next start, or by gateway seal-open","code":"receipt_not_forwarded"}`
+  `{"error":"seal not forwarded: the receipt sink did not acknowledge the session's seal; the session is sealed in the registry, nothing was answered, and the seal is held to be delivered again by the session's next seal while the gateway that sealed it runs, and after a restart only by the next start or by gateway seal-open","code":"receipt_not_forwarded"}`
 
   The seal is in the registry, and held. The session's next `/seal` delivers it again, and
   answers it once it is acknowledged; a `/seal` after that is answered as one of a sealed
-  session. While a receipt of the session is held, `/seal` is refused with the receipt's
+  session. A `/seal` that waits past its deadline behind a delivery of the session's seal
+  still in flight is answered with this body too. While a receipt of the session is held, `/seal` is refused with the receipt's
   sentence, and no seal is appended.
 - **A seal pending forwarding.** The gateway records in the store, before it appends a seal,
   that the seal is pending forwarding, and removes the record once the sink acknowledges

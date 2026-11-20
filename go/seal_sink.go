@@ -68,7 +68,7 @@ var sealDeliveredHook = func(sessionID string) {}
 type sealNotForwarded struct{}
 
 func (sealNotForwarded) Error() string {
-	return "seal not forwarded: the receipt sink did not acknowledge the session's seal; the session is sealed in the registry, nothing was answered, and the seal is held to be delivered again before the session's next seal, at the next start, or by gateway seal-open"
+	return "seal not forwarded: the receipt sink did not acknowledge the session's seal; the session is sealed in the registry, nothing was answered, and the seal is held to be delivered again by the session's next seal while the gateway that sealed it runs, and after a restart only by the next start or by gateway seal-open"
 }
 
 // sealHeldRefusal names, for the start and seal-open, a session whose seal

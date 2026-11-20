@@ -293,19 +293,28 @@ func (f *receiptForwarder) held(index int64, stored *vObject, payloadDigest stri
 // again. A delivery already in flight for the session is waited for under
 // ctx and for at most one attempt's deadline: past that the caller is
 // refused with the fixed sentence, so requests queued behind a sink that is
-// down end together, not one after another.
+// down end together, not one after another. The sentence is the first
+// held item's own (refusal): a seal waiting behind its session's seal
+// delivery is refused with the seal's sentence, and the receipt's sentence
+// is the answer where nothing is held.
 func (f *receiptForwarder) deliver(ctx context.Context, q *forwardQueue, upTo int64) error {
 	if q == nil {
 		return nil
+	}
+	behind := func() error {
+		if refused := q.refusal(); refused != nil {
+			return refused
+		}
+		return receiptNotForwarded{}
 	}
 	wait := time.NewTimer(f.attemptTimeout)
 	defer wait.Stop()
 	select {
 	case q.send <- struct{}{}:
 	case <-ctx.Done():
-		return receiptNotForwarded{}
+		return behind()
 	case <-wait.C:
-		return receiptNotForwarded{}
+		return behind()
 	}
 	defer func() { <-q.send }()
 	for {
