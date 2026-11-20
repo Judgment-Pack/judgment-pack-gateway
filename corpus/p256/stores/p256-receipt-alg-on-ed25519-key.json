@@ -1,0 +1,24 @@
+{
+  "name": "p256-receipt-alg-on-ed25519-key",
+  "note": "A version 3 receipt carrying alg \"ES256\" beside the key id of TEST-PUBLIC-KEY, signed by the P-256 test key: the key its key id names is Ed25519, not of the algorithm alg names, which is the key failure (ADR-0053 §1).",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"alg\":\"ES256\",\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"ae7df81ff2953a6266f682757a684ee3e9e9327ff9ae1fcd7297ac5734cdbc0f56d65503c3cb7abb29eb610303b00b32a383e2ba153d541bcb628b8a6892d1fe\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"key-rotation\",\"next\":\"026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16\",\"nextAlg\":\"ES256\",\"nextKeyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"aed4b43988b90f939ff52a2cf89b94b6b8e8c9cb26f77ec585aa4c4358c8f5c30d30233492a427e8843a5d9855c2498e26cb4fab73bd16c64598e8e0e5536905\"}\n{\"alg\":\"ES256\",\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"kind\":\"key-continuation\",\"previous\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\",\"previousKeyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"0a791a3bb94387630e33a422baec18582ae8457ac9a160c243fe99b757d50ee74d9319baa27d20fc98808ab11aa512b5b493aa5000d83ae706cfa6bfe7848535\"}\n{\"alg\":\"ES256\",\"finalCount\":1,\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"3d1bf63e21d184ac6201cbe6cab5a332d7a272218a2da7dba4a8233d0ba928f33e27940f457c982e87f891cf3db6a28a6319e35d6b73d9edbaa38caf84f6f8a0\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "key-mismatch"
+      }
+    ],
+    "rotations": {
+      "count": 1,
+      "keyId": "dbdb99c64b3d511f72c88fb6c054da73"
+    }
+  }
+}

@@ -2738,6 +2738,24 @@ Version 38 adds the optional `retention` member
   twice, a key that is not a sound Ed25519 public key, an empty list and a fifth key are
   refused at load, by their place in the list.
 
+**From version 40, a P-256 key** (docs/adr/0053-an-ecdsa-p256-signer-at-a-key-services-hsm-protection-level.md,
+§9) is listed in the object form `{"alg": "ES256", "key": "<66 lowercase hexadecimal characters>"}`,
+the key its compressed SEC 1 point, beside Ed25519 keys as strings; the list holds 1 to 4 distinct
+keys of either algorithm, each held to its own algorithm's key rule. Each case, with the sentence
+that refuses it, each beginning `engine configuration: retention.acknowledgedBy[<i>]`:
+
+| Version | Entry | Result |
+|---|---|---|
+| 38, 39 | a string of 64 lowercase hex | an Ed25519 key |
+| 38, 39 | any object | refused: "is an Ed25519 public key, 64 lowercase hexadecimal characters" |
+| 40 | a string of 64 lowercase hex | an Ed25519 key |
+| 40 | `{"alg": "ES256", "key": <66 lowercase hex>}`, nothing else | a P-256 key; one off the key rule (`02` or `03`, x below p, a point that exists): "is not a sound P-256 public key" |
+| 40 | an object without `alg`, with another `alg`, with any other member, or whose `key` is not 66 lowercase hex | refused: "is an Ed25519 public key of 64 lowercase hexadecimal characters, or {"alg": "ES256", "key": <66 lowercase hexadecimal characters>}" |
+| 40 | a string of 66 hex, or of any other form | refused, the same sentence |
+
+A bare string of 66 characters is refused: taking it would choose the algorithm from the key's
+length, and a compressed point of another curve is 33 bytes too.
+
 With no `retention` member nothing is removed by age, as before; nothing runs on a timer, and
 a schedule is the operator's scheduler running the command. A file of version 37 or earlier
 with the member is refused by name: `retention is a version-38 member`.
@@ -2750,11 +2768,17 @@ bytes, at most 10000 lines, read whole. Each line has exactly these seven member
 |---|---|
 | `acknowledgedAt` | when the log acknowledged the seal: UTC, to the second, `YYYY-MM-DDThh:mm:ssZ`; no earlier than the seal's `sealedAt`, no later than the command's clock |
 | `finalCount` | the seal's `finalCount`, as the seal record carries it |
-| `keyId` | the id of the key the line is signed under, one `acknowledgedBy` lists: the first 32 lowercase hexadecimal characters of the SHA-256 of its 32 raw public-key bytes (as SPEC.md §1.2 derives a key id) |
+| `keyId` | the id of the key the line is signed under, one `acknowledgedBy` lists: the first 32 lowercase hexadecimal characters of the SHA-256 of its 32 raw public-key bytes (as SPEC.md §1.2 derives a key id), or of a P-256 key's 33-byte compressed point |
 | `kind` | `"retention-ack"` |
 | `sealSignature` | the seal's `signature`, 128 lowercase hexadecimal characters, as the seal record carries it |
 | `sessionId` | the session's id, as its receipts and its seal carry it |
-| `signature` | Ed25519, 128 lowercase hexadecimal characters, over the bytes `judgment-pack-gateway/retention-ack/1:` followed by the canonical JSON of the object without `signature` |
+| `signature` | Ed25519, 128 lowercase hexadecimal characters, over the bytes `judgment-pack-gateway/retention-ack/1:` followed by the canonical JSON of the object without `signature`; under a P-256 key, ECDSA P-256 SHA-256 over the same bytes, `r||s` with s ≤ (n − 1)/2, in 128 lowercase hexadecimal characters |
+
+**Under a P-256 key** the line has an eighth member, `alg: "ES256"`, inside what it signs, and the
+key its `keyId` names must be listed in the object form. A line whose `alg` is not the listed
+key's algorithm (an `alg` on a key listed as Ed25519, or a P-256 signature with no `alg`) and a
+high-S signature do not verify under the key named; a DER signature and any other `alg` value
+are not of the line's form. The vectors are `corpus/retention-ack/*.json`.
 
 A line names a seal by the seal's own `signature` and `finalCount`, copied as the seal record
 carries them, so an audit log that holds the seal fills both without computing anything over

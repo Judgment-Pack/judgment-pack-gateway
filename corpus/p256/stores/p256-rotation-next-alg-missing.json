@@ -1,0 +1,24 @@
+{
+  "name": "p256-rotation-next-alg-missing",
+  "note": "The rotation with nextAlg removed from the key-rotation, re-signed by TEST-SEED: a next of 66 characters without nextAlg is not of an Ed25519 key's form (ADR-0053 §7, check 1).",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:844597ab5513a2f4d24ea1f08782a798a46e5623ee54e8fb528733822adf1aa4\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-08-01T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"198e0dca2da1220d4f7d9591955ae2c32f07885c6a61dc52c6e33e73fee41f0f09d7c3cfd330eca27c8bebf0869979df6d81ddc6de86085643151001646e4a07\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-08-01T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"ff0fc5fa51eb21d9d4496f09f22f805f6c58a0cb94597f96e3bdceb64ac4505257578242b837e534e13b707d91eb08056bc1a8a29c2414761da006877da1a90b\"}\n{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"key-rotation\",\"next\":\"026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16\",\"nextKeyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"7bae4834bf12b4d882d8fe03d22c0e5e49e9e1437f21960f5ce486d8ac39fc55506bed48ba6b14cd388290db89d890584eb1b79a67e176d625ed2745511dae0d\"}\n{\"alg\":\"ES256\",\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"kind\":\"key-continuation\",\"previous\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\",\"previousKeyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"866ca97ff1618daa03542cf38ce132a070db292bd4237003b5588e2e8096eae91b28b66c8640a54702f388ee13ba2ba10f9294ffcef3af4fe36e083ec01a04c9\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      },
+      {
+        "status": "rotation-break",
+        "rotation": 1
+      }
+    ]
+  }
+}

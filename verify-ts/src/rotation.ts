@@ -7,6 +7,8 @@
 
 import * as crypto from "node:crypto";
 
+import { keyObject, p256KeySound, recordAlg, verifyByAlg } from "./alg.ts";
+import type { Alg } from "./alg.ts";
 import { canonical } from "./canon.ts";
 import { hasDuplicate, member, parse } from "./json.ts";
 import type { ObjectValue, Value } from "./json.ts";
@@ -15,8 +17,9 @@ import { keyRefusal } from "./witness.ts";
 export type RotationStatus = "rotation-break" | "rotation-forged" | "rotation-order" | "rotation-key-refused";
 
 // A key the walk reached: the key pinned first, then each key a followed
-// rotation rotated to.
-export type ReachedKey = { readonly raw: Uint8Array; readonly keyId: string; readonly key: crypto.KeyObject };
+// rotation rotated to, each with the algorithm it was reached with: the pin's, or
+// its rotation's nextAlg (ADR-0053 §7).
+export type ReachedKey = { readonly raw: Uint8Array; readonly keyId: string; readonly alg: Alg; readonly key: crypto.KeyObject | null };
 
 const prefix = "judgment-pack-gateway/rotation/1:";
 const maxRotation = 2n ** 53n - 2n;
@@ -24,19 +27,28 @@ const timeForm = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/;
 const hexOf = (n: number) => new RegExp(`^[0-9a-f]{${n}}$`);
 const hex32 = hexOf(32);
 const hex64 = hexOf(64);
+const hex66 = hexOf(66);
 const hex128 = hexOf(128);
 
 const members: Record<string, readonly string[]> = {
   "key-rotation": ["kind", "rotationVersion", "rotation", "rotatedAt", "keyId", "next", "nextKeyId", "signature"],
   "key-continuation": ["kind", "rotationVersion", "rotation", "rotatedAt", "keyId", "previous", "previousKeyId", "signature"],
 };
+// The members a statement holds where a P-256 key signs it (alg) or is the
+// key it names (nextAlg, previousAlg), each then "ES256" (ADR-0053 §1, §7).
+const optional: Record<string, readonly string[]> = {
+  "key-rotation": ["alg", "nextAlg"],
+  "key-continuation": ["alg", "previousAlg"],
+};
 
-export function reached(raw: Uint8Array): ReachedKey {
-  return {
-    raw,
-    keyId: crypto.createHash("sha256").update(raw).digest("hex").slice(0, 32),
-    key: crypto.createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: Buffer.from(raw).toString("base64url") }, format: "jwk" }),
-  };
+export function reached(raw: Uint8Array, alg: Alg = ""): ReachedKey {
+  return { raw, keyId: crypto.createHash("sha256").update(raw).digest("hex").slice(0, 32), alg, key: keyObject(alg, raw) };
+}
+
+// keySound is the key rule of alg: Ed25519's of SPEC.md §8.4, or a
+// compressed P-256 point that exists.
+function keySound(alg: Alg, raw: Uint8Array): boolean {
+  return alg === "" ? keyRefusal(raw) === null : p256KeySound(raw);
 }
 
 // A rotation statement that holds its form.
@@ -45,6 +57,9 @@ type Statement = {
   readonly rotation: bigint;
   readonly rotatedAt: string;
   readonly keyId: string;
+  // alg is the statement's signer's algorithm, and namedAlg the named key's.
+  readonly alg: Alg;
+  readonly namedAlg: Alg;
   // named is the key the statement names: next, or previous.
   readonly named: Uint8Array;
   readonly namedId: string;
@@ -75,17 +90,22 @@ function str(v: Value | undefined, form: RegExp): string | null {
 // key's id.
 function statementOf(kind: string, v: ObjectValue): Statement | null {
   const names = members[kind]!;
-  if (v.members.length !== names.length || !v.members.every((m) => names.includes(m.name))) {
+  const extra = optional[kind]!;
+  if (!names.every((name) => member(v, name) !== undefined) || !v.members.every((m) => names.includes(m.name) || extra.includes(m.name))) {
     return null;
   }
-  const [named, namedIdName] = kind === "key-rotation" ? ["next", "nextKeyId"] : ["previous", "previousKeyId"];
+  const [named, namedIdName, namedAlgName] = kind === "key-rotation" ? ["next", "nextKeyId", "nextAlg"] : ["previous", "previousKeyId", "previousAlg"];
+  const alg = recordAlg(v, "alg");
+  const namedAlg = recordAlg(v, namedAlgName!);
   const rotation = member(v, "rotation");
   const rotatedAt = str(member(v, "rotatedAt"), timeForm);
   const keyId = str(member(v, "keyId"), hex32);
-  const namedHex = str(member(v, named!), hex64);
+  const namedHex = str(member(v, named!), namedAlg === "ES256" ? hex66 : hex64);
   const namedId = str(member(v, namedIdName!), hex32);
   const signature = str(member(v, "signature"), hex128);
   if (
+    alg === null ||
+    namedAlg === null ||
     str(member(v, "rotationVersion"), /^1$/) === null ||
     rotation?.type !== "number" ||
     rotation.integer === null ||
@@ -103,17 +123,18 @@ function statementOf(kind: string, v: ObjectValue): Statement | null {
   if (crypto.createHash("sha256").update(raw).digest("hex").slice(0, 32) !== namedId) {
     return null;
   }
-  return { kind, rotation: rotation.integer, rotatedAt, keyId, named: raw, namedId, signature, value: v };
+  return { kind, rotation: rotation.integer, rotatedAt, keyId, alg, namedAlg, named: raw, namedId, signature, value: v };
 }
 
-// signedBy is whether the statement's signature verifies under the key,
-// over the prefix and the canonical form of everything but the signature.
-function signedBy(st: Statement, key: crypto.KeyObject): boolean {
+// signedBy is whether the statement's signature verifies under the key by
+// the algorithm the statement's alg names, which the key must be of, over
+// the prefix and the canonical form of everything but the signature.
+function signedBy(st: Statement, key: ReachedKey): boolean {
   const body = canonical({ type: "object", members: st.value.members.filter((m) => m.name !== "signature") });
   if (body === null) {
     return false;
   }
-  return crypto.verify(null, Buffer.concat([Buffer.from(prefix, "utf8"), body]), key, Buffer.from(st.signature, "hex"));
+  return verifyByAlg(st.alg, key, Buffer.concat([Buffer.from(prefix, "utf8"), body]), st.signature);
 }
 
 // RegistryWalk takes the registry's lines in order. A line it does not take
@@ -126,8 +147,8 @@ export class RegistryWalk {
   private pending: Statement | null = null;
   private readonly onKey: (k: ReachedKey) => void;
 
-  constructor(pinned: Uint8Array, onKey: (k: ReachedKey) => void) {
-    this.keys = [reached(pinned)];
+  constructor(pinned: Uint8Array, pinnedAlg: Alg, onKey: (k: ReachedKey) => void) {
+    this.keys = [reached(pinned, pinnedAlg)];
     this.onKey = onKey;
   }
 
@@ -158,11 +179,16 @@ export class RegistryWalk {
         reverse !== null &&
         reverse.rotation === forward.rotation &&
         reverse.rotatedAt === forward.rotatedAt &&
+        // the pair (check 5): the continuation's alg is the rotation's
+        // nextAlg, its previous and previousAlg the current key's bytes and
+        // algorithm, and it verifies under next by that algorithm
+        reverse.alg === forward.namedAlg &&
+        reverse.namedAlg === from.alg &&
         Buffer.from(reverse.named).equals(Buffer.from(from.raw)) &&
         reverse.keyId === forward.namedId &&
-        signedBy(reverse, reached(forward.named).key)
+        signedBy(reverse, reached(forward.named, forward.namedAlg))
       ) {
-        const k = reached(forward.named);
+        const k = reached(forward.named, forward.namedAlg);
         this.onKey(k);
         this.keys.push(k);
         return true;
@@ -187,7 +213,9 @@ export class RegistryWalk {
       return true;
     }
     const current = this.current();
-    if (st.keyId !== current.keyId || !signedBy(st, current.key)) {
+    // the signer's algorithm is the current key's, and its signature
+    // verifies by it (check 2)
+    if (st.keyId !== current.keyId || st.alg !== current.alg || !signedBy(st, current)) {
       this.stop("rotation-forged");
       return true;
     }
@@ -195,7 +223,9 @@ export class RegistryWalk {
       this.stop("rotation-order");
       return true;
     }
-    if (keyRefusal(st.named) !== null || this.keys.some((k) => k.keyId === st.namedId)) {
+    // the key named holds nextAlg's key rule, and its key id is none of a
+    // key reached, of either algorithm (check 4)
+    if (!keySound(st.namedAlg, st.named) || this.keys.some((k) => k.keyId === st.namedId)) {
       this.stop("rotation-key-refused");
       return true;
     }

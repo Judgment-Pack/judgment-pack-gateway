@@ -502,6 +502,57 @@ written, and the first that did was built afterwards to the text. `gateway
 conform` reads both directories. A vector that fails is a specification
 question before it is an implementation one, the same rule as above.
 
+## P-256 vectors
+
+**`p256/stores/*.json`** — 15 vectors for ECDSA P-256 with SHA-256, the `ES256` algorithm of
+[ADR-0053](../docs/adr/0053-an-ecdsa-p256-signer-at-a-key-services-hsm-protection-level.md): a
+record a P-256 key signs carries `alg: "ES256"` inside what it signs, its signature is `r||s` in
+128 lowercase hexadecimal characters with s ≤ (n − 1)/2, and its key is the 33-byte compressed point
+in 66. Each vector is a store, read by the store runner and the process contract as the vectors of
+`stores/` are. Each but one pins `TEST-PUBLIC-KEY` and reaches the P-256 test key through a rotation
+in its registry, whose `key-rotation` carries `nextAlg` and whose `key-continuation` carries `alg`.
+That one, `p256-pinned-from-first-receipt`, is a store the P-256 test key signed from its first
+receipt, with no rotation; it gives `"publicKeyAlg": "ES256"`, and the runner passes
+`--public-key-alg ES256` with the 66 characters of `TEST-P256-PUBLIC-KEY` on standard input (the
+process contract, below).
+
+Three verify: the rotation from Ed25519 alone (`p256-rotation-from-ed25519`, `rotations` one), a
+version 3 receipt and its seal of `SPEC.md` §3's form signed over five members, `alg` among them
+(`p256-receipt-sealed`), and receipts of a scope identifier under a seal of version 3 carrying `alg`
+(`p256-scoped-seal`). Eleven refuse: the receipt with s replaced by n − s, `signature-mismatch`
+(`p256-receipt-high-s`); a version 2 receipt holding `alg`, `malformed` (`p256-v2-receipt-with-alg`);
+the receipt's signature as DER, `malformed` (`p256-receipt-der`); `alg: "ES384"`, `malformed`
+(`p256-receipt-unknown-alg`); `alg` beside the key id of `TEST-PUBLIC-KEY`, and a P-256 signature with
+no `alg`, each `key-mismatch` (`p256-receipt-alg-on-ed25519-key`, `p256-receipt-no-alg`); the seal
+with `alg` removed, which loads nothing, `unregistered-session` (`p256-seal-alg-stripped`); and four
+rotations: a 66-character `next` with no `nextAlg`, `rotation-break`
+(`p256-rotation-next-alg-missing`); the `key-continuation`'s s replaced by n − s, `rotation-break`
+(`p256-rotation-continuation-high-s`); a `next` whose x has no point, `rotation-key-refused`
+(`p256-rotation-next-off-curve`); and a `next` of 130 characters, the uncompressed point,
+`rotation-break` (`p256-rotation-next-uncompressed`).
+
+**`retention-ack/*.json`** — 6 vectors for the acknowledgment line `gateway retain` reads
+(ADR-0053 §9), which no verifier reads. Each holds an `acknowledgedBy` list, read as a version-40
+engine configuration reads it, one `line`, and `expected`: `{"accepted": true}`, or
+`{"refused": <why>}`, the sentence `retain` gives after `acknowledgment line <n> `. `gateway conform`
+runs them in process, with no process-contract command, whatever implementation is under test: a
+valid P-256 line, a high-S one, a DER one, one with an unknown `alg`, one with `alg` on a key listed
+as Ed25519, and a P-256 signature with no `alg`.
+
+**The key and the signature vectors.** `TEST-P256-SCALAR` is the synthetic scalar, the 32 bytes `01`
+repeated, published for building vectors alone, as `TEST-SEED` is. `TEST-P256-PUBLIC-KEY` is its
+compressed point, `026ff03b…ca16`, key id `dbdb99c64b3d511f72c88fb6c054da73`. `p256-vectors.json`
+sits beside `ed25519-vectors.json`: ECDSA P-256 SHA-256 signatures under that key, each with its
+high-S twin, which every implementation's own tests verify and refuse.
+
+**Made once, independently, and frozen.** Every P-256 signature here, and the Ed25519 signatures of
+the records these vectors re-sign, were made once by a script using Python's `cryptography` 44.0.0
+(over OpenSSL), not by this repository's code: the signing input is the kind's prefix and `SPEC.md`
+§1.1's canonical form, which the script checks against the canonical bytes of the vectors it starts
+from, and each ECDSA signature is normalized to low-S and written as `r||s`. ECDSA signatures are not
+reproducible, so the vectors are verify-only: no test signs them again, and the script is not kept
+in the repository.
+
 ## Witness vectors
 
 **`witness/*.json`** — 54 vectors for the checkpoint witness's statement (`SPEC.md` §8),
@@ -685,8 +736,10 @@ this one:
 - `CMD canon` — stdin: one JSON document (the *text*). stdout: the canonical
   bytes, exactly, no trailing newline. Exit 0 if inside the domain, non-zero if
   refused.
-- `CMD verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>]`
-  — stdin: the 32-byte Ed25519 **public** key, raw bytes, never a secret.
+- `CMD verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>]`
+  — stdin: the 32-byte Ed25519 **public** key, raw bytes, never a secret; under
+  `--public-key-alg ES256`, exactly the 66 lowercase hexadecimal characters of a P-256 compressed
+  point, nothing around them.
   stdout: `{"ok": bool, "findings": [...]}`, and optionally the
   `observations` member of `SPEC.md` §4, which the runner compares as a multiset
   for a vector that states them and does not read for any other (above), the
@@ -719,6 +772,12 @@ this one:
   member, `{"scope", "sessions", "unattributed"}`, which the runner compares whole, and a
   verdict without the option gives none. No verdict for a vector run with it disagrees with
   that vector, `store <name>: no verdict under --scope:`, and the run goes on.
+  `--public-key-alg ES256` pins a P-256 key (ADR-0053 §11), given first, before every other option,
+  `--scope` among them; the runner passes it exactly when the vector gives `"publicKeyAlg": "ES256"`,
+  standard input then the 66 characters of `TEST-P256-PUBLIC-KEY`, and nothing in its place
+  otherwise. An implementation that gives no verdict for a vector run under it, as one that does not
+  take the option does, disagrees with that vector, `store <name>: no verdict under
+  --public-key-alg:`, and the run goes on, as under `--ordinary-seals-only`.
 - `CMD witness --trail <hex> --witness-key <file>... [--witness <file>]...
   [--witness-head <file>]` — the flags of the runtime's `audit verify`: the trail being
   verified; each key a file holding its 64 lowercase hexadecimal characters and a

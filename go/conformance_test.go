@@ -99,7 +99,12 @@ func TestStoreVectors(t *testing.T) {
 		}
 		defer os.RemoveAll(tmp)
 
-		rep, err := verifierBy(vec.OrdinarySealsOnly, vec.Scope, previousOf(vec, tmp))(root, registryPath, vec.Authority, decisionRecords, suppliedOf(vec, tmp), publicKey)
+		var p256 heldKey
+		pin, err := vectorPin(corpusPath(), vec, publicKey, &p256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep, err := verifierByPin(vec.OrdinarySealsOnly, vec.Scope, previousOf(vec, tmp))(root, registryPath, vec.Authority, decisionRecords, suppliedOf(vec, tmp), pin)
 		if err != nil {
 			t.Errorf("%s: no verdict: %v", vec.Name, err)
 			continue

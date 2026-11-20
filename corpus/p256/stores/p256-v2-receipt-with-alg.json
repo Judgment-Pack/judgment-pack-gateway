@@ -1,0 +1,20 @@
+{
+  "name": "p256-v2-receipt-with-alg",
+  "note": "An Ed25519 version 2 receipt holding alg \"ES256\", signed by TEST-SEED over it, and its seal: a version 2 receipt carries no alg, of any value, and is malformed, never verified as ES256 (SPEC.md §1.2, ADR-0053 §1).",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"alg\":\"ES256\",\"argumentsDigest\":\"hmac-sha256:844597ab5513a2f4d24ea1f08782a798a46e5623ee54e8fb528733822adf1aa4\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-08-01T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"813966c11fff288daa5a945e4f70b4758e9e89781412e8218dd450bf836d9aa9fc934e53a23ab59c0412596d14a080b1a251ea034c8008ab7ffd643a40edf103\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-08-01T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"ff0fc5fa51eb21d9d4496f09f22f805f6c58a0cb94597f96e3bdceb64ac4505257578242b837e534e13b707d91eb08056bc1a8a29c2414761da006877da1a90b\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "file": "0.json",
+        "status": "malformed"
+      }
+    ]
+  }
+}

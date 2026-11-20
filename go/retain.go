@@ -60,12 +60,13 @@ type retentionConfig struct {
 	windowDays int64
 	// acknowledgedBy is each key a line may be signed under, in the
 	// configuration's order, and keyIDs their key ids, in the same order
-	acknowledgedBy []ed25519.PublicKey
+	// each held with its algorithm (ADR-0053 §9)
+	acknowledgedBy []heldKey
 	keyIDs         []string
 }
 
 // keyFor is the listed key whose id a line names, if one is.
-func (c *retentionConfig) keyFor(keyID string) (ed25519.PublicKey, bool) {
+func (c *retentionConfig) keyFor(keyID string) (heldKey, bool) {
 	found := -1
 	for i, id := range c.keyIDs {
 		if subtle.ConstantTimeCompare([]byte(keyID), []byte(id)) == 1 {
@@ -73,7 +74,7 @@ func (c *retentionConfig) keyFor(keyID string) (ed25519.PublicKey, bool) {
 		}
 	}
 	if found < 0 {
-		return nil, false
+		return heldKey{}, false
 	}
 	return c.acknowledgedBy[found], true
 }
@@ -82,7 +83,7 @@ func (c *retentionConfig) keyFor(keyID string) (ed25519.PublicKey, bool) {
 // of days from 7, and acknowledgedBy, a list of one to four distinct Ed25519
 // public keys, each 64 lowercase hexadecimal characters, so the acknowledging
 // log's old and new keys overlap while it rotates.
-func parseRetentionConfig(v value) (*retentionConfig, error) {
+func parseRetentionConfig(v value, version string) (*retentionConfig, error) {
 	obj, ok := v.(*vObject)
 	if !ok {
 		return nil, errors.New("engine configuration: retention is an object")
@@ -103,22 +104,58 @@ func parseRetentionConfig(v value) (*retentionConfig, error) {
 	cfg := &retentionConfig{window: time.Duration(days) * 24 * time.Hour, windowDays: int64(days)}
 	seen := map[string]bool{}
 	for i, each := range keys {
-		keyHex, isString := each.(vString)
-		if !isString || !isLowerHexOfLen(string(keyHex), 64) {
-			return nil, fmt.Errorf("engine configuration: retention.acknowledgedBy[%d] is an Ed25519 public key, 64 lowercase hexadecimal characters", i)
+		key, err := acknowledgingKey(i, each, versionAtLeast(version, p256SignerVersion))
+		if err != nil {
+			return nil, err
 		}
-		key, _ := hex.DecodeString(string(keyHex))
-		if publicKeyFault(key) != keySound {
-			return nil, fmt.Errorf("engine configuration: retention.acknowledgedBy[%d] is not a sound Ed25519 public key", i)
-		}
-		if seen[string(keyHex)] {
+		if seen[key.alg+":"+string(key.key)] {
 			return nil, fmt.Errorf("engine configuration: retention.acknowledgedBy[%d] is listed twice", i)
 		}
-		seen[string(keyHex)] = true
-		cfg.acknowledgedBy = append(cfg.acknowledgedBy, ed25519.PublicKey(key))
-		cfg.keyIDs = append(cfg.keyIDs, keyIDFor(key))
+		seen[key.alg+":"+string(key.key)] = true
+		cfg.acknowledgedBy = append(cfg.acknowledgedBy, key)
+		cfg.keyIDs = append(cfg.keyIDs, key.keyID())
 	}
 	return cfg, nil
+}
+
+// acknowledgingKey is the key retention.acknowledgedBy[i] lists, with its
+// algorithm (ADR-0053 §9): a string of 64 lowercase hexadecimal characters
+// is an Ed25519 key, at every version; from version 40, objectForm, the
+// object {"alg": "ES256", "key": <66 lowercase hexadecimal characters>},
+// nothing else, is a P-256 key held to its key rule. Every other entry is
+// refused: before version 40 with the Ed25519 sentence, and from it with
+// the sentence naming both forms -- a bare string of 66 characters among
+// them, since taking it would choose the algorithm from the key's length.
+func acknowledgingKey(i int, each value, objectForm bool) (heldKey, error) {
+	at := fmt.Sprintf("engine configuration: retention.acknowledgedBy[%d]", i)
+	if keyHex, ok := each.(vString); ok && isLowerHexOfLen(string(keyHex), 64) {
+		key, _ := hex.DecodeString(string(keyHex))
+		if publicKeyFault(key) != keySound {
+			return heldKey{}, errors.New(at + " is not a sound Ed25519 public key")
+		}
+		return edKey(key), nil
+	}
+	if !objectForm {
+		return heldKey{}, errors.New(at + " is an Ed25519 public key, 64 lowercase hexadecimal characters")
+	}
+	bothForms := errors.New(at + ` is an Ed25519 public key of 64 lowercase hexadecimal characters, or {"alg": "ES256", "key": <66 lowercase hexadecimal characters>}`)
+	obj, ok := each.(*vObject)
+	if !ok || len(obj.byName) != 2 {
+		return heldKey{}, bothForms
+	}
+	alg, okAlg := memberString(obj, "alg")
+	keyHex, okKey := memberString(obj, "key")
+	if !okAlg || alg != algES256 || !okKey {
+		return heldKey{}, bothForms
+	}
+	key := decodeKeyHex(algES256, keyHex)
+	if key == nil {
+		return heldKey{}, bothForms
+	}
+	if !keySoundFor(algES256, key) {
+		return heldKey{}, errors.New(at + " is not a sound P-256 public key")
+	}
+	return heldKey{alg: algES256, key: key}, nil
 }
 
 // retentionAck is one acknowledgment line that verified.
@@ -188,11 +225,13 @@ func retentionAckOf(line []byte, cfg *retentionConfig) (retentionAck, string) {
 	if !ok || !bytes.Equal(canon(obj), line) {
 		return retentionAck{}, "is not one canonical JSON object"
 	}
-	if len(obj.byName) != len(retentionAckMembers) {
+	// alg among them on a line a P-256 key signs (ADR-0053 §9)
+	members := membersWithAlg(retentionAckMembers, obj)
+	if len(obj.byName) != len(members) {
 		return retentionAck{}, "does not hold exactly an acknowledgment's members"
 	}
 	for name := range obj.byName {
-		if !retentionAckMembers[name] {
+		if !members[name] {
 			return retentionAck{}, "does not hold exactly an acknowledgment's members"
 		}
 	}
@@ -204,7 +243,8 @@ func retentionAckOf(line []byte, cfg *retentionConfig) (retentionAck, string) {
 	sigHex, okSig := memberString(obj, "signature")
 	countV, _ := obj.get("finalCount")
 	count, okC := countV.(vInt)
-	if kind != retentionAckKind || !okS || requireSession(session) != nil || !okSeal || !isLowerHexOfLen(sealSig, 128) ||
+	alg, okAlg := recordAlg(obj, "alg")
+	if kind != retentionAckKind || !okAlg || !okS || requireSession(session) != nil || !okSeal || !isLowerHexOfLen(sealSig, 128) ||
 		!okAt || !witnessTimeForm.MatchString(at) || !okK || !isLowerHexOfLen(keyID, 32) || !okSig || !isLowerHexOfLen(sigHex, 128) ||
 		!okC || count < 0 {
 		return retentionAck{}, "is not of an acknowledgment's form"
@@ -218,7 +258,9 @@ func retentionAckOf(line []byte, cfg *retentionConfig) (retentionAck, string) {
 	if !listed {
 		return retentionAck{}, "names a key that retention.acknowledgedBy does not list"
 	}
-	if !verifyByAlgorithm(algEd25519, edKey(key), recordSigningInput(retentionAckContext, obj), sig) {
+	// the line's alg names the listed key's algorithm, or it does not
+	// verify: a P-256 signature with no alg, and an alg on an Ed25519 key
+	if !verifyByAlgorithm(alg, key, recordSigningInput(retentionAckContext, obj), sig) {
 		return retentionAck{}, fmt.Sprintf("does not verify under retention.acknowledgedBy, key %s", keyID)
 	}
 	return retentionAck{sessionID: session, sealSignature: sealSig, finalCount: int64(count), acknowledgedAt: when}, ""

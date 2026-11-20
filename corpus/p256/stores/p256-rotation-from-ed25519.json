@@ -1,0 +1,24 @@
+{
+  "name": "p256-rotation-from-ed25519",
+  "note": "An Ed25519 store, sealed under TEST-PUBLIC-KEY, then rotated to the P-256 test key (ADR-0053 §7): the key-rotation the Ed25519 key signs carries next as the 66-character compressed point and nextAlg \"ES256\"; the key-continuation the P-256 key signs carries alg \"ES256\" and previous as the Ed25519 key. The rotation is followed.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:844597ab5513a2f4d24ea1f08782a798a46e5623ee54e8fb528733822adf1aa4\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-08-01T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"198e0dca2da1220d4f7d9591955ae2c32f07885c6a61dc52c6e33e73fee41f0f09d7c3cfd330eca27c8bebf0869979df6d81ddc6de86085643151001646e4a07\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-08-01T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"ff0fc5fa51eb21d9d4496f09f22f805f6c58a0cb94597f96e3bdceb64ac4505257578242b837e534e13b707d91eb08056bc1a8a29c2414761da006877da1a90b\"}\n{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"key-rotation\",\"next\":\"026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16\",\"nextAlg\":\"ES256\",\"nextKeyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"aed4b43988b90f939ff52a2cf89b94b6b8e8c9cb26f77ec585aa4c4358c8f5c30d30233492a427e8843a5d9855c2498e26cb4fab73bd16c64598e8e0e5536905\"}\n{\"alg\":\"ES256\",\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"kind\":\"key-continuation\",\"previous\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\",\"previousKeyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"816c2f690fb5f8d5938b8ca538d8166bd0678ab39fdcac13f252237f571c517b6a77285f0f5db161ade9f504418a13630bbd24af3cd916247ba23e43be3fa354\"}\n",
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      }
+    ],
+    "rotations": {
+      "count": 1,
+      "keyId": "dbdb99c64b3d511f72c88fb6c054da73"
+    }
+  }
+}

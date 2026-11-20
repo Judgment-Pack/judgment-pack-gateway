@@ -1,0 +1,15 @@
+{
+  "name": "p256-line",
+  "note": "A line signed by the P-256 test key, carrying alg \"ES256\" and its P-256 key id, under acknowledgedBy listing it in the object form: accepted.",
+  "acknowledgedBy": [
+    "fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b",
+    {
+      "alg": "ES256",
+      "key": "026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16"
+    }
+  ],
+  "line": "{\"acknowledgedAt\":\"2026-08-02T00:00:00Z\",\"alg\":\"ES256\",\"finalCount\":1,\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"kind\":\"retention-ack\",\"sealSignature\":\"ff0fc5fa51eb21d9d4496f09f22f805f6c58a0cb94597f96e3bdceb64ac4505257578242b837e534e13b707d91eb08056bc1a8a29c2414761da006877da1a90b\",\"sessionId\":\"s1\",\"signature\":\"e944cfcc6c4dba9546da7205c1f0c99074f0effc21b9f6f3c7eb546a78a33f4308ea263db3eecca2c6dde6e0cb085341d575f461d6cc94f330da8bd5df76eca4\"}",
+  "expected": {
+    "accepted": true
+  }
+}
