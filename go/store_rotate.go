@@ -83,7 +83,7 @@ func cmdStoreRotateAt(args []string, stdout, stderr io.Writer, stamp func() stri
 		// The PostgreSQL kind's rotation (#546) must also carry the key
 		// history of the database rotated from into the new one, as
 		// storeRotate carries it beside the new registry (carriedHistoryOf;
-		// ADR-0051), for gatewayService.carriedKeyHistory to read there.
+		// ADR-0052), for gatewayService.carriedKeyHistory to read there.
 		fmt.Fprintln(stderr, "store rotate: the PostgreSQL kind is rotated to a new database or schema, which this release does not yet do; nothing was changed")
 		return 1
 	}
@@ -337,7 +337,7 @@ func refuseRotatedStore(registryPath string) error {
 }
 
 // carriedHistoryOf is the key history a store rotation carries into the new
-// store (SPEC.md §3e; ADR-0051): the history of the old registry's bytes as
+// store (SPEC.md §3e; ADR-0052): the history of the old registry's bytes as
 // the rotation names them, walked from the key in force, with what was
 // carried into the old store in its turn -- the answer the old store's
 // gateway gives, which the new store's continues. A history that does not

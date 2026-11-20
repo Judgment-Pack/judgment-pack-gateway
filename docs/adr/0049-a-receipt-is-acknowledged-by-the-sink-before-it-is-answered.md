@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-19
 deciders: maintainer
 ---
@@ -150,7 +150,8 @@ Chosen: option 1 and K1.
    run alone, which has ended when delivery begins, and the delivery time is added to the
    acquisition's. A caller's own deadline should allow for the source's timeout plus 16
    seconds. A stop of the gateway ends a delivery in flight, which is then refused.
-9. **What is forwarded.** Receipts minted by `/acquire` alone, including those of the MCP
+9. **What is forwarded.** Under version 35, receipts minted by `/acquire` alone (seals are
+   forwarded from version 37 where the configuration asks for them: see the amendment below), including those of the MCP
    front and of an action's read-back, which take the same path. Other records are unchanged
    and not forwarded:
    - an action's receipt minted by `/act`;
@@ -183,7 +184,9 @@ Chosen: option 1 and K1.
   instance that does not serve the session, and the instance that finds it open after the
   holder has stopped delivers from the store.
 - Later change: forwarding action receipts and seals. Neither is forwarded in this version;
-  doing so is a new `deliveryVersion`, and a follow-up issue.
+  doing so is a new `deliveryVersion`, and a follow-up issue. Seals are forwarded from
+  version 37, under `deliveryVersion` `"2"` (amendment of 2026-11-19); action receipts are
+  not.
 - Bad: the acknowledgment is the sink's word. A sink that acknowledges and then drops a
   receipt loses it, and the gateway cannot tell.
 - Bad: one sink serves every scope identifier. It learns every scope's receipts and, with
@@ -191,10 +194,107 @@ Chosen: option 1 and K1.
 - Neutral: a refused acquisition now leaves a receipt in the store. SPEC.md §6 says so beside
   the other answers.
 
+## Amendment (2026-11-19): each seal goes to the same sink
+
+Chosen by the maintainer.
+
+The configured log learns of a session's receipts, but not that the session ended, or at
+what count. The amendment sends each seal to the same sink, under the same rules, behind an
+opt-in that a version-35 sink never sees.
+
+1. **The member.** `receiptSink.seals`, `true` or `false`, `false` when absent, read from
+   engine configuration version 37 (`sealSinkVersion`) and refused by name under an earlier
+   one: `receiptSink: seals is a version-37 member; engineVersion 36 has no seals`. Without
+   it, nothing changes: a sink is sent receipts alone, and no marker is written.
+2. **What is forwarded.** Every seal the gateway appends: `/seal`'s, and a seal made after an
+   interruption (SPEC.md §3c) by the start's `sealOpenAtStart` or by `gateway seal-open
+   --config`, on both store kinds.
+3. **The delivery.** `POST` to the same url, the canonical JSON of exactly:
+   - `deliveryVersion`: `"2"`, so that a sink that reads receipts never takes a seal for one;
+   - `seal`: the seal record, whole, as its registry line holds it;
+   - `sealDigest`: `sha256:` and the lowercase hexadecimal SHA-256 of the seal's canonical
+     bytes, its registry line without the line feed.
+
+   The acknowledgment is `{"acknowledged":"<sealDigest>"}`, under decision 3's bounds. The
+   retries and deadlines are decision 8's. Delivery is at least once, and the sink
+   deduplicates by `sealDigest`.
+4. **Order.** A seal is appended only once every receipt of its session is acknowledged.
+   `/seal` delivers the session's held receipts first, as before, and appends the seal only
+   when, under the gateway's lock, nothing is held. A seal made after an interruption is
+   appended only once each stored acquisition receipt of its session is acknowledged. The
+   seal is then the last thing of its session the sink is sent.
+5. **Held.** `/seal` answers the seal only once the sink has acknowledged it. Otherwise it
+   answers `503`, `code` `receipt_not_forwarded`, with the seal's own fixed sentence:
+   `seal not forwarded: the receipt sink did not acknowledge the session's seal; the session
+   is sealed in the registry, nothing was answered, and the seal is held to be delivered again
+   before the session's next seal, at the next start, or by gateway seal-open`. The code is
+   the receipts' code, since a caller acts on both alike, by asking `/seal` again; the
+   sentence says the session is sealed. The seal is held in the serving process's memory,
+   after the session's receipts. The session's next `/seal` delivers it again, and answers it
+   once it is acknowledged, once; a `/seal` after that is answered as a sealed session's
+   always was. The start and seal-open name a seal they could not deliver with the same
+   sentence, and leave it held.
+6. **The marker.** The gateway keeps no record of acknowledgments, and delivering every seal
+   in the registry at each start would cost a delivery per session ever sealed. A seal
+   pending forwarding is therefore marked in the store: the marker is written durably before
+   the seal is appended, and removed once the sink acknowledges the seal.
+   - On the filesystem kind it is a file under `seal-forwarding/` in the store's root, named
+     by the session id and holding it and a line feed, staged, synced and renamed into place
+     as a receipt is. A file of any other name or bytes, such as a staging file a write left,
+     is no marker.
+   - On the PostgreSQL kind it is a document of no scope in `gateway.documents`, named
+     `seal-forwarding.` and the lowercase hexadecimal SHA-256 of the session id (a document's
+     name is held to a session id's form and length), holding the session id. The run-time
+     role's grants on the table already cover it. No table and no migration is added, so a
+     database is not migrated for a member it may never use.
+
+   The marker names a session and nothing else. No verifier reads it, `gateway verify`'s
+   verdict is the same with it or without it, and an export carries no document. The start,
+   with or without `sealOpenAtStart`, and `gateway seal-open --config` deliver each pending
+   seal that the registry holds, in the markers' order, before they serve or seal. Each
+   pending seal is sent alone: its receipts were acknowledged before its marker was written
+   (decision 4). Once one delivery fails the sink is not asked for the seals after it, which
+   are named, and stay held.
+7. **Crash cases.**
+   - Before the marker is written: no seal is appended. The session is left open in the store,
+     as without the member, and the seal made after the interruption is forwarded.
+   - After the marker, before the append: the marker names a session the registry holds no
+     seal of. The start and seal-open pass over it, and keep it. When the session is sealed
+     after the interruption, that seal is delivered and the marker removed. On the PostgreSQL
+     kind this is also what a starting instance finds while another live instance is between
+     its marker and its append, so a marker is never removed for a seal not yet appended.
+   - After the append, before the acknowledgment: the next start or `seal-open --config`
+     delivers the seal and removes the marker.
+   - After the acknowledgment, before the marker is removed: the seal is delivered again at
+     the next start, and the sink deduplicates it.
+   - An append whose outcome is not known (a write that may have been kept): the session is
+     taken as sealed, as before, and the marker stays. A later `/seal` in that process is
+     answered as before, and the next start or `seal-open --config` delivers the seal if the
+     registry holds it.
+   - The sink down at the start: each pending seal is named on stderr and stays marked. The
+     start still serves: the seal is in the registry already, and no caller is answered it.
+8. **Versioning.** No receipt, seal, registry or corpus form changes. The marker is a store
+   record outside the verified form.
+
+### Consequences of the amendment
+
+- Good: the log learns that a session ended, and at what count, before the caller does. A
+  session's seal reaches it after every receipt the seal counts.
+- Good: a version-35 sink, or one of version 36 or 37 without `seals`, sees nothing new.
+- Bad: an unavailable sink now stops `/seal` too, after the seal is appended. The caller
+  learns of the seal from the registry until the sink acknowledges it.
+- Neutral: `/registry` serves a seal from its append, before the sink acknowledges it, as the
+  store holds a receipt before its acknowledgment.
+- Neutral: a marker whose session is never sealed stays, and is read at each start.
+- Neutral: on the PostgreSQL kind a start delivers every pending seal the registry holds,
+  one another live instance holds among them; the sink deduplicates it.
+
 ## More information
 
 - SPEC.md §6a, "Receipt forwarding"; `docs/design/engine-config.md`, "A receipt sink (engine
   version 35)"; SECURITY.md, "The receipt sink".
 - `go/receipt_sink.go`; tests in `go/receipt_sink_test.go`.
+- The amendment: `go/seal_sink.go`; tests in `go/receipt_sink_seals_test.go`;
+  `docs/design/engine-config.md`, "Seals at the receipt sink (engine version 37)".
 - ADR-0029 (a fixed sentence for a failure class); ADR-0028 (payloads not kept); ADR-0037 and
   ADR-0041 (scope reach); ADR-0042 (the scope salt).

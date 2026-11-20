@@ -2670,6 +2670,37 @@ of the seed's key ([ADR-0050](../adr/0050-an-external-signer-in-a-key-service.md
   - A key service that cannot be reached, refuses (a 429 or 503 among the refusals) or answers a signature that does not verify fails the acquisition or the seal with a fixed sentence, and nothing is written.
 - **The commands under a key service.** `gateway remove-artifact`, `remove-scope`, `seal-open`, `export` and `connect`'s descriptor capture sign through the key version the configuration names, held to `signingPublicKey`. `gateway rotate-key` stays seed-only and refuses through the registry's walk. A key service's key is rotated by SIGHUP on the file kind; on the PostgreSQL kind every instance is stopped first (ADR-0050).
 
+## Seals at the receipt sink (engine version 37)
+
+Version 37 adds `receiptSink`'s optional `seals` member
+([ADR-0049](../adr/0049-a-receipt-is-acknowledged-by-the-sink-before-it-is-answered.md),
+amendment of 2026-11-19; SPEC.md §6a). With it on, each seal is delivered to the same sink,
+after every receipt of its session, and acknowledged by its digest.
+
+```json
+"receiptSink": {"url": "https://audit-log.example/receipts", "seals": true}
+```
+
+- `seals` is optional, `true` or `false`, and `false` when absent. A sink of a file without
+  it, version 35's among them, is sent receipts alone, as before.
+- The member under version 36 or earlier is refused as `receiptSink: seals is a version-37 member;
+  engineVersion 36 has no seals`.
+
+With `seals: true`:
+- `/seal` answers only once the sink has acknowledged the seal. A seal not acknowledged is
+  refused `503` with `code` `receipt_not_forwarded` and the seal's own sentence. The seal is
+  in the registry and held: the session's next `/seal` delivers it again, and answers it once
+  it is acknowledged.
+- A seal made after an interruption, by the start's `sealOpenAtStart` or by `gateway
+  seal-open --config`, is delivered after the session's stored receipts, and named while it
+  is not acknowledged.
+- The store keeps a marker for each seal pending forwarding: on the filesystem kind a file
+  under `seal-forwarding/` in the store's root, on the PostgreSQL kind a document of no
+  scope. The start, with or without `sealOpenAtStart`, and `gateway seal-open --config`
+  deliver each pending seal before they serve or seal. The marker is no part of what
+  `gateway verify` reads. The PostgreSQL kind needs no migration for it: the run-time role's
+  grants on `gateway.documents` cover it.
+
 ## Keyed actions (engine version 14 and later)
 
 Version 14 and every later version require a caller-chosen `actionKey` on `/act`: 64 lowercase hex

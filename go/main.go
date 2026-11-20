@@ -601,12 +601,11 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	defer registryHold.Close()
-	// under the hold, before anything is served (SPEC.md §3c)
-	if cfg.sealOpenAtStart {
-		if err := sealOpenAtStart(service, os.Stderr, nowStamp); err != nil {
-			fmt.Fprintln(os.Stderr, "start:", err)
-			return 1
-		}
+	// under the hold, before anything is served (SPEC.md §3c), and the
+	// seals pending forwarding delivered (seal_sink.go)
+	if err := sealsAtStart(service, os.Stderr, nowStamp, cfg.sealOpenAtStart); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
 	}
 	service.witness = witness
 	// SIGHUP: the configuration's signingKeyVersion read again, and the
@@ -865,10 +864,11 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 	if err == nil {
 		_, err = service.kindRegistryWalk()
 	}
-	if err == nil && cfg.sealOpenAtStart {
+	if err == nil {
 		// the lease held and the registry walked, before anything is
-		// served (SPEC.md §3c; seal_open_pg.go)
-		err = sealOpenAtStart(service, r.said, nowStamp)
+		// served (SPEC.md §3c; seal_open_pg.go), and the seals pending
+		// forwarding delivered (seal_sink.go)
+		err = sealsAtStart(service, r.said, nowStamp, cfg.sealOpenAtStart)
 	}
 	if err == nil {
 		// a lease lost while the start ran ends it here
@@ -1356,12 +1356,11 @@ func cmdServe(args []string) int {
 		return 1
 	}
 	defer registryHold.Close()
-	// under the hold, before anything is served (SPEC.md §3c)
-	if opts.sealOpenAtStart {
-		if err := sealOpenAtStart(service, os.Stderr, nowStamp); err != nil {
-			fmt.Fprintln(os.Stderr, "start:", err)
-			return 1
-		}
+	// under the hold, before anything is served (SPEC.md §3c), and the
+	// seals pending forwarding delivered (seal_sink.go)
+	if err := sealsAtStart(service, os.Stderr, nowStamp, opts.sealOpenAtStart); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
 	}
 	// Sources run in their own process groups, so the terminal's interrupt
 	// no longer reaches them; the gateway's does, and it is carried to every

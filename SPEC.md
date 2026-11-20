@@ -1585,7 +1585,7 @@ usage error, giving no verdict.
 A consumer that checks receipts one at a time holds no registry to follow rotations in. A gateway
 answers its **key history** at `GET /publickey/history` (§6), with no token: every key its registry
 proves it signed under, in order, each with what proves it, so that a consumer that pinned the first key
-(§5) checks every entry from the answer alone (`docs/adr/0051-the-key-history-beside-the-public-key.md`).
+(§5) checks every entry from the answer alone (`docs/adr/0052-the-key-history-beside-the-public-key.md`).
 It adds no trust: an entry the consumer cannot check is no entry.
 
 **The answer.** `canon` (§1.1) of `{keyHistoryVersion, keys}`: `keyHistoryVersion` the string `"1"`, and
@@ -2512,7 +2512,10 @@ status:
 
 A gateway whose configuration names a receipt sink (§6a) has one more answer. It is **`503`**
 with `code` `receipt_not_forwarded` beside the fixed sentence of §6a, and it is the one refused
-acquisition after which a receipt is in the store.
+acquisition after which a receipt is in the store. Where it forwards seals as well
+(`receiptSink.seals`, engine version 37), `/seal` has the same status and code beside the
+seal's fixed sentence of §6a, and it is the one refused seal after which a seal is in the
+registry.
 
 An acquisition is one receipted read, however many runs of its adapter it takes: a token
 step's token request, the request, and the token request and run once more after a sealed
@@ -3198,9 +3201,10 @@ path, version 0.28.0 or later.
 
 A gateway whose engine configuration names `receiptSink` (engine version 35,
 `docs/design/engine-config.md`; ADR-0049) delivers each receipt `/acquire` mints to that one
-endpoint. `/acquire` answers only once the sink has acknowledged the receipt. Nothing here
-changes a receipt, a seal or the registry, and a receipt verifies (§4) with or without the
-sink.
+endpoint. `/acquire` answers only once the sink has acknowledged the receipt. Where
+`receiptSink.seals` is `true` (engine version 37), each seal goes to the same endpoint too,
+after its session's receipts ("Seals", below). Nothing here changes a receipt, a seal or the
+registry, and a receipt or a seal verifies (§4) with or without the sink.
 
 **The endpoint.** `receiptSink.url` is `https`, or plain `http` to a loopback address written
 as one: 127.0.0.0/8 in dotted decimal, or `[::1]`. A name, `localhost` included, is refused
@@ -3268,9 +3272,46 @@ start) only once each receipt the store holds of it, oldest first, has been deli
 acknowledged; one whose receipts are not all acknowledged is left open and named (ADR-0049,
 consequences).
 
+**Seals (engine version 37).** A gateway whose `receiptSink.seals` is `true` delivers each seal
+it appends to the same endpoint: the seal `/seal` appends, and a seal made after an
+interruption (§3c) at the start or by `gateway seal-open --config`. Without the member, or
+under engine version 35, no seal is delivered.
+- **The delivery.** One `POST` per seal, `Content-Type: application/json`. The body is the
+  canonical JSON (§1.1) of exactly these members:
+  - `deliveryVersion`, `"2"`;
+  - `seal`, the seal record, whole;
+  - `sealDigest`, `sha256:` followed by the lowercase hexadecimal SHA-256 of the seal's
+    canonical bytes (its registry line without the line feed).
+
+  A sink tells a seal's delivery from a receipt's by `deliveryVersion` alone.
+- **The acknowledgment.** A `200` whose body is exactly `{"acknowledged":"<sealDigest>"}`,
+  optionally followed by one line feed, under the bounds of a receipt's acknowledgment.
+  Anything else is not an acknowledgment.
+- **Order and at least once.** A seal is appended only once every receipt of its session has
+  been acknowledged, and is delivered after them. It is sent, in the same bytes, until it is
+  acknowledged, under the retries and deadlines above. A sink keeps each `sealDigest` once.
+- **When the sink does not acknowledge.** `/seal` answers `503`, `Content-Type:
+  application/json`, with no `Retry-After` and exactly this body:
+
+  `{"error":"seal not forwarded: the receipt sink did not acknowledge the session's seal; the session is sealed in the registry, nothing was answered, and the seal is held to be delivered again before the session's next seal, at the next start, or by gateway seal-open","code":"receipt_not_forwarded"}`
+
+  The seal is in the registry, and held. The session's next `/seal` delivers it again, and
+  answers it once it is acknowledged; a `/seal` after that is answered as one of a sealed
+  session. While a receipt of the session is held, `/seal` is refused with the receipt's
+  sentence, and no seal is appended.
+- **A seal pending forwarding.** The gateway records in the store, before it appends a seal,
+  that the seal is pending forwarding, and removes the record once the sink acknowledges
+  the seal: on the filesystem kind a file under `seal-forwarding/` in the store's root, on
+  the PostgreSQL kind a document of no scope (ADR-0049, amendment). The start, whether or not
+  it seals sessions left open, and `gateway seal-open --config` deliver each pending seal the
+  registry holds before they serve or seal, and name each one the sink does not acknowledge,
+  which stays pending. The record is not part of the store's verified form, and no verifier
+  reads it.
+
 **What is not forwarded.** These are unchanged:
 - an action's receipt minted by `/act`;
-- a seal and every other registry line;
+- a seal, where `receiptSink.seals` is not `true`;
+- every other registry line;
 - a removal record.
 
 ## 7. Conformance

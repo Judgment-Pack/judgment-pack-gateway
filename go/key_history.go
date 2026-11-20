@@ -1,6 +1,6 @@
 package main
 
-// The key history (SPEC.md §3e; docs/adr/0051-the-key-history-beside-the-public-key.md):
+// The key history (SPEC.md §3e; docs/adr/0052-the-key-history-beside-the-public-key.md):
 // every key the gateway's registry proves it signed under, in order, the key
 // pinned first, each later key with the two statements of the rotation to
 // it (§3b), so that a consumer that pinned the first key checks every entry
@@ -290,7 +290,7 @@ func (g *gatewayService) carriedKeyHistory() ([]byte, bool, error) {
 		// The PostgreSQL kind's store rotation (#546) must carry the key
 		// history of the database rotated from into the new one, as the
 		// filesystem kind's carries it beside the new registry (storeRotate,
-		// ADR-0051), and this must read it there. Until it does, a
+		// ADR-0052), and this must read it there. Until it does, a
 		// PostgreSQL registry continues no store, and its walk is its whole
 		// history.
 		return nil, false, nil
