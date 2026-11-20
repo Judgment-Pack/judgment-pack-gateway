@@ -25,9 +25,9 @@ var retentionAckKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, 32))
 // retainStore is scopeStore's store with p1, a sealed session of no scope
 // identifier, besides, and an engine configuration of the retention
 // version pinning retentionAckKey with a window of 30 days.
-func retainStore(t *testing.T) (*gatewayService, string) {
+func retainStore(t *testing.T, extra ...[3]string) (*gatewayService, string) {
 	t.Helper()
-	g, seedPath := scopeStore(t, [3]string{"p1", "plain", "only-p"})
+	g, seedPath := scopeStore(t, append([][3]string{{"p1", "plain", "only-p"}}, extra...)...)
 	server := httptest.NewServer(g.handler())
 	if code, out := post(t, server, "/seal", `{"session":"p1"}`); code != http.StatusOK {
 		t.Fatalf("seal p1: %d %v", code, out)
