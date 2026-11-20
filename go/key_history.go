@@ -318,20 +318,25 @@ var _ keyHistoryCarrier = (*pgKind)(nil)
 
 // keyHistoryAnswer is an answer to GET /publickey/history and what it was
 // made of: the SHA-256 of the registry's bytes, the carried history's, and
-// the gateway's key.
+// the gateway's key. The answer is the document, or the finding that the
+// history does not hold (err), answered 500.
 type keyHistoryAnswer struct {
 	registry, carried [sha256.Size]byte
 	present           bool
 	own               string
 	doc               []byte
+	err               error
 }
 
-// keyHistoryKept is the last answer made, kept for the requests after it
-// while what it was made of is the same: the route is open, and a walk
-// parses every line and checks each rotation's signatures.
+// keyHistoryKept is the last answer made, a document or a finding, kept for
+// the requests after it while what it was made of is the same: the route is
+// open, and a walk parses every line and checks each rotation's signatures,
+// so a registry whose history does not hold is walked once per change of
+// it, not once per request. walks counts the walks made.
 type keyHistoryKept struct {
-	mu   sync.Mutex
-	last *keyHistoryAnswer
+	mu    sync.Mutex
+	last  *keyHistoryAnswer
+	walks int
 }
 
 // keyHistory is the answer to GET /publickey/history: the history of the
@@ -339,7 +344,8 @@ type keyHistoryKept struct {
 // consumer's check from its own first key before it is answered, so that an
 // entry the chain does not prove is never served. The registry and the
 // carried history are read at each request; the answer is made again
-// whenever a byte of either, or the gateway's key, is not the last answer's.
+// whenever a byte of either, or the gateway's key, is not the last answer's;
+// a finding is kept the same way as a document.
 func (g *gatewayService) keyHistory() ([]byte, error) {
 	data, err := g.registry.log.readLog(0)
 	if faultOf(err) == faultAbsent {
@@ -358,8 +364,18 @@ func (g *gatewayService) keyHistory() ([]byte, error) {
 	defer g.keyHistoryKept.mu.Unlock()
 	if last := g.keyHistoryKept.last; last != nil && last.registry == made.registry && last.carried == made.carried &&
 		last.present == made.present && last.own == made.own {
-		return last.doc, nil
+		return last.doc, last.err
 	}
+	g.keyHistoryKept.walks++
+	made.doc, made.err = walkKeyHistory(data, own, carried, present)
+	g.keyHistoryKept.last = &made
+	return made.doc, made.err
+}
+
+// walkKeyHistory is the key history document of a registry, with what was
+// carried into its store, held to the consumer's check from its own first
+// key, or the finding that it does not hold.
+func walkKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, present bool) ([]byte, error) {
 	entries, err := registryKeyHistory(data, own, carried, present)
 	if err != nil {
 		return nil, err
@@ -368,7 +384,5 @@ func (g *gatewayService) keyHistory() ([]byte, error) {
 	if _, err := checkKeyHistory(doc, entries[0].key); err != nil {
 		return nil, fmt.Errorf("the key history does not hold: %w", err)
 	}
-	made.doc = doc
-	g.keyHistoryKept.last = &made
 	return doc, nil
 }

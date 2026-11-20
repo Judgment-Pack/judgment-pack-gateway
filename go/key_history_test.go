@@ -412,3 +412,51 @@ func TestACarriedKeyHistoryEndsAtTheKeyThatSignedTheContinuation(t *testing.T) {
 		t.Fatalf("a carried history ending at the key that signed the continuation: %d %s", code, body)
 	}
 }
+
+// A history that does not hold is walked once per change of what it is made
+// of: two requests to a registry with a forged rotation are one walk, both
+// answered 500; the registry changed is walked again.
+func TestAKeyHistoryThatDoesNotHoldIsWalkedOncePerChange(t *testing.T) {
+	g, _, registry := ksService(t, nil)
+	mustAcquire(t, g, "a")
+	mustSeal(t, g, "a")
+	data, err := os.ReadFile(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := rotationRecord(data, 1, "2026-11-19T00:00:00Z", ed25519.NewKeyFromSeed(historySeed("other")), ed25519.NewKeyFromSeed(historySeed("next")))
+	if err := os.WriteFile(registry, append(bytes.Clone(data), forged...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	walks := func() int {
+		g.keyHistoryKept.mu.Lock()
+		defer g.keyHistoryKept.mu.Unlock()
+		return g.keyHistoryKept.walks
+	}
+	before := walks()
+	for i := 0; i < 2; i++ {
+		if code, body := askKeyHistory(t, g); code != http.StatusInternalServerError {
+			t.Fatalf("request %d: a history past a forged rotation: %d %s", i, code, body)
+		}
+	}
+	if got := walks() - before; got != 1 {
+		t.Fatalf("two requests to one registry that does not hold made %d walks, not 1", got)
+	}
+	other := rotationRecord(data, 1, "2026-11-19T00:00:00Z", ed25519.NewKeyFromSeed(historySeed("another")), ed25519.NewKeyFromSeed(historySeed("next")))
+	if err := os.WriteFile(registry, append(bytes.Clone(data), other...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := askKeyHistory(t, g); code != http.StatusInternalServerError {
+		t.Fatalf("a history past another forged rotation: %d", code)
+	}
+	if got := walks() - before; got != 2 {
+		t.Fatalf("a changed registry made %d walks in all, not 2", got)
+	}
+	// the registry as it was holds again, and is answered
+	if err := os.WriteFile(registry, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := askKeyHistory(t, g); code != http.StatusOK {
+		t.Fatalf("the registry restored: %d %s", code, body)
+	}
+}
