@@ -14,6 +14,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -96,6 +97,11 @@ func (w *registryWriter) rotateTo(next signer, at string) (*signingKey, error) {
 	if _, err := engineWalk(append(bytes.Clone(existing), record...), to.public); err != nil {
 		return nil, fmt.Errorf("the rotation's record would not walk to the next key; nothing was changed: %w", err)
 	}
+	// the key history /publickey/history would make with the record, held
+	// before the append: no rotation is written that the history refuses
+	if err := rotationHoldsInKeyHistory(w.path, existing, record, from.public, to.public, at); err != nil {
+		return nil, err
+	}
 	if n, err := w.log.appendRecord(record); err != nil {
 		if n > 0 || committed(err) {
 			return nil, rotationMayBeWritten{fmt.Errorf("the rotation's record may be in the registry %s; the gateway did not switch, and stops: settle the registry before it starts again (ADR-0050): %w", w.path, err)}
@@ -104,6 +110,28 @@ func (w *registryWriter) rotateTo(next signer, at string) (*signingKey, error) {
 	}
 	w.signing.switchTo(to)
 	return to, nil
+}
+
+// rotationHoldsInKeyHistory refuses, on the file kind, a rotation from
+// from to to stamped at whose record, at the end of the registry's bytes
+// data, would leave a key history the consumer's check refuses
+// (keyHistoryWriteRefusal): the history built as /publickey/history builds
+// it, with what a store rotation carried beside the registry at
+// registryPath. A history that does not hold before the rotation refuses it
+// too. Nothing is written.
+func rotationHoldsInKeyHistory(registryPath string, data, record []byte, from, to ed25519.PublicKey, at string) error {
+	carried, present, err := readCarriedKeyHistory(registryPath)
+	if err != nil {
+		return fmt.Errorf("the key history carried into the store: %w; nothing was written", err)
+	}
+	before, err := registryKeyHistory(data, from, carried, present)
+	if err != nil {
+		return fmt.Errorf("the key history before the rotation does not hold: %w; nothing was written", err)
+	}
+	return keyHistoryWriteRefusal(before, at, storeRotateKeyBefore, keyHistoryRotationFault, func() error {
+		_, err := walkKeyHistory(append(bytes.Clone(data), record...), to, carried, present)
+		return err
+	})
 }
 
 // errRotationOnKind is SIGHUP on the PostgreSQL kind, where several

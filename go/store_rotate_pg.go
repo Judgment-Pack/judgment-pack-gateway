@@ -142,9 +142,13 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 			if err != nil {
 				return fmt.Errorf("%v; the store is not rotated, and the seals appended stay in the old registry", err)
 			}
-			made, err := newContinuationLine(key, data, history, stamp())
+			at := stamp()
+			made, err := newContinuationLine(key, data, history, at)
 			if err != nil {
 				return fmt.Errorf("the continuation could not be signed: %v; the store is not rotated, and the seals appended stay in the old registry", err)
+			}
+			if err := continuationHolds(data, made, key.public, history, at); err != nil {
+				return fmt.Errorf("%v; the store is not rotated, and the seals appended stay in the old registry", err)
 			}
 			_, err = migratePostgresThen(dsn, set, target.roles, target.timeout, func(tx pgTx) error {
 				if err := pgRotationTargetEmpty(tx); err != nil {

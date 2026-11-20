@@ -286,6 +286,12 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	if err := refuseSealsPending(marks, o.forwardsSeals()); err != nil {
 		return nil, nil, err
 	}
+	// and a continuation stamped before the last rotation of the history it
+	// would carry, a clock behind, refuses it before anything is written:
+	// the seals pass over the history, so it is the history after them
+	if err := continuationOrderRefusal(o.registry, data, pub, stamp()); err != nil {
+		return nil, nil, err
+	}
 	writer, err := newRegistryWriterWith(o.registry, seed, newSignerHolder(sig), func() (bool, error) { return true, nil })
 	if err != nil {
 		return nil, nil, err
@@ -311,9 +317,13 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	if err != nil {
 		return sealed, nil, fmt.Errorf("%v; the store is not rotated", err)
 	}
-	line, err := newContinuationLine(key, data, history, stamp())
+	at := stamp()
+	line, err := newContinuationLine(key, data, history, at)
 	if err != nil {
 		return sealed, nil, fmt.Errorf("the continuation could not be signed: %v; the store is not rotated, and the seals appended stay in the old registry", err)
+	}
+	if err := continuationHolds(data, line, pub, history, at); err != nil {
+		return sealed, nil, fmt.Errorf("%v; the store is not rotated, and the seals appended stay in the old registry", err)
 	}
 	if err := os.Mkdir(newStore, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return sealed, nil, fmt.Errorf("the new store: %w", err)
@@ -483,6 +493,38 @@ func refuseRotatedStore(registryPath string) error {
 func carriedHistoryOf(registryPath string, data []byte, key ed25519.PublicKey) ([]byte, error) {
 	carried, present, err := readCarriedKeyHistory(registryPath)
 	return historyToCarry(data, key, carried, present, err)
+}
+
+// continuationOrderRefusal refuses a store rotation from the registry at
+// registryPath, of bytes data and key key, whose continuation stamped at
+// is before the last rotation of the key history it would carry
+// (keyHistoryWriteRefusal), before anything is sealed or written. A history
+// that does not hold refuses it as carriedHistoryOf does.
+func continuationOrderRefusal(registryPath string, data []byte, key ed25519.PublicKey, at string) error {
+	carried, present, err := readCarriedKeyHistory(registryPath)
+	if err != nil {
+		return fmt.Errorf("the key history carried into the store: %w; the store is not rotated", err)
+	}
+	entries, err := registryKeyHistory(data, key, carried, present)
+	if err != nil {
+		return fmt.Errorf("the store's key history: %w; the store is not rotated", err)
+	}
+	return keyHistoryWriteRefusal(entries, at, keyHistoryContinuationOrder, keyHistoryContinuationFault, nil)
+}
+
+// continuationHolds holds a store continuation line, stamped at over the
+// old registry's bytes data, to the key history the new store's
+// /publickey/history would make from it and history, carried beside it
+// (keyHistoryWriteRefusal), before the new store is written.
+func continuationHolds(data, line []byte, key ed25519.PublicKey, history []byte, at string) error {
+	before, err := checkKeyHistory(history, nil)
+	if err != nil {
+		return fmt.Errorf("the key history to carry: %w", err)
+	}
+	return keyHistoryWriteRefusal(before, at, keyHistoryContinuationOrder, keyHistoryContinuationFault, func() error {
+		_, err := walkKeyHistory(line, key, history, true)
+		return err
+	})
 }
 
 // historyToCarry is the key history a store rotation carries, from the old

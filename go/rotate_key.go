@@ -291,6 +291,23 @@ func rotateKey(seedPath, registryPath string, stamp func() string, random io.Rea
 	if _, err := os.Lstat(kept); err == nil || !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("%s is there already; nothing was changed", kept)
 	}
+	// The key history as /publickey/history makes it, with what a store
+	// rotation carried beside the registry: a rotation stamped before its
+	// last rotation is refused before the next seed is made, and the
+	// record is held to the history below, before it is kept
+	// (keyHistoryWriteRefusal).
+	carried, carriedPresent, err := readCarriedKeyHistory(registryPath)
+	if err != nil {
+		return nil, fmt.Errorf("the key history carried into the store: %w; nothing was written", err)
+	}
+	before, err := registryKeyHistory(data, from, carried, carriedPresent)
+	if err != nil {
+		return nil, fmt.Errorf("the key history before the rotation does not hold: %w; nothing was written", err)
+	}
+	at := stamp()
+	if err := keyHistoryWriteRefusal(before, at, storeRotateKeyBefore, keyHistoryRotationFault, nil); err != nil {
+		return nil, err
+	}
 
 	// The next seed, made once and never replaced; its key is derived from
 	// the bytes persisted, as keygen derives its own.
@@ -312,7 +329,15 @@ func rotateKey(seedPath, registryPath string, stamp func() string, random io.Rea
 	// The record is kept, durably, before a byte of it reaches the
 	// registry: whatever stops the append, --resume knows exactly which
 	// bytes are the rotation's.
-	record := rotationRecord(data, ordinal, stamp(), private, nextPrivate)
+	record := rotationRecord(data, ordinal, at, private, nextPrivate)
+	if err := keyHistoryWriteRefusal(before, at, storeRotateKeyBefore, keyHistoryRotationFault, func() error {
+		_, err := walkKeyHistory(append(bytes.Clone(data), record...), to, carried, carriedPresent)
+		return err
+	}); err != nil {
+		os.Remove(nextPath)
+		syncDir(filepath.Dir(seedPath))
+		return nil, err
+	}
 	k := keptRecord{rotation: ordinal, from: keyIDFor(from), to: keyIDFor(to), length: int64(len(data)), digest: registryDigest(data), record: record}
 	if err := writeNewSeed(recordPath, k.bytes()); err != nil {
 		os.Remove(nextPath)
