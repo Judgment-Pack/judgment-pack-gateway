@@ -315,6 +315,11 @@ type gatewayService struct {
 	// receipt sink before /acquire answers (ADR-0049); nil where none is
 	// configured, and the gateway is then as it was before.
 	forwarder *receiptForwarder
+	// labels keeps the store's session labels from labelsVersion
+	// (ADR-0051, session_labels.go): the session a request names is then a
+	// label in its scope's namespace. nil before that version, and the name
+	// a request sends is then the session id, as it always was.
+	labels labelKeeper
 	// decisionRecords is where an action's cited decision record is looked
 	// for (executor.md); empty refuses every action.
 	decisionRecords string
@@ -1350,6 +1355,15 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	st, err := g.storeFor(spec.scope)
 	if err != nil {
 		return nil, err
+	}
+	// From labelsVersion the session the request names is a label in the
+	// namespace of the source's scope (ADR-0051), looked up there alone and
+	// minted on its first use, its mapping in the store before any receipt
+	// of it. A read-back names the session id of its action, never a label.
+	if g.labels != nil && reconciliation == nil {
+		if sessionID, err = g.sessionOfLabel(sessionID, spec.scope); err != nil {
+			return nil, err
+		}
 	}
 	canonicalArgs := canon(arguments)
 
@@ -2888,7 +2902,14 @@ func (g *gatewayService) handler() http.Handler {
 			fail(w, badRequest{errors.New("scope must be a string, the scope identifier of the session to seal")})
 			return
 		}
-		out, err := g.sealFor(session, g.reachOf(who).narrowedTo(asked))
+		var out map[string]any
+		if g.labels != nil {
+			// the session a label in the namespace the request names
+			// (ADR-0051), looked up there alone
+			out, err = g.sealLabelled(session, asked, g.reachOf(who).narrowedTo(asked))
+		} else {
+			out, err = g.sealFor(session, g.reachOf(who).narrowedTo(asked))
+		}
 		if err != nil {
 			fail(w, err)
 			return

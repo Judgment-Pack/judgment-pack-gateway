@@ -592,6 +592,10 @@ func retainFrom(storeRoot, authority string, priv *signingKey, walk *registryWal
 		out.refused = append(refused, "nothing was removed")
 		return out, nil
 	}
+	// the label of each session removed goes with it (ADR-0051)
+	if plan.labels, err = labelFilesOf(fsLabels{root: storeRoot}, "", append(append([]string{}, plan.sessions...), plan.empty...)); err != nil {
+		return out, fmt.Errorf("the store's session labels could not be read, and nothing was removed: %v", err)
+	}
 	if len(plan.sessions)+len(plan.empty) != len(choice.take)+len(choice.finish) || plan.sealed != int64(len(plan.sessions)) {
 		return out, errors.New("the sessions the acknowledgments name are not those the store would remove, and nothing was removed")
 	}

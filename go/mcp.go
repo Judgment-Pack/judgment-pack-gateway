@@ -938,12 +938,21 @@ func (s *mcpServer) admitCall(sess *mcpSession, token string, req mcpRequest) mc
 	if invalid == nil && tool.seal {
 		// the seal tool's arguments are this server's own: read exactly,
 		// no duplicate, a string
+		// in the caller form from labelsVersion it takes an optional scope
+		// too (ADR-0051): the namespace of the label to seal, one the
+		// caller's token reaches
+		allowed, form := map[string]bool{"session": true}, "{session}"
+		if s.sealTakesScope() {
+			allowed, form = map[string]bool{"session": true, "scope": true}, "{session, scope}"
+		}
 		if err := noDuplicateMembers(arguments, nil); err != nil {
 			invalid = &jsonrpcError{rpcInvalidParams, mcpSealTool + " arguments: " + err.Error()}
-		} else if args, perr := members(arguments, mcpSealTool+" arguments", map[string]bool{"session": true}); perr != nil {
-			invalid = &jsonrpcError{rpcInvalidParams, mcpSealTool + " takes {session} and no other member"}
+		} else if args, perr := members(arguments, mcpSealTool+" arguments", allowed); perr != nil {
+			invalid = &jsonrpcError{rpcInvalidParams, mcpSealTool + " takes " + form + " and no other member"}
 		} else if !isString(args["session"]) {
-			invalid = &jsonrpcError{rpcInvalidParams, mcpSealTool + " takes {session}, a session name"}
+			invalid = &jsonrpcError{rpcInvalidParams, mcpSealTool + " takes " + form + ", a session name"}
+		} else if scope, named, ok := sealScopeArgument(args); !ok || (named && !reach().holds(scope)) {
+			invalid = &jsonrpcError{rpcInvalidParams, mcpSealTool + " takes scope, where it is given, as a scope identifier this caller's token reaches"}
 		} else {
 			json.Unmarshal(args["session"], &session)
 		}
@@ -1056,6 +1065,12 @@ func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessag
 		seal := map[string]string{"session": session}
 		if scope := s.cfg.mcp.scope; scope != "" {
 			seal["scope"] = scope
+		} else if args, perr := members(arguments, mcpSealTool+" arguments", map[string]bool{"session": true, "scope": true}); perr == nil {
+			// the caller form's scope, read and held to the token's reach
+			// at admission
+			if scope, named, _ := sealScopeArgument(args); named {
+				seal["scope"] = scope
+			}
 		}
 		body, _ = json.Marshal(seal)
 	} else {

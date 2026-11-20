@@ -48,7 +48,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | seal-open | remove-artifact | remove-scope | retain | journal | store | mcp | posture | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | seal-open | remove-artifact | remove-scope | retain | sessions | journal | store | mcp | posture | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -82,6 +82,8 @@ func main() {
 		os.Exit(cmdRetain(os.Args[2:], os.Stdout, os.Stderr))
 	case "remove-scope":
 		os.Exit(cmdRemoveScope(os.Args[2:], os.Stdout, os.Stderr))
+	case "sessions":
+		os.Exit(cmdSessions(os.Args[2:], os.Stdout, os.Stderr))
 	case "journal":
 		os.Exit(cmdJournal(os.Args[2:], os.Stdout, os.Stderr))
 	case "store":
@@ -438,6 +440,9 @@ func applyServeOptions(service *gatewayService, opts serveOptions) {
 	if opts.receiptSink != nil {
 		service.forwarder = newReceiptForwarder(opts.receiptSink)
 	}
+	if opts.labels && service.kind == nil {
+		service.labels = fsLabels{root: service.storeRoot}
+	}
 }
 
 // engineStart is what serve --config judges before it loads the seed, in
@@ -575,40 +580,14 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", witnessStartLine(log, cfg.witness))
 		witness = newWitnessService(log, cfg.witness, os.Stderr)
 	}
-	// held while the engine serves, so gateway journal compact refuses; taken
-	// before the service is built, so a compaction under way refuses the start
-	// before anything is made in the store (#359)
-	storeHold, err := holdServedStore(cfg.store)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "start:", err)
-		return 1
-	}
-	defer storeHold.Close()
 	served := engineServeOptions(cfg, sources, identity)
 	served.signer = keyService
-	service, err := buildService(cfg.store, seed, cfg.authority, cfg.registry, served)
+	service, closeHolds, err := startOnStore(cfg, seed, seedNames, served)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
-	if err := storeHold.made(); err != nil {
-		fmt.Fprintln(os.Stderr, "start:", err)
-		return 1
-	}
-	// held while the engine runs, so gateway rotate-key refuses; a rotation
-	// begun since the check above is refused under it (SPEC.md §3b)
-	registryHold, err := holdEngineRegistryKey(seedNames, cfg.registry, service.store.publicKey)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "start:", err)
-		return 1
-	}
-	defer registryHold.Close()
-	// under the hold, before anything is served (SPEC.md §3c), and the
-	// seals pending forwarding delivered (seal_sink.go)
-	if err := sealsAtStart(service, os.Stderr, nowStamp, cfg.sealOpenAtStart); err != nil {
-		fmt.Fprintln(os.Stderr, "start:", err)
-		return 1
-	}
+	defer closeHolds()
 	service.witness = witness
 	// SIGHUP: the configuration's signingKeyVersion read again, and the
 	// gateway's key rotated to it while it serves (rotate_serving.go)
@@ -617,6 +596,51 @@ func cmdServeEngine(args []string) int {
 		return again, err
 	}
 	return serveEngineService(service, cfg, delegation, nil)
+}
+
+// startOnStore is serve --config's start on the filesystem kind once the
+// witness is open: the store held while the engine serves, so gateway
+// journal compact refuses, and taken before the service is built, so a
+// compaction under way refuses the start before anything is made in the
+// store (#359); the service built; the registry held while the engine runs,
+// so gateway rotate-key refuses, a rotation begun since the check refused
+// under it (SPEC.md §3b); under the hold, before anything is served, the
+// sessions left open sealed where the switch says so (SPEC.md §3c) and the
+// seals pending forwarding delivered (seal_sink.go); and, from
+// labelsVersion, the start refused while a session named before it is open
+// (session_labels.go). closeHolds releases both holds once the service has
+// stopped; a refused start has released them.
+func startOnStore(cfg engineConfig, seed []byte, seedNames []string, served serveOptions) (service *gatewayService, closeHolds func(), err error) {
+	storeHold, err := holdServedStore(cfg.store)
+	if err != nil {
+		return nil, nil, err
+	}
+	release := func() { storeHold.Close() }
+	refused := func(err error) (*gatewayService, func(), error) {
+		release()
+		return nil, nil, err
+	}
+	if service, err = buildService(cfg.store, seed, cfg.authority, cfg.registry, served); err != nil {
+		return refused(err)
+	}
+	if err := storeHold.made(); err != nil {
+		return refused(err)
+	}
+	registryHold, err := holdEngineRegistryKey(seedNames, cfg.registry, service.store.publicKey)
+	if err != nil {
+		return refused(err)
+	}
+	release = func() {
+		registryHold.Close()
+		storeHold.Close()
+	}
+	if err := sealsAtStart(service, os.Stderr, nowStamp, cfg.sealOpenAtStart); err != nil {
+		return refused(err)
+	}
+	if err := labelsAtStart(service); err != nil {
+		return refused(err)
+	}
+	return service, release, nil
 }
 
 // serveEngineService serves a service made, until a signal ends it.
@@ -863,6 +887,9 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 		served.signer = r.signer
 		service, err = buildServiceOn(kind, seed, cfg.authority, served)
 	}
+	if err == nil && versionAtLeast(cfg.version, labelsVersion) && service.labels == nil {
+		err = fmt.Errorf("%w: session labels (engineVersion %s, ADR-0051) are kept by the filesystem kind alone so far, and the PostgreSQL kind keeps them in a follow-up of #550 (migration 0009); keep a configuration on this kind at engineVersion 38 until then", errStorageKindUnsupported, labelsVersion)
+	}
 	if err == nil {
 		_, err = service.kindRegistryWalk()
 	}
@@ -985,6 +1012,9 @@ type serveOptions struct {
 	// left open, after the interruption (--seal-open-at-start; serve
 	// --config reads the configuration's sealOpenAtStart; SPEC.md §3c).
 	sealOpenAtStart bool
+	// labels is whether the session a request names is a label in its
+	// scope (labelsVersion, ADR-0051)
+	labels bool
 }
 
 // validateEnvKey accepts what an environment variable name can be on the
