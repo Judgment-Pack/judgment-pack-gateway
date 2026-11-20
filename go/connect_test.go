@@ -940,3 +940,39 @@ func TestConnectReadsTheIdentitysKeysAsServeDoes(t *testing.T) {
 		t.Fatalf("with keys that read: %v (asked %d)", err, len(f.asked))
 	}
 }
+
+// Two platforms pin one binding whose catalog file changed: --replace of
+// one re-pins both to the new digest in one write, says so, and the start
+// then succeeds (#542).
+func TestReplaceRepinsEveryPlatformOnTheBindingReplaced(t *testing.T) {
+	stale := `"binding":"postgres@` + digestOf(postgresBinding) + `","credentials":{"history":{"file":"`
+	// The platform kept is resolved, so its credentials are judged: a
+	// synthetic file of its own user's, held by the stub filesystem.
+	kept := filepath.Join(filepath.VolumeName(t.TempDir())+string(filepath.Separator), "run", "secrets", "warehouse-b")
+	other := `"warehouse-b":{` + stale + escapePath(kept) + `"},"live":{"file":"` + escapePath(kept) + `"}},"user":"engine-docs"}`
+	f := newConnectFixture(t, restrictedBinding, `"warehouse":{`+stale+escapePath(f0(t))+`"},"live":{"file":"`+escapePath(f0(t))+`"}},"user":"engine-warehouse"},`+other)
+	f.fs[kept] = fileOwnership{uid: stubUsers["engine-docs"], mode: 0o600}
+	req := f.request()
+	req.replace = true
+	out, err := connect(context.Background(), req, f.host, f.check)
+	if err != nil {
+		t.Fatalf("--replace with a second platform on the same stale binding: %v", err)
+	}
+	want := "postgres@" + digestOf(restrictedBinding)
+	cfg, _, err := loadEngineConfig(f.config, stubAccounts(stubUsers))
+	if err != nil || len(cfg.platforms) != 2 {
+		t.Fatalf("the configuration as written: %v %+v", err, cfg.platforms)
+	}
+	for _, p := range cfg.platforms {
+		if p.binding != want {
+			t.Fatalf("platform %s pins %s, not %s", p.name, p.binding, want)
+		}
+	}
+	said := strings.Join(out.after, "\n")
+	if !strings.Contains(said, "warehouse-b: re-pinned to "+want) || !strings.Contains(said, "restart both processes") {
+		t.Fatalf("the output names the platform re-pinned: %q", said)
+	}
+	if _, err := resolveEngineConfig(&cfg, stubAccounts(stubUsers)); err != nil {
+		t.Fatalf("the start resolves every platform: %v", err)
+	}
+}

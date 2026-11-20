@@ -1087,7 +1087,9 @@ server still reads and verifies the pinned snapshot at its start.
 
 It refuses a binding that is not in the catalog, a platform already configured unless
 `--replace` is given — and with it the entry replaced is not resolved, since its pin may be
-what is being repaired, while every other platform is — a configuration path that is a symbolic
+what is being repaired, while every other platform is, each platform naming the same binding
+first re-pinned to the file `--replace` pins, in the same write, and named in the output — a
+configuration path that is a symbolic
 link, and a configuration that with the entry would exceed the size `serve` reads, judged
 before any check runs. The file's directory is held open from the first read to the rename, so
 what is read, written beside it and put in place is in that directory whatever a path component
