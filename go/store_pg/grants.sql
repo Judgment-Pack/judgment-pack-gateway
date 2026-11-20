@@ -17,8 +17,11 @@
 -- acting as the owner, appends them, and the run-time role reads them for
 -- an export. The key history a store rotation carried into the database
 -- (schema version 8) is SELECT alone: the migration login, acting as the
--- owner, writes it with the registry's first line. Nothing is TRUNCATE,
--- REFERENCES, TRIGGER or DDL.
+-- owner, writes it with the registry's first line. The session labels
+-- (schema version 9) are SELECT and INSERT: the migration login, acting as
+-- the owner, removes them with the sessions they name. The start lease's
+-- column labels (schema version 9) is written and read under the table's
+-- grant. Nothing is TRUNCATE, REFERENCES, TRIGGER or DDL.
 
 DO $grants$
 DECLARE
@@ -28,7 +31,7 @@ BEGIN
     EXECUTE pg_catalog.format('REVOKE ALL ON SCHEMA gateway FROM %I', runtime);
     EXECUTE pg_catalog.format('GRANT USAGE ON SCHEMA gateway TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT ON gateway.schema_migrations TO %I', runtime);
-    EXECUTE pg_catalog.format('GRANT SELECT, INSERT ON gateway.blobs, gateway.series, gateway.entries, gateway.logs, gateway.log_records, gateway.secrets, gateway.scope_identifiers, gateway.series_holders TO %I', runtime);
+    EXECUTE pg_catalog.format('GRANT SELECT, INSERT ON gateway.blobs, gateway.series, gateway.entries, gateway.logs, gateway.log_records, gateway.secrets, gateway.scope_identifiers, gateway.series_holders, gateway.session_labels TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT, INSERT, UPDATE, DELETE ON gateway.documents TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT, INSERT, UPDATE ON gateway.start_lease TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT ON gateway.removal_records TO %I', runtime);

@@ -386,6 +386,11 @@ type sealOpenOptions struct {
 	// byFlags is a store given by its flags, not --config; noSink is
 	// --no-sink, which a store by its flags is sealed under alone (#541).
 	byFlags, noSink bool
+	// labels is whether the configuration reads sessions by label
+	// (labelsVersion): on the PostgreSQL kind the command's row of the
+	// start lease records it, so it is admitted beside the instances that
+	// serve at the configuration's version (admitBeside)
+	labels bool
 }
 
 // sink is the receipt sink the command delivers to before it seals, nil
@@ -455,6 +460,7 @@ func parseSealOpen(args []string) (sealOpenOptions, string) {
 		// names the kind (seal_open_pg.go)
 		o.keyVersion, o.keyPublic = cfg.signingKeyVersion, cfg.signingPublicKey
 		o.store, o.registry, o.authority, o.seedNames, o.storage, o.receiptSink = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}, cfg.storage, cfg.receiptSink
+		o.labels = versionAtLeast(cfg.version, labelsVersion)
 		// the seed by the name it resolves to as well, as serve --config
 		// looks for a rotation under way beside both
 		if resolved, err := filepath.EvalSymlinks(cfg.seed); err == nil && resolved != cfg.seed {

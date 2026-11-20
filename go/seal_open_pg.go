@@ -401,6 +401,7 @@ func sealOpenPostgresHeld(o sealOpenOptions, stamp func() string, said io.Writer
 		return nil, nil, err
 	}
 	kind.instance = instanceForKey(&spec, sig.publicKey(), o.authority)
+	kind.instance.labels = o.labels
 	if c.alone {
 		kind.instance.several = false
 	}
