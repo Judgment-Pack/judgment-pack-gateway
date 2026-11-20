@@ -32,7 +32,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,7 +77,7 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 			if err != nil {
 				return err
 			}
-			walk, err := engineWalk(data, key.public)
+			walk, err := engineWalk(data, key.held())
 			if err != nil {
 				return err
 			}
@@ -93,7 +92,7 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 			if err != nil {
 				return fmt.Errorf("the key history carried into the store: %w; the store is not rotated", err)
 			}
-			if err := continuationOrderRefusalOf(data, key.public, carried, present, stamp()); err != nil {
+			if err := continuationOrderRefusalOf(data, key.held(), carried, present, stamp()); err != nil {
 				return err
 			}
 			// a seal held for the sink that this rotation does not deliver
@@ -112,13 +111,13 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 				return err
 			}
 			// the registry as it ends walks to the key in force still
-			if _, err := engineWalk(data, key.public); err != nil {
+			if _, err := engineWalk(data, key.held()); err != nil {
 				return err
 			}
 			if prior != nil {
 				// the rerun: the new database holds the continuation of
 				// this registry as it ends, and the old one is marked
-				named, err := continuesRegistry(prior, data, key.public)
+				named, err := continuesRegistry(prior, data, key.held())
 				if err != nil {
 					return fmt.Errorf("the new database: it holds a registry; %v; a rotation starts a new store in a database that holds none", err)
 				}
@@ -133,7 +132,7 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 					if !bytes.Equal(again, prior) {
 						return errors.New("its registry changed after it was read")
 					}
-					return pgCarryKeyHistory(tx, named, func() ([]byte, error) { return pgCarriedHistoryOf(kind, data, key.public) })
+					return pgCarryKeyHistory(tx, named, func() ([]byte, error) { return pgCarriedHistoryOf(kind, data, key.held()) })
 				}, true)
 				if errors.Is(err, errPgCommitUncertain) {
 					return fmt.Errorf("the new database: %v; its key history may have been written; rerun to check", err)
@@ -149,7 +148,7 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 			}
 			// the continuation names the old database's key history by its
 			// digest (SPEC.md §3e), and the new database carries its bytes
-			history, err := pgCarriedHistoryOf(kind, data, key.public)
+			history, err := pgCarriedHistoryOf(kind, data, key.held())
 			if err != nil {
 				return fmt.Errorf("%v; the store is not rotated, and the seals appended stay in the old registry", err)
 			}
@@ -158,7 +157,7 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 			if err != nil {
 				return fmt.Errorf("the continuation could not be signed: %v; the store is not rotated, and the seals appended stay in the old registry", err)
 			}
-			if err := continuationHolds(data, made, key.public, history, at); err != nil {
+			if err := continuationHolds(data, made, key.held(), history, at); err != nil {
 				return fmt.Errorf("%v; the store is not rotated, and the seals appended stay in the old registry", err)
 			}
 			_, err = migratePostgresThen(dsn, set, target.roles, target.timeout, func(tx pgTx) error {
@@ -289,7 +288,7 @@ var errPgTargetHoldsRegistry = errors.New("it holds a registry; a rotation start
 
 // continuesRegistry holds line to be a store continuation, signed by pub,
 // that names previous as it ends, and answers the key history it names.
-func continuesRegistry(line, previous []byte, pub ed25519.PublicKey) (string, error) {
+func continuesRegistry(line, previous []byte, pub heldKey) (string, error) {
 	walk, err := engineWalk(line, pub)
 	if err != nil {
 		return "", err
@@ -330,7 +329,7 @@ func (k *pgKind) carriedKeyHistory() ([]byte, bool, error) {
 // pgCarriedHistoryOf is carriedHistoryOf on the PostgreSQL kind: the history
 // of the old registry's bytes as the rotation names them, walked from the
 // key in force, with what was carried into the old database in its turn.
-func pgCarriedHistoryOf(k *pgKind, data []byte, key ed25519.PublicKey) ([]byte, error) {
+func pgCarriedHistoryOf(k *pgKind, data []byte, key heldKey) ([]byte, error) {
 	carried, present, err := k.carriedKeyHistory()
 	return historyToCarry(data, key, carried, present, err)
 }

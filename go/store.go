@@ -168,6 +168,14 @@ func (s *store) stampInto(core *vObject, before func() error) (*vObject, string,
 	// it wholly under the key it was begun under or wholly under the next.
 	key := s.signing.key()
 	core.set("keyId", vString(key.keyID))
+	// a P-256 key names its algorithm, inside what it signs, and signs a
+	// version 3 receipt alone (ADR-0053 §1)
+	if key.alg != algEd25519 {
+		if version, _ := memberString(core, "receiptVersion"); version != receiptVersion3 {
+			return nil, "", false, signingFailure{errors.New("a P-256 key signs version 3 receipts alone (ADR-0053); nothing was signed")}
+		}
+		setAlg(core, "alg", key.alg)
+	}
 	if afterReceiptKeyChosen != nil {
 		afterReceiptKeyChosen()
 	}
@@ -278,7 +286,7 @@ func (r *registryRead) at(from int64, data []byte, walk *registryWalk) {
 // where they end a line: they are committed (the append's lock is held,
 // and the read is at READ COMMITTED), and stay in the log whatever this
 // append comes to.
-func (r *registryRead) judge(read func(from int64) ([]byte, error), own ed25519.PublicKey, sessionID string) (bool, []byte, error) {
+func (r *registryRead) judge(read func(from int64) ([]byte, error), own heldKey, sessionID string) (bool, []byte, error) {
 	if r.walk != nil {
 		data, err := read(r.offset - int64(len(r.last)))
 		switch {
@@ -423,7 +431,7 @@ func newRegistryWriterOnWith(log appendLog, name string, seed []byte, signing *s
 	if signing == nil {
 		signing = newSignerHolder(newSeedSigner(seed))
 	}
-	own := signing.key().public
+	own := signing.key().held()
 	// The gateway's own reading of its registry (SPEC.md §3b): walked from
 	// its first key, it must find nothing and end at this seed's key, or the
 	// gateway does not start -- a rotation written and not switched to is
@@ -436,12 +444,12 @@ func newRegistryWriterOnWith(log appendLog, name string, seed []byte, signing *s
 	// history as well: a record under a key no rotation leads from to it
 	// refuses the start, so a store a key service signed for does not take
 	// the seed's records, nor the seed's a key service's, without a rotation
-	if err := heldUnderAnotherKey(existing, walk.keys, own, nil); err != nil {
+	if err := heldUnderAnotherKey(existing, walk.keys, own.key, nil); err != nil {
 		return nil, fmt.Errorf("registry %s: %w", name, err)
 	}
 	w := &registryWriter{
 		path: name, log: log, seed: seed, signing: signing,
-		keyID: keyIDFor(own), startKeys: walk.keys,
+		keyID: own.keyID(), startKeys: walk.keys,
 	}
 	if shared {
 		// the start's walk is where the seals' reading starts from: up to
@@ -450,7 +458,7 @@ func newRegistryWriterOnWith(log appendLog, name string, seed []byte, signing *s
 		w.read = &registryRead{}
 		if cut := bytes.LastIndexByte(existing, '\n') + 1; cut == len(existing) {
 			w.read.at(0, existing, walk)
-		} else if prefix := walkRegistry(existing[:cut], registryFirstKey(existing, own)); prefix.ownReading(own) == nil {
+		} else if prefix := walkRegistryFrom(existing[:cut], registryFirstKey(existing, own)); prefix.ownReading(own) == nil {
 			w.read.at(0, existing[:cut], prefix)
 		}
 	}
@@ -467,7 +475,7 @@ func newRegistryWriterOnWith(log appendLog, name string, seed []byte, signing *s
 // appended beside it.
 func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt string) (*vObject, error) {
 	return w.appendSeal(sessionID, func(key *signingKey) (*vObject, error) {
-		signature, err := key.signVerified(sealSigningInput(sessionID, finalCount, sealedAt, key.keyID))
+		signature, err := key.signVerified(sealSigningInputFor(key.alg, sessionID, finalCount, sealedAt, key.keyID))
 		if err != nil {
 			return nil, err
 		}
@@ -476,6 +484,7 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 		record.set("finalCount", vInt(finalCount))
 		record.set("sealedAt", vString(sealedAt))
 		record.set("keyId", vString(key.keyID))
+		setAlg(record, "alg", key.alg)
 		record.set("signature", vString(hex.EncodeToString(signature)))
 		return record, nil
 	})
@@ -507,6 +516,7 @@ func (w *registryWriter) sealOfScope(sessionID string, finalCount int64, sealedA
 		setScopeNaming(record, sessionID, scope, salt)
 		record.set("sealedAt", vString(sealedAt))
 		record.set("sessionId", vString(sessionID))
+		setAlg(record, "alg", key.alg)
 		signature, err := key.signVerified(signedOver(versionedSealContext(record), record))
 		if err != nil {
 			return nil, err
@@ -572,6 +582,7 @@ func (w *registryWriter) sealAfterInterruptionOfScope(sessionID string, finalCou
 		record.set("sealedAt", vString(sealedAt))
 		record.set("sealedVia", vString(via))
 		record.set("sessionId", vString(sessionID))
+		setAlg(record, "alg", key.alg)
 		signature, err := key.signVerified(interruptionSealSigningInput(record))
 		if err != nil {
 			return nil, err
@@ -665,7 +676,7 @@ func (w *registryWriter) appendSealJudged(log judgedAppendLog, sessionID string,
 	w.read.mu.Lock()
 	defer w.read.mu.Unlock()
 	n, err := log.appendJudged(func(read func(int64) ([]byte, error)) ([]byte, error) {
-		sealed, more, err := w.read.judge(read, key.public, sessionID)
+		sealed, more, err := w.read.judge(read, key.held(), sessionID)
 		if err != nil {
 			return nil, err
 		}
@@ -704,7 +715,7 @@ func (w *registryWriter) appendSealJudged(log judgedAppendLog, sessionID string,
 func (w *registryWriter) sealLine(existing []byte, sessionID string, key *signingKey, build func(*signingKey) (*vObject, error)) ([]byte, int, *vObject, error) {
 	// sealed as the verifier loads a seal, never as any parseable line
 	// naming the session (appendSeal)
-	walk, err := engineWalk(existing, key.public)
+	walk, err := engineWalk(existing, key.held())
 	if err != nil {
 		return nil, 0, nil, err
 	}

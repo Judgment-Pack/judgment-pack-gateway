@@ -76,7 +76,7 @@ func TestTwoSessionsOfAScopeAreSealedOverUnrelatedDigests(t *testing.T) {
 		t.Fatal("two sessions carry one scope salt")
 	}
 	registry := readFile(t, service.regPath)
-	walk, err := engineWalk([]byte(registry), service.publicKey)
+	walk, err := engineWalk([]byte(registry), edKey(service.publicKey))
 	if err != nil || len(walk.seals) != 2 {
 		t.Fatalf("the registry: %v\n%s", err, registry)
 	}

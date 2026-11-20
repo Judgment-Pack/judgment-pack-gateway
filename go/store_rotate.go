@@ -14,7 +14,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io"
@@ -230,12 +229,12 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	// the key in force signs the seals and the continuation: the key
 	// service's key version the configuration names, held to
 	// signingPublicKey, or else the seed's (ADR-0050)
-	sig, err := commandSigner(o.keyVersion, o.keyPublic, seed)
+	sig, err := commandSigner(o.keyVersion, o.keyPublic, o.keyAlg, seed)
 	if err != nil {
 		return nil, nil, err
 	}
 	key := newSigningKey(sig)
-	hold, err := holdEngineRegistryKey(o.seedNames, o.registry, key.public)
+	hold, err := holdEngineRegistryKey(o.seedNames, o.registry, key.held())
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
 			return nil, nil, fmt.Errorf("%w; stop the gateway, then rotate", err)
@@ -248,7 +247,7 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 		return nil, nil, fmt.Errorf("registry: the registry could not be read under the hold: %v", err)
 	}
 	pub := key.public
-	walk, err := engineWalk(data, pub)
+	walk, err := engineWalk(data, key.held())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -261,7 +260,7 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	} else if present {
 		// a rerun: the new registry is this one's continuation alone, made
 		// by a rotation stopped before its mark, or it is refused
-		named, ok := continuesAlone(made, data, pub)
+		named, ok := continuesAlone(made, data, key.held())
 		if !ok {
 			return nil, nil, fmt.Errorf("%s is there already; a rotation starts a new store and registry, and nothing was changed", newRegistry)
 		}
@@ -273,7 +272,7 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 		// the history is written before the registry, and the continuation
 		// names its bytes: one beside it is held to them, and one lost is
 		// carried again from the same bytes, which must be the ones named
-		if err := carryKeyHistory(o.registry, data, pub, newRegistry, named); err != nil {
+		if err := carryKeyHistory(o.registry, data, key.held(), newRegistry, named); err != nil {
 			return nil, nil, err
 		}
 		if err := markRotated(o.registry, made); err != nil {
@@ -289,7 +288,7 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	// and a continuation stamped before the last rotation of the history it
 	// would carry, a clock behind, refuses it before anything is written:
 	// the seals pass over the history, so it is the history after them
-	if err := continuationOrderRefusal(o.registry, data, pub, stamp()); err != nil {
+	if err := continuationOrderRefusal(o.registry, data, key.held(), stamp()); err != nil {
 		return nil, nil, err
 	}
 	writer, err := newRegistryWriterWith(o.registry, seed, newSignerHolder(sig), func() (bool, error) { return true, nil })
@@ -310,10 +309,10 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	if err != nil || !present {
 		return sealed, nil, fmt.Errorf("registry: the registry could not be read after sealing: %v", err)
 	}
-	if _, err := engineWalk(data, pub); err != nil {
+	if _, err := engineWalk(data, key.held()); err != nil {
 		return sealed, nil, err
 	}
-	history, err := carriedHistoryOf(o.registry, data, pub)
+	history, err := carriedHistoryOf(o.registry, data, key.held())
 	if err != nil {
 		return sealed, nil, fmt.Errorf("%v; the store is not rotated", err)
 	}
@@ -322,7 +321,7 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	if err != nil {
 		return sealed, nil, fmt.Errorf("the continuation could not be signed: %v; the store is not rotated, and the seals appended stay in the old registry", err)
 	}
-	if err := continuationHolds(data, line, pub, history, at); err != nil {
+	if err := continuationHolds(data, line, key.held(), history, at); err != nil {
 		return sealed, nil, fmt.Errorf("%v; the store is not rotated, and the seals appended stay in the old registry", err)
 	}
 	if err := os.Mkdir(newStore, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
@@ -377,8 +376,8 @@ func newStoreFree(newStore, newRegistry string) error {
 // continuesAlone is whether made is one line, a store continuation that
 // loads under the key and names previous's line count and digest, and the
 // key history it names.
-func continuesAlone(made, previous []byte, key ed25519.PublicKey) (string, bool) {
-	w := walkRegistry(made, key)
+func continuesAlone(made, previous []byte, key heldKey) (string, bool) {
+	w := walkRegistryFrom(made, key)
 	lines, digest := registryLink(previous)
 	if bytes.Count(made, []byte("\n")) == 1 && bytes.HasSuffix(made, []byte("\n")) && w.continuation != nil &&
 		w.continuationFinding == nil && w.continuation.previousLines == lines && w.continuation.previousDigest == digest {
@@ -490,7 +489,7 @@ func refuseRotatedStore(registryPath string) error {
 // carried into the old store in its turn -- the answer the old store's
 // gateway gives, which the new store's continues. A history that does not
 // hold refuses the rotation.
-func carriedHistoryOf(registryPath string, data []byte, key ed25519.PublicKey) ([]byte, error) {
+func carriedHistoryOf(registryPath string, data []byte, key heldKey) ([]byte, error) {
 	carried, present, err := readCarriedKeyHistory(registryPath)
 	return historyToCarry(data, key, carried, present, err)
 }
@@ -500,7 +499,7 @@ func carriedHistoryOf(registryPath string, data []byte, key ed25519.PublicKey) (
 // is before the last rotation of the key history it would carry
 // (keyHistoryWriteRefusal), before anything is sealed or written. A history
 // that does not hold refuses it as carriedHistoryOf does.
-func continuationOrderRefusal(registryPath string, data []byte, key ed25519.PublicKey, at string) error {
+func continuationOrderRefusal(registryPath string, data []byte, key heldKey, at string) error {
 	carried, present, err := readCarriedKeyHistory(registryPath)
 	if err != nil {
 		return fmt.Errorf("the key history carried into the store: %w; the store is not rotated", err)
@@ -510,7 +509,7 @@ func continuationOrderRefusal(registryPath string, data []byte, key ed25519.Publ
 
 // continuationOrderRefusalOf is continuationOrderRefusal over the history
 // carried into the store as read, on either kind.
-func continuationOrderRefusalOf(data []byte, key ed25519.PublicKey, carried []byte, present bool, at string) error {
+func continuationOrderRefusalOf(data []byte, key heldKey, carried []byte, present bool, at string) error {
 	entries, err := registryKeyHistory(data, key, carried, present)
 	if err != nil {
 		return fmt.Errorf("the store's key history: %w; the store is not rotated", err)
@@ -522,7 +521,7 @@ func continuationOrderRefusalOf(data []byte, key ed25519.PublicKey, carried []by
 // old registry's bytes data, to the key history the new store's
 // /publickey/history would make from it and history, carried beside it
 // (keyHistoryWriteRefusal), before the new store is written.
-func continuationHolds(data, line []byte, key ed25519.PublicKey, history []byte, at string) error {
+func continuationHolds(data, line []byte, key heldKey, history []byte, at string) error {
 	before, err := checkKeyHistory(history, nil)
 	if err != nil {
 		return fmt.Errorf("the key history to carry: %w", err)
@@ -536,7 +535,7 @@ func continuationHolds(data, line []byte, key ed25519.PublicKey, history []byte,
 // historyToCarry is the key history a store rotation carries, from the old
 // registry's bytes and the history carried into the old store, read with
 // err: the answer the old store's gateway gives.
-func historyToCarry(data []byte, key ed25519.PublicKey, carried []byte, present bool, err error) ([]byte, error) {
+func historyToCarry(data []byte, key heldKey, carried []byte, present bool, err error) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the key history carried into the store: %w", err)
 	}
@@ -553,7 +552,7 @@ func historyToCarry(data []byte, key ed25519.PublicKey, carried []byte, present 
 // and one not there is written, durably, only when the history
 // carriedHistoryOf gives is; otherwise the rerun is refused, nothing
 // changed.
-func carryKeyHistory(registryPath string, data []byte, key ed25519.PublicKey, newRegistry, named string) error {
+func carryKeyHistory(registryPath string, data []byte, key heldKey, newRegistry, named string) error {
 	there, present, err := readCarriedKeyHistory(newRegistry)
 	if err != nil {
 		return fmt.Errorf("the new registry's key history: %w", err)

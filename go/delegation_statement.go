@@ -523,7 +523,7 @@ func verifyDelegationChain(chainV value, keys delegationKeys) (*delegationChain,
 	// Step 5.
 	for i, l := range chain.links {
 		signature, err := hex.DecodeString(l.signature)
-		if err != nil || !ed25519.Verify(keys[l.host][l.keyID], l.signingInput(), signature) {
+		if err != nil || !verifyByAlgorithm(algEd25519, edKey(keys[l.host][l.keyID]), l.signingInput(), signature) {
 			return nil, refuse(refusalSignatureMismatch, "link %d's signature does not verify", i)
 		}
 	}

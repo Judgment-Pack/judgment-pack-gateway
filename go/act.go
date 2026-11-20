@@ -842,7 +842,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 // write that ran and could not be receipted is the one outcome this design
 // exists to refuse.
 func (g *gatewayService) sessionOpen(sessionID string) string {
-	if seals, err := loadEngineSeals(g.regPath, g.ownKey()); err != nil {
+	if seals, err := loadEngineSeals(g.regPath, g.ownHeld()); err != nil {
 		return registryRefusal(err)
 	} else if _, sealed := seals[sessionID]; sealed {
 		return "session is sealed in the registry: " + sessionID
@@ -1126,7 +1126,7 @@ func (g *gatewayService) reachedKeys() ([]reachedKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	w, err := engineWalk(data, g.ownKey())
+	w, err := engineWalk(data, g.ownHeld())
 	if err != nil {
 		return nil, err
 	}

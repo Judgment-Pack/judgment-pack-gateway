@@ -4,7 +4,6 @@ package main
 // chain entries, and have their own signing domain.
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -77,6 +76,7 @@ func (s *store) retainDescriptorCapture(data []byte, operation string) (descript
 	for k, v := range map[string]string{"statementVersion": "1", "authority": s.authority, "keyId": key.keyID, "source": snap.platform + "/" + operation, "binding": snap.binding, "snapshot": p.snapshot, "endpoint": snap.endpoint, "capturedAt": snap.capturedAt} {
 		o.set(k, vString(v))
 	}
+	setAlg(o, "alg", key.alg)
 	sig, err := key.signVerified(append([]byte(descriptorStatementContext), canon(o)...))
 	if err != nil {
 		return p, err
@@ -119,7 +119,11 @@ func checkDescriptorProvenance(root string, p descriptorProvenance, authority, s
 		return fail
 	}
 	o, ok := v.(*vObject)
-	if !ok || exactlyMembers(o, map[string]bool{"statementVersion": true, "authority": true, "keyId": true, "source": true, "binding": true, "snapshot": true, "endpoint": true, "capturedAt": true, "signature": true}, "descriptor statement") != nil {
+	if !ok || exactlyMembers(o, membersWithAlg(map[string]bool{"statementVersion": true, "authority": true, "keyId": true, "source": true, "binding": true, "snapshot": true, "endpoint": true, "capturedAt": true, "signature": true}, o), "descriptor statement") != nil {
+		return fail
+	}
+	alg, okAlg := recordAlg(o, "alg")
+	if !okAlg {
 		return fail
 	}
 	fields := map[string]string{}
@@ -148,7 +152,7 @@ func checkDescriptorProvenance(root string, p descriptorProvenance, authority, s
 	}
 	sig, _ := hex.DecodeString(fields["signature"])
 	for _, key := range keys {
-		if key.keyID == fields["keyId"] && ed25519.Verify(key.key, append([]byte(descriptorStatementContext), canon(core)...), sig) {
+		if key.keyID == fields["keyId"] && key.alg == alg && verifyByAlgorithm(alg, key.held(), append([]byte(descriptorStatementContext), canon(core)...), sig) {
 			return "ok"
 		}
 	}
@@ -167,7 +171,7 @@ func retainConnectedCapture(cfg engineConfig, data []byte, operation string) (de
 	}
 	// signed through the key service's key version where the configuration
 	// names one (ADR-0050), else the seed
-	sig, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, seed)
+	sig, err := commandSigner(cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm, seed)
 	if err != nil {
 		return descriptorProvenance{}, err
 	}

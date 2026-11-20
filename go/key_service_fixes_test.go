@@ -60,10 +60,10 @@ func TestAKeyServiceDoesNotStartOverHistoryUnderAnotherKey(t *testing.T) {
 func TestSigningPublicKeyPinsTheKeyVersionsKey(t *testing.T) {
 	standInKeyService(t)
 	one, two := hex.EncodeToString(ksKey("one").Public().(ed25519.PublicKey)), hex.EncodeToString(ksKey("two").Public().(ed25519.PublicKey))
-	if _, _, err := newKeyServiceSignerPinned(ksVersion1, two); !errors.Is(err, errKeyServiceNotExpected) || strings.Contains(err.Error(), one) || strings.Contains(err.Error(), two) {
+	if _, _, err := newKeyServiceSignerPinned(ksVersion1, two, algEd25519); !errors.Is(err, errKeyServiceNotExpected) || strings.Contains(err.Error(), one) || strings.Contains(err.Error(), two) {
 		t.Fatalf("another key version's key: %v", err)
 	}
-	if _, _, err := newKeyServiceSignerPinned(ksVersion1, one); err != nil {
+	if _, _, err := newKeyServiceSignerPinned(ksVersion1, one, algEd25519); err != nil {
 		t.Fatal(err)
 	}
 	catalog := catalogWith(t, map[string]string{"records": tokenBinding})

@@ -12,7 +12,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -89,6 +92,7 @@ var (
 	errKeyServiceAnswer         = errors.New("the key service answered with no signature the gateway takes; nothing was signed")
 	errKeyServiceToken          = errors.New("the gateway's access token could not be had from the metadata server; nothing was signed")
 	errKeyServicePublicKey      = errors.New("the key service answered no Ed25519 public key of the key version configured; the gateway does not start")
+	errKeyServicePublicKeyP256  = errors.New("the key service answered no P-256 public key of the key version configured; the gateway does not start")
 	errSigningPublicKeyRequired = errors.New("engine configuration: signingKeyVersion is not given without signingPublicKey, the key version's Ed25519 public key that pins it (ADR-0050)")
 	errKeyServiceNotExpected    = errors.New("the key service's key version answers a public key other than the one signingPublicKey names; nothing is signed with it")
 )
@@ -101,8 +105,10 @@ func crc32c(data []byte) string {
 
 // keyServiceSigner signs with one key version in the key service.
 type keyServiceSigner struct {
-	version  string
-	public   ed25519.PublicKey
+	version string
+	public  []byte
+	// alg is the key version's algorithm, as signingKeyAlgorithm names it.
+	alg      string
 	api      *http.Client
 	metadata *http.Client
 	now      func() time.Time
@@ -135,8 +141,8 @@ type lifeBinder interface{ bindLife(context.Context) }
 // newKeyServiceSignerPinned is newKeyServiceSigner held to expected, where
 // it is named (signingPublicKey, ADR-0050): a key version whose public key
 // is another signs nothing. The refusal names neither key.
-func newKeyServiceSignerPinned(version, expected string) (*keyServiceSigner, string, error) {
-	k, line, err := newKeyServiceSigner(version)
+func newKeyServiceSignerPinned(version, expected, alg string) (*keyServiceSigner, string, error) {
+	k, line, err := newKeyServiceSigner(version, alg)
 	if err != nil {
 		return nil, "", err
 	}
@@ -200,9 +206,11 @@ var errRedirectRefused = errors.New("a redirect is not followed")
 // key read once from the service and checked: the answer names the version
 // asked, EC_SIGN_ED25519, a PEM whose CRC32C is the one answered, holding
 // one Ed25519 public key. Anything else is errKeyServicePublicKey, and the
-// gateway does not start. The key's place in the registry is held by the
+// gateway does not start. Under alg ES256 (ADR-0053 §5) the answer names
+// EC_SIGN_P256_SHA256 and the HSM protection level, any other level refused
+// by name, and its PEM holds one P-256 key, held as its compressed point. The key's place in the registry is held by the
 // registry's walk, which must end at it (newRegistryWriterOnWith).
-func newKeyServiceSigner(version string) (*keyServiceSigner, string, error) {
+func newKeyServiceSigner(version, alg string) (*keyServiceSigner, string, error) {
 	if !keyVersionForm.MatchString(version) {
 		return nil, "", fmt.Errorf("signingKeyVersion is not of the form %s", keyVersionFormText)
 	}
@@ -214,7 +222,7 @@ func newKeyServiceSigner(version string) (*keyServiceSigner, string, error) {
 	if err != nil || !bytes.HasPrefix([]byte(keyServiceMetadataBase), []byte("http://")) {
 		return nil, "", errors.New("the metadata server is asked over http at an IP literal")
 	}
-	k := &keyServiceSigner{version: version, api: api, metadata: metadata, now: time.Now}
+	k := &keyServiceSigner{version: version, alg: alg, api: api, metadata: metadata, now: time.Now}
 	ctx, cancel := context.WithTimeout(context.Background(), keyServiceDeadline)
 	defer cancel()
 	var answer struct {
@@ -227,33 +235,69 @@ func newKeyServiceSigner(version string) (*keyServiceSigner, string, error) {
 	if err := k.call(ctx, http.MethodGet, "/v1/"+version+"/publicKey", nil, &answer); err != nil {
 		return nil, "", fmt.Errorf("signingKeyVersion: %w", err)
 	}
-	if answer.Name != version || answer.Algorithm != keyServiceAlgorithm || answer.PemCrc32c != crc32c([]byte(answer.Pem)) {
-		return nil, "", errKeyServicePublicKey
+	algorithm, refusal, named := keyServiceAlgorithm, errKeyServicePublicKey, "Ed25519"
+	if alg == algES256 {
+		algorithm, refusal, named = keyServiceAlgorithmP256, errKeyServicePublicKeyP256, algES256
+	}
+	if answer.Name != version || answer.Algorithm != algorithm || answer.PemCrc32c != crc32c([]byte(answer.Pem)) {
+		return nil, "", refusal
 	}
 	block, rest := pem.Decode([]byte(answer.Pem))
 	if block == nil || block.Type != "PUBLIC KEY" || len(bytes.TrimSpace(rest)) != 0 {
-		return nil, "", errKeyServicePublicKey
+		return nil, "", refusal
 	}
 	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
-	public, ok := parsed.(ed25519.PublicKey)
-	if err != nil || !ok || len(public) != ed25519.PublicKeySize {
-		return nil, "", errKeyServicePublicKey
+	if err != nil {
+		return nil, "", refusal
 	}
-	k.public = public
+	if k.public = keyServicePublicKey(alg, parsed); k.public == nil {
+		return nil, "", refusal
+	}
 	level := answer.ProtectionLevel
 	if level != "SOFTWARE" && level != "HSM" && level != "EXTERNAL" && level != "EXTERNAL_VPC" {
 		level = "unstated"
 	}
-	return k, fmt.Sprintf("the signer is the key service's key version %s (Ed25519, protection level %s), keyId %s; the gateway holds no private key", version, level, keyIDFor(public)), nil
+	// The protection level is checked, not only reported: a P-256 key is
+	// taken at the HSM level alone (ADR-0053 §6), and the refusal names the
+	// level answered and the one required.
+	if alg == algES256 && level != "HSM" {
+		return nil, "", fmt.Errorf("the key service answers protection level %s for the key version configured; a key of signingKeyAlgorithm ES256 is taken at protection level HSM alone (ADR-0053), and the gateway does not start", level)
+	}
+	return k, fmt.Sprintf("the signer is the key service's key version %s (%s, protection level %s), keyId %s; the gateway holds no private key", version, named, level, keyIDFor(k.public)), nil
 }
 
-func (k *keyServiceSigner) publicKey() ed25519.PublicKey { return k.public }
+// keyServicePublicKey is the key a SubjectPublicKeyInfo parsed holds, held
+// to alg: 32 bytes of Ed25519, or a P-256 point (id-ecPublicKey on
+// prime256v1) on the curve, compressed (ADR-0053 §4); nil for anything else.
+func keyServicePublicKey(alg string, parsed any) []byte {
+	switch alg {
+	case algEd25519:
+		if public, ok := parsed.(ed25519.PublicKey); ok && len(public) == ed25519.PublicKeySize {
+			return public
+		}
+	case algES256:
+		public, ok := parsed.(*ecdsa.PublicKey)
+		if !ok || public.Curve != elliptic.P256() {
+			return nil
+		}
+		if uncompressed, err := public.Bytes(); err == nil {
+			return compressP256(uncompressed)
+		}
+	}
+	return nil
+}
+
+func (k *keyServiceSigner) publicKey() []byte { return k.public }
+
+func (k *keyServiceSigner) algorithm() string { return k.alg }
 
 // sign asks the service for the signature of message by the key version
 // configured, within keyServiceDeadline: the answer must name that version,
 // say the data's CRC32C was verified, and carry a signature of 64 bytes
 // whose CRC32C is the one answered. The caller holds it to the public key
-// (signingKey.signVerified).
+// (signingKey.signVerified). A P-256 key version is asked over the SHA-256
+// digest of message, which alone leaves the gateway, and answers DER, which
+// is turned into low-S r||s (ADR-0053 §5).
 func (k *keyServiceSigner) sign(message []byte) ([]byte, error) {
 	k.fault.Lock()
 	life, latched, until := k.life, k.latched, k.latchedUntil
@@ -279,20 +323,41 @@ func (k *keyServiceSigner) sign(message []byte) ([]byte, error) {
 func (k *keyServiceSigner) ask(life context.Context, message []byte) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(life, keyServiceDeadline)
 	defer cancel()
-	request, _ := json.Marshal(map[string]string{
-		"data":       base64.StdEncoding.EncodeToString(message),
-		"dataCrc32c": crc32c(message),
-	})
+	var request []byte
+	if k.alg == algES256 {
+		digest := sha256.Sum256(message)
+		request, _ = json.Marshal(map[string]any{
+			"digest":       map[string]string{"sha256": base64.StdEncoding.EncodeToString(digest[:])},
+			"digestCrc32c": crc32c(digest[:]),
+		})
+	} else {
+		request, _ = json.Marshal(map[string]string{
+			"data":       base64.StdEncoding.EncodeToString(message),
+			"dataCrc32c": crc32c(message),
+		})
+	}
 	var answer struct {
-		Name               string `json:"name"`
-		Signature          string `json:"signature"`
-		SignatureCrc32c    string `json:"signatureCrc32c"`
-		VerifiedDataCrc32c bool   `json:"verifiedDataCrc32c"`
+		Name                 string `json:"name"`
+		Signature            string `json:"signature"`
+		SignatureCrc32c      string `json:"signatureCrc32c"`
+		VerifiedDataCrc32c   bool   `json:"verifiedDataCrc32c"`
+		VerifiedDigestCrc32c bool   `json:"verifiedDigestCrc32c"`
 	}
 	if err := k.call(ctx, http.MethodPost, "/v1/"+k.version+":asymmetricSign", request, &answer); err != nil {
 		return nil, err
 	}
 	signature, err := base64.StdEncoding.DecodeString(answer.Signature)
+	if k.alg == algES256 {
+		if err != nil || answer.Name != k.version || !answer.VerifiedDigestCrc32c ||
+			len(signature) > 72 || answer.SignatureCrc32c != crc32c(signature) {
+			return nil, errKeyServiceAnswer
+		}
+		rs, ok := p256SignatureOfDER(signature)
+		if !ok {
+			return nil, errKeyServiceAnswer
+		}
+		return rs, nil
+	}
 	if err != nil || answer.Name != k.version || !answer.VerifiedDataCrc32c ||
 		len(signature) != ed25519.SignatureSize || answer.SignatureCrc32c != crc32c(signature) {
 		return nil, errKeyServiceAnswer
@@ -384,12 +449,13 @@ func (k *keyServiceSigner) accessToken(ctx context.Context) (string, error) {
 
 // commandSigner is what an operator command run with the gateway stopped
 // signs through (ADR-0050): the key service's key version the configuration
-// names, held to signingPublicKey where it is named, or else the seed's key.
-func commandSigner(version, expected string, seed []byte) (signer, error) {
+// names, held to signingPublicKey where it is named, of the algorithm alg
+// (signingKeyAlgorithm), or else the seed's key.
+func commandSigner(version, expected, alg string, seed []byte) (signer, error) {
 	if version == "" {
 		return newSeedSigner(seed), nil
 	}
-	k, _, err := newKeyServiceSignerPinned(version, expected)
+	k, _, err := newKeyServiceSignerPinned(version, expected, alg)
 	if err != nil {
 		return nil, err
 	}

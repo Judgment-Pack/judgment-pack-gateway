@@ -205,7 +205,7 @@ func witnessConfigOf(spec *witnessSpec, seed []byte, registryPath string) (witne
 	if err != nil {
 		return witnessConfig{}, fmt.Errorf("registry: %w", err)
 	}
-	walk, err := engineWalk(data, public)
+	walk, err := engineWalk(data, edKey(public))
 	if err != nil {
 		return witnessConfig{}, err
 	}

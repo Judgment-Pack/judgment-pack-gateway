@@ -79,11 +79,12 @@ func continuationLine(line string) *vObject {
 // force at its line: exactly its members, keyHistoryDigest among them, each
 // of its form, its keyId the key's and its signature verifying under it.
 func continuationOf(obj *vObject, key reachedKey) (*storeContinuation, bool) {
-	if len(obj.byName) != len(continuationMembers) {
+	members := membersWithAlg(continuationMembers, obj)
+	if len(obj.byName) != len(members) {
 		return nil, false
 	}
 	for name := range obj.byName {
-		if !continuationMembers[name] {
+		if !members[name] {
 			return nil, false
 		}
 	}
@@ -102,7 +103,8 @@ func continuationOf(obj *vObject, key reachedKey) (*storeContinuation, bool) {
 		return nil, false
 	}
 	signature, _ := hex.DecodeString(sigHex)
-	if keyID != key.keyID || len(key.key) != ed25519.PublicKeySize || !ed25519.Verify(key.key, continuationSigningInput(obj), signature) {
+	alg, okAlg := recordAlg(obj, "alg")
+	if !okAlg || keyID != key.keyID || alg != key.alg || !verifyByAlgorithm(alg, key.held(), continuationSigningInput(obj), signature) {
 		return nil, false
 	}
 	return &storeContinuation{keyID: keyID, continuedAt: at, previousLines: int64(lines), previousDigest: last, keyHistoryDigest: history}, true
@@ -182,6 +184,7 @@ func newContinuationLine(key *signingKey, previous, history []byte, at string) (
 	obj.set("kind", vString(continuationKind))
 	obj.set("previousDigest", vString(last))
 	obj.set("previousLines", vInt(lines))
+	setAlg(obj, "alg", key.alg)
 	signature, err := key.signVerified(continuationSigningInput(obj))
 	if err != nil {
 		return nil, err
@@ -218,12 +221,12 @@ func linkPrevious(rep *report, previous string, pinned ed25519.PublicKey) error 
 		status = statusContinuationMissing
 	default:
 		lines, digest := registryLink(data)
-		before := walkRegistry(data, registryFirstKey(data, pinned))
+		before := walkRegistryFrom(data, registryFirstKey(data, edKey(pinned)))
 		if c.previousLines != lines {
 			status = statusContinuationCountMismatch
 		} else if c.previousDigest != digest {
 			status = statusContinuationDigestMismatch
-		} else if before.finding != nil || before.current().keyID != c.keyID || !lastSealHolds(data, registryFirstKey(data, pinned)) {
+		} else if before.finding != nil || before.current().keyID != c.keyID || !lastSealHolds(data, registryFirstKey(data, edKey(pinned))) {
 			status = statusContinuationKeyMismatch
 		}
 	}
@@ -239,7 +242,7 @@ func linkPrevious(rep *report, previous string, pinned ed25519.PublicKey) error 
 // keyId, and no rotation statement or store continuation -- is the key in
 // force at that line, the registry walked from start. A registry holding no
 // seal holds: its walk's last key alone is held to the continuation.
-func lastSealHolds(data []byte, start ed25519.PublicKey) bool {
+func lastSealHolds(data []byte, start heldKey) bool {
 	lines := strings.SplitAfter(string(data), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSuffix(lines[i], "\n")
@@ -261,7 +264,7 @@ func lastSealHolds(data []byte, start ed25519.PublicKey) bool {
 		if _, okSession := memberString(obj, "sessionId"); !okKey || !okSession {
 			continue
 		}
-		upTo := walkRegistry([]byte(strings.Join(lines[:i+1], "")), start)
+		upTo := walkRegistryFrom([]byte(strings.Join(lines[:i+1], "")), start)
 		return upTo.finding == nil && upTo.current().keyID == keyID
 	}
 	return true

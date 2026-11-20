@@ -131,7 +131,7 @@ func TestAPostgresStoreRetainRefusesToFinishASessionOfNoScope(t *testing.T) {
 	if !bytes.Equal(key.public, pub) {
 		t.Fatal("the service does not sign under the test seed")
 	}
-	walk, err := engineWalk([]byte(readFile(t, filepath.Join(before, "registry"))), pub)
+	walk, err := engineWalk([]byte(readFile(t, filepath.Join(before, "registry"))), edKey(pub))
 	if err != nil {
 		t.Fatal(err)
 	}

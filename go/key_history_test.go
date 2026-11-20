@@ -164,7 +164,7 @@ func TestTheKeyHistoryCheckRefusesWhatTheChainDoesNotProve(t *testing.T) {
 	first, second, third := ed25519.NewKeyFromSeed(historySeed("1")), ed25519.NewKeyFromSeed(historySeed("2")), ed25519.NewKeyFromSeed(historySeed("3"))
 	data := rotationRecord(nil, 1, "2026-11-19T00:00:00Z", first, second)
 	data = append(data, rotationRecord(data, 2, "2026-11-19T00:00:01Z", second, third)...)
-	entries, err := registryKeyHistory(data, third.Public().(ed25519.PublicKey), nil, false)
+	entries, err := registryKeyHistory(data, edKey(third.Public().(ed25519.PublicKey)), nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +495,7 @@ func TestTheKeyHistoryCheckRefusesARotationBeforeTheOneBefore(t *testing.T) {
 	for _, at := range []string{"2026-11-19T00:00:01Z", "2026-11-19T00:00:00Z", "2026-11-19T00:00:02Z"} {
 		data := rotationRecord(nil, 1, "2026-11-19T00:00:01Z", first, second)
 		data = append(data, rotationRecord(data, 2, at, second, third)...)
-		entries, err := registryKeyHistory(data, third.Public().(ed25519.PublicKey), nil, false)
+		entries, err := registryKeyHistory(data, edKey(third.Public().(ed25519.PublicKey)), nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -517,7 +517,7 @@ func TestTheKeyHistoryCheckRefusesARotationBeforeTheOneBefore(t *testing.T) {
 func TestAStoreContinuationIsMadeWhileTheKeyItCarriesIsInForce(t *testing.T) {
 	first, second, third := ed25519.NewKeyFromSeed(historySeed("1")), ed25519.NewKeyFromSeed(historySeed("2")), ed25519.NewKeyFromSeed(historySeed("3"))
 	old := rotationRecord(nil, 1, "2026-11-19T00:00:05Z", first, second)
-	entries, err := registryKeyHistory(old, second.Public().(ed25519.PublicKey), nil, false)
+	entries, err := registryKeyHistory(old, edKey(second.Public().(ed25519.PublicKey)), nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,7 +529,7 @@ func TestAStoreContinuationIsMadeWhileTheKeyItCarriesIsInForce(t *testing.T) {
 			data = append(data, rotationRecord(data, 1, rotatedAt, second, third)...)
 			own = third.Public().(ed25519.PublicKey)
 		}
-		return registryKeyHistory(data, own, history, true)
+		return registryKeyHistory(data, edKey(own), history, true)
 	}
 	before := "the store continuation's continuedAt is before the validFrom of the key in force at the store rotation"
 	after := "the store continuation's continuedAt is after the validTo of the key in force at the store rotation"

@@ -196,7 +196,7 @@ func witnessSignatureValid(key ed25519.PublicKey, st *witnessStatement) bool {
 	if err != nil {
 		return false
 	}
-	return ed25519.Verify(key, st.signed, signature)
+	return verifyByAlgorithm(algEd25519, edKey(key), st.signed, signature)
 }
 
 // witnessReading is what one reading takes: the trail being verified, the

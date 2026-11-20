@@ -440,7 +440,7 @@ func verifySignature(key publicKey, signed, signature []byte) error {
 			return errors.New("token signature does not verify")
 		}
 	case ed25519.PublicKey:
-		if !ed25519.Verify(k, signed, signature) {
+		if !verifyByAlgorithm(algEd25519, edKey(k), signed, signature) {
 			return errors.New("token signature does not verify")
 		}
 	default:

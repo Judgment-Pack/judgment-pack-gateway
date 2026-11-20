@@ -378,7 +378,7 @@ func TestPostgresInstancesSealingOneSessionAtOnceAppendOneSeal(t *testing.T) {
 	if n := bytes.Count(data, []byte("\n")); n != 3 {
 		t.Fatalf("the registry holds %d records:\n%s", n, data)
 	}
-	walk, err := engineWalk(data, ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey))
+	walk, err := engineWalk(data, edKey(ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey)))
 	if err != nil || len(walk.seals) != 3 {
 		t.Fatalf("the registry's seals: %v %v", walk, err)
 	}
@@ -684,7 +684,7 @@ func TestAKilledPostgresInstancesSessionsWaitForItsRowToExpireThenAreSealed(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	walk, err := engineWalk(data, ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey))
+	walk, err := engineWalk(data, edKey(ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey)))
 	if err != nil || len(walk.seals) != 2 || bytes.Count(data, []byte("\n")) != 2 {
 		t.Fatalf("the registry after the starts: %v %v\n%s", walk, err, data)
 	}

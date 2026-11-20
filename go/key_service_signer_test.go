@@ -42,9 +42,16 @@ func ksKey(word string) ed25519.PrivateKey {
 // it holds, as the key service does, and the access token as the metadata
 // server does. Its faults are set by a test between calls.
 type keyServiceStandIn struct {
-	mu       sync.Mutex
-	keys     map[string]ed25519.PrivateKey
-	requests int
+	mu   sync.Mutex
+	keys map[string]ed25519.PrivateKey
+	// p256 are the P-256 key versions, answered at level (HSM where it is
+	// ""); p256HighS answers each signature with s as n - s, and p256SignBy
+	// signs in place of the version's key
+	p256       map[string]*ecdsa.PrivateKey
+	level      string
+	p256HighS  bool
+	p256SignBy *ecdsa.PrivateKey
+	requests   int
 	// signStatus, where not 0, answers every sign with it; signBy, where
 	// not nil, signs with it in place of the version's key; publicKey,
 	// where not nil, rewrites the publicKey answer; redirect, where not "",
@@ -65,7 +72,7 @@ type keyServiceStandIn struct {
 
 func standInKeyService(t *testing.T) *keyServiceStandIn {
 	t.Helper()
-	s := &keyServiceStandIn{keys: map[string]ed25519.PrivateKey{ksVersion1: ksKey("one"), ksVersion2: ksKey("two")}}
+	s := &keyServiceStandIn{keys: map[string]ed25519.PrivateKey{ksVersion1: ksKey("one"), ksVersion2: ksKey("two")}, p256: map[string]*ecdsa.PrivateKey{ksP256One: p256Key(1), ksP256Two: p256Key(2)}}
 	s.kms = httptest.NewTLSServer(http.HandlerFunc(s.serveKMS))
 	s.metadata = httptest.NewServer(http.HandlerFunc(s.serveMetadata))
 	t.Cleanup(s.kms.Close)
@@ -113,6 +120,41 @@ func (s *keyServiceStandIn) serveKMS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/v1/")
+	if version, ok := strings.CutSuffix(path, "/publicKey"); ok && r.Method == http.MethodGet && s.p256[version] != nil {
+		der, _ := x509.MarshalPKIXPublicKey(&s.p256[version].PublicKey)
+		pemText := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+		level := s.level
+		if level == "" {
+			level = "HSM"
+		}
+		json.NewEncoder(w).Encode(map[string]string{"name": version, "pem": pemText, "algorithm": keyServiceAlgorithmP256, "pemCrc32c": crc32c([]byte(pemText)), "protectionLevel": level})
+		return
+	}
+	if version, ok := strings.CutSuffix(path, ":asymmetricSign"); ok && r.Method == http.MethodPost && s.p256[version] != nil {
+		var asked struct {
+			Digest       struct{ Sha256 string } `json:"digest"`
+			DigestCrc32c string                  `json:"digestCrc32c"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&asked); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		digest, err := base64.StdEncoding.DecodeString(asked.Digest.Sha256)
+		if err != nil || len(digest) != 32 || asked.DigestCrc32c != crc32c(digest) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		key := s.p256[version]
+		if s.p256SignBy != nil {
+			key = s.p256SignBy
+		}
+		der, _ := ecdsa.SignASN1(rand.Reader, key, digest)
+		if s.p256HighS {
+			der = highSDER(der)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"name": version, "signature": base64.StdEncoding.EncodeToString(der), "signatureCrc32c": crc32c(der), "verifiedDigestCrc32c": true})
+		return
+	}
 	if version, ok := strings.CutSuffix(path, "/publicKey"); ok && r.Method == http.MethodGet {
 		key, held := s.keys[version]
 		if !held {
@@ -165,7 +207,7 @@ func (s *keyServiceStandIn) serveKMS(w http.ResponseWriter, r *http.Request) {
 
 func mustKeyServiceSigner(t *testing.T, version string) *keyServiceSigner {
 	t.Helper()
-	k, _, err := newKeyServiceSigner(version)
+	k, _, err := newKeyServiceSigner(version, algEd25519)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +275,7 @@ func TestTheSeedSignerSignsTheBytesTheSeedAlwaysSigned(t *testing.T) {
 // the seed's key.
 func TestTheKeyServiceSignsReceiptsTheVerifierAccepts(t *testing.T) {
 	standIn := standInKeyService(t)
-	k, line, err := newKeyServiceSigner(ksVersion1)
+	k, line, err := newKeyServiceSigner(ksVersion1, algEd25519)
 	if err != nil || !strings.Contains(line, "protection level SOFTWARE") || !bytes.Equal(k.publicKey(), ksKey("one").Public().(ed25519.PublicKey)) {
 		t.Fatalf("the start: %v %q", err, line)
 	}
@@ -323,13 +365,13 @@ func TestTheKeyServicesPublicKeyIsCheckedAtStart(t *testing.T) {
 		},
 	} {
 		standIn.set(func(s *keyServiceStandIn) { s.publicKey = rewrite })
-		if _, _, err := newKeyServiceSigner(ksVersion1); !errors.Is(err, errKeyServicePublicKey) {
+		if _, _, err := newKeyServiceSigner(ksVersion1, algEd25519); !errors.Is(err, errKeyServicePublicKey) {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
 	standIn.set(func(s *keyServiceStandIn) { s.publicKey = nil; s.requests = 0 })
 	for _, bad := range []string{"projects/standin-project/locations/global/keyRings/r/cryptoKeys/k", ksVersion1 + "/../2", "https://elsewhere/" + ksVersion1, strings.Replace(ksVersion1, "Versions/1", "Versions/0", 1)} {
-		if _, _, err := newKeyServiceSigner(bad); err == nil || !strings.Contains(err.Error(), "not of the form") {
+		if _, _, err := newKeyServiceSigner(bad, algEd25519); err == nil || !strings.Contains(err.Error(), "not of the form") {
 			t.Fatalf("%q: %v", bad, err)
 		}
 	}

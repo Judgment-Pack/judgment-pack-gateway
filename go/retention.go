@@ -9,7 +9,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -181,8 +180,14 @@ func signedByReachedKey(obj *vObject, prefix, keyID, signatureHex string, keys [
 	if keyPos < 0 {
 		return -1
 	}
+	// by the algorithm the record's alg names, which the key must be of; a
+	// P-256 signature in lowercase hex alone (ADR-0053 §4)
+	alg, okAlg := recordAlg(obj, "alg")
+	if !okAlg || keys[keyPos].alg != alg || alg == algES256 && !isLowerHexOfLen(signatureHex, 128) {
+		return -1
+	}
 	signature, err := hex.DecodeString(signatureHex)
-	if err != nil || !ed25519.Verify(keys[keyPos].key, recordSigningInput(prefix, obj), signature) {
+	if err != nil || !verifyByAlgorithm(alg, keys[keyPos].held(), recordSigningInput(prefix, obj), signature) {
 		return -1
 	}
 	return keyPos
@@ -219,7 +224,7 @@ func sessionRemovalOf(obj *vObject, keys []reachedKey) (sessionRemoval, bool) {
 	if salted {
 		members = sessionRemovalSaltedMembers
 	}
-	if !exactMembers(obj, members) {
+	if !exactMembers(obj, membersWithAlg(members, obj)) {
 		return sessionRemoval{}, false
 	}
 	kind, _ := memberString(obj, "kind")
@@ -256,7 +261,7 @@ func sessionRemovalOf(obj *vObject, keys []reachedKey) (sessionRemoval, bool) {
 // scopeRemovalOf holds a record to a scope-removal's form (SPEC.md §1.3a, "A
 // removed session") and loads it under the keys the walk reached.
 func scopeRemovalOf(obj *vObject, keys []reachedKey) (scopeRemoval, bool) {
-	if !exactMembers(obj, scopeRemovalMembers) {
+	if !exactMembers(obj, membersWithAlg(scopeRemovalMembers, obj)) {
 		return scopeRemoval{}, false
 	}
 	kind, _ := memberString(obj, "kind")
@@ -396,7 +401,7 @@ func removalOf(line string, keys []reachedKey) (removalRecord, bool) {
 func artifactRemovalOf(obj *vObject, keys []reachedKey) (removalRecord, bool) {
 	// every member is required below, and §1.1's parser admits no name
 	// twice, so a member of no other name is all that is left to refuse
-	if !exactMembers(obj, removalMembers) {
+	if !exactMembers(obj, membersWithAlg(removalMembers, obj)) {
 		return removalRecord{}, false
 	}
 	kind, _ := memberString(obj, "kind")

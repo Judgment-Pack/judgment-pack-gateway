@@ -103,6 +103,9 @@ func keyIDFor(publicKey []byte) string {
 // --- receipts -------------------------------------------------------------
 
 type receipt struct {
+	// alg is the algorithm the receipt's alg member names (ADR-0053 §1):
+	// algES256 on a version 3 receipt a P-256 key signs, else algEd25519.
+	alg            string
 	delivery       *actionDelivery
 	reconciliation *actionReconciliation
 	obj            *vObject
@@ -180,6 +183,21 @@ func receiptFrom(obj *vObject) (*receipt, error) {
 			return nil, err
 		}
 	}
+	// alg (ADR-0053 §1): a version 3 receipt a P-256 key signs carries
+	// "ES256" and no other value; a version 2 receipt, Ed25519 alone,
+	// carries none, of any value, and is never verified as ES256
+	if _, present := obj.get("alg"); present {
+		switch r.version {
+		case receiptVersion:
+			return nil, errors.New(`a version 2 receipt carries no member "alg"`)
+		case receiptVersion3:
+			alg, ok := recordAlg(obj, "alg")
+			if !ok {
+				return nil, errors.New(`member "alg" is not "ES256"`)
+			}
+			r.alg = alg
+		}
+	}
 	ci, ok := obj.get("callIndex")
 	if !ok {
 		return nil, errors.New(`missing member "callIndex"`)
@@ -254,7 +272,15 @@ type seal struct {
 // sealSigningInput is spelled out by SPEC.md §3: the seal context prefix, then
 // canon over exactly these four members.
 func sealSigningInput(sessionID string, finalCount int64, sealedAt, keyID string) []byte {
+	return sealSigningInputFor(algEd25519, sessionID, finalCount, sealedAt, keyID)
+}
+
+// sealSigningInputFor is sealSigningInput by algorithm: a P-256 seal of
+// §3's form signs five members, alg among them, under the same prefix
+// (ADR-0053 §1); an Ed25519 one the four, as always.
+func sealSigningInputFor(alg, sessionID string, finalCount int64, sealedAt, keyID string) []byte {
 	covered := newObject()
+	setAlg(covered, "alg", alg)
 	covered.set("sessionId", vString(sessionID))
 	covered.set("finalCount", vInt(finalCount))
 	covered.set("sealedAt", vString(sealedAt))
@@ -549,7 +575,7 @@ func readRegistryOf(path string, required bool) ([]byte, error) {
 // first key (SPEC.md §3b, "The gateway's own reading"), so a session sealed
 // under a key the gateway rotated from stays sealed; a walk that finds
 // anything, or ends at another key than the engine's, is a refusal.
-func loadEngineSeals(path string, publicKey []byte) (map[string]seal, error) {
+func loadEngineSeals(path string, publicKey heldKey) (map[string]seal, error) {
 	data, err := readRegistryOf(path, true)
 	if err != nil {
 		return nil, err
@@ -677,11 +703,24 @@ func verifyOrdinarySealsOnly(storeRoot, registryPath, authority, decisionRecords
 // made at its start is required, so a registry that is not there is no
 // verdict, never "no seals" -- which, with no session left to enumerate,
 // would verify.
-func verifyAsEngine(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
-	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, "", publicKey, true, false, "")
+func verifyAsEngine(storeRoot, registryPath, authority, decisionRecords string, own heldKey) (*report, error) {
+	return verifyAgainstPin(storeRoot, registryPath, authority, decisionRecords, "", own, true, false, "")
 }
 
 func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte, registryRequired, ordinarySealsOnly bool, scope string) (*report, error) {
+	return verifyAgainstPin(storeRoot, registryPath, authority, decisionRecords, supplied, edKey(publicKey), registryRequired, ordinarySealsOnly, scope)
+}
+
+// verifySuppliedPin is verifySupplied, or verifyByScope where scope is
+// named, under a key pinned with its algorithm (gateway verify
+// --public-key-alg; ADR-0053 §11).
+func verifySuppliedPin(storeRoot, registryPath, authority, decisionRecords, supplied string, pin heldKey, ordinarySealsOnly bool, scope string) (*report, error) {
+	return verifyAgainstPin(storeRoot, registryPath, authority, decisionRecords, supplied, pin, false, ordinarySealsOnly, scope)
+}
+
+// verifyAgainstPin is the verdict under the key pinned, pin, read with the
+// algorithm it was given with.
+func verifyAgainstPin(storeRoot, registryPath, authority, decisionRecords, supplied string, pin heldKey, registryRequired, ordinarySealsOnly bool, scope string) (*report, error) {
 	// A verdict by scope names a scope identifier of its form, and reads no
 	// decision record: an action receipt carries no scope, and a session of
 	// a scope identifier is refused one (SPEC.md §4, "A verdict by scope").
@@ -714,8 +753,8 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 		return nil, fmt.Errorf("store root is not a directory: %s", storeRoot)
 	}
 
-	if len(publicKey) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("public key must be %d bytes", ed25519.PublicKeySize)
+	if 2*len(pin.key) != publicKeyHexLen(pin.alg) {
+		return nil, fmt.Errorf("public key must be %d bytes", publicKeyHexLen(pin.alg)/2)
 	}
 	rep := &report{OK: true, Findings: []finding{}}
 
@@ -734,11 +773,11 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied
 	}
 	var walk *registryWalk
 	if registryRequired {
-		if walk, err = engineWalk(registryData, publicKey); err != nil {
+		if walk, err = engineWalk(registryData, pin); err != nil {
 			return nil, err
 		}
 	} else {
-		walk = walkRegistry(registryData, publicKey)
+		walk = walkRegistryFrom(registryData, pin)
 	}
 	seals, sealOrder := walk.seals, walk.order
 	// The removal records load under the keys the walk reached (SPEC.md
@@ -1440,14 +1479,19 @@ func checkReceiptProbed(data []byte, probe storeProbe, sessionID, fileName, auth
 	if r.keyPos < 0 {
 		return r, "key-mismatch", nil
 	}
-	publicKey := keys[r.keyPos].key
+	// The key the keyId names verifies a receipt of its own algorithm
+	// alone: alg names it (ADR-0053 §1), and a key of the other algorithm
+	// is the key failure, order 3, with no signature tried.
+	if keys[r.keyPos].alg != r.alg {
+		return r, "key-mismatch", nil
+	}
 	// Well-formed hex of the wrong length is NOT malformed: it is a signature
 	// that cannot verify, which is order 4.
 	sig, err := hex.DecodeString(r.signature)
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return r, "signature-mismatch", nil
 	}
-	if !ed25519.Verify(publicKey, r.signingInput(), sig) {
+	if !verifyByAlgorithm(r.alg, keys[r.keyPos].held(), r.signingInput(), sig) {
 		return r, "signature-mismatch", nil
 	}
 	// Location binding: the receipt has to sit where it says it does, so a

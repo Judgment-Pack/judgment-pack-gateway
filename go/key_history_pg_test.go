@@ -108,7 +108,7 @@ func pgRotateStopped(t *testing.T, db *pgTestDB, seed, next []byte, at string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	walk, err := engineWalk(existing, seedKeyOf(seed))
+	walk, err := engineWalk(existing, edKey(seedKeyOf(seed)))
 	if err != nil {
 		t.Fatal(err)
 	}

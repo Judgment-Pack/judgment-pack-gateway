@@ -149,24 +149,24 @@ func TestTheGatewaysOwnReading(t *testing.T) {
 	k0, k1, k2 := rotationKey("zero"), rotationKey("one"), rotationKey("two")
 	at := "2026-10-25T00:00:00Z"
 	registry := []byte(sealLine(t, k0, "a", 1) + rotationLines(k0, k1, 1, at) + sealLine(t, k1, "b", 1))
-	w, err := engineWalk(registry, publicOf(k1))
+	w, err := engineWalk(registry, edKey(publicOf(k1)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(w.seals) != 2 {
 		t.Fatalf("the gateway's own reading loads %d seals, want both", len(w.seals))
 	}
-	if _, err := engineWalk(registry, publicOf(k0)); err == nil || !strings.Contains(err.Error(), "pending") {
+	if _, err := engineWalk(registry, edKey(publicOf(k0))); err == nil || !strings.Contains(err.Error(), "pending") {
 		t.Fatalf("the key rotated from read its registry: %v", err)
 	}
-	if _, err := engineWalk(registry, publicOf(k2)); err == nil {
+	if _, err := engineWalk(registry, edKey(publicOf(k2))); err == nil {
 		t.Fatal("a key the registry never names read it")
 	}
 	broken := append(append([]byte(nil), registry...), forwardLine(k1, 2, at, publicOf(k2))+"\n"...)
-	if _, err := engineWalk(broken, publicOf(k1)); err == nil || !strings.Contains(err.Error(), statusRotationBreak) {
+	if _, err := engineWalk(broken, edKey(publicOf(k1))); err == nil || !strings.Contains(err.Error(), statusRotationBreak) {
 		t.Fatalf("a walk that does not hold: %v", err)
 	}
-	if _, err := engineWalk(nil, publicOf(k0)); err != nil {
+	if _, err := engineWalk(nil, edKey(publicOf(k0))); err != nil {
 		t.Fatalf("an empty registry: %v", err)
 	}
 }
@@ -498,7 +498,7 @@ func TestRotateKeyResumesATornAppend(t *testing.T) {
 			data, _ := os.ReadFile(registry)
 			if c.cut > forwardLength {
 				for _, key := range []ed25519.PrivateKey{k0, k1} {
-					if _, err := engineWalk(data, publicOf(key)); err == nil || !strings.Contains(err.Error(), "--resume") {
+					if _, err := engineWalk(data, edKey(publicOf(key))); err == nil || !strings.Contains(err.Error(), "--resume") {
 						t.Fatalf("the gateway's own reading of a rotation without its continuation, under %x: %v", publicOf(key)[:4], err)
 					}
 				}
@@ -532,7 +532,7 @@ func TestRotateKeyResumesATornAppend(t *testing.T) {
 			if w.finding != nil || w.followed() != 1 || len(w.seals) != 1 {
 				t.Fatalf("walked from the first key: finding %v, %d followed, %d seals", w.finding, w.followed(), len(w.seals))
 			}
-			if _, err := engineWalk(data, publicOf(k1)); err != nil {
+			if _, err := engineWalk(data, edKey(publicOf(k1))); err != nil {
 				t.Fatalf("the gateway's own reading under the next key: %v", err)
 			}
 		})

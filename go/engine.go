@@ -138,7 +138,7 @@ import (
 // 39 either.
 const engineVersion = labelsVersion
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -174,19 +174,23 @@ type engineConfig struct {
 	// key version must answer, 64 lowercase hexadecimal characters: a key
 	// version whose key is another signs nothing (ADR-0050)
 	signingPublicKey string
-	store            string
-	registry         string
-	decisionRecords  string
-	listen           string
-	catalog          string
-	runtime          string
-	adapters         string
-	rootSigner       bool
-	hostRuntime      bool
-	identity         *identitySpec    // who may call; nil records caller null
-	platforms        []platformConfig // in name order
-	version          string
-	mcp              *mcpConfig // the MCP server's own settings; nil when the configuration has none
+	// signingKeyAlgorithm is signingKeyVersion's algorithm (ADR-0053 §6):
+	// algES256 for a P-256 key version at the key service's HSM protection
+	// level, from p256SignerVersion; algEd25519, absent, otherwise.
+	signingKeyAlgorithm string
+	store               string
+	registry            string
+	decisionRecords     string
+	listen              string
+	catalog             string
+	runtime             string
+	adapters            string
+	rootSigner          bool
+	hostRuntime         bool
+	identity            *identitySpec    // who may call; nil records caller null
+	platforms           []platformConfig // in name order
+	version             string
+	mcp                 *mcpConfig // the MCP server's own settings; nil when the configuration has none
 	// witness makes the signer a checkpoint witness (ADR-0013); nil when the
 	// configuration has none.
 	witness *witnessSpec
@@ -439,7 +443,7 @@ var engineMembers = map[string]bool{
 	"decisionRecords": true, "listen": true, "catalog": true, "platforms": true,
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
 	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
-	"sealOpenAtStart": false, "signingKeyVersion": false, "signingPublicKey": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
+	"sealOpenAtStart": false, "signingKeyVersion": false, "signingPublicKey": false, "signingKeyAlgorithm": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
 	"receiptSink": false, "retention": false,
 }
 
@@ -911,6 +915,21 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		}
 		cfg.signingKeyVersion = string(named)
 	}
+	// signingKeyAlgorithm (ADR-0053 §6): "ES256", from p256SignerVersion and
+	// only beside signingKeyVersion, since the seed stays Ed25519; absent,
+	// Ed25519, as before
+	if algValue, present := obj.get("signingKeyAlgorithm"); present {
+		if !versionAtLeast(version, p256SignerVersion) {
+			return engineConfig{}, fmt.Errorf("engine configuration: signingKeyAlgorithm is a version-%s member; engineVersion %s has no signingKeyAlgorithm", p256SignerVersion, version)
+		}
+		if named, ok := algValue.(vString); !ok || string(named) != algES256 {
+			return engineConfig{}, errors.New(`engine configuration: signingKeyAlgorithm is "ES256", a P-256 key version at the key service's HSM protection level, or absent for Ed25519`)
+		}
+		if cfg.signingKeyVersion == "" {
+			return engineConfig{}, errors.New("engine configuration: signingKeyAlgorithm names the algorithm of signingKeyVersion's key version, and is not given without it: the seed's key is Ed25519 (ADR-0053)")
+		}
+		cfg.signingKeyAlgorithm = algES256
+	}
 	// signingPublicKey (ADR-0050): the key version's public key, pinned
 	// beside its name, as the seed's expected key is pinned elsewhere
 	if keyValue, present := obj.get("signingPublicKey"); present {
@@ -918,7 +937,11 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			return engineConfig{}, fmt.Errorf("engine configuration: signingPublicKey is a version-%s member; engineVersion %s has no signingPublicKey", keyServiceSignerVersion, version)
 		}
 		named, ok := keyValue.(vString)
-		if !ok || !signingPublicKeyForm.MatchString(string(named)) {
+		// each form is refused under the other algorithm (ADR-0053 §6)
+		if cfg.signingKeyAlgorithm == algES256 && (!ok || !isLowerHexOfLen(string(named), publicKeyHexLen(algES256))) {
+			return engineConfig{}, errors.New("engine configuration: signingPublicKey is the key version's P-256 public key under signingKeyAlgorithm ES256, its compressed point in 66 lowercase hexadecimal characters")
+		}
+		if cfg.signingKeyAlgorithm == algEd25519 && (!ok || !signingPublicKeyForm.MatchString(string(named))) {
 			return engineConfig{}, errors.New("engine configuration: signingPublicKey is the key version's Ed25519 public key, 64 lowercase hexadecimal characters")
 		}
 		if cfg.signingKeyVersion == "" {

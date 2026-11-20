@@ -6,7 +6,7 @@ package main
 // Subcommands:
 //
 //	gateway canon                                    < value.json
-//	gateway verify [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry> <auth> [<decision-records>]  < publickey.raw
+//	gateway verify [--public-key-alg ES256] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry> <auth> [<decision-records>]  < publickey.raw (or the 66 hex of a P-256 point under --public-key-alg ES256)
 //	gateway export --config <engine.json> --out <dir> [--observations <file>]...
 //	gateway export --check <dir>
 //	gateway conform [--impl CMD] [--corpus DIR]
@@ -145,7 +145,18 @@ func cmdCanon() int {
 }
 
 func cmdVerify(args []string) int {
-	const usage = "usage: gateway verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] [--previous <registry>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
+	// --public-key-alg ES256, given first (ADR-0053 §11): the key on standard
+	// input is then a P-256 key's compressed point, exactly its 66 lowercase
+	// hexadecimal characters; without it, Ed25519's 32 raw bytes, as before
+	pinAlg := algEd25519
+	if len(args) > 0 && args[0] == "--public-key-alg" {
+		if len(args) < 2 || args[1] != algES256 {
+			fmt.Fprintln(os.Stderr, "gateway verify: --public-key-alg is ES256, given first; without it the key on standard input is Ed25519's 32 raw bytes")
+			return 2
+		}
+		pinAlg, args = algES256, args[2:]
+	}
+	const usage = "usage: gateway verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] [--previous <registry>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
 	// --scope <identifier>, first or not at all: the verdict is cut by the
 	// scope identifier (SPEC.md §4, "A verdict by scope"), and takes no
 	// decision-record directory. In any later place it is a usage error,
@@ -261,18 +272,16 @@ func cmdVerify(args []string) int {
 		fmt.Fprintln(os.Stderr, "read public key from stdin:", err)
 		return 1
 	}
-	publicKey, err := readPublicKey(raw)
+	publicKey, err := readPinnedKey(pinAlg, raw)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "public key:", err)
 		return 1
 	}
 
 	var verdict *report
-	if scope != "" {
-		verdict, err = verifyByScope(storeRoot, registryPath, authority, supplied, scope, publicKey, ordinarySealsOnly)
-	} else {
-		verdict, err = verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, ordinarySealsOnly)
-	}
+	// a verdict by scope reads no decision records (refused above), so
+	// one call makes either verdict under the key pinned with its algorithm
+	verdict, err = verifySuppliedPin(storeRoot, registryPath, authority, decisionRecords, supplied, heldKey{alg: pinAlg, key: publicKey}, ordinarySealsOnly, scope)
 	if err == nil {
 		err = linkPrevious(verdict, previous, publicKey)
 	}
@@ -310,6 +319,24 @@ func readPublicKey(raw []byte) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("expected 32 raw bytes, got %d", len(raw))
+}
+
+// readPinnedKey is the key standard input pins under alg: under ES256
+// exactly the 66 lowercase hexadecimal characters of a compressed P-256
+// point that holds §4's key rule (ADR-0053 §11), nothing around them;
+// otherwise readPublicKey's 32 raw bytes.
+func readPinnedKey(alg string, raw []byte) ([]byte, error) {
+	if alg != algES256 {
+		return readPublicKey(raw)
+	}
+	key := decodeKeyHex(algES256, string(raw))
+	if key == nil {
+		return nil, fmt.Errorf("expected exactly the 66 lowercase hexadecimal characters of a P-256 compressed point under --public-key-alg ES256, got %d bytes", len(raw))
+	}
+	if !keySoundFor(algES256, key) {
+		return nil, errors.New("not a P-256 point under --public-key-alg ES256")
+	}
+	return key, nil
 }
 
 // cmdKeygen writes a fresh 32-byte Ed25519 seed and reports the public key it
@@ -563,7 +590,7 @@ func cmdServeEngine(args []string) int {
 	// end at it below, as at the seed's
 	var keyService signer
 	if cfg.signingKeyVersion != "" {
-		ks, line, err := newKeyServiceSignerPinned(cfg.signingKeyVersion, cfg.signingPublicKey)
+		ks, line, err := newKeyServiceSignerPinned(cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "start:", err)
 			return 1
@@ -634,7 +661,7 @@ func startOnStore(cfg engineConfig, seed []byte, seedNames []string, served serv
 	if err := storeHold.made(); err != nil {
 		return refused(err)
 	}
-	registryHold, err := holdEngineRegistryKey(seedNames, cfg.registry, service.store.publicKey)
+	registryHold, err := holdEngineRegistryKey(seedNames, cfg.registry, service.store.signing.key().held())
 	if err != nil {
 		return refused(err)
 	}

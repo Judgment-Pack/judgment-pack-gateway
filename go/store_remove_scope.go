@@ -193,7 +193,7 @@ func cmdStoreRemoveScopeAt(args []string, stdout, stderr io.Writer, stamp func()
 // key version, and the connection string, and removes the scope's rows,
 // signed by the key in force (commandSigner, ADR-0050).
 func storeRemoveScope(spec *storageSpec, o storeRemoveScopeOptions, stamp func() string) (removalOutcome, error) {
-	seedPath, version, public := o.seed, "", ""
+	seedPath, version, public, alg := o.seed, "", "", ""
 	if o.config != "" {
 		data, err := readBounded(o.config, maxEngineConfigBytes)
 		if err != nil {
@@ -206,7 +206,7 @@ func storeRemoveScope(spec *storageSpec, o storeRemoveScopeOptions, stamp func()
 		if cfg.storage == nil {
 			return removalOutcome{}, errors.New("the engine configuration names the filesystem kind; gateway remove-scope removes its files")
 		}
-		seedPath, version, public = cfg.seed, cfg.signingKeyVersion, cfg.signingPublicKey
+		seedPath, version, public, alg = cfg.seed, cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm
 	}
 	seed, err := loadSeed(seedPath)
 	if err != nil {
@@ -216,7 +216,7 @@ func storeRemoveScope(spec *storageSpec, o storeRemoveScopeOptions, stamp func()
 	if err != nil {
 		return removalOutcome{}, err
 	}
-	sig, err := commandSigner(version, public, seed)
+	sig, err := commandSigner(version, public, alg, seed)
 	if err != nil {
 		return removalOutcome{}, err
 	}
@@ -316,7 +316,7 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 	if !present {
 		return failed(errors.New("the registry is not there; a gateway makes it when it starts, and its walk names the key the records are signed under"))
 	}
-	walk, err := engineWalk(data, priv.public)
+	walk, err := engineWalk(data, priv.held())
 	if err != nil {
 		return failed(err)
 	}

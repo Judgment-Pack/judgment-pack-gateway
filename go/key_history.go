@@ -30,24 +30,29 @@ const keyHistoryVersion = "1"
 
 var (
 	keyHistoryMembers      = map[string]bool{"keyHistoryVersion": true, "keys": true}
-	keyHistoryEntryMembers = map[string]bool{"keyId": true, "publicKey": true, "validFrom": true, "validTo": true, "keyRotation": true, "keyContinuation": true}
+	keyHistoryEntryMembers = map[string]bool{"alg": true, "keyId": true, "publicKey": true, "validFrom": true, "validTo": true, "keyRotation": true, "keyContinuation": true}
 )
 
 // keyHistoryEntry is one key of a key history: validFrom and the two
 // statements "" for the first key, validTo "" for the last, the key in force.
 type keyHistoryEntry struct {
-	key                ed25519.PublicKey
-	keyID              string
+	key   []byte
+	keyID string
+	// alg is the key's algorithm, "ES256" for a P-256 key (ADR-0053 §8)
+	alg                string
 	validFrom, validTo string
 	forward, reverse   string
 }
+
+// held is the entry's key with its algorithm.
+func (e keyHistoryEntry) held() heldKey { return heldKey{alg: e.alg, key: e.key} }
 
 // historyOfWalk is the entries of the keys a walk reached, in order: each
 // key's validTo the rotatedAt of the rotation from it.
 func historyOfWalk(keys []reachedKey) []keyHistoryEntry {
 	entries := make([]keyHistoryEntry, len(keys))
 	for i, k := range keys {
-		entries[i] = keyHistoryEntry{key: k.key, keyID: k.keyID, validFrom: k.rotatedAt, forward: k.forward, reverse: k.reverse}
+		entries[i] = keyHistoryEntry{key: k.key, keyID: k.keyID, alg: k.alg, validFrom: k.rotatedAt, forward: k.forward, reverse: k.reverse}
 		if i > 0 {
 			entries[i-1].validTo = k.rotatedAt
 		}
@@ -60,6 +65,7 @@ func keyHistoryDocument(entries []keyHistoryEntry) []byte {
 	keys := vArray{}
 	for _, e := range entries {
 		obj := newObject()
+		setAlg(obj, "alg", e.alg)
 		obj.set("keyId", vString(e.keyID))
 		obj.set("publicKey", vString(hex.EncodeToString(e.key)))
 		for name, v := range map[string]string{"validFrom": e.validFrom, "validTo": e.validTo, "keyRotation": e.forward, "keyContinuation": e.reverse} {
@@ -88,10 +94,10 @@ func keyHistoryDocument(entries []keyHistoryEntry) []byte {
 // validTo, the registry's first rotation, if any; a continued registry with none
 // carried is refused, as is one carried beside a registry that continues
 // none: a history cut short, or lost, is never answered as the whole.
-func registryKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, present bool) ([]keyHistoryEntry, error) {
+func registryKeyHistory(data []byte, own heldKey, carried []byte, present bool) ([]keyHistoryEntry, error) {
 	w := &registryWalk{seals: map[string]seal{}, conflicted: map[string]bool{}, keysOnly: true}
 	first := registryFirstKey(data, own)
-	w.keys = []reachedKey{{key: first, keyID: keyIDFor(first)}}
+	w.keys = []reachedKey{{key: first.key, alg: first.alg, keyID: first.keyID()}}
 	w.walkLines(data)
 	if w.finding != nil {
 		return nil, fmt.Errorf("the registry's rotations do not hold: %s at rotation %d", w.finding["status"], w.finding["rotation"])
@@ -104,8 +110,8 @@ func registryKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, pres
 	// the gateway's history only where it ends at the gateway's own key, as
 	// the gateway's own reading requires (ownReading), each key before then
 	// named by the signature of the key after it
-	if !bytes.Equal(w.current().key, own) {
-		return nil, fmt.Errorf("the registry's rotations end at key %s, not this gateway's key %s", w.current().keyID, keyIDFor(own))
+	if !w.current().held().is(own) {
+		return nil, fmt.Errorf("the registry's rotations end at key %s, not this gateway's key %s", w.current().keyID, own.keyID())
 	}
 	entries := historyOfWalk(w.keys)
 	switch {
@@ -124,8 +130,8 @@ func registryKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, pres
 		return nil, fmt.Errorf("the key history carried into the store: %w", err)
 	}
 	last := before[len(before)-1]
-	if !bytes.Equal(last.key, first) {
-		return nil, fmt.Errorf("the key history carried into the store ends at key %s, not key %s, which signed the store continuation", last.keyID, keyIDFor(first))
+	if !last.held().is(first) {
+		return nil, fmt.Errorf("the key history carried into the store ends at key %s, not key %s, which signed the store continuation", last.keyID, first.keyID())
 	}
 	// the key in force at the store rotation is one key, its entry the
 	// carried one's, and its end the registry's first rotation, if any; the
@@ -238,14 +244,23 @@ func historyEntryOf(v value) (keyHistoryEntry, error) {
 	var e keyHistoryEntry
 	keyHex, okKey := memberString(obj, "publicKey")
 	keyID, okID := memberString(obj, "keyId")
-	if !okKey || !isLowerHexOfLen(keyHex, 64) || !okID {
+	// alg (ADR-0053 §8): present exactly for a P-256 key, whose publicKey
+	// is its compressed point
+	alg, okAlg := recordAlg(obj, "alg")
+	if !okAlg {
+		return e, errors.New(`alg is not "ES256"`)
+	}
+	if e.alg = alg; alg == algES256 && (!okKey || !isLowerHexOfLen(keyHex, publicKeyHexLen(algES256)) || !okID) {
+		return e, errors.New("publicKey is not 66 lowercase hexadecimal characters under alg ES256, or keyId is missing")
+	}
+	if alg == algEd25519 && (!okKey || !isLowerHexOfLen(keyHex, 64) || !okID) {
 		return e, errors.New("publicKey is not 64 lowercase hexadecimal characters, or keyId is missing")
 	}
 	e.key, _ = hex.DecodeString(keyHex)
 	if e.keyID = keyID; keyIDFor(e.key) != keyID {
 		return e, errors.New("keyId is not the key id of publicKey")
 	}
-	if publicKeyFault(e.key) != keySound {
+	if !keySoundFor(e.alg, e.key) {
 		return e, errors.New("publicKey is a key §8.4's rule refuses")
 	}
 	for name, into := range map[string]*string{"validFrom": &e.validFrom, "validTo": &e.validTo, "keyRotation": &e.forward, "keyContinuation": &e.reverse} {
@@ -276,10 +291,10 @@ func rotationPairHolds(before, e keyHistoryEntry) (string, error) {
 	if !ok {
 		return "", errors.New("keyRotation does not hold its form")
 	}
-	if st.keyID != before.keyID || !st.signedBy(before.key) {
+	if st.keyID != before.keyID || st.alg != before.alg || !st.signedBy(before.held()) {
 		return "", errors.New("keyRotation is not signed by the key before it")
 	}
-	if !bytes.Equal(st.named, e.key) {
+	if st.namedAlg != e.alg || !bytes.Equal(st.named, e.key) {
 		return "", errors.New("keyRotation does not name this entry's key")
 	}
 	kind, obj = rotationKindOf(e.reverse)
@@ -288,7 +303,8 @@ func rotationPairHolds(before, e keyHistoryEntry) (string, error) {
 	}
 	reverse, ok := rotationStatementOf(kind, obj)
 	if !ok || reverse.rotation != st.rotation || reverse.rotatedAt != st.rotatedAt ||
-		!bytes.Equal(reverse.named, before.key) || reverse.keyID != e.keyID || !reverse.signedBy(e.key) {
+		reverse.alg != e.alg || reverse.namedAlg != before.alg ||
+		!bytes.Equal(reverse.named, before.key) || reverse.keyID != e.keyID || !reverse.signedBy(e.held()) {
 		return "", errors.New("keyContinuation is not the key-continuation of keyRotation, signed by this entry's key")
 	}
 	return st.rotatedAt, nil
@@ -377,8 +393,8 @@ func (g *gatewayService) keyHistory() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the key history carried into the store: %w", err)
 	}
-	own := g.ownKey()
-	made := keyHistoryAnswer{registry: sha256.Sum256(data), carried: sha256.Sum256(carried), present: present, own: hex.EncodeToString(own)}
+	own := g.ownHeld()
+	made := keyHistoryAnswer{registry: sha256.Sum256(data), carried: sha256.Sum256(carried), present: present, own: own.alg + hex.EncodeToString(own.key)}
 	g.keyHistoryKept.mu.Lock()
 	defer g.keyHistoryKept.mu.Unlock()
 	if last := g.keyHistoryKept.last; last != nil && last.registry == made.registry && last.carried == made.carried &&
@@ -394,7 +410,7 @@ func (g *gatewayService) keyHistory() ([]byte, error) {
 // walkKeyHistory is the key history document of a registry, with what was
 // carried into its store, held to the consumer's check from its own first
 // key, or the finding that it does not hold.
-func walkKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, present bool) ([]byte, error) {
+func walkKeyHistory(data []byte, own heldKey, carried []byte, present bool) ([]byte, error) {
 	entries, err := registryKeyHistory(data, own, carried, present)
 	if err != nil {
 		return nil, err

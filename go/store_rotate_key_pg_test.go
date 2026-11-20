@@ -231,7 +231,7 @@ func TestAPostgresStoreRotateKeyMovesTheSeedToAKeyServiceAndOn(t *testing.T) {
 		t.Fatalf("the registry is not the one before with the record printed at its end:\n%s", got)
 	}
 	rotated := s.registry(t)
-	if _, err := engineWalk(rotated, one.publicKey()); err != nil {
+	if _, err := engineWalk(rotated, edKey(one.publicKey())); err != nil {
 		t.Fatalf("the registry does not walk to key version 1: %v", err)
 	}
 	// run again, it finds the rotation made
@@ -381,7 +381,7 @@ func TestAPostgresStoreRotateKeyRerunSettlesAnUncertainCommit(t *testing.T) {
 		t.Fatalf("the COMMIT's answer lost: %d %q %q", code, stdout, stderr)
 	}
 	committed := s.registry(t)
-	if _, err := engineWalk(committed, mustKeyServiceSigner(t, ksVersion2).publicKey()); err != nil {
+	if _, err := engineWalk(committed, edKey(mustKeyServiceSigner(t, ksVersion2).publicKey())); err != nil {
 		t.Fatalf("the committed rotation does not walk to version 2: %v", err)
 	}
 	if code, stdout, stderr := s.rotate(t, ksVersion2, rkFrom(t, ksVersion1)...); code != 0 || stdout != "" || !strings.Contains(stderr, "already ends at this rotation, rotation 2 from key "+keyIDFor(mustKeyServiceSigner(t, ksVersion1).publicKey())+" to key "+keyIDFor(mustKeyServiceSigner(t, ksVersion2).publicKey())+", which may be an earlier run's") ||

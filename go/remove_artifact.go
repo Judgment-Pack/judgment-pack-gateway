@@ -68,6 +68,7 @@ type removeArtifactOptions struct {
 	// keyVersion and keyPublic are the configuration's signingKeyVersion
 	// and signingPublicKey: the key service's key version the command signs
 	// through, "" where the seed signs (ADR-0050)
+	keyAlg                     string
 	keyVersion, keyPublic      string
 	store, registry, authority string
 	seedNames                  []string
@@ -154,7 +155,7 @@ func parseRemoveArtifact(args []string) (removeArtifactOptions, string) {
 		if err := refuseUnderPostgreSQL(cfg, "gateway remove-artifact, which keeps its removal records in the store on disk,"); err != nil {
 			return removeArtifactOptions{}, err.Error()
 		}
-		o.keyVersion, o.keyPublic = cfg.signingKeyVersion, cfg.signingPublicKey
+		o.keyVersion, o.keyPublic, o.keyAlg = cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm
 		o.store, o.registry, o.authority, o.seedNames = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}
 		// the seed by the name it resolves to as well, as seal-open looks
 		// for a rotation under way beside both
@@ -225,12 +226,12 @@ func removeArtifact(o removeArtifactOptions, stamp func() string) (out removalOu
 	} else if !present {
 		return out, false, absentRegistry
 	}
-	sig, err := commandSigner(o.keyVersion, o.keyPublic, seed)
+	sig, err := commandSigner(o.keyVersion, o.keyPublic, o.keyAlg, seed)
 	if err != nil {
 		return out, false, err
 	}
 	key := newSigningKey(sig)
-	hold, err := holdEngineRegistryKey(o.seedNames, o.registry, key.public)
+	hold, err := holdEngineRegistryKey(o.seedNames, o.registry, key.held())
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
 			return out, false, fmt.Errorf("%w; stop the gateway, then remove", err)
@@ -246,7 +247,7 @@ func removeArtifact(o removeArtifactOptions, stamp func() string) (out removalOu
 	if !present {
 		return out, unlocked, absentRegistry
 	}
-	walk, err := engineWalk(data, key.public)
+	walk, err := engineWalk(data, key.held())
 	if err != nil {
 		return out, unlocked, err
 	}
@@ -467,6 +468,7 @@ func removeArtifactsUnder(storeRoot, authority string, key *signingKey, keys []r
 		record.set("removedBy", vString(o.by))
 		record.set("resultDigest", vString(s.r.resultDigest))
 		record.set("sessionId", vString(s.sessionID))
+		setAlg(record, "alg", key.alg)
 		signature, err := key.signVerified(removalSigningInput(record))
 		if err != nil {
 			return out, err
