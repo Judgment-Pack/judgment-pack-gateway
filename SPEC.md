@@ -1367,6 +1367,17 @@ beside the seed refuse that start. A seed switched by hand, with them removed, s
 gateway under a key no verifier pinning the first key reaches; the switch is never made
 by hand.
 
+A rotation to a key service's key version (`docs/adr/0050-an-external-signer-in-a-key-service.md`,
+"A rotation whose append failed") writes no next seed and no kept record, so `--resume` does not
+settle it. Its append failing, in part or whole, switches nothing and stops the gateway; its operator
+reads the registry's end and settles it by the same three cases. The two statements whole, the walk
+ending at the next key: the gateway starts under the configuration naming the next key version.
+Nothing of the record appended, or a `key-rotation` torn before its end: the registry reads, under
+either key, as one with no rotation, and the gateway starts under the key rotated from and is rotated
+again. Any other part of the record: the walk refuses a start under either key until that part is cut,
+from its first byte and nothing more, by its operator, as `--resume` cuts it; the gateway then starts
+under the key rotated from and is rotated again. No other byte of the registry is cut.
+
 **The gateway's own reading.** A gateway pins no key out of band for itself. It walks
 its registry from the key its first rotation rotated from — the `previous` of the
 registry's first `key-continuation` statement — or from its own key when the registry
