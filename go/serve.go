@@ -18,12 +18,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -559,6 +561,13 @@ func newGatewayServiceOnSigned(kind storeKind, seed []byte, sig signer, authorit
 		g.scoped = map[string]*store{}
 		for scope, view := range views {
 			g.scoped[scope] = newStoreOnWith("", view.artifacts(), view.receipts(), seed, st.signing, authority)
+		}
+		// each scope's series are held to the key as the rows of no scope
+		// are: a view's receipts are its scope's alone (ADR-0050)
+		for _, scope := range slices.Sorted(maps.Keys(g.scoped)) {
+			if err := holdStoreUnderKey(g.scoped[scope], reg); err != nil {
+				return nil, fmt.Errorf("scope %s: %w", scope, err)
+			}
 		}
 	}
 	return g, nil
