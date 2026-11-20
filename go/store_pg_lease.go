@@ -399,7 +399,7 @@ func admitBeside(as pgInstance, live []pgLeaseRow) error {
 		case !r.several:
 			return fmt.Errorf("%w: the database is served by gateway instance %s in the one-instance mode, whose start lease runs %d s more; an instance in the several-instances mode does not start beside it (docs/postgresql-store.md, \"Several instances on one database\")", errStartLeaseHeld, r.holder, r.left)
 		case r.keyID != as.keyID:
-			return fmt.Errorf("%w: gateway instance %s serves the database signing under key id %s, and this instance signs under key id %s; every instance serving one database at once signs with one key: a rolling deploy that moves the instances to another key version, or from the seed to a key service, is not made one instance at a time; stop every instance, rotate, and start them all under the next key (ADR-0050)", errInstanceMismatch, r.holder, r.keyID, as.keyID)
+			return fmt.Errorf("%w: gateway instance %s serves the database signing under key id %s, and this instance signs under key id %s; every instance serving one database at once signs with one key: a rolling deploy that moves the instances to another key version, or from the seed to a key service, is not made one instance at a time; stop every instance, rotate with gateway store rotate-key, and start them all under the next key (ADR-0050)", errInstanceMismatch, r.holder, r.keyID, as.keyID)
 		case r.authority != as.authority:
 			return fmt.Errorf("%w: gateway instance %s serves the database for authority %q, and this instance names %q; every instance serving one database at once names one authority (docs/postgresql-store.md, \"Several instances on one database\")", errInstanceMismatch, r.holder, r.authority, as.authority)
 		}
