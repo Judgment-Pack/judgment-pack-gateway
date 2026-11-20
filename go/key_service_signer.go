@@ -404,17 +404,8 @@ func commandSigner(version, expected string, seed []byte) (signer, error) {
 // its seed to a key service, or to another key version, signs once a
 // rotation to its key is recorded, and not before. receipts may be nil.
 func heldUnderAnotherKey(registry []byte, keys []reachedKey, own ed25519.PublicKey, receipts indexedSpace) error {
-	reached := func(keyID string) bool {
-		for _, k := range keys {
-			if k.keyID == keyID {
-				return true
-			}
-		}
-		return false
-	}
-	refuse := func(what, keyID string) error {
-		return fmt.Errorf("the %s is under key id %s, and no rotation in the registry leads from it to this gateway's key %s: a gateway moved to a key service, or to another key version, starts once a rotation to its key is recorded (ADR-0050)", what, keyID, keyIDFor(own))
-	}
+	reached := func(keyID string) bool { return keyReached(keys, keyID) }
+	refuse := func(what, keyID string) error { return underAnotherKey(what, keyID, own) }
 	for _, line := range bytes.Split(registry, []byte("\n")) {
 		if kind, _ := rotationKindOf(string(line)); kind != "" || len(bytes.TrimSpace(line)) == 0 {
 			continue
@@ -437,12 +428,7 @@ func heldUnderAnotherKey(registry []byte, keys []reachedKey, own ed25519.PublicK
 		if err != nil {
 			return fmt.Errorf("the store's sessions could not be read to find the key their receipts are under, and nothing was signed: %w", err)
 		}
-		for _, f := range firsts {
-			if keyID := receiptKeyID(f.data); keyID != "" && !reached(keyID) {
-				return refuse("store holds a receipt that", keyID)
-			}
-		}
-		return nil
+		return firstsUnderAnotherKey(firsts, keys, own)
 	}
 	series, err := receipts.listSeries()
 	if err != nil {
@@ -473,6 +459,33 @@ func heldUnderAnotherKey(registry []byte, keys []reachedKey, own ed25519.PublicK
 		}
 	}
 	return nil
+}
+
+// firstsUnderAnotherKey is heldUnderAnotherKey's judgment of the first
+// receipt of each series, read already: one under a key id the walk did not
+// reach refuses, as at the start.
+func firstsUnderAnotherKey(firsts []seriesFirst, keys []reachedKey, own ed25519.PublicKey) error {
+	for _, f := range firsts {
+		if keyID := receiptKeyID(f.data); keyID != "" && !keyReached(keys, keyID) {
+			return underAnotherKey("store holds a receipt that", keyID, own)
+		}
+	}
+	return nil
+}
+
+// keyReached is whether keyID names one of the keys a walk reached.
+func keyReached(keys []reachedKey, keyID string) bool {
+	for _, k := range keys {
+		if k.keyID == keyID {
+			return true
+		}
+	}
+	return false
+}
+
+// underAnotherKey is heldUnderAnotherKey's refusal of what is under keyID.
+func underAnotherKey(what, keyID string, own ed25519.PublicKey) error {
+	return fmt.Errorf("the %s is under key id %s, and no rotation in the registry leads from it to this gateway's key %s: a gateway moved to a key service, or to another key version, starts once a rotation to its key is recorded (ADR-0050)", what, keyID, keyIDFor(own))
 }
 
 // receiptKeyID is the keyId a receipt's bytes name, "" where they are not

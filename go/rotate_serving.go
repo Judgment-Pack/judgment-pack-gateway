@@ -108,9 +108,10 @@ func (w *registryWriter) rotateTo(next signer, at string) (*signingKey, error) {
 
 // errRotationOnKind is SIGHUP on the PostgreSQL kind, where several
 // instances may serve one database: a rotation there is every instance
-// stopped, the registry rotated, and every instance started under the next
-// key; a coordinated rotation across instances while they serve is #537.
-var errRotationOnKind = errors.New("a rotation while serving is not made on the PostgreSQL kind: stop every instance, rotate, and start them all under the next key version (ADR-0050); nothing was changed")
+// stopped, the registry rotated by gateway store rotate-key
+// (store_rotate_key_pg.go), and every instance started under the next key;
+// a coordinated rotation across instances while they serve is #537.
+var errRotationOnKind = errors.New("a rotation while serving is not made on the PostgreSQL kind: stop every instance, rotate with gateway store rotate-key, and start them all under the next key version (ADR-0050); nothing was changed")
 
 // installRotationOnHangup rotates the gateway's key at each SIGHUP until ctx
 // ends (rotateOnHangup), saying the outcome on said; a rotation whose append
