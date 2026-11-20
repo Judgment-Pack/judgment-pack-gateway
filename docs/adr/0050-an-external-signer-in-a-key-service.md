@@ -47,7 +47,7 @@ Every signature is held to the signer's key (`signingKey.signVerified`) before a
 | Rotation statements while serving (`rotationRecordSigned`, `registryWriter.rotateTo`) | either kind, forward by the current key and reverse by the next |
 | `gateway rotate-key`, the gateway stopped | seed only. With a key service, the registry's walk ends at the service's key, so the command refuses (`engineWalk`). A key-service rotation is `rotateTo`. |
 | `gateway remove-artifact`, `remove-scope`, `seal-open` (both kinds), `export`, and `connect`'s descriptor capture, the gateway stopped | either kind. Given `--config`, each builds the signer from the configuration (`commandSigner`) and signs through it; `export` names its key. Given `--store`/`--seed`/`--registry`, the seed signs, and history under a key the registry's walk did not reach is refused (`heldUnderAnotherKey`), so the seed never signs over a store a key service signs for. |
-| `gateway store remove-scope` (PostgreSQL, flags only) | seed only, and refused over a registry holding records under a key its walk did not reach |
+| `gateway store remove-scope` (PostgreSQL) | either kind. Given `--config`, it signs through `commandSigner` as the commands above do (#553). Given `--seed`, the seed signs, and a registry holding records under a key its walk did not reach is refused. |
 | The PostgreSQL kind | either kind. The start lease and the instances' rows name the signer's key (`instanceForKey`). |
 | Witness checkpoints | refused beside `signingKeyVersion` at configuration |
 
