@@ -3109,9 +3109,15 @@ func (g *gatewayService) listenAndServe(address string) error {
 // the listener is bound to, the authority and the key, and serves on the
 // listener.
 func (g *gatewayService) announceAndServe(listener net.Listener) error {
-	fmt.Fprintf(os.Stderr, "gateway on http://%s (authority %s, key %s)\n",
-		listener.Addr(), g.authority, g.keyID)
+	fmt.Fprint(os.Stderr, g.readinessLine(listener.Addr()))
 	return g.serveOn(listener)
+}
+
+// readinessLine is the line announceAndServe writes: the key is the one in
+// force as it is written (ownKeyID), never the key at start, since a
+// rotation on SIGHUP may switch it before the line is written.
+func (g *gatewayService) readinessLine(addr net.Addr) string {
+	return fmt.Sprintf("gateway on http://%s (authority %s, key %s)\n", addr, g.authority, g.ownKeyID())
 }
 
 // The limits a listener other hosts can reach is served under, beside the
