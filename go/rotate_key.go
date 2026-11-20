@@ -151,6 +151,10 @@ func holdEngineRegistryKey(seedPaths []string, registryPath string, own ed25519.
 	}
 	err = rotationPendingBesideAny(seedPaths, registryPath)
 	if err == nil {
+		// a store rotated away from (SPEC.md §3d) is held by nothing again
+		err = refuseRotatedStore(registryPath)
+	}
+	if err == nil {
 		var data []byte
 		if data, _, err = readRegistryBytes(registryPath); err == nil {
 			_, err = engineWalk(data, own)
@@ -265,6 +269,12 @@ func rotateKey(seedPath, registryPath string, stamp func() string, random io.Rea
 	}
 	if lock != nil {
 		defer lock.Close()
+	}
+	// a store rotated away from (SPEC.md §3d) takes no rotation statement:
+	// one would change the bytes the new store's continuation names, and
+	// the seed the new store starts under
+	if err := refuseRotatedStore(registryPath); err != nil {
+		return nil, fmt.Errorf("%w; nothing was changed", err)
 	}
 	data, _, err := readRegistryBytes(registryPath)
 	if err != nil {
@@ -429,6 +439,12 @@ func resumeRotation(seedPath, registryPath string, _ func() string, _ io.Reader)
 	}
 	if lock != nil {
 		defer lock.Close()
+	}
+	// a store rotated away from (SPEC.md §3d) takes no rotation statement:
+	// one would change the bytes the new store's continuation names, and
+	// the seed the new store starts under
+	if err := refuseRotatedStore(registryPath); err != nil {
+		return nil, fmt.Errorf("%w; nothing was changed", err)
 	}
 	data, present, err := readRegistryBytes(registryPath)
 	if err != nil {

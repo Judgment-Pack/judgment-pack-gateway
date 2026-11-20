@@ -352,8 +352,13 @@ type storeVector struct {
 	// Scope runs the vector as a verdict by scope (SPEC.md §4, "A verdict
 	// by scope"): the process contract passes --scope <identifier> first,
 	// before every other option. Absent is a verdict of the whole store.
-	Scope    string `json:"scope"`
-	Expected struct {
+	Scope string `json:"scope"`
+	// PreviousRegistry is the registry of the store before this one
+	// (SPEC.md §3d), materialized beside the vector's registry: the process
+	// contract then passes --previous <file>, after --artifacts and before
+	// the store root. Absent means the option is not passed.
+	PreviousRegistry *string `json:"previousRegistry"`
+	Expected         struct {
 		OK       bool             `json:"ok"`
 		Findings []map[string]any `json:"findings"`
 		// Witnesses are SPEC.md §4's witnesses, compared as a set; absent
@@ -420,7 +425,7 @@ type implementation interface {
 	// under --ordinary-seals-only when ordinarySealsOnly is set, with
 	// --artifacts supplied when supplied is not "", and cut by --scope scope
 	// when scope is not "".
-	verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error)
+	verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, publicKey []byte) (contractVerdict, error)
 	// witness reads one chain of witness statements (SPEC.md §8.6) from
 	// files, and answers with the verdict the process contract gives.
 	witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error)
@@ -439,8 +444,8 @@ func (inProcess) canon(source string) ([]byte, bool) {
 	return out, true
 }
 
-func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
-	rep, err := verifierBy(ordinarySealsOnly, scope)(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey)
+func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, publicKey []byte) (contractVerdict, error) {
+	rep, err := verifierBy(ordinarySealsOnly, scope, previous)(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey)
 	if err != nil {
 		return contractVerdict{}, err
 	}
@@ -461,12 +466,26 @@ func verifierFor(ordinarySealsOnly bool) func(storeRoot, registryPath, authority
 // verifierBy is verifierFor's verdict, cut by the scope identifier scope as
 // gateway verify --scope cuts it (SPEC.md §4, "A verdict by scope"), "" for
 // a verdict of the whole store.
-func verifierBy(ordinarySealsOnly bool, scope string) func(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte) (*report, error) {
+//
+// previous, at most one, is the registry of the store before this one
+// (--previous; SPEC.md §3d), its link to this one's store continuation
+// checked; none, or "", checks no link.
+func verifierBy(ordinarySealsOnly bool, scope string, previous ...string) func(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte) (*report, error) {
 	return func(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte) (*report, error) {
+		var rep *report
+		var err error
 		if scope != "" {
-			return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, false, ordinarySealsOnly, scope)
+			rep, err = verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, false, ordinarySealsOnly, scope)
+		} else {
+			rep, err = verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, ordinarySealsOnly)
 		}
-		return verifySupplied(storeRoot, registryPath, authority, decisionRecords, supplied, publicKey, ordinarySealsOnly)
+		if err != nil || len(previous) == 0 {
+			return rep, err
+		}
+		if err := linkPrevious(rep, previous[0], publicKey); err != nil {
+			return nil, err
+		}
+		return rep, nil
 	}
 }
 
@@ -511,7 +530,7 @@ func (s subprocess) canon(source string) ([]byte, bool) {
 	return stdout.Bytes(), true
 }
 
-func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, publicKey []byte) (contractVerdict, error) {
+func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, publicKey []byte) (contractVerdict, error) {
 	args := append(append([]string{}, s.argv[1:]...), "verify")
 	if scope != "" {
 		// First, before every other option (corpus/README.md): passed
@@ -527,6 +546,11 @@ func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords, 
 		// After it, before the store root (corpus/README.md): passed exactly
 		// when the vector supplies bytes.
 		args = append(args, "--artifacts", supplied)
+	}
+	if previous != "" {
+		// After it, before the store root (corpus/README.md): passed exactly
+		// when the vector carries the registry before its own.
+		args = append(args, "--previous", previous)
 	}
 	args = append(args, storeRoot, registryPath, authority)
 	if decisionRecords != "" {
@@ -729,6 +753,11 @@ func materializeVector(vector storeVector) (root, storeRoot, registryPath, decis
 			return "", "", "", "", err
 		}
 	}
+	if vector.PreviousRegistry != nil {
+		if err := os.WriteFile(previousOf(vector, root), []byte(*vector.PreviousRegistry), 0o600); err != nil {
+			return "", "", "", "", err
+		}
+	}
 	registryPath = filepath.Join(root, "registry.jsonl")
 	if vector.AbsentRegistry {
 		// Deliberately not created: a MISSING registry is a different input from
@@ -739,6 +768,15 @@ func materializeVector(vector storeVector) (root, storeRoot, registryPath, decis
 		return "", "", "", "", err
 	}
 	return root, storeRoot, registryPath, decisionRecords, nil
+}
+
+// previousOf is where materializeVector puts a vector's previous registry,
+// under the root it made, or "" for a vector that carries none.
+func previousOf(vector storeVector, root string) string {
+	if vector.PreviousRegistry == nil {
+		return ""
+	}
+	return filepath.Join(root, "previous.jsonl")
 }
 
 // suppliedOf is where materializeVector puts a vector's supplied bytes,
@@ -869,10 +907,10 @@ func runStoreVectors(corpusDir string, impl implementation) ([]string, int, erro
 		if err != nil {
 			return nil, 0, err
 		}
-		verdict, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, suppliedOf(vector, root), vector.Scope, vector.OrdinarySealsOnly, publicKey)
+		verdict, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, suppliedOf(vector, root), vector.Scope, vector.OrdinarySealsOnly, previousOf(vector, root), publicKey)
 		os.RemoveAll(root)
 		var refused noVerdict
-		if err != nil && (vector.OrdinarySealsOnly || vector.SuppliedArtifacts != nil || vector.Scope != "") && errors.As(err, &refused) {
+		if err != nil && (vector.OrdinarySealsOnly || vector.SuppliedArtifacts != nil || vector.Scope != "" || vector.PreviousRegistry != nil) && errors.As(err, &refused) {
 			// A verifier written before the option refuses one it does not
 			// know: that is its answer to this vector, a disagreement, and
 			// the run goes on (SPEC.md §7). No verdict for a vector run
@@ -881,6 +919,8 @@ func runStoreVectors(corpusDir string, impl implementation) ([]string, int, erro
 			switch {
 			case vector.Scope != "":
 				option = "--scope"
+			case vector.PreviousRegistry != nil:
+				option = "--previous"
 			case !vector.OrdinarySealsOnly:
 				option = "--artifacts"
 			}

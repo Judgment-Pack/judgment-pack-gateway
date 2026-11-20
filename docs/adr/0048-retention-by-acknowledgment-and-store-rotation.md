@@ -89,12 +89,17 @@ This record sets out the options for each and the form chosen. Nothing of it is 
   2. It starts a new store and registry.
   3. It writes as the new registry's first line a `store-continuation` statement, signed by
      the key in force under a prefix of its own. The statement names the old registry's line
-     count, the SHA-256 of its last line's bytes, and the key id in force.
+     count, the SHA-256 of its bytes, whole, and the key id in force.
+  4. It marks the old store rotated away from, outside the old registry's bytes, and every
+     later start, removal or key rotation on the old store refuses it by the mark's name
+     (SPEC.md §3d).
 
   A verifier given the new store alone reports the observation `continues-from`, which is no
   finding: the old store may have been removed under retention. A verifier given both
-  (`--previous <store>`, repeatable) checks that the statement names the old registry's tail
-  exactly, and fails the pair when it does not. Once every session of an old store is past
+  (`--previous <registry>`, the old store's registry, once per run) checks that the statement
+  names the old registry's tail exactly, and fails the pair when it does not. A sequence of
+  stores is verified pairwise: each store in its own run, each with the registry of the one
+  before it. One run over the whole sequence is #544. Once every session of an old store is past
   retention and acknowledged, the operator deletes the old store whole: seals, records and
   all. This is a SPEC change: a new registry line kind, read where rotation statements are
   read (§3b).
@@ -164,8 +169,8 @@ The narrowest form, to be built in a later milestone:
   the build states), as removal records are.
 
 **How a verifier crosses a rotation.** It verifies each store on its own, as today. Given the
-earlier stores with `--previous`, it also checks each `store-continuation` against the
-registry before it. A verdict over the sequence is `ok` only when every store is `ok` and every
+registry of the store before with `--previous`, one per run, it also checks that store's
+`store-continuation` against it; a sequence is crossed one link at a time. A verdict over the sequence is `ok` only when every store is `ok` and every
 link holds. A receipt is never read across stores: a session lives in one store, since the
 rotation seals what was open.
 
@@ -199,6 +204,10 @@ rotation seals what was open.
   that it does, or when a seal and its removal can name no scope.
 
 ## More information
+
+- Store rotation implemented in #535 (part B), on the filesystem kind: `gateway store rotate`, the
+  `store-continuation` line and `gateway verify --previous` (SPEC.md §3d). The PostgreSQL kind's
+  rotation is refused by name until it is built.
 
 - Issue #504; ADR-0034 (removal of one scope identifier), ADR-0042 (export and verify by
   scope), ADR-0035 (several instances on one database) and #471 (one registry chain per
