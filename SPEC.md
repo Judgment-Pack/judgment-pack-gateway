@@ -42,6 +42,10 @@ byte.
 registry lines by which a gateway rotates its signing key, which a verifier follows from
 the key it pinned. A registry that holds none is read exactly as before.
 
+**It is normative too for a second signature algorithm (§1.5), ECDSA P-256 (`ES256`),** from
+engine configuration version 40: the member `alg` by which a record names it, and its key, key id
+and signature. A record an Ed25519 key signs is unchanged by it, byte for byte.
+
 ## 1. The format
 
 Everything a signature depends on is stated here. An earlier revision of this
@@ -100,8 +104,8 @@ A receipt is a canonical JSON object. Every member is required.
 | `resultDigest` | `"sha256:" + 64 lowercase hex` over the retained artifact bytes |
 | `servedAt` | timestamp string |
 | `authority` | operator-configured authority label |
-| `keyId` | `sha256(public key, 32 raw bytes)` in hex, **first 32 characters** |
-| `signature` | Ed25519 signature, hex |
+| `keyId` | `sha256(public key, 32 raw bytes)` in hex, **first 32 characters**; a P-256 key's is taken over its 33-byte compressed point (§1.5) |
+| `signature` | Ed25519 signature, hex. A version 2 receipt is Ed25519 alone and carries no `alg` (§1.5): a version 2 receipt holding an `alg` member, of any value, is `malformed` (§1.4 order 1) |
 
 **What the signature covers** — `"judgment-pack-gateway/receipt/2:"` followed by
 `canon` of the receipt object with **the `signature` member removed and every
@@ -149,13 +153,14 @@ Two forms recur and are named once:
   each element of `pageItems` are digests;
 - a version 3 **signature** — the receipt's own and each `cites[*].signature` —
   is exactly 128 lowercase hexadecimal characters, the 64 bytes of an Ed25519
-  signature; uppercase or another length is `malformed` here, where version 2
+  signature, or, in a receipt holding `alg`, of an ES256 signature (§1.5); uppercase or another length is `malformed` here, where version 2
   left the case open and classed a wrong length as `signature-mismatch`.
 
 | Member | Type |
 |---|---|
 | `receiptVersion` | the **string** `"3"` |
 | `sessionId`, `callIndex`, `prevSignature`, `source`, `resultDigest`, `servedAt`, `authority`, `keyId`, `signature` | as in §1.2 |
+| `alg` | optional, from engine configuration version 40: the string `"ES256"`, present exactly when the key that signs the receipt is a P-256 key (§1.5); any other value is `malformed` |
 | `kind` | the string `"acquisition"` or `"action"` |
 | `argumentsCommitment` | a digest: a salted commitment (below) to the canonical arguments |
 | `caller` | `{ "issuer": string, "subject": string, "tokenDigest": "sha256:" + hex }`, or `null` |
@@ -843,7 +848,8 @@ line, each line terminated by a line feed:
 
 `signature` = Ed25519, under the gateway's signing seed, over
 `"judgment-pack-gateway/artifact-removal/1:" + canon(the record without signature)`,
-every other member retained. Its members:
+every other member retained. A record a P-256 key signs holds `alg` besides, signed with the rest,
+and is ES256 (§1.5). Its members:
 
 - `sessionId` and `callIndex` — the receipt's, a §3a identifier and an integer from 0 to
   2^53−1;
@@ -936,7 +942,8 @@ same loading: one record for each sealed session removed, and one for the call.
 `signature` = Ed25519, under the gateway's signing seed, over
 `"judgment-pack-gateway/session-removal/1:"`, or `"judgment-pack-gateway/scope-removal/1:"`,
 `+ canon(the record without signature)`, every other member retained: each kind's prefix is
-its own, so no record is read as another kind's, as a seal or as a receipt. Their members:
+its own, so no record is read as another kind's, as a seal or as a receipt. A record a P-256 key
+signs holds `alg` besides, signed with the rest, and is ES256 (§1.5). Their members:
 
 - `sessionId` — the removed session's, a §3a identifier;
 - `sealSignature` — the signature of the session's seal, the first that loaded for it in the
@@ -1063,6 +1070,129 @@ checks it reaches first — a refusal either way, never an acceptance. Version 2
 receipts are relabelled `"3"` at their peril: they lack every member §1.2a
 requires and fail at order 1, not at the signature.
 
+### 1.5 The signature algorithm: Ed25519, and ECDSA P-256 from engine configuration version 40
+
+Every signature this document defines is Ed25519, by §8.4's equation and key rule, unless the record
+names another algorithm. From engine configuration version 40, a gateway may sign with an ECDSA P-256
+key that a key service holds at its hardware protection level
+(`docs/adr/0053-an-ecdsa-p256-signer-at-a-key-services-hsm-protection-level.md`). This section states
+that algorithm once, and every record kind it names takes it as stated here.
+
+Nothing here changes what an Ed25519 record is. A record that an Ed25519 key signs carries no member
+this section adds, and is byte for byte what it was.
+
+**The algorithm.** `ES256` is ECDSA over the curve P-256 with SHA-256 (FIPS 186-5; SEC 2's
+secp256r1), with these parameters:
+
+- the prime `p` = 2²⁵⁶ − 2²²⁴ + 2¹⁹² + 2⁹⁶ − 1;
+- the curve `y² = x³ − 3x + b` over it, with `b` as the curve defines it;
+- `n`, the order of the base point. It is odd, and the cofactor is 1.
+
+**The member `alg`.**
+
+- A record that a P-256 key signs holds the top-level member `alg`, the string `"ES256"`. A record that
+  an Ed25519 key signs holds none, and no record names Ed25519 by a member.
+- A record whose `alg` is any other value, or is not a string, does not hold its form, with the
+  consequence its kind gives below.
+- `alg` is inside every kind's signing input, so it is never removed or changed without the signature
+  failing.
+
+A rotation statement names a second key, and beside that key it holds `nextAlg` or `previousAlg`, on
+the same rule (§3b).
+
+**The key.** A P-256 public key is its compressed point (SEC 1 §2.3.3): the byte `02` where y is even
+or `03` where it is odd, then the 32 bytes of x, big-endian. That is 33 bytes, written as 66 lowercase
+hexadecimal characters.
+
+The key rule for P-256 accepts a key when:
+
+- its first byte is `02` or `03`;
+- x < p;
+- x³ − 3x + b is a square modulo p, so that the point exists.
+
+The uncompressed form (`04` and 64 bytes) is refused, and so is any other length. The cofactor is 1,
+so a point that exists has order n, and no point needs refusing for its order.
+
+**The key id** of a P-256 key is the first 32 lowercase hexadecimal characters of SHA-256 over its 33
+bytes. An Ed25519 key's key id is unchanged (§1.2).
+
+For illustration only, take the synthetic scalar of 32 bytes `01` repeated. It is a key no gateway
+holds, and the corpus builds its vectors from it. Its compressed point is
+`026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16`, and its key id is
+`dbdb99c64b3d511f72c88fb6c054da73`.
+
+**The signature.** It is `r||s`, each a 32-byte unsigned big-endian integer: 64 bytes, written as 128
+lowercase hexadecimal characters wherever a kind's `signature` member is written. It verifies under a
+P-256 key when:
+
+- 1 ≤ r ≤ n − 1;
+- 1 ≤ s ≤ (n − 1)/2, the low-S rule;
+- ECDSA verification (FIPS 186-5 §6.4.2) holds, with the message digest being SHA-256 over the kind's
+  signing input, which this section leaves unchanged but for `alg`.
+
+The low-S rule leaves one encoding for each signature. A signature's bytes are what `prevSignature`,
+`receiptSignature`, `sealSignature` and `cites[*].signature` name it by.
+
+- A high-S signature, one with s > (n − 1)/2, does not verify.
+- A DER-encoded signature does not verify.
+- A signature of another length is what each kind already says of one: for example, `malformed` in a
+  version 3 receipt (§1.2a), and `rotation-break` in a rotation statement (§3b).
+
+A gateway signing with a P-256 key writes only signatures that verify so.
+
+ES256 signatures are not reproducible: two signings of one input differ. Nothing in this document
+makes a signature again in order to compare it with one made before.
+
+**Choosing the algorithm.** A verifier verifies a record's signature by the algorithm its `alg` names,
+Ed25519 where it holds none. A receipt of version 2 is the one kind that may not hold `alg`: holding it,
+of any value, it is `malformed` (§1.2), and it is never verified as ES256. It does so under the key the record's `keyId` names among the keys it
+holds, and only where that key is of that algorithm.
+
+A key carries the algorithm it was given with, and its length or form is only held to that algorithm,
+never read as one. A key is given with its algorithm by:
+
+- the verifier's pin. A verifier that pins a P-256 key pins it with its algorithm: `gateway verify
+  --public-key-alg ES256` reads the key's 66 lowercase hexadecimal characters on standard input, exactly;
+  verify-ts takes `{alg: "ES256", key: <66 lowercase hexadecimal characters>}`. With no option the pin is
+  Ed25519, its 32 raw bytes on standard input, unchanged. A store signed by a P-256 key from its first
+  receipt is verifiable by such a pin, with no rotation;
+- a rotation's `nextAlg` or `previousAlg` (§3b);
+- a key-history entry's `alg` (§3e).
+
+A key of the other algorithm with the key id named is not the key the record names, and the result is
+the kind's key failure:
+
+- a receipt is `key-mismatch` (§1.4 order 3);
+- a seal or a record loads nothing;
+- a rotation statement fails §3b's checks 2 or 5.
+
+**Where `alg` sits.** Every kind signed by the gateway's key:
+
+| Kind | Section | Signing input with `alg` |
+|---|---|---|
+| Receipt of version 3, an acquisition's or an action's | §1.2a | everything but `signature`, unchanged: `alg` is among the members it retains |
+| Seal of §3's form | §3 | the prefix and `canon` of exactly the five members `alg`, `finalCount`, `keyId`, `sealedAt` and `sessionId` |
+| Seal of version 2 or 3, and seal made after an interruption | §3, §3c | everything but `signature`: one member more than the form lists |
+| `key-rotation` and `key-continuation` statements | §3b | everything but `signature`: `alg` for the statement's signer, and `nextAlg` or `previousAlg` for the key the statement names |
+| Store continuation | §3d | everything but `signature` |
+| Artifact-removal, session-removal and scope-removal records | §1.3a | everything but `signature` |
+| Descriptor statement | §9 | everything but `signature` |
+
+**Kinds this section does not change:**
+
+- A receipt of version 2 is Ed25519 alone (§1.2).
+- The witness statement (§8) is signed by the seed and stays Ed25519.
+- The key-history answer (§3e) is not signed itself. Its entries hold `alg` for a P-256 key.
+
+**A verifier written before this section** reads a P-256 record as one that fails, and never as valid:
+
+- A `key-rotation` naming a P-256 key is not of its form to that verifier, and is `rotation-break`, so
+  the keys it reaches end at the last Ed25519 key.
+- A version 3 receipt, and a seal of §3's form, carrying `alg` are tolerated as members, but their
+  `keyId` names no key that verifier reached. The receipt is then `key-mismatch`, and the seal loads
+  nothing.
+- Every other kind holds exactly its members, so carrying `alg` refuses it.
+
 ## 2. What per-receipt verification catches, and what it cannot
 
 `attest.verify_store` checks every receipt against the public key: signature, key
@@ -1099,6 +1229,18 @@ The context prefix domain-separates a seal signature from a receipt signature
 (`"judgment-pack-gateway/receipt/2:"`) so neither can be replayed as the other.
 
 Checking a seal needs only the **public** key — see §5.
+
+**A seal under a P-256 key** (§1.5, from engine configuration version 40) holds `alg` in each of its
+forms. A seal of the form above then signs five members, not four:
+`"judgment-pack-gateway/seal/2:" + canon({alg, finalCount, keyId, sealedAt, sessionId})`, so its
+`alg` is signed with its count, and it is ES256. It loads (§4 step 2) only where its `keyId` is the
+current key's, that key is a P-256 key, and the signature verifies over those five members. A seal of
+the form above holding no `alg` is signed over the four members and verified as Ed25519, as before,
+and loads only under an Ed25519 key; a seal of either signing input under a key of the other algorithm
+loads nothing. A seal of version 2 or 3 (below), and a seal made after an interruption (§3c), holds
+`alg` beside the members its form lists, signed with every other member, and loads only where its
+`alg` names the current key's algorithm: such a line of version 2 or 3 holds eight members where its
+form lists seven.
 
 **A seal of version 2.** A session is of one scope (§6, `/acquire`): its receipts all carry
 one scope identifier (§1.2a, `scope`), or all carry none. A session of a scope identifier was
@@ -1258,19 +1400,26 @@ section existed.
 | `rotation` | an integer from 1 to 2⁵³−2 | both: this rotation's ordinal in the registry, 1 for the first |
 | `rotatedAt` | `YYYY-MM-DDThh:mm:ssZ`, the form of `witnessedAt` (§8.2) | both: the gateway's clock when it rotated, the same in the two |
 | `keyId` | 32 lowercase hexadecimal characters | both: the key id (§1.2) of the key that signs the statement |
-| `next` | 64 lowercase hexadecimal characters | `key-rotation`: the 32 bytes of the key rotated to |
+| `alg` | optional: the string `"ES256"` | both: present exactly when the key that signs the statement is a P-256 key (§1.5) |
+| `next` | 64 lowercase hexadecimal characters; 66 where `nextAlg` is present | `key-rotation`: the 32 bytes of the key rotated to, or its 33-byte compressed point (§1.5) |
+| `nextAlg` | optional: the string `"ES256"` | `key-rotation`: present exactly when the key rotated to is a P-256 key |
 | `nextKeyId` | 32 lowercase hexadecimal characters | `key-rotation`: the key id of `next` |
-| `previous` | 64 lowercase hexadecimal characters | `key-continuation`: the 32 bytes of the key rotated from |
+| `previous` | 64 lowercase hexadecimal characters; 66 where `previousAlg` is present | `key-continuation`: the 32 bytes of the key rotated from, or its 33-byte compressed point |
+| `previousAlg` | optional: the string `"ES256"` | `key-continuation`: present exactly when the key rotated from is a P-256 key |
 | `previousKeyId` | 32 lowercase hexadecimal characters | `key-continuation`: the key id of `previous` |
-| `signature` | 128 lowercase hexadecimal characters, the 64 bytes of an Ed25519 signature | both |
+| `signature` | 128 lowercase hexadecimal characters, the 64 bytes of an Ed25519 signature, or, where `alg` is present, of an ES256 signature (§1.5) | both |
+
+`alg`, `nextAlg` and `previousAlg` are members from engine configuration version 40 (§1.5). A statement
+holding none of them is the statement it was, byte for byte.
 
 A registry line is a **rotation statement** when §1.1's parser reads it as one JSON
 object whose `kind` member is the string `"key-rotation"` or `"key-continuation"`. A
 rotation statement is never a seal, and every other line is read as a seal is (§4 step
 2), as before. A rotation statement **holds its form** when it has exactly the members
-the table lists for its `kind`, each once and of its form — a member it does not list
+the table lists for its `kind`, the optional ones only as the table says, each once and of its form — a member it does not list
 is a new `rotationVersion`, as a new member of a witness statement is (§8.2) — and its
-`nextKeyId` or `previousKeyId` is the key id of its `next` or `previous`.
+`nextKeyId` or `previousKeyId` is the key id of its `next` or `previous`, taken by the algorithm
+its `nextAlg` or `previousAlg` names (§1.5).
 
 **What the signature covers** — `"judgment-pack-gateway/rotation/1:"` followed by
 `canon` of the statement with its top-level `signature` member removed and every other
@@ -1282,7 +1431,8 @@ judgment-pack-gateway/rotation/1:{"keyId":"<keyId>","kind":"key-rotation","next"
 judgment-pack-gateway/rotation/1:{"keyId":"<keyId>","kind":"key-continuation","previous":"<previous>","previousKeyId":"<previousKeyId>","rotatedAt":"<rotatedAt>","rotation":<rotation>,"rotationVersion":"1"}
 ```
 
-with `rotation` in decimal digits. The prefix is none of the receipt's, the seal's or
+with `rotation` in decimal digits. A statement holding `alg`, `nextAlg` or `previousAlg` is signed by
+the same rule, each member in its code-point place among the others. The prefix is none of the receipt's, the seal's or
 the witness statement's, so no rotation signature can be replayed as one of theirs, or
 the reverse; `kind` is signed, so neither statement of a pair can be presented as the
 other.
@@ -1299,22 +1449,27 @@ and every key a followed rotation rotated to. At each line:
   key did not name.
 - A `key-rotation` statement is held to these, in order, and takes the first it fails:
   1. it holds its form — otherwise **`rotation-break`**;
-  2. its `keyId` is the current key's, and its signature verifies under the current
-     key by §8.4's equation — otherwise **`rotation-forged`**: a hop signed by a key
+  2. its `keyId` is the current key's, its `alg` names the current key's algorithm (none for
+     an Ed25519 key), and its signature verifies under the current key by that algorithm,
+     §8.4's equation for Ed25519 and §1.5's for ES256 — otherwise **`rotation-forged`**: a hop signed by a key
      the walk had not reached, or had moved on from;
   3. its `rotation` is one more than the rotations followed — otherwise
      **`rotation-order`**: an ordinal skipped or given again;
-  4. `next` is a key §8.4's key rule accepts, and its key id is none of a key reached
+  4. `next` is a key the key rule of the algorithm its `nextAlg` names accepts, §8.4's
+     for Ed25519 and §1.5's for P-256, and its key id is none of a key reached, of either
+     algorithm
      — otherwise **`rotation-key-refused`**: a key not canonical, of small order or no
      point, or a key the walk has held already, the current one included;
   5. the line after it is a `key-continuation` statement that holds its form, whose
-     `rotation` and `rotatedAt` are the `key-rotation`'s, whose `previous` is the
-     current key's 32 bytes, whose `keyId` is the `key-rotation`'s `nextKeyId`, and
-     whose signature verifies under `next` by §8.4's equation — otherwise
+     `rotation` and `rotatedAt` are the `key-rotation`'s, whose `previous` and
+     `previousAlg` are the current key and its algorithm, whose `keyId` is the
+     `key-rotation`'s `nextKeyId`, whose `alg` is the `key-rotation`'s `nextAlg` (both
+     absent, or both `"ES256"`), and whose signature verifies under `next` by that
+     algorithm — otherwise
      **`rotation-break`**: the reverse statement missing, or not the one the
      rotation names.
 
-  When it fails none, the rotation is followed: `next` is the current key, the
+  When it fails none, the rotation is followed: `next`, of the algorithm `nextAlg` names, is the current key, the
   rotations followed are one more, and the walk goes on at the line after the
   `key-continuation`.
 
@@ -1403,7 +1558,7 @@ configuration naming the next key version.
 
 **The gateway's own reading.** A gateway pins no key out of band for itself. It walks
 its registry from the key its first rotation rotated from — the `previous` of the
-registry's first `key-continuation` statement — or from its own key when the registry
+registry's first `key-continuation` statement, of the algorithm its `previousAlg` names — or from its own key when the registry
 holds no `key-continuation` statement, a `key-rotation` alone included, so that such a
 registry is refused under the key rotated from (`rotation-break`) and under the key
 rotated to (`rotation-forged`) alike. It refuses to start, and refuses to seal, to
@@ -1440,7 +1595,8 @@ The record that closes such a session is of a kind of its own:
 
 `signature` = Ed25519, under the gateway's signing seed, over
 `"judgment-pack-gateway/seal-after-interruption/1:" + canon(the record without signature)`,
-every other member retained. Its members:
+every other member retained. A seal a P-256 key signs holds `alg` besides, signed with the rest, and is
+ES256 (§1.5, §3). Its members:
 
 - `sessionId` — the session, a §3a identifier;
 - `finalCount` — the number of receipts the store held in the session when it was sealed,
@@ -1560,10 +1716,11 @@ store"), its continuation this one, byte for byte, read through `gateway export`
 | `continuationVersion` | the string `"1"` | |
 | `continuedAt` | `YYYY-MM-DDThh:mm:ssZ`, the form of `rotatedAt` | the gateway's clock when it rotated |
 | `keyId` | 32 lowercase hexadecimal characters | the key id of the key in force, which signs it |
+| `alg` | optional: the string `"ES256"` | present exactly when the key in force is a P-256 key (§1.5), from engine configuration version 40 |
 | `previousLines` | an integer from 0 to 2⁵³−1 | the old registry's line count |
 | `previousDigest` | 64 lowercase hexadecimal characters | the SHA-256 of the old registry's bytes, whole |
 | `keyHistoryDigest` | 64 lowercase hexadecimal characters | the SHA-256 of the key history the rotation carries beside the new registry (§3e), its exact bytes |
-| `signature` | 128 lowercase hexadecimal characters | Ed25519 over `"judgment-pack-gateway/store-continuation/1:"` and `canon` of the statement without `signature` |
+| `signature` | 128 lowercase hexadecimal characters | Ed25519, or ES256 where `alg` is present (§1.5), over `"judgment-pack-gateway/store-continuation/1:"` and `canon` of the statement without `signature` |
 
 A registry's **line count** is the number of pieces its bytes split into at each `0x0A`, a last piece
 that is empty not counted; its **digest** is the SHA-256 of all its bytes, blank lines and a torn last
@@ -1633,7 +1790,8 @@ It adds no trust: an entry the consumer cannot check is no entry.
 | Member | Form | Entry |
 |---|---|---|
 | `keyId` | 32 lowercase hexadecimal characters | every: the key id (§1.2) of `publicKey` |
-| `publicKey` | 64 lowercase hexadecimal characters | every: the key's 32 bytes |
+| `alg` | optional: the string `"ES256"` | every whose key is a P-256 key, and no other (§1.5) |
+| `publicKey` | 64 lowercase hexadecimal characters; 66 in an entry holding `alg` | every: the key's 32 bytes, or its 33-byte compressed point |
 | `validFrom` | `YYYY-MM-DDThh:mm:ssZ` | every but the first: the `rotatedAt` of the rotation to the key |
 | `validTo` | `YYYY-MM-DDThh:mm:ssZ` | every but the last, the key in force: the `rotatedAt` of the rotation from the key |
 | `keyRotation` | a string | every but the first: the rotation's `key-rotation` statement (§3b), its registry line without its `0x0A` |
@@ -1675,18 +1833,24 @@ is missing or not the bytes named is answered `500` as above.
 
 **Checking it.** A consumer that pinned a key holds the answer, read by §1.1's parser, to: exactly the
 members above, each of its form; the first entry's `publicKey` the key pinned, with no `validFrom`,
-`keyRotation` or `keyContinuation`; each entry's `keyId` the key id of its `publicKey`, a key §8.4's rule
-accepts, the key of no earlier entry; for each later entry, `keyRotation` a `key-rotation` statement
+`keyRotation` or `keyContinuation`, and the algorithm the key was pinned with as its `alg`; each entry's `keyId`
+the key id of its `publicKey` by its algorithm, a key the key rule of that algorithm accepts (§8.4's, or §1.5's
+for an entry holding `alg`), the key of no earlier entry of either algorithm; for each later entry, `keyRotation` a `key-rotation` statement
 holding its form (§3b) whose `keyId` is the entry before's and whose signature verifies under its key,
-naming this entry's key as `next`, and `keyContinuation` a `key-continuation` statement holding its form,
-of the same `rotation` and `rotatedAt`, whose `keyId` is this entry's and whose signature verifies under its
-key, naming the entry before's key as `previous`; that `rotatedAt` this entry's `validFrom` and the entry
+naming this entry's key as `next` with this entry's `alg` as its `nextAlg`, and `keyContinuation` a
+`key-continuation` statement holding its form, of the same `rotation` and `rotatedAt`, whose `keyId` is this
+entry's and whose signature verifies under its key, naming the entry before's key as `previous` with the entry
+before's `alg` as its `previousAlg`; each statement's own `alg` the algorithm of the entry whose key signs it
+(§1.5); that `rotatedAt` this entry's `validFrom` and the entry
 before's `validTo`, and not earlier than the entry before's `validFrom`, if it has one, so that each
 rotation's `rotatedAt` is not before the one before it (the form is fixed-width, so its order is its
 bytes'; two rotations of one second hold); and every
 entry but the last with a `validTo`, the last without one. The `rotation`
 ordinal is held to its form alone: it counts within one registry, and starts again at 1 after a store
-continuation. A receipt then verifies under the entry whose `keyId` it names. What a key's `validFrom` and
+continuation. A receipt then verifies under the entry whose `keyId` it names, by that entry's algorithm, and only
+where the receipt's `alg` names it (§1.5). An entry holding `alg` is from engine configuration version 40; a
+history of Ed25519 keys alone is the bytes it was, its `keyHistoryVersion` still `"1"`, and so are the bytes a
+store rotation carries and the `keyHistoryDigest` that names them. What a key's `validFrom` and
 `validTo` bound is the gateway's clock at each rotation, as `rotatedAt` is (§3b), and nothing more: an
 answer that holds is the history the gateway's registry proves, and, as `/publickey` is (§5), consistency
 with the gateway that answers it, unless the key pinned came from elsewhere.
@@ -2037,7 +2201,8 @@ not itself a finding.
 
 ## 5. Trust boundary and honest bounds
 
-- The gateway holds **one protected signing identity** (an Ed25519 seed). It lives
+- The gateway holds **one protected signing identity** (an Ed25519 seed, or a key service's key version,
+  Ed25519 or, from engine configuration version 40, ECDSA P-256, §1.5). It lives
   in the service, never in a client or a downstream consumer. A client calls
   `/acquire` and **cannot supply a receipt** — the gateway produces every receipt.
   This is what removes the model/agent from the proof path: a caller can lie about
@@ -2331,7 +2496,7 @@ written then verifies what is minted now. `gateway verify` takes
 | POST   | `/delegation/revoke` | from an issuing host: ends live delegation credentials (§11.6). Answered only where the configuration has `delegation`. |
 | GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`, and `observations` when §4 has any (§4, "Observations") and `rotations` when the walk of §3b followed any, against the registry the gateway made when it started (§3): a registry that is not there is no verdict here, never the absent registry of §4.1 that loads no seals. The key it verifies from is the one its own reading of §3b starts at, taken from its registry — a reason more that this answer is not evidence (§5a.3). |
 | GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. A registry that cannot be read (§4.1), or that is not there — the gateway made it when it started (§3) — is answered `500`, never as the empty body a verifier reads as no seals; the answer's body is `{"error":"the registry could not be read; the gateway says why on its stderr"}` whatever the reason, naming neither the registry's path nor the platform's error, since a caller needs no token, and the reason is written on the gateway's stderr. |
-| GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |
+| GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`: for an Ed25519 key `algorithm` is `"ed25519"` and `publicKey` its 64 lowercase hexadecimal characters, as before; for a P-256 key (§1.5, engine configuration version 40) `algorithm` is `"ES256"`, `publicKey` its compressed point in 66, and `keyId` its key id. The value is the record's `alg` identifier for P-256 and the legacy string `"ed25519"` for Ed25519, which is not an `alg` value and is not changed. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |
 | GET    | `/publickey/history` | → canon of `{keyHistoryVersion, keys}`, every key the registry proves the gateway signed under, each later key with the two statements of the rotation to it, carried across a store rotation (§3e). A history that cannot be read or does not hold is answered `500` with `{"error":"the key history could not be read; the gateway says why on its stderr"}`, never in part. |
 
 A `source` is an operator-configured subprocess that reads the canonical arguments on
@@ -3902,7 +4067,9 @@ these members:
 The signature is Ed25519 over UTF-8
 `judgment-pack-gateway/descriptor-statement/1:` followed by the canonical object
 with only its top-level `signature` removed. The statement's key must be among
-the registry's reached keys, no later in that walk than the receipt's key.
+the registry's reached keys, no later in that walk than the receipt's key. A statement a P-256 key
+signs holds `alg` beside the members above, signed with them, and verifies, by ES256, only under a
+reached key of that algorithm (§1.5).
 
 After §1.4's artifact checks, a receipt with this member undergoes two further
 checks, in order. If either referenced artifact is absent, unreadable, not a
