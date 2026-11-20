@@ -184,8 +184,8 @@ where the gateway writes as a vulnerability in this class, not as a configuratio
 otherwise.** `gateway serve <store> <seed> <authority> <registry>` has no `identity`: every request
 is admitted and no caller is recorded, so whoever reaches its listener can run any source it is
 configured with, with arguments of their choosing, have receipts signed under its key, seal any
-session it holds and read `/verify` and `/posture`; `/registry` and `/publickey` are open to every
-caller in every form, by design; `/act` is refused, since nobody is a requester. It listens on
+session it holds and read `/verify` and `/posture`; `/registry`, `/publickey` and `/publickey/history` are
+open to every caller in every form, by design; `/act` is refused, since nobody is a requester. It listens on
 `127.0.0.1` unless `--listen` names another address, which is an IP address written out: a name is
 refused, so no resolver decides where it listens, and every address of a family is bound only when
 `0.0.0.0` or `::` is written out. An address that is not loopback is taken only with
@@ -196,8 +196,8 @@ needs something in front of it that decides who reaches it: an authenticating pr
 or a private network that admits only the intended callers. The gateway limits neither the rate of
 requests nor the number of connections, so what is in front should limit them too. A listener that
 is not loopback, in either form of serve, closes a connection idle for a minute, bounds a request's
-headers at 64 KiB, and gives the answer of `/registry` and of `/publickey` 30 seconds each to be
-written; the bound is per answer, not a server-wide write timeout, since an `/acquire` or an `/act`
+headers at 64 KiB, and gives the answer of `/registry`, of `/publickey` and of `/publickey/history` 30
+seconds each to be written; the bound is per answer, not a server-wide write timeout, since an `/acquire` or an `/act`
 has no fixed longest run (a source runs to its timeout, and requests under one action key wait on
 each other). The transport is
 plain HTTP, so on the
@@ -723,18 +723,20 @@ an IP literal and a port written as the gateway binds them, no name and no zone,
 family only when `0.0.0.0` or `[::]` is written out, bound in its own family. It is taken only where
 the configuration also has an `identity` and `acceptOtherHostsOverPlainHTTP: true`, and has neither
 a `witness` nor `mcp`; either member alone is refused at load, and so is the acknowledgement beside a
-loopback `listen`. Every endpoint of such a listener but `/registry` and `/publickey` then holds its
+loopback `listen`. Every endpoint of such a listener but `/registry`, `/publickey` and `/publickey/history` then holds its
 caller to a token, the start says on stderr that other hosts can reach the gateway over plain HTTP,
 and `/posture` reports its `listener-reach` line `partial`. What it does not give: the gateway
 terminates no TLS and cannot check that anything in front does, so on the network between a caller
 and the listener a bearer token can be read and replayed within its validity window, every result
-and a version 3 response's salts read, and a request changed; `/registry` and `/publickey` are
+and a version 3 response's salts read, and a request changed; `/registry`, `/publickey` and `/publickey/history` are
 readable by anyone who reaches the listener; and the gateway limits neither the rate of requests nor
 the number of connections. A front that terminates TLS and limits them still belongs in front of
-it. The two open routes disclose, to anyone who reaches the listener, the whole registry log
-(`/registry`: every line it holds, as written) and the signer's algorithm, authority, key id and
-public key (`/publickey`); a `/registry` that cannot be served answers `500` with a fixed sentence
-that names no path, and the reason goes to the gateway's stderr. Such a listener has the limits of
+it. The three open routes disclose, to anyone who reaches the listener, the whole registry log
+(`/registry`: every line it holds, as written), the signer's algorithm, authority, key id and
+public key (`/publickey`), and every key the registry proves, with its rotation statements, which
+`/registry` holds already (`/publickey/history`, SPEC.md §3e); a `/registry` or a history that cannot
+be served answers `500` with a fixed sentence that names no path, and the reason goes to the
+gateway's stderr. Such a listener has the limits of
 any listener off loopback (above): a connection idle for a minute is closed, a request's headers
 are bounded at 64 KiB, and each answer of the two open routes has 30 seconds to be written. A
 separate process on the same host can still reach the signer, over loopback where `listen` is
