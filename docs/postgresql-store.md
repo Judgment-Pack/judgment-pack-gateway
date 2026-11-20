@@ -854,7 +854,12 @@ It is refused, with exit status 1, by name:
 The mark (SPEC.md §3d) is the one row of `gateway.rotated` (schema version 7): the hexadecimal
 SHA-256 of the continuation line and the time it was written. The command writes it last, as the
 run-time login, under the start lease and fenced as every write is, once the new database's
-transaction is committed; a mark that fails to write is said so, and a run again writes it. A
+transaction is committed; a mark that fails to write is said so, and a run again writes it.
+Until it is written the old database is not marked, so keep every instance stopped until the run
+again has marked it. The mark fails to write when the lease is lost first. If an instance starts on
+the old database before the run again, its registry grows past the one the continuation names. The
+run again is then refused (`it holds a registry`), and the new database must be dropped by the
+operator and made again empty before a rotation into it. A
 start on the old database reads the row before the start lease's rows and is refused by name,
 *the store was rotated away from (store-rotated:...)*; so is every command that takes the lease,
 `seal-open` and a second `store rotate` among them. `gateway store remove-scope`, which holds the
