@@ -2454,6 +2454,10 @@ status:
   `Retry-After`: the closure ends when its operator reopens admission, which the gateway does
   not know in advance.
 
+A gateway whose configuration names a receipt sink (§6a) has one more answer. It is **`503`**
+with `code` `receipt_not_forwarded` beside the fixed sentence of §6a, and it is the one refused
+acquisition after which a receipt is in the store.
+
 An acquisition is one receipted read, however many runs of its adapter it takes: a token
 step's token request, the request, and the token request and run once more after a sealed
 token the adapter could not open (`docs/adr/0027-an-http-source-obtains-its-token-by-a-client-assertion.md`).
@@ -3133,6 +3137,85 @@ name of its `continuation` in the directories `--witness-resume` and `--witness-
 sentences, and the runtime's `report` as it wrote it, with its `exit`. It
 exits `0` whenever it gave a report, as `gateway verify` does (§5a.2). The runtime is named by its
 path, version 0.28.0 or later.
+
+## 6a. Receipt forwarding
+
+A gateway whose engine configuration names `receiptSink` (engine version 35,
+`docs/design/engine-config.md`; ADR-0049) delivers each receipt `/acquire` mints to that one
+endpoint. `/acquire` answers only once the sink has acknowledged the receipt. Nothing here
+changes a receipt, a seal or the registry, and a receipt verifies (§4) with or without the
+sink.
+
+**The endpoint.** `receiptSink.url` is `https`, or plain `http` to a loopback address written
+as one: 127.0.0.0/8 in dotted decimal, or `[::1]`. A name, `localhost` included, is refused
+for plain http at load. The url carries no user, query or fragment. An `https` host is
+resolved by the system resolver when a connection is opened, never at load. No proxy is
+taken from the environment, the certificate is verified for the url's host, and no redirect
+is followed.
+
+**The delivery.** One `POST` per receipt, `Content-Type: application/json`. The body is the
+canonical JSON (§1.1) of exactly these members:
+- `deliveryVersion`, `"1"`;
+- `payloadDigest`, the receipt's `resultDigest`;
+- `receipt`, the stored receipt, whole;
+- `receiptDigest`, `sha256:` followed by the lowercase hexadecimal SHA-256 of the receipt's
+  canonical bytes (the line under `receipts/` without its line feed);
+- `payload`, the result as `/acquire` answers it. It is present only where
+  `receiptSink.payload` is `true` and the source keeps its payload. A source that keeps none
+  ("Payloads a gateway does not keep", §6) never has its result carried.
+
+**The acknowledgment.** A `200` whose body is exactly `{"acknowledged":"<receiptDigest>"}`,
+optionally followed by one line feed, naming the delivered receipt's digest. At most 512 bytes
+are read. Anything else is not an acknowledgment: another status, a redirect, another digest,
+another member, other whitespace, or a longer body.
+
+**Order and at least once.** A session's receipts are delivered in the order of their
+`callIndex`, one delivery at a time for the session. A receipt is sent, in the same bytes,
+until it is acknowledged. A sink keeps each `receiptDigest` once: the same receipt arrives
+again where its acknowledgment was lost. Receipts of different sessions are in no order to
+one another.
+
+**Retries and deadlines.**
+- A receipt is sent at most three times in one call, with waits of 250 ms and then 500 ms
+  between sends.
+- Each send is bounded as a whole by 5 seconds.
+- A call stops at the first receipt not acknowledged, so a failing sink adds at most 15.75
+  seconds of sending to it. A call may first wait, at most 5 seconds, for another call of the
+  same session to end its delivery, so a call that waits adds at most 20.75 seconds.
+
+The source's timeout bounds the source's run alone; delivery starts after it and adds its
+time to the acquisition's.
+
+**When the sink does not acknowledge.** The answer is `503`, `Content-Type:
+application/json`, with no `Retry-After` and exactly this body:
+
+`{"error":"receipt not forwarded: the receipt sink did not acknowledge a receipt of this session; nothing was answered, and the receipt is held to be delivered again before the session's next acquisition or seal","code":"receipt_not_forwarded"}`
+
+It is the same whatever the cause: an unreachable sink, a send past its deadline, or an
+answer that is not the acknowledgment. Nothing of the sink's answer, the receipt or the result
+reaches the caller.
+
+The receipt is in the store at its `callIndex`, and the session is begun. The receipt is
+held, and is delivered again, oldest first with any other held receipt of the session:
+- before the session's next acquisition proceeds: before a delegation counts it, the grant is
+  asked or the source runs;
+- before an action (`/act`) of the session runs its executor;
+- before the session is sealed, for a caller that reaches the session's scope identifier.
+
+While a held receipt is not acknowledged, all three are answered with the same `503`. The
+acquisition and the action run nothing and mint nothing, and the session is not sealed. A held
+receipt is never answered to any caller.
+
+Held receipts are kept in the serving process's memory, and each is in the store. A session
+left open by a stop or a crash is sealed after the interruption (§3c, by `seal-open` or at the
+start) only once each receipt the store holds of it, oldest first, has been delivered and
+acknowledged; one whose receipts are not all acknowledged is left open and named (ADR-0049,
+consequences).
+
+**What is not forwarded.** These are unchanged:
+- an action's receipt minted by `/act`;
+- a seal and every other registry line;
+- a removal record.
 
 ## 7. Conformance
 

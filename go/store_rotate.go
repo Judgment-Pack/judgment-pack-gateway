@@ -264,6 +264,19 @@ func continuesAlone(made, previous []byte, key ed25519.PublicKey) bool {
 
 // newRegistryTemp is the file a new registry is written to, beside it, before
 // it is renamed into place.
+// syncRotationDirectory syncs the directory at path, so an entry made or
+// renamed in it is durable: where Unix syncs a directory (connect_unix.go),
+// as the store's other directories are; elsewhere a directory is not synced
+// (connect_other.go), and the file's own sync is what is durable.
+func syncRotationDirectory(path string) error {
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return syncDirectory(root, ".")
+}
+
 func newRegistryTemp(path string) string {
 	return filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".rotating")
 }
@@ -292,7 +305,7 @@ func writeNewRegistry(path string, line []byte) error {
 	if err := os.Rename(temp, path); err != nil {
 		return err
 	}
-	return syncDirectoryAt(filepath.Dir(path))
+	return syncRotationDirectory(filepath.Dir(path))
 }
 
 // rotatedMarkPath is the file beside a registry that marks its store rotated
@@ -305,7 +318,7 @@ func markRotated(registryPath string, line []byte) error {
 	path := rotatedMarkPath(registryPath)
 	err := writeFileSynced(path, []byte(rotatedMark(line)+"\n"))
 	if err == nil {
-		err = syncDirectoryAt(filepath.Dir(path))
+		err = syncRotationDirectory(filepath.Dir(path))
 	}
 	if err != nil {
 		return fmt.Errorf("the new registry is made, but the old store could not be marked rotated away from (%v); rerun the same rotation to mark it", err)
