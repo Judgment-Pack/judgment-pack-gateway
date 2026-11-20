@@ -13,12 +13,15 @@ import { test } from "node:test";
 
 import { canonical } from "../src/canon.ts";
 import { maxValues, parse } from "../src/json.ts";
+import { verifyByAlg } from "../src/alg.ts";
+import { reached } from "../src/rotation.ts";
 import { verifyStore } from "../src/verify.ts";
 import {
   corpus,
   materialize,
   multiset,
   newStore,
+  p256Pin,
   publicKey,
   readStoreVector,
   readVector,
@@ -67,13 +70,53 @@ test("every Ed25519 vector, and none of them altered", () => {
   }
 });
 
+test("every P-256 vector, its high-S twin refused, and none of them altered", () => {
+  const doc = JSON.parse(fs.readFileSync(path.join(corpus, "p256-vectors.json"), "utf8"));
+  assert.ok(doc.vectors.length > 0);
+  for (const v of doc.vectors) {
+    assert.equal(v.publicKey, p256Pin.key);
+    const key = reached(Buffer.from(v.publicKey, "hex"), "ES256");
+    assert.equal(key.keyId, "dbdb99c64b3d511f72c88fb6c054da73");
+    const message = Buffer.from(v.message, "hex");
+    assert.ok(verifyByAlg("ES256", key, message, v.signature), v.message);
+    assert.ok(!verifyByAlg("ES256", key, message, v.highS), v.message);
+    assert.ok(!verifyByAlg("", key, message, v.signature), v.message);
+    assert.ok(!verifyByAlg("ES256", key, message, v.signature.toUpperCase()), v.message);
+    const altered = Buffer.from(v.signature, "hex");
+    altered[10]! ^= 1;
+    assert.ok(!verifyByAlg("ES256", key, message, altered.toString("hex")), v.message);
+  }
+});
+
+test("main.ts verify takes --public-key-alg ES256 first, and the 66 hexadecimal characters on standard input", () => {
+  const v = storeVectors().find((s) => s.name === "p256-pinned-from-first-receipt")!;
+  const { root, registry } = materialize(v);
+  const run = (args: string[], input: string | Buffer) => spawnSync(process.execPath, [main, "verify", ...args, root, registry, v.authority], { input });
+  const pinned = run(["--public-key-alg", "ES256"], p256Pin.key);
+  assert.equal(pinned.status, 0, pinned.stderr.toString());
+  assert.equal(JSON.parse(pinned.stdout.toString("utf8")).ok, true);
+  // the Ed25519 pin finds the P-256 receipt's key id among no key reached
+  const plain = run([], publicKey);
+  assert.equal(plain.status, 0);
+  assert.equal(JSON.parse(plain.stdout.toString("utf8")).ok, false);
+  for (const input of [p256Pin.key + "\n", p256Pin.key.toUpperCase(), publicKey]) {
+    assert.equal(run(["--public-key-alg", "ES256"], input).status, 2);
+  }
+  // off the curve: x = 1 has no point
+  assert.equal(run(["--public-key-alg", "ES256"], "02" + "00".repeat(31) + "01").status, 2);
+  assert.equal(run(["--public-key-alg", "ES384"], p256Pin.key).status, 64);
+  assert.equal(run(["--scope", "scope-a", "--public-key-alg", "ES256"], p256Pin.key).status, 64);
+});
+
 test("every store vector", () => {
   const vectors = storeVectors();
   assert.ok(vectors.length >= 39);
   for (const v of vectors) {
     const { root, registry, decisionRecords, artifacts, previous } = materialize(v);
     const options = { ordinarySealsOnly: v.ordinarySealsOnly === true, ...(artifacts !== undefined && { artifacts }), ...(v.scope !== undefined && { scope: v.scope }), ...(previous !== undefined && { previous }) };
-    const verdict = JSON.parse(verdictText(verifyStore(root, registry, v.authority, decisionRecords, publicKey, options)));
+    assert.ok(v.publicKeyAlg === undefined || v.publicKeyAlg === "ES256", v.name);
+    const pin = v.publicKeyAlg === "ES256" ? p256Pin : publicKey;
+    const verdict = JSON.parse(verdictText(verifyStore(root, registry, v.authority, decisionRecords, pin, options)));
     assert.equal(verdict.ok, v.expected.ok, v.name);
     assert.deepEqual(multiset(verdict.findings), multiset(v.expected.findings), v.name);
     // the observations, as a multiset, only where the vector states them

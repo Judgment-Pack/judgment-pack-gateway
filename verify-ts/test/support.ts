@@ -28,9 +28,13 @@ export function tempDir(): string {
 
 export const corpus = path.join(import.meta.dirname, "..", "..", "corpus");
 export const publicKey = Buffer.from(fs.readFileSync(path.join(corpus, "TEST-PUBLIC-KEY"), "utf8").trim(), "hex");
+// The P-256 test key's pin (ADR-0053 §11), for a vector giving
+// "publicKeyAlg": "ES256".
+export const p256Pin = { alg: "ES256", key: fs.readFileSync(path.join(corpus, "TEST-P256-PUBLIC-KEY"), "utf8").trim() } as const;
 
 export type StoreVector = {
   name: string;
+  publicKeyAlg?: string;
   authority: string;
   files: Record<string, string>;
   registry: string;
@@ -118,14 +122,14 @@ function only(file: string, o: unknown, ...names: string[]): void {
 // not read, at the top or in expected.
 export function readStoreVector(file: string): StoreVector {
   const v = readVector(file) as StoreVector;
-  only(file, v, "name", "note", "authority", "files", "registry", "decisionRecords", "absentRegistry", "emptySessions", "ordinarySealsOnly", "suppliedArtifacts", "scope", "previousRegistry", "expected");
+  only(file, v, "name", "note", "authority", "files", "registry", "decisionRecords", "absentRegistry", "emptySessions", "ordinarySealsOnly", "suppliedArtifacts", "scope", "previousRegistry", "publicKeyAlg", "expected");
   only(file, v.expected, "ok", "findings", "witnesses", "rotations", "observations", "cut");
   return v;
 }
 
 export function storeVectors(): StoreVector[] {
   const vectors: StoreVector[] = [];
-  for (const dir of [path.join(corpus, "stores"), path.join(corpus, "v3", "stores")]) {
+  for (const dir of [path.join(corpus, "stores"), path.join(corpus, "v3", "stores"), path.join(corpus, "p256", "stores")]) {
     for (const name of fs.readdirSync(dir).sort()) {
       vectors.push(readStoreVector(path.join(dir, name)));
     }

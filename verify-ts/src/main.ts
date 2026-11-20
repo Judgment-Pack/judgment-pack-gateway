@@ -5,8 +5,11 @@
 //   main.ts canon      stdin: one JSON document; stdout: its canonical
 //                      bytes; exit 0 inside the domain, 1 refused, 2
 //                      past what this implementation reads
-//   main.ts verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>]
-//                      stdin: the 32-byte Ed25519 public key; stdout:
+//   main.ts verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>]
+//                      stdin: the 32-byte Ed25519 public key, or under
+//                      --public-key-alg ES256, first or not at all,
+//                      exactly the 66 lowercase hexadecimal characters of
+//                      a P-256 compressed point (ADR-0053 §11); stdout:
 //                      {"ok": bool, "findings": [...]}; exit 0 whenever a
 //                      verdict was reached, 2 when none could be; with
 //                      the option, first or not at all, a session a seal
@@ -185,10 +188,15 @@ function main(args: string[]): number {
     process.stdout.write(bytes);
     return 0;
   }
-  // --scope <identifier>, first or not at all.
-  const scoped = command === "verify" && rest[0] === "--scope";
-  const badScope = scoped && (rest.length < 2 || !isScopeIdentifier(rest[1]!));
-  const options = scoped ? rest.slice(2) : rest;
+  // --public-key-alg ES256, first or not at all (ADR-0053 §11).
+  const p256 = command === "verify" && rest[0] === "--public-key-alg";
+  const badAlg = p256 && rest[1] !== "ES256";
+  const unpinned = p256 ? rest.slice(2) : rest;
+  const misplacedAlg = command === "verify" && unpinned.includes("--public-key-alg");
+  // --scope <identifier>, first after it or not at all.
+  const scoped = command === "verify" && unpinned[0] === "--scope";
+  const badScope = scoped && (unpinned.length < 2 || !isScopeIdentifier(unpinned[1]!));
+  const options = scoped ? unpinned.slice(2) : unpinned;
   const misplacedScope = command === "verify" && options.includes("--scope");
   const ordinarySealsOnly = command === "verify" && options[0] === "--ordinary-seals-only";
   const afterOption = ordinarySealsOnly ? options.slice(1) : options;
@@ -205,19 +213,30 @@ function main(args: string[]): number {
   // argument and the plain verdict run in its stead.
   const misplaced = command === "verify" && options.slice(1).includes("--ordinary-seals-only");
   const misplacedArtifacts = command === "verify" && (positional.includes("--artifacts") || (afterOption[0] === "--artifacts" && !supplied));
-  if (command === "verify" && !badScope && !misplacedScope && !misplaced && !misplacedArtifacts && !misplacedPrevious && (positional.length === 3 || (positional.length === 4 && !scoped))) {
+  if (command === "verify" && !badAlg && !misplacedAlg && !badScope && !misplacedScope && !misplaced && !misplacedArtifacts && !misplacedPrevious && (positional.length === 3 || (positional.length === 4 && !scoped))) {
     try {
       // The directory comes right before the positional arguments, so the
       // command line's last entries are it and them.
       const exact = exactArguments(supplied ? [afterOption[1]!, ...positional] : positional);
       const artifacts = supplied ? exact[0] : undefined;
       const [root, registry, authority, decisionRecords] = (supplied ? exact.slice(1) : exact) as [string, string, string, string | undefined];
-      const key = readInput(32);
-      if (key === null) {
-        throw new NoVerdict("the public key on standard input is more than 32 bytes");
+      let key: Uint8Array | Pin;
+      if (p256) {
+        const text = readInput(66);
+        const hex = text === null ? "" : Buffer.from(text).toString("latin1");
+        if (!/^[0-9a-f]{66}$/.test(hex)) {
+          throw new NoVerdict("expected exactly the 66 lowercase hexadecimal characters of a P-256 compressed point under --public-key-alg ES256");
+        }
+        key = { alg: "ES256", key: hex };
+      } else {
+        const raw = readInput(32);
+        if (raw === null) {
+          throw new NoVerdict("the public key on standard input is more than 32 bytes");
+        }
+        key = raw;
       }
       // The scope's own bytes, as the command line holds them.
-      const scope = scoped ? exactArguments(rest)[1] : undefined;
+      const scope = scoped ? exactArguments(unpinned)[1] : undefined;
       const verdict = verifyStore(root, registry, authority, decisionRecords, key, {
         ordinarySealsOnly,
         ...(artifacts !== undefined && { artifacts }),
@@ -239,6 +258,9 @@ function main(args: string[]): number {
   if (command === "witness") {
     return witness(rest);
   }
+  if (badAlg || misplacedAlg) {
+    process.stderr.write("verify: --public-key-alg is ES256, given first; without it the key on standard input is Ed25519's 32 raw bytes\n");
+  }
   if (badScope) {
     process.stderr.write("verify: --scope names a scope identifier\n");
   }
@@ -255,7 +277,7 @@ function main(args: string[]): number {
     process.stderr.write("verify: --artifacts <dir> goes before the store root, after --ordinary-seals-only; a directory so named is given as ./--artifacts\n");
   }
   process.stderr.write(
-    "usage: main.ts canon | main.ts verify [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n",
+    "usage: main.ts canon | main.ts verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n",
   );
   return 64;
 }

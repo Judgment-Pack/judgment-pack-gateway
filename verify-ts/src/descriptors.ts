@@ -6,6 +6,7 @@ import { canonical } from "./canon.ts";
 import { readDocument } from "./inputs.ts";
 import { hasDuplicate, member, parse } from "./json.ts";
 import type { ObjectValue } from "./json.ts";
+import { recordAlg, verifyByAlg } from "./alg.ts";
 import type { ReachedKey } from "./rotation.ts";
 import { isRemoteEndpoint } from "./structure.ts";
 
@@ -32,7 +33,10 @@ export function descriptorStatus(root: string, receipt: ObjectValue, keys: reado
   if (obj?.type !== "object" || hasDuplicate(obj)) return fail;
   const bytes = canonical(obj);
   if (bytes === null || !Buffer.from(bytes).equals(Buffer.from(statement))) return fail;
-  const names = ["statementVersion","authority","keyId","source","binding","snapshot","endpoint","capturedAt","signature"];
+  // alg among them on a statement a P-256 key signs (ADR-0053 §2)
+  const names = ["statementVersion","authority","keyId","source","binding","snapshot","endpoint","capturedAt","signature", ...(member(obj,"alg") !== undefined ? ["alg"] : [])];
+  const alg = recordAlg(obj,"alg");
+  if (alg === null) return fail;
   if (obj.members.length !== names.length || !obj.members.every(m => names.includes(m.name) && m.value.type === "string")) return fail;
   if (text(obj,"statementVersion") !== "1" || text(obj,"authority") !== text(receipt,"authority") || text(obj,"source") !== text(receipt,"source") || text(obj,"binding") !== text(p,"binding") || text(obj,"snapshot") !== snapshotPin) return fail;
   const at = text(obj,"capturedAt")!, endpoint = text(obj,"endpoint")!, signature = text(obj,"signature")!, keyId = text(obj,"keyId")!;
@@ -46,5 +50,5 @@ export function descriptorStatus(root: string, receipt: ObjectValue, keys: reado
   const core: ObjectValue = {type:"object",members:obj.members.filter(m => m.name !== "signature")};
   const input = Buffer.concat([Buffer.from("judgment-pack-gateway/descriptor-statement/1:","utf8"),canonical(core)!]);
   const key = keys.find(k => k.keyId === keyId);
-  return key !== undefined && crypto.verify(null,input,key.key,Buffer.from(signature,"hex")) ? "ok" : fail;
+  return key !== undefined && verifyByAlg(alg,key,input,signature) ? "ok" : fail;
 }

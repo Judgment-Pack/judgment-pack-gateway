@@ -35,6 +35,8 @@ import {
 } from "./inputs.ts";
 import { TooLarge, count, hasDuplicate, integerDigits, maxValues, member, parse } from "./json.ts";
 import type { NumberValue, ObjectValue, Value } from "./json.ts";
+import { p256KeySound, recordAlg, verifyByAlg } from "./alg.ts";
+import type { Alg, Pin } from "./alg.ts";
 import { RegistryWalk, rotationKind } from "./rotation.ts";
 import type { ReachedKey, RotationStatus } from "./rotation.ts";
 import { isScopeIdentifier, structureV2, structureV3 } from "./structure.ts";
@@ -271,15 +273,16 @@ export function keyIdOf(publicKey: Uint8Array): string {
   return crypto.createHash("sha256").update(publicKey).digest("hex").slice(0, 32);
 }
 
-// signed is whether the signature, in hex of either case, verifies over
-// the prefix and the canonical form of the value.
-function signed(key: crypto.KeyObject, prefix: string, v: Value, signatureHex: string): boolean {
+// signed is whether the signature verifies by alg under the key, which must
+// be of alg, over the prefix and the canonical form of the value: an
+// Ed25519 one in hex of either case, an ES256 one in 128 lowercase
+// hexadecimal characters, low-S (verifyByAlg).
+function signed(key: ReachedKey, alg: Alg, prefix: string, v: Value, signatureHex: string): boolean {
   const body = canonical(v);
-  if (body === null || !/^(?:[0-9a-fA-F]{2}){64}$/.test(signatureHex)) {
+  if (body === null) {
     return false;
   }
-  const message = Buffer.concat([Buffer.from(prefix, "utf8"), body]);
-  return crypto.verify(null, message, key, Buffer.from(signatureHex, "hex"));
+  return verifyByAlg(alg, key, Buffer.concat([Buffer.from(prefix, "utf8"), body]), signatureHex);
 }
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -421,7 +424,10 @@ function removalOf(v: Value | null, keys: readonly ReachedKey[]): (Removal & { r
   if (v === null || v.type !== "object" || hasDuplicate(v)) {
     return null;
   }
-  if (v.members.length !== removalMembers.length || !v.members.every((m) => removalMembers.includes(m.name))) {
+  // alg among them on a record a P-256 key signs (ADR-0053 §2)
+  const names = member(v, "alg") !== undefined ? [...removalMembers, "alg"] : removalMembers;
+  const alg = recordAlg(v, "alg");
+  if (alg === null || v.members.length !== names.length || !v.members.every((m) => names.includes(m.name))) {
     return null;
   }
   const of = (name: string, form: RegExp): string | undefined => {
@@ -458,11 +464,11 @@ function removalOf(v: Value | null, keys: readonly ReachedKey[]): (Removal & { r
     return null;
   }
   const keyPos = keys.findIndex((k) => k.keyId === keyId);
-  if (keyPos < 0) {
+  if (keyPos < 0 || keys[keyPos]!.alg !== alg) {
     return null;
   }
   const payload: ObjectValue = { type: "object", members: v.members.filter((m) => m.name !== "signature") };
-  if (!signed(keys[keyPos]!.key, removalPrefix, payload, signature)) {
+  if (!signed(keys[keyPos]!, alg, removalPrefix, payload, signature)) {
     return null;
   }
   return { sessionId: own(sessionId), callIndex: callIndex.integer, resultDigest: own(resultDigest), keyPos, receiptSignature: own(receiptSignature) };
@@ -480,8 +486,9 @@ function sessionRemovalOf(v: Value | null, keys: readonly ReachedKey[]): (Sessio
   // the nine members, or the ten of a record of a session sealed with a
   // seal of version 3, its scope salt among them (ADR-0042)
   const salted = member(v, "scopeSalt") !== undefined;
-  const members = salted ? sessionRemovalSaltedMembers : sessionRemovalMembers;
-  if (v.members.length !== members.length || !v.members.every((m) => members.includes(m.name))) {
+  const members = [...(salted ? sessionRemovalSaltedMembers : sessionRemovalMembers), ...(member(v, "alg") !== undefined ? ["alg"] : [])];
+  const alg = recordAlg(v, "alg");
+  if (alg === null || v.members.length !== members.length || !v.members.every((m) => members.includes(m.name))) {
     return null;
   }
   const of = (name: string, form: RegExp): string | undefined => {
@@ -525,7 +532,7 @@ function sessionRemovalOf(v: Value | null, keys: readonly ReachedKey[]): (Sessio
     return null;
   }
   const payload: ObjectValue = { type: "object", members: v.members.filter((m) => m.name !== "signature") };
-  if (!signed(keys[keyPos]!.key, sessionRemovalPrefix, payload, signature)) {
+  if (keys[keyPos]!.alg !== alg || !signed(keys[keyPos]!, alg, sessionRemovalPrefix, payload, signature)) {
     return null;
   }
   return { sessionId: own(sessionId), sealSignature: own(sealSignature), finalCount: finalCount.integer, scope: own(scope), ...(scopeSalt !== undefined && { scopeSalt: own(scopeSalt) }), keyPos };
@@ -618,6 +625,13 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
   if (!(version === "3" ? structureV3(receipt) : structureV2(receipt))) {
     return { file, status: "malformed" };
   }
+  // alg (ADR-0053 §1): a version 3 receipt a P-256 key signs carries
+  // "ES256" and no other value; a version 2 receipt, Ed25519 alone,
+  // carries none, of any value, and is never verified as ES256.
+  const alg = version === "3" ? recordAlg(receipt, "alg") : "";
+  if (alg === null || (version === "2" && member(receipt, "alg") !== undefined)) {
+    return { file, status: "malformed" };
+  }
   // An index whose value is not read -- more than integerDigits digits --
   // cannot verify (the canonical domain ends at sixteen), and is no
   // verdict rather than a finding of unbounded size.
@@ -636,14 +650,17 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
   // (§3b), the key pinned first.
   const receiptKeyId = str(member(receipt, "keyId"));
   const keyPos = keys.findIndex((k) => k.keyId === receiptKeyId);
-  if (keyPos < 0) {
+  // The key the key id names verifies a receipt of its own algorithm
+  // alone: alg names it, and a key of the other algorithm is the key
+  // failure, with no signature tried.
+  if (keyPos < 0 || keys[keyPos]!.alg !== alg) {
     return judged("key-mismatch");
   }
   // 4. signature-mismatch: over everything but the receipt's own
   // top-level signature, under its version's prefix, under the key its
   // key id names.
   const unsigned: ObjectValue = { type: "object", members: receipt.members.filter((m) => m.name !== "signature") };
-  if (!signed(keys[keyPos]!.key, receiptPrefix[version]!, unsigned, signature)) {
+  if (!signed(keys[keyPos]!, alg, receiptPrefix[version]!, unsigned, signature)) {
     return judged("signature-mismatch");
   }
   // 5. misfiled: the file's stem is its callIndex, and the directory its
@@ -776,7 +793,7 @@ type Seal = { readonly sessionId: string; readonly finalCount: bigint; readonly 
 // sealOf is a registry line, read, as a seal, when it is one whose key id
 // is the current key's at its line (§3b, §4 step 2) and whose signature
 // verifies under that key; any other line is no seal and is dropped.
-function sealOf(seal: Value | null, key: crypto.KeyObject, keyId: string, keyPos: number): Seal | null {
+function sealOf(seal: Value | null, current: ReachedKey, keyPos: number): Seal | null {
   if (seal === null || seal.type !== "object" || hasDuplicate(seal)) {
     return null;
   }
@@ -795,19 +812,25 @@ function sealOf(seal: Value | null, key: crypto.KeyObject, keyId: string, keyPos
   ) {
     return null;
   }
-  if (sealKeyId.value !== keyId) {
+  // alg (ADR-0053 §1): absent, Ed25519, whose signature's hex stays
+  // lenient of case; "ES256", whose signature is 128 lowercase hexadecimal
+  // characters (verifyByAlg), and whose signing input names five members,
+  // alg among them; any other value loads nothing
+  const alg = recordAlg(seal, "alg");
+  if (alg === null || sealKeyId.value !== current.keyId || alg !== current.alg) {
     return null;
   }
   const payload: ObjectValue = {
     type: "object",
     members: [
+      ...(alg === "ES256" ? [{ name: "alg", value: member(seal, "alg")! }] : []),
       { name: "sessionId", value: sessionId },
       { name: "finalCount", value: finalCount },
       { name: "sealedAt", value: sealedAt },
       { name: "keyId", value: sealKeyId },
     ],
   };
-  if (!signed(key, sealPrefix, payload, signature)) {
+  if (!signed(current, alg, sealPrefix, payload, signature)) {
     return null;
   }
   return { sessionId: own(sessionId.value), finalCount: finalCount.integer, signature: signature.toLowerCase(), keyPos };
@@ -825,8 +848,11 @@ function isVersioned(v: Value | null): v is ObjectValue {
 // key id is the current key's at its line and its signature verifies under
 // that key, over the prefix and the canonical form of everything but the
 // signature; any other such line is no seal.
-function scopedSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string, keyPos: number): Seal | null {
-  if (hasDuplicate(v) || !v.members.every((m) => scopedSealMembers.includes(m.name))) {
+function scopedSealOf(v: ObjectValue, current: ReachedKey, keyPos: number): Seal | null {
+  // alg among them on a seal a P-256 key signs (ADR-0053 §2)
+  const alg = recordAlg(v, "alg");
+  const allowed = member(v, "alg") !== undefined ? [...scopedSealMembers, "alg"] : scopedSealMembers;
+  if (alg === null || hasDuplicate(v) || !v.members.every((m) => allowed.includes(m.name))) {
     return null;
   }
   const of = (name: string, form: RegExp): string | undefined => {
@@ -855,11 +881,11 @@ function scopedSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string, keyP
   ) {
     return null;
   }
-  if (sealKeyId !== keyId) {
+  if (sealKeyId !== current.keyId || alg !== current.alg) {
     return null;
   }
   const payload: ObjectValue = { type: "object", members: v.members.filter((m) => m.name !== "signature") };
-  if (!signed(key, version === "3" ? saltedSealPrefix : scopedSealPrefix, payload, signature)) {
+  if (!signed(current, alg, version === "3" ? saltedSealPrefix : scopedSealPrefix, payload, signature)) {
     return null;
   }
   return { sessionId: own(sessionId), finalCount: finalCount.integer, signature: own(signature), keyPos, scopeDigest: own(scopeDigest), ...(version === "3" && { salted: true }) };
@@ -878,13 +904,15 @@ function isInterruption(v: Value | null): v is ObjectValue {
 // id is the current key's at its line and its signature verifies under that
 // key, over the prefix and the canonical form of everything but the
 // signature; any other such line is no seal of either kind.
-function interruptionSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string, keyPos: number): Seal | null {
+function interruptionSealOf(v: ObjectValue, current: ReachedKey, keyPos: number): Seal | null {
   // one of version 2 or 3 holds sealVersion "2" or "3" and a scopeDigest
   // beside its own members, and is signed under a prefix of its own
   // (ADR-0036, ADR-0042)
   const versioned = member(v, "sealVersion") !== undefined;
-  const allowed = versioned ? [...interruptionMembers, "scopeDigest", "sealVersion"] : interruptionMembers;
-  if (hasDuplicate(v) || !v.members.every((m) => allowed.includes(m.name))) {
+  // and alg on a seal a P-256 key signs (ADR-0053 §2)
+  const alg = recordAlg(v, "alg");
+  const allowed = [...(versioned ? [...interruptionMembers, "scopeDigest", "sealVersion"] : interruptionMembers), ...(member(v, "alg") !== undefined ? ["alg"] : [])];
+  if (alg === null || hasDuplicate(v) || !v.members.every((m) => allowed.includes(m.name))) {
     return null;
   }
   const scopeDigest = versioned ? str(member(v, "scopeDigest")) : undefined;
@@ -918,11 +946,11 @@ function interruptionSealOf(v: ObjectValue, key: crypto.KeyObject, keyId: string
   ) {
     return null;
   }
-  if (sealKeyId !== keyId) {
+  if (sealKeyId !== current.keyId || alg !== current.alg) {
     return null;
   }
   const payload: ObjectValue = { type: "object", members: v.members.filter((m) => m.name !== "signature") };
-  if (!signed(key, version === "3" ? interruptionPrefix3 : versioned ? interruptionPrefix2 : interruptionPrefix, payload, signature)) {
+  if (!signed(current, alg, version === "3" ? interruptionPrefix3 : versioned ? interruptionPrefix2 : interruptionPrefix, payload, signature)) {
     return null;
   }
   return { sessionId: own(sessionId), finalCount: finalCount.integer, head: own(head), signature: own(signature), keyPos, ...(scopeDigest !== undefined && { scopeDigest: own(scopeDigest) }), ...(version === "3" && { salted: true }) };
@@ -1021,7 +1049,7 @@ export function verifyStore(
   registryPath: string,
   authority: string,
   decisionRecordsPath: string | undefined,
-  publicKey: Uint8Array,
+  publicKey: Uint8Array | Pin,
   options: { readonly ordinarySealsOnly?: boolean; readonly artifacts?: string; readonly scope?: string; readonly previous?: string } = {},
 ): Verdict {
   const ordinarySealsOnly = options.ordinarySealsOnly === true;
@@ -1035,8 +1063,20 @@ export function verifyStore(
     throw new NoVerdict("a verdict by scope reads no decision records");
   }
   refuseUnsupportedPlatform();
-  if (publicKey.length !== 32) {
-    throw new NoVerdict(`the public key is ${publicKey.length} bytes, not 32`);
+  // The key pinned, with its algorithm (ADR-0053 §11): 32 raw bytes of an
+  // Ed25519 key, or {alg: "ES256", key} with the 66 lowercase hexadecimal
+  // characters of a P-256 point that holds the key rule.
+  let pinned: { readonly raw: Uint8Array; readonly alg: Alg };
+  if (publicKey instanceof Uint8Array) {
+    if (publicKey.length !== 32) {
+      throw new NoVerdict(`the public key is ${publicKey.length} bytes, not 32`);
+    }
+    pinned = { raw: publicKey, alg: "" };
+  } else {
+    if (publicKey.alg !== "ES256" || !/^[0-9a-f]{66}$/.test(publicKey.key) || !p256KeySound(Buffer.from(publicKey.key, "hex"))) {
+      throw new NoVerdict('the pin is {alg: "ES256", key: <the 66 lowercase hexadecimal characters of a P-256 compressed point>}');
+    }
+    pinned = { raw: Buffer.from(publicKey.key, "hex"), alg: "ES256" };
   }
   // A spelling §4.1 refuses is refused before anything is read, and each
   // anchor is judged absent or present before the store is read.
@@ -1067,7 +1107,7 @@ export function verifyStore(
   // §3c: the sessions for which more than one seal loads, one of them at
   // least a seal made after an interruption; the first still anchors.
   const conflicted = new Set<string>();
-  const walk = new RegistryWalk(publicKey, (k) => budget.charge(entryCost + size(k.keyId) + 64, "the keys the registry's rotations reached"));
+  const walk = new RegistryWalk(pinned.raw, pinned.alg, (k) => budget.charge(entryCost + size(k.keyId) + 64, "the keys the registry's rotations reached"));
   // §3d: the store continuation, which loads only as the registry's first
   // line, and is never a seal or a rotation statement.
   let lineAt = -1;
@@ -1108,10 +1148,10 @@ export function verifyStore(
     const current = walk.current();
     const at = walk.keys.length - 1;
     const seal = isInterruption(read)
-      ? interruptionSealOf(read, current.key, current.keyId, at)
+      ? interruptionSealOf(read, current, at)
       : isVersioned(read)
-        ? scopedSealOf(read, current.key, current.keyId, at)
-        : sealOf(read, current.key, current.keyId, at);
+        ? scopedSealOf(read, current, at)
+        : sealOf(read, current, at);
     if (seal === null) {
       return;
     }
@@ -1142,7 +1182,7 @@ export function verifyStore(
       linkFinding = "continuation-count-mismatch";
     } else if (c.digest !== link.digest) {
       linkFinding = "continuation-digest-mismatch";
-    } else if (lastKeyOf(options.previous, publicKey) !== c.keyId) {
+    } else if (lastKeyOf(options.previous, pinned) !== c.keyId) {
       linkFinding = "continuation-key-mismatch";
     }
   }
@@ -1808,7 +1848,13 @@ const continuationMembers = ["kind", "continuationVersion", "continuedAt", "keyI
 // continuationOf is a store continuation that holds its form and is signed
 // by the key in force at its line, or null.
 function continuationOf(v: Value, key: ReachedKey): { readonly keyId: string; readonly lines: bigint; readonly digest: string } | null {
-  if (v.type !== "object" || v.members.length !== continuationMembers.length || !v.members.every((m) => continuationMembers.includes(m.name))) {
+  if (v.type !== "object") {
+    return null;
+  }
+  // alg among them on a continuation a P-256 key signs (ADR-0053 §2)
+  const names = member(v, "alg") !== undefined ? [...continuationMembers, "alg"] : continuationMembers;
+  const alg = recordAlg(v, "alg");
+  if (alg === null || v.members.length !== names.length || !v.members.every((m) => names.includes(m.name))) {
     return null;
   }
   const s = (name: string, form: RegExp): string | null => {
@@ -1826,11 +1872,11 @@ function continuationOf(v: Value, key: ReachedKey): { readonly keyId: string; re
     return null;
   }
   const body = canonical({ type: "object", members: v.members.filter((m) => m.name !== "signature") });
-  if (keyId !== key.keyId || body === null) {
+  if (keyId !== key.keyId || alg !== key.alg || body === null) {
     return null;
   }
   const signed = Buffer.concat([Buffer.from("judgment-pack-gateway/store-continuation/1:", "utf8"), body]);
-  if (!crypto.verify(null, signed, key.key, Buffer.from(signature, "hex"))) {
+  if (!verifyByAlg(alg, key, signed, signature)) {
     return null;
   }
   return { keyId, lines: BigInt(lines.text), digest: last };
@@ -1861,7 +1907,7 @@ function registryLink(data: Buffer): { readonly lines: bigint; readonly digest: 
 // keyId its last seal states is not the key in force at that seal's line, so
 // that a registry that never rotated is held to the key its seals name. A
 // registry holding no seal is held by its walk's last key alone.
-function lastKeyOf(previous: string, pinned: Uint8Array): string | null {
+function lastKeyOf(previous: string, pinned: { readonly raw: Uint8Array; readonly alg: Alg }): string | null {
   const values: (Value | null)[] = [];
   eachRegistryLine({ absent: false, path: previous }, (line) => {
     if (line.bytes === null) {
@@ -1881,19 +1927,21 @@ function lastKeyOf(previous: string, pinned: Uint8Array): string | null {
       }),
     );
   });
-  let start: Uint8Array = pinned;
+  let start = pinned;
   for (const v of values) {
     const statement = rotationKind(v);
     if (statement?.kind !== "key-continuation") {
       continue;
     }
+    // with its previousAlg (ADR-0053 §7, "The gateway's own reading")
     const previous = member(statement.value, "previous");
-    if (previous?.type === "string" && /^[0-9a-fA-F]{64}$/.test(previous.value)) {
-      start = Buffer.from(previous.value, "hex");
+    const alg = recordAlg(statement.value, "previousAlg");
+    if (alg !== null && previous?.type === "string" && new RegExp(`^[0-9a-fA-F]{${alg === "ES256" ? 66 : 64}}$`).test(previous.value)) {
+      start = { raw: Buffer.from(previous.value, "hex"), alg };
     }
     break;
   }
-  const walk = new RegistryWalk(start, () => {});
+  const walk = new RegistryWalk(start.raw, start.alg, () => {});
   // the last seal: the keyId it states, and the key in force at its line
   let lastSeal: { readonly stated: string; readonly inForce: string } | null = null;
   for (const v of values) {
