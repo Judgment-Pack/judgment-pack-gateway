@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // labelRecorder is what a store's labels were looked up under: each
@@ -227,6 +228,56 @@ func TestALabelFileOutOfFormIsRefused(t *testing.T) {
 	code, out := post(t, server, "/acquire", `{"session":"kept","source":"a","scope":`+jsonText(t, testScope)+`,"arguments":{}}`)
 	if code == http.StatusOK || !strings.Contains(fmt.Sprint(out["error"]), "its label could not be read") {
 		t.Fatalf("a torn label: %d %v", code, out)
+	}
+}
+
+// After remove-scope a label of the scope is free: its file goes with the
+// scope's sessions, and its next use mints a new id; another scope's label
+// stays.
+func TestAfterRemoveScopeALabelIsFreeAndMintsANewID(t *testing.T) {
+	g, seedPath := scopeStore(t)
+	g.labels = fsLabels{root: g.storeRoot}
+	server := httptest.NewServer(g.handler())
+	defer server.Close()
+	removed, _ := labelAcquire(t, server, "job", "a", testScope)
+	kept, _ := labelAcquire(t, server, "job", "b", otherScope)
+	if code, raw := labelSeal(t, server, "job", testScope); code != http.StatusOK {
+		t.Fatalf("seal: %d %s", code, raw)
+	}
+	if code, stdout, stderr := removeScopeOn(t, g, seedPath, "--scope", testScope, "--by", "operator-1"); code != 0 {
+		t.Fatalf("remove-scope: %d %q %q", code, stdout, stderr)
+	}
+	if exists(filepath.Join(g.storeRoot, labelsDir, labelFileName(testScope, "job"))) || !exists(filepath.Join(g.storeRoot, labelsDir, labelFileName(otherScope, "job"))) {
+		t.Fatal("remove-scope did not take the scope's label alone")
+	}
+	if again, index := labelAcquire(t, server, "job", "a", testScope); again == removed || index != 0 {
+		t.Fatalf("the label after the removal: %s at %v", again, index)
+	}
+	if again, _ := labelAcquire(t, server, "job", "b", otherScope); again != kept {
+		t.Fatalf("the other scope's label moved: %s, not %s", again, kept)
+	}
+}
+
+// After retain removes a session its label is free, and mints a new id.
+func TestAfterRetainALabelIsFreeAndMintsANewID(t *testing.T) {
+	g, config := retainStore(t)
+	g.labels = fsLabels{root: g.storeRoot}
+	server := httptest.NewServer(g.handler())
+	defer server.Close()
+	removed, _ := labelAcquire(t, server, "nightly", "a", testScope)
+	if code, raw := labelSeal(t, server, "nightly", testScope); code != http.StatusOK {
+		t.Fatalf("seal: %d %s", code, raw)
+	}
+	s := sealOf(t, g.regPath, g.publicKey, removed)
+	acks := writeAcks(t, retentionAckLine(retentionAckKey, removed, s.signature, s.finalCount, stampOf(sealTime(t, s).Add(time.Hour))))
+	if code, stdout, stderr := runRetain(config, acks, sealTime(t, s).Add(31*24*time.Hour)); code != 0 || !strings.Contains(stdout, removed) {
+		t.Fatalf("retain: %d %q %q", code, stdout, stderr)
+	}
+	if exists(filepath.Join(g.storeRoot, labelsDir, labelFileName(testScope, "nightly"))) {
+		t.Fatal("retain left the label of the session it removed")
+	}
+	if again, index := labelAcquire(t, server, "nightly", "a", testScope); again == removed || index != 0 {
+		t.Fatalf("the label after retention: %s at %v", again, index)
 	}
 }
 

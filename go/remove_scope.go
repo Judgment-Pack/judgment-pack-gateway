@@ -263,6 +263,10 @@ type scopeRemovalPlan struct {
 	receipts []*storedReceipt
 	payloads []string
 	empty    []string
+	// labels is the files of labels/ the removal takes with its sessions
+	// (ADR-0051): removed once the records are durable and before anything
+	// else, so no label is left naming a session the removal took
+	labels []string
 }
 
 // removeScopeFrom is the command's work, the registry held: the store read,
@@ -294,6 +298,10 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 	if len(plan.sessions) == 0 && len(plan.empty) == 0 {
 		out.notes = append(out.notes, "no session of the scope identifier is in the store; nothing was removed")
 		return out, nil
+	}
+	// every label of the scope's namespace goes with its sessions (ADR-0051)
+	if plan.labels, err = labelFilesOf(fsLabels{root: storeRoot}, o.scope, nil); err != nil {
+		return out, fmt.Errorf("the store's session labels could not be read, and nothing was removed: %v", err)
 	}
 
 	// Every record first, each read back as a verifier reads it, then
@@ -358,6 +366,9 @@ func carryOutRemoval(storeRoot string, plan scopeRemovalPlan) error {
 		return fmt.Errorf("the store: %v; the records stand, and a second run completes the removal", err)
 	}
 	defer root.Close()
+	if err := removeLabelFiles(storeRoot, plan.labels); err != nil {
+		return fmt.Errorf("a session label could not be removed: %v; the records stand, and a second run completes the removal", err)
+	}
 	for _, hexSum := range plan.payloads {
 		if err := root.Remove(filepath.Join("artifacts", hexSum)); err != nil && !absent(err) {
 			return fmt.Errorf("a payload could not be removed: %v; the records stand, and a second run completes the removal", err)
