@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -297,7 +298,7 @@ func TestTheStartRefusesWhileASessionNamedBeforeLabelsIsOpen(t *testing.T) {
 	}
 	g.labels = keeper
 	err := labelsAtStart(g)
-	if err == nil || !strings.Contains(err.Error(), "gateway seal-open --all") || !strings.Contains(err.Error(), "(named-1)") {
+	if err == nil || !strings.Contains(err.Error(), "sealed before the upgrade: stop the gateway, run gateway seal-open --all") || !strings.Contains(err.Error(), "(named-1)") {
 		t.Fatalf("the start beside a session named before labels: %v", err)
 	}
 	g.labels = nil
@@ -343,7 +344,7 @@ func TestAtVersion38AndBelowNothingChanges(t *testing.T) {
 		t.Fatalf("an acquisition before labels: %d %v", code, out)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := cmdSessions([]string{"--config", labelsConfig(t, "38", g), "--scope", "none"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "labels are read from engineVersion 39") {
+	if code := cmdSessions([]string{"--config", labelsConfig(t, "38", g), "--no-scope"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "labels are read from engineVersion 39") {
 		t.Fatalf("gateway sessions at 38: %d %q", code, stderr.String())
 	}
 }
@@ -365,8 +366,15 @@ func TestGatewaySessionsPrintsANamespacesLabels(t *testing.T) {
 	if code, out := run("--scope", testScope); code != 0 || out != "job-a "+first+"\njob-b "+second+"\n" {
 		t.Fatalf("the namespace of A: %d %q", code, out)
 	}
-	if code, out := run("--scope", "none", "--label", "job-a"); code != 0 || out != "job-a "+plain+"\n" {
+	if code, out := run("--no-scope", "--label", "job-a"); code != 0 || out != "job-a "+plain+"\n" {
 		t.Fatalf("a label of none: %d %q", code, out)
+	}
+	// --scope none names the scope identifier "none", which holds no label
+	if code, out := run("--scope", "none"); code != 0 || out != "" {
+		t.Fatalf("the scope identifier none: %d %q", code, out)
+	}
+	if code, _ := run("--scope", testScope, "--no-scope"); code != 2 {
+		t.Fatalf("a scope beside --no-scope: %d", code)
 	}
 	if code, _ := run("--scope", testScope, "--label", "absent"); code != 1 {
 		t.Fatalf("an absent label: %d", code)
@@ -438,4 +446,108 @@ func TestTheCallerFormSealToolTakesAScope(t *testing.T) {
 	if code != http.StatusBadRequest || !bytes.Contains(raw, []byte("no such session: front-1")) || len(rec.take()) != 0 {
 		t.Fatalf("a caller of B sealing in A's namespace: %d %s", code, raw)
 	}
+}
+
+// remove-scope cut off after its records, with a labelled session of the
+// scope open, leaves no label naming the session it removes: the label's
+// next use mints a new id, before the rerun completes the removal and
+// after it, and never names the removed session again.
+func TestARemovalCutOffLeavesNoLabelNamingARemovedOpenSession(t *testing.T) {
+	g, seedPath := scopeStore(t)
+	g.labels = fsLabels{root: g.storeRoot}
+	server := httptest.NewServer(g.handler())
+	defer server.Close()
+	removed, _ := labelAcquire(t, server, "open-job", "a", testScope)
+	removalCutOff = func() error { return errors.New("cut off") }
+	code, stdout, stderr := removeScopeOn(t, g, seedPath, "--scope", testScope, "--by", "operator-1")
+	removalCutOff = nil
+	if code == 0 || !strings.Contains(stderr, "cut off; the records stand") {
+		t.Fatalf("the run cut off: %d %q %q", code, stdout, stderr)
+	}
+	if again, index := labelAcquire(t, server, "open-job", "a", testScope); again == removed || index != 0 {
+		t.Fatalf("the label after a removal cut off: %s at %v, the removed session %s", again, index, removed)
+	}
+	if code, stdout, stderr := removeScopeOn(t, g, seedPath, "--scope", testScope, "--by", "operator-1"); code != 0 {
+		t.Fatalf("the rerun: %d %q %q", code, stdout, stderr)
+	}
+	if again, index := labelAcquire(t, server, "open-job", "a", testScope); again == removed || index != 0 {
+		t.Fatalf("the label after the rerun: %s at %v, the removed session %s", again, index, removed)
+	}
+}
+
+// /act reads its session as a label in the namespace of none: the action
+// is minted into the session the label names there, after the acquisition
+// it cites, and cites[].sessionId is the minted id.
+func TestActUnderALabel(t *testing.T) {
+	image := "--image=x@sha256:" + strings.Repeat("0", 64)
+	service, server := testService(t)
+	service.labels = fsLabels{root: service.storeRoot}
+	env, _ := goodEnvelope()
+	t.Setenv(envSourceEnvelope, envelopeText(t, env))
+	service.sources["boards/write"] = sourceSpec{argv: []string{os.Args[0], image, "--tools=update"}, env: helperEnv, tools: []string{"update"}, shape: "mcp", endpoint: "h"}
+	service.decisionRecords = t.TempDir()
+	issuer := newIssuer(t)
+	id := identityFor(t, issuer)
+	service.identity = &id
+	token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
+	code, first := authed(t, server, "/acquire", `{"session":"act-label","source":"screening","arguments":{"q":"example"}}`, token)
+	if code != http.StatusOK {
+		t.Fatalf("acquire: %d %v", code, first)
+	}
+	receipt := first["receipt"].(map[string]any)
+	minted, signature := receipt["sessionId"].(string), receipt["signature"].(string)
+	if !mintedSessionPattern.MatchString(minted) {
+		t.Fatalf("the acquisition's session: %q", minted)
+	}
+	cite := `{"sessionId":"` + minted + `","callIndex":0,"signature":"` + signature + `"}`
+	line := `{"kind":"evaluation","cites":[` + cite + `]}`
+	if err := os.WriteFile(filepath.Join(service.decisionRecords, "evaluations.jsonl"), []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"session":"act-label","platform":"boards","tool":"update","arguments":{"id":42},` +
+		`"decision":{"recordDigest":"sha256:` + hexOf([]byte(line)) + `","packDigest":"sha256:` + strings.Repeat("b", 64) + `"},"cites":[` + cite + `]}`
+	code, acted := authed(t, server, "/act", body, token)
+	if code != http.StatusOK {
+		t.Fatalf("act: %d %v", code, acted)
+	}
+	if got := fmt.Sprint(acted["receipt"].(map[string]any)["sessionId"], "/", acted["receipt"].(map[string]any)["callIndex"]); got != minted+"/1" {
+		t.Fatalf("the action receipt is at %s, not %s/1", got, minted)
+	}
+	if exists(filepath.Join(service.storeRoot, "receipts", "act-label")) {
+		t.Fatal("the label was taken for a session id")
+	}
+}
+
+// serve --config's start on the filesystem kind (startOnStore, the start
+// cmdServeEngine runs once the platforms' isolation holds) refuses a
+// configuration at labelsVersion over a store holding a session open that
+// no label names, naming what the operator does, and releases its holds; at
+// version 38 the same store starts.
+func TestTheStartAtLabelsVersionRefusesASessionLeftFromBefore(t *testing.T) {
+	g, server, _ := labelledStore(t)
+	g.labels = nil
+	if code, out := post(t, server, "/acquire", `{"session":"named-1","source":"plain","arguments":{}}`); code != http.StatusOK {
+		t.Fatalf("an acquisition by name: %d %v", code, out)
+	}
+	server.Close()
+	seedPath := writeSeedFile(t, t.TempDir(), testSeed)
+	start := func(version string) (*gatewayService, func(), error) {
+		data, _ := os.ReadFile(labelsConfig(t, version, g))
+		cfg, err := parseEngineConfig(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.seed = seedPath
+		return startOnStore(cfg, testSeed, []string{seedPath}, engineServeOptions(cfg, nil, nil))
+	}
+	_, _, err := start(labelsVersion)
+	if err == nil || !strings.Contains(err.Error(), "engine configuration version 39") || !strings.Contains(err.Error(), "(named-1); such a session is sealed before the upgrade: stop the gateway, run gateway seal-open --all") {
+		t.Fatalf("the start at version 39: %v", err)
+	}
+	// the holds were released: the same store starts at version 38
+	service, closeHolds, err := start("38")
+	if err != nil || service.labels != nil {
+		t.Fatalf("the start at version 38: %v", err)
+	}
+	closeHolds()
 }

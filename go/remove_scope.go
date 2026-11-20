@@ -356,6 +356,10 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 	return out, nil
 }
 
+// removalCutOff, where it is set, runs once a removal's labels are gone and
+// before its payloads and receipts: a test's way of cutting a run off there.
+var removalCutOff func() error
+
 // carryOutRemoval removes what a plan names, its records already appended
 // and made durable: the payloads, while the receipts that name them are
 // still there for a second run to find, and then the sessions. remove-scope
@@ -368,6 +372,11 @@ func carryOutRemoval(storeRoot string, plan scopeRemovalPlan) error {
 	defer root.Close()
 	if err := removeLabelFiles(storeRoot, plan.labels); err != nil {
 		return fmt.Errorf("a session label could not be removed: %v; the records stand, and a second run completes the removal", err)
+	}
+	if removalCutOff != nil {
+		if err := removalCutOff(); err != nil {
+			return fmt.Errorf("%v; the records stand, and a second run completes the removal", err)
+		}
 	}
 	for _, hexSum := range plan.payloads {
 		if err := root.Remove(filepath.Join("artifacts", hexSum)); err != nil && !absent(err) {

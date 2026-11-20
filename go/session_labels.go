@@ -439,36 +439,40 @@ func labelsAtStart(service *gatewayService) error {
 	if len(named) > 5 {
 		named = named[:5]
 	}
-	return fmt.Errorf("engine configuration version %s reads the session a request names as a label in its scope (ADR-0051), and the store holds %d session(s) open that no label names, named before that version (%s); seal them with gateway seal-open --all, the gateway stopped, and start again; the gateway does not start", labelsVersion, len(open), strings.Join(named, ", "))
+	return fmt.Errorf("engine configuration version %s reads the session a request names as a label in its scope (ADR-0051), and the store holds %d session(s) open that no label names, left from before that version (%s); such a session is sealed before the upgrade: stop the gateway, run gateway seal-open --all, and start again; the gateway does not start", labelsVersion, len(open), strings.Join(named, ", "))
 }
 
-const sessionsUsage = `usage: gateway sessions --config <engine.json> --scope <identifier|none> [--label <label>]
-Prints, for one scope identifier's namespace or for none's, a "label sessionId"
-line for each session label the store keeps there (ADR-0051), in label order;
-with --label, that label's line alone, or exits 1 where the namespace has no
-such label. Reads the store with the gateway running or stopped, and writes
-nothing. --scope none names the sessions of no scope identifier.`
+const sessionsUsage = `usage: gateway sessions --config <engine.json> (--scope <identifier> | --no-scope) [--label <label>]
+Prints, for one scope identifier's namespace, or with --no-scope for the
+namespace of no scope identifier, a "label sessionId" line for each session
+label the store keeps there (ADR-0051), in label order; with --label, that
+label's line alone, or exits 1 where the namespace has no such label. Reads
+the store with the gateway running or stopped, and writes nothing.
+--scope none names the scope identifier "none".`
 
 func cmdSessions(args []string, stdout, stderr io.Writer) int {
 	flags := map[string]string{}
-	for rest := args; len(rest) > 0; rest = rest[2:] {
+	noScope := false
+	for rest := args; len(rest) > 0; {
 		name := rest[0]
+		if name == "--no-scope" && !noScope {
+			noScope, rest = true, rest[1:]
+			continue
+		}
 		if (name != "--config" && name != "--scope" && name != "--label") || len(rest) < 2 || flags[name] != "" || rest[1] == "" {
 			fmt.Fprintln(stderr, sessionsUsage)
 			return 2
 		}
-		flags[name] = rest[1]
+		flags[name], rest = rest[1], rest[2:]
 	}
 	_, labelGiven := flags["--label"]
-	if flags["--config"] == "" || flags["--scope"] == "" {
+	if flags["--config"] == "" || (flags["--scope"] == "") == !noScope {
 		fmt.Fprintln(stderr, sessionsUsage)
 		return 2
 	}
 	scope := flags["--scope"]
-	if scope == "none" {
-		scope = ""
-	} else if !isScopeIdentifier(scope) {
-		fmt.Fprintln(stderr, "gateway sessions: --scope is a scope identifier, or none: "+scopeForm)
+	if !noScope && !isScopeIdentifier(scope) {
+		fmt.Fprintln(stderr, "gateway sessions: --scope is a scope identifier: "+scopeForm)
 		return 2
 	}
 	if labelGiven && requireSession(flags["--label"]) != nil {
