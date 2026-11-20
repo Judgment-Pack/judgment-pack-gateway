@@ -105,7 +105,7 @@ A receipt is a canonical JSON object. Every member is required.
 | `servedAt` | timestamp string |
 | `authority` | operator-configured authority label |
 | `keyId` | `sha256(public key, 32 raw bytes)` in hex, **first 32 characters**; a P-256 key's is taken over its 33-byte compressed point (§1.5) |
-| `signature` | Ed25519 signature, hex. A version 2 receipt is Ed25519 alone: `alg` (§1.5) is a member it does not know, and it is verified as Ed25519 |
+| `signature` | Ed25519 signature, hex. A version 2 receipt is Ed25519 alone and carries no `alg` (§1.5): a version 2 receipt holding an `alg` member, of any value, is `malformed` (§1.4 order 1) |
 
 **What the signature covers** — `"judgment-pack-gateway/receipt/2:"` followed by
 `canon` of the receipt object with **the `signature` member removed and every
@@ -1144,13 +1144,18 @@ ES256 signatures are not reproducible: two signings of one input differ. Nothing
 makes a signature again in order to compare it with one made before.
 
 **Choosing the algorithm.** A verifier verifies a record's signature by the algorithm its `alg` names,
-Ed25519 where it holds none. It does so under the key the record's `keyId` names among the keys it
+Ed25519 where it holds none. A receipt of version 2 is the one kind that may not hold `alg`: holding it,
+of any value, it is `malformed` (§1.2), and it is never verified as ES256. It does so under the key the record's `keyId` names among the keys it
 holds, and only where that key is of that algorithm.
 
 A key carries the algorithm it was given with, and its length or form is only held to that algorithm,
 never read as one. A key is given with its algorithm by:
 
-- the verifier's pin. A verifier that pins a P-256 key pins it with its algorithm.
+- the verifier's pin. A verifier that pins a P-256 key pins it with its algorithm: `gateway verify
+  --public-key-alg ES256` reads the key's 66 lowercase hexadecimal characters on standard input, exactly;
+  verify-ts takes `{alg: "ES256", key: <66 lowercase hexadecimal characters>}`. With no option the pin is
+  Ed25519, its 32 raw bytes on standard input, unchanged. A store signed by a P-256 key from its first
+  receipt is verifiable by such a pin, with no rotation;
 - a rotation's `nextAlg` or `previousAlg` (§3b);
 - a key-history entry's `alg` (§3e).
 
@@ -2491,7 +2496,7 @@ written then verifies what is minted now. `gateway verify` takes
 | POST   | `/delegation/revoke` | from an issuing host: ends live delegation credentials (§11.6). Answered only where the configuration has `delegation`. |
 | GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`, and `observations` when §4 has any (§4, "Observations") and `rotations` when the walk of §3b followed any, against the registry the gateway made when it started (§3): a registry that is not there is no verdict here, never the absent registry of §4.1 that loads no seals. The key it verifies from is the one its own reading of §3b starts at, taken from its registry — a reason more that this answer is not evidence (§5a.3). |
 | GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. A registry that cannot be read (§4.1), or that is not there — the gateway made it when it started (§3) — is answered `500`, never as the empty body a verifier reads as no seals; the answer's body is `{"error":"the registry could not be read; the gateway says why on its stderr"}` whatever the reason, naming neither the registry's path nor the platform's error, since a caller needs no token, and the reason is written on the gateway's stderr. |
-| GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`: for an Ed25519 key `algorithm` is `"ed25519"` and `publicKey` its 64 lowercase hexadecimal characters, as before; for a P-256 key (§1.5, engine configuration version 40) `algorithm` is `"ES256"`, `publicKey` its compressed point in 66, and `keyId` its key id. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |
+| GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`: for an Ed25519 key `algorithm` is `"ed25519"` and `publicKey` its 64 lowercase hexadecimal characters, as before; for a P-256 key (§1.5, engine configuration version 40) `algorithm` is `"ES256"`, `publicKey` its compressed point in 66, and `keyId` its key id. The value is the record's `alg` identifier for P-256 and the legacy string `"ed25519"` for Ed25519, which is not an `alg` value and is not changed. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |
 | GET    | `/publickey/history` | → canon of `{keyHistoryVersion, keys}`, every key the registry proves the gateway signed under, each later key with the two statements of the rotation to it, carried across a store rotation (§3e). A history that cannot be read or does not hold is answered `500` with `{"error":"the key history could not be read; the gateway says why on its stderr"}`, never in part. |
 
 A `source` is an operator-configured subprocess that reads the canonical arguments on

@@ -107,8 +107,11 @@ Each key a verifier holds carries the algorithm it was given with:
 A key's length or form is then only checked against that algorithm. It never chooses the algorithm.
 
 **Receipts of version 2.** They stay Ed25519 alone. A gateway configured for `ES256` mints version 3 only,
-and a configuration that asks for version 2 beside it is refused. In a version 2 receipt, `alg` remains a
-member version 2 does not know, as it is today: tolerated, and signed. The receipt is verified as Ed25519.
+and a configuration that asks for version 2 beside it is refused. A version 2 receipt carries no `alg`: one
+that holds the member, of any value, is refused as `malformed` (SPEC.md §1.2, §1.4 order 1), and it is never
+verified as ES256. This is one reading for both rules: dispatch by `alg` (above) never reaches a version 2
+receipt. It tightens v0.37.0, which tolerates the member as one it does not know; no gateway has written a
+version 2 receipt holding it.
 
 ### 2. The signed record kinds, and how the list was derived
 
@@ -183,7 +186,11 @@ the call.
 **So nothing more is needed in an earlier release.** Its refusals are its existing findings, which name
 neither the algorithm nor `alg`, because it does not know them. The build must keep the panic in mind:
 every call of `ed25519.Verify` in v0.38.0 is reached only after `alg` has been read and the key's algorithm
-checked to be Ed25519.
+checked to be Ed25519. Seven sites call it today with no length check of their own (`go/rotation.go:384`,
+`:597`, `:692`; `go/verify.go:1450`; `go/retention.go:185`; `go/descriptor_provenance.go:151`;
+`go/retain.go:221`). The build routes every one through one verify-by-algorithm function, which holds the
+key's algorithm to `alg` and the key's length to that algorithm before any library call; no other
+signature check remains.
 
 **An earlier gateway.** It refuses a version-40 configuration by its version (`go/engine.go:479`,
 "unsupported engineVersion"). Started on a store or registry that holds P-256 records:
@@ -216,6 +223,10 @@ checked to be Ed25519.
   A high-S signature does not verify. A DER signature is 70 to 72 bytes, so it is not of the form, and it
   fails at each kind's existing check of the signature's form. For example, it is `malformed` in a
   version 3 receipt, whose signature must be exactly 128 lowercase hexadecimal characters (SPEC.md §1.2a).
+- **Lowercase on every kind.** A P-256 signature is checked as 128 lowercase hexadecimal characters on
+  every kind. Where a kind accepts either case today (the §3 seal's signature, `go/rotation.go:369`;
+  verify-ts's `signed`), the build adds the lowercase check for P-256 records. An Ed25519 §3 seal stays
+  lenient, unchanged, so no Ed25519 store verifies differently.
 - **Signatures are not reproducible.** Two ES256 signings of one input differ. Nothing in the format makes
   a signature again in order to compare it with one made before. `gateway rotate-key --resume` rebuilds a
   record and compares it byte for byte, but only for the seed's records, which are Ed25519. The build must
@@ -305,12 +316,14 @@ service is asked.
 
 **An earlier gateway** refuses a version-40 file by its version (§3 above).
 
-**The protection level is checked, not only documented.** For `ES256` the start refuses any answered
-protection level but `HSM`:
+**The protection level is checked, not only documented.** For `ES256` the start refuses, by name, any
+answered protection level but `HSM`. An Ed25519 key version keeps the software level ADR-0050 gives it.
 
 - `SOFTWARE` is refused, because a P-256 key at that level buys nothing over ADR-0050's Ed25519 key and
   still costs every verifier a second algorithm;
 - `EXTERNAL` and `EXTERNAL_VPC` are refused, because they are not this decision's Level 3.
+
+Each refusal names the level the service answered and the one required.
 
 The start line and `/posture` name the algorithm and the protection level. The level is the service's own
 report, read over the pinned TLS connection. It is not attested here, and no record carries it, so a
@@ -331,7 +344,10 @@ statement's `alg` names its signer's algorithm.
 **P-256 to P-256.** Both statements carry `alg`. The `key-rotation` carries `nextAlg`, and the
 `key-continuation` carries `previousAlg`.
 
-**Back to Ed25519.** The format also allows a rotation from P-256 back to Ed25519, by the same rule.
+**Back to Ed25519.** The format also allows a rotation from P-256 back to Ed25519, by the same rule, and
+the gateway does not refuse it, since refusing it would block a rollback. `store rotate-key` (and the
+filesystem kind's rotation) prints one stderr line naming the step as a move from an HSM key to a key
+that is not one. The key history records it as it records any rotation: the new entry carries no `alg`.
 
 **The walk.** §3b's five checks stay, with the algorithm added to each:
 
@@ -397,9 +413,21 @@ existing lowercase Ed25519 value stays as it is.
 
 ### 9. `retention.acknowledgedBy`, and the acknowledgment line
 
-**Recommended: the explicit form `{"alg": "ES256", "key": "<66 hexadecimal characters>"}`** for a P-256 key.
-A string of 64 lowercase hexadecimal characters stays an Ed25519 key, as before. The object form is taken
-from version 40.
+**The explicit form `{"alg": "ES256", "key": "<66 hexadecimal characters>"}`** for a P-256 key. A string
+of 64 lowercase hexadecimal characters stays an Ed25519 key, as before. Each case, with its sentence
+(each begins `engine configuration: retention.acknowledgedBy[<i>]`):
+
+| Version | Entry | Result |
+|---|---|---|
+| 38, 39 | a string of 64 lowercase hex | an Ed25519 key, as today |
+| 38, 39 | any object | refused: "is an Ed25519 public key, 64 lowercase hexadecimal characters" (today's sentence) |
+| 40 | a string of 64 lowercase hex | an Ed25519 key |
+| 40 | `{"alg": "ES256", "key": <66 lowercase hex>}`, nothing else | a P-256 key, held to §4's key rule; a key off the rule: "is not a sound P-256 public key" |
+| 40 | an object without `alg` (`{"key": "<64 hex>"}`), with another `alg`, or with any other member | refused: "is an Ed25519 public key of 64 lowercase hexadecimal characters, or {\"alg\": \"ES256\", \"key\": <66 lowercase hexadecimal characters>}" |
+| 40 | a string of 66 hex, or of any other form | refused, the same sentence |
+
+The object form is required for a P-256 key at version 40; an Ed25519 key never takes it, since it has no
+`alg` value.
 
 A bare string of 66 hexadecimal characters is refused at version 40 with a sentence naming the object
 form. Taking it would pick the algorithm from the key's length, which driver 3 refuses, and a compressed
@@ -445,9 +473,18 @@ entry's key id is unchanged in form.
 **The family.** The new vectors are a family of their own, `corpus/p256/stores/*.json`, read by the store
 runner and the process contract as they are:
 
-- Each vector pins `TEST-PUBLIC-KEY`, which is Ed25519, and reaches the P-256 test key through a rotation
-  in its registry. `CMD verify`'s standard input therefore stays the 32-byte Ed25519 key, and no other
-  implementation's contract changes.
+- Each vector but one pins `TEST-PUBLIC-KEY`, which is Ed25519, and reaches the P-256 test key through a
+  rotation in its registry. `CMD verify`'s standard input stays the 32-byte Ed25519 key for those.
+- **The pin of a P-256 key.** The process contract gains one optional option:
+  `CMD verify [--public-key-alg ES256] ...`, given first. With it, standard input is the 66 lowercase
+  hexadecimal characters of the compressed point, exactly; without it, standard input is the 32 raw bytes
+  of an Ed25519 key, as today. The runner passes the option exactly when a vector gives
+  `"publicKeyAlg": "ES256"`, and the key is then `TEST-P256-PUBLIC-KEY`, published beside
+  `TEST-PUBLIC-KEY`. An implementation that does not take the option gives no verdict, and the runner
+  reports that vector as `store <name>: no verdict under --public-key-alg:`, as it does for
+  `--ordinary-seals-only`. `gateway verify` takes the same option, and verify-ts takes the pin as
+  `{alg, key}` beside today's 32-byte key. The vector `p256-pinned-from-first-receipt` holds a store
+  signed by the P-256 test key from its first receipt, with no rotation, and expects `ok` under that pin.
 - The P-256 test key comes from a fixed synthetic scalar, the 32 bytes `01` repeated. That scalar is
   published beside `TEST-SEED` as `TEST-P256-SCALAR`, for building vectors alone.
 - The signatures are made once, by an implementation independent of this repository, and frozen. They are
@@ -468,6 +505,7 @@ runner and the process contract as they are:
 | Vector | Holds | Expected |
 |---|---|---|
 | `p256-receipt-high-s` | the receipt with s replaced by n − s | `signature-mismatch` |
+| `p256-v2-receipt-with-alg` | an Ed25519 version 2 receipt that holds `alg: "ES256"`, signed over it | `malformed` |
 | `p256-receipt-der` | the receipt with its signature as DER, 140 to 144 hexadecimal characters | `malformed` (version 3's signature form) |
 | `p256-receipt-unknown-alg` | `alg: "ES384"`, re-signed | `malformed` |
 | `p256-receipt-alg-on-ed25519-key` | `alg: "ES256"` beside the `keyId` of `TEST-PUBLIC-KEY`, signed by the P-256 key | `key-mismatch` |
@@ -507,18 +545,38 @@ process-contract command. The family has six vectors:
 - **Bad:** each signing is still one call to the service, and an HSM key's latency and quota may be higher
   than a software key's (ADR-0050, "Latency and deadlines").
 
+### What the release notes must say
+
+- An earlier verifier, Go or TypeScript, refuses a P-256 store with `rotation-break`, `key-mismatch` or
+  a record that loads nothing, never naming P-256; a newer verifier is needed.
+- `/publickey` answers `"algorithm": "ES256"` for a P-256 key, beside `"ed25519"`; a consumer that matches
+  the value breaks.
+- A consumer of v0.37.0 refuses a whole `/publickey/history` that holds a P-256 entry.
+- The pin of a P-256 key: `gateway verify --public-key-alg ES256` with the 66-hex point; verify-ts's
+  `{alg, key}`.
+- A version 2 receipt holding `alg` is now `malformed`.
+- No record or option lets a relying party require ES256 after a rotation, and the protection level is
+  not attested.
+- A rotation from an HSM key back to a non-HSM key is allowed and named on stderr.
+
 ### What is not established
 
+- **Requiring ES256.** No record and no verifier option lets a relying party require that a store is signed
+  by ES256 after a rotation: a later rotation back to Ed25519 (§7) verifies, with only the stderr line at
+  the gateway to show it. Nor is the protection level attested to a verifier (below).
 - **`data` versus `digest`.** Whether the service also accepts `data` for `EC_SIGN_P256_SHA256` is not
   established. `digest` is the documented form for ECDSA keys, and is what this record fixes.
 - **High-S from the service.** Whether the service ever answers a high-S signature is not established. The
   normalization makes the answer to that question irrelevant.
 - **The protection level.** It is the service's own report. The service's key attestation for HSM keys is
-  not read or checked here, and no record lets a verifier tell an HSM key from a software one.
+  not read or checked in v0.38.0, and no record lets a verifier tell an HSM key from a software one.
+  Reading the attestation at start is a possible later step.
 - **The HSM's latency and quota** under the gateway's lock are not measured.
 - **Low-S in the libraries.** Neither Go's `crypto/ecdsa` nor Node's `crypto.verify` enforces low-S, so
-  both verifiers must check it explicitly. Go's `ecdsa.Verify` takes `(r, s)`, and verify-ts needs
-  `dsaEncoding: "ieee-p1363"`. Neither is built yet.
+  both verifiers must check it explicitly. Go's `ecdsa.Verify` takes `(r, s)`. verify-ts must call
+  `crypto.verify` with `'sha256'` named explicitly and `dsaEncoding: "ieee-p1363"`, and check the
+  KeyObject's `asymmetricKeyType` against `alg` (`"ec"`, curve P-256, for `ES256`; `"ed25519"` otherwise)
+  before verifying. Neither is built yet.
 - **Not changed by this record:** the corpus README's process contract, `docs/design/engine-config.md` and
   `docs/postgresql-store.md`. Each changes with the build.
 
