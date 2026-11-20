@@ -65,6 +65,21 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 	}
 	var line []byte
 	sealed, _, err := sealOpenPostgresHeld(o, stamp, said, pgLeaseCommand{as: "store rotate", verb: "rotate", alone: true,
+		// the key in force signs the seals and the continuation (ADR-0050):
+		// before anything is sealed, the registry walks to it, and neither
+		// the registry nor the store's receipts hold anything under a key
+		// the walk did not reach
+		before: func(kind *pgKind, key *signingKey) error {
+			data, err := pgRegistryUnderLease(kind)
+			if err != nil {
+				return err
+			}
+			walk, err := engineWalk(data, key.public)
+			if err != nil {
+				return err
+			}
+			return heldUnderAnotherKey(data, walk.keys, key.public, kind.receipts())
+		},
 		then: func(kind *pgKind, key *signingKey, refused []string, held *kindStart) error {
 			if len(refused) > 0 {
 				return fmt.Errorf("a session left open could not be sealed, so the store is not rotated: %s", refused[0])
@@ -76,14 +91,8 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 			if err != nil {
 				return err
 			}
-			// the key in force signs the continuation (ADR-0050): the
-			// registry walks to it, and holds nothing under a key the walk
-			// did not reach
-			walk, err := engineWalk(data, key.public)
-			if err != nil {
-				return err
-			}
-			if err := heldUnderAnotherKey(data, walk.keys, key.public, nil); err != nil {
+			// the registry as it ends walks to the key in force still
+			if _, err := engineWalk(data, key.public); err != nil {
 				return err
 			}
 			if prior != nil {

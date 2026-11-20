@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -303,4 +306,46 @@ func seedContinuation(t *testing.T, priv ed25519.PrivateKey, previous []byte, at
 		t.Fatal(err)
 	}
 	return line
+}
+
+// gateway store rotate --config delivers the receipts of what is open to
+// the configuration's receipt sink before it seals them, as seal-open does:
+// a sink that does not acknowledge them leaves the session open, and the
+// rotation refused, with no mark beside the old registry, no new registry,
+// the old registry the same bytes, and every receipt still held.
+func TestStoreRotateDeliversToTheReceiptSinkBeforeItSeals(t *testing.T) {
+	g := leftOpenStore(t)
+	sink, server := newStandInSink(t)
+	sink.setAnswer(refuseAcknowledgments)
+	dir := t.TempDir()
+	seedPath := writeSeedFile(t, dir, testSeed)
+	config := filepath.Join(dir, "engine.json")
+	body := fmt.Sprintf(`{"engineVersion":"35","authority":"gateway:test","seed":%q,"store":%q,"registry":%q,"decisionRecords":%q,"listen":"127.0.0.1:8787","catalog":%q,"receiptSink":{"url":%q},"platforms":{}}`,
+		seedPath, g.storeRoot, g.regPath, filepath.Join(dir, "decisions"), filepath.Join(dir, "catalog"), server.URL)
+	if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newStore, newRegistry := filepath.Join(dir, "store"), filepath.Join(dir, "registry.jsonl")
+	receipts := storeTree(t, g.storeRoot)
+	before := readFile(t, g.regPath)
+	var stdout, stderr bytes.Buffer
+	code := cmdStoreRotateAt([]string{"--config", config, "--new-store", newStore, "--new-registry", newRegistry}, &stdout, &stderr, fixedStamp("2026-11-19T00:00:01Z"))
+	if code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "left") {
+		t.Fatalf("store rotate past a sink that does not acknowledge: %d %q %q", code, stdout.String(), stderr.String())
+	}
+	if got, _ := sink.snapshot(); len(got) == 0 {
+		t.Fatal("nothing was delivered to the sink")
+	}
+	if _, err := os.Stat(rotatedMarkPath(g.regPath)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the old registry is marked rotated: %v", err)
+	}
+	if _, err := os.Stat(newRegistry); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a new registry was made: %v", err)
+	}
+	if readFile(t, g.regPath) != before {
+		t.Fatal("the old registry changed")
+	}
+	if after := storeTree(t, g.storeRoot); len(after) != len(receipts) {
+		t.Fatalf("the old store changed: %d files, was %d", len(after), len(receipts))
+	}
 }

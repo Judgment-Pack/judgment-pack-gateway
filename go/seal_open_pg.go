@@ -341,7 +341,10 @@ func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([
 type pgLeaseCommand struct {
 	as, verb string
 	alone    bool
-	then     func(kind *pgKind, key *signingKey, refused []string, held *kindStart) error
+	// before runs under the lease, the registry writer made, and before
+	// anything is sealed: a refusal there leaves the store as it was
+	before func(kind *pgKind, key *signingKey) error
+	then   func(kind *pgKind, key *signingKey, refused []string, held *kindStart) error
 }
 
 // holding is whether the hold has the start lease still, with margin of it
@@ -422,6 +425,11 @@ func sealOpenPostgresHeld(o sealOpenOptions, stamp func() string, said io.Writer
 	writer, err := newRegistryWriterOnWith(kind.registry(), pgRegistryName, seed, newSignerHolder(sig), func() (bool, error) { return true, nil })
 	if err != nil {
 		return nil, nil, err
+	}
+	if c.before != nil {
+		if err := c.before(kind, writer.signing.key()); err != nil {
+			return nil, nil, err
+		}
 	}
 	// a seal is appended only while the lease is held: once it is lost,
 	// each append fails at its fence and the command ends with that failure

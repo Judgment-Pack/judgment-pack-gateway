@@ -109,3 +109,86 @@ func TestAPostgresStoreRotateSignsThroughTheKeyService(t *testing.T) {
 		t.Fatalf("the old store after the rotation: %v %+v", err, rep)
 	}
 }
+
+// On the PostgreSQL kind, a store holding receipts under a key no rotation
+// leads from to the key in force is refused before anything is sealed: the
+// session left open under the key in force stays open, the old registry is
+// the same bytes, the old database is not marked rotated, and the new
+// database holds no registry.
+func TestAPostgresStoreRotateRefusesReceiptsUnderAnUnreachedKeyBeforeSealing(t *testing.T) {
+	standInKeyService(t)
+	one := mustKeyServiceSigner(t, ksVersion1)
+	db := newPgTestDB(t)
+	db.migrate(t)
+	dir := tempDirAt(t, 0o700)
+	config, cfg := ksPgConfig(t, db, dir, ksVersion1, one.publicKey())
+	var said bytes.Buffer
+	a, err := startOnKind(cfg, testSeed, sealOpenPgSources(t), nil, kindRun{period: pgStartLeasePeriod, every: pgStartLeaseRenewal, stopped: context.Background(), said: &said, signer: one})
+	if err != nil {
+		t.Fatalf("the instance: %v\n%s", err, said.String())
+	}
+	server := httptest.NewServer(a.service.handler())
+	for _, body := range []string{
+		`{"session":"ks-left","source":"screening-a","scope":"scope-a","arguments":{"q":"x"}}`,
+		`{"session":"ks-done","source":"plain","arguments":{"q":"x"}}`,
+	} {
+		if code, got := post(t, server, "/acquire", body); code != http.StatusOK {
+			t.Fatalf("acquire: %d %v", code, got)
+		}
+	}
+	code, seal := post(t, server, "/seal", `{"session":"ks-done"}`)
+	if code != http.StatusOK {
+		t.Fatalf("seal: %d %v", code, seal)
+	}
+	server.Close()
+	a.stop(&said)
+
+	// a session left open whose receipts are under a key no rotation
+	// reaches, planted beside the one under the service's key: the
+	// registry holds nothing under that key, so the store's receipts are
+	// what the rotation is held to
+	_, other, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unreached := keyIDFor(other.Public().(ed25519.PublicKey))
+	serviceKey := keyIDFor(one.publicKey())
+	receipts := db.open(t, nil).receipts()
+	entries, err := receipts.listEntries("ks-done")
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("the sealed session's receipts: %v %v", entries, err)
+	}
+	first, err := receipts.getEntry("ks-done", entries[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(first, []byte(`"keyId":"`+serviceKey+`"`)) {
+		t.Fatalf("the receipt is not under the service's key: %s", first)
+	}
+	foreign := bytes.Replace(first, []byte(`"keyId":"`+serviceKey+`"`), []byte(`"keyId":"`+unreached+`"`), 1)
+	foreign = bytes.ReplaceAll(foreign, []byte(`"ks-done"`), []byte(`"ks-foreign"`))
+	if _, err := receipts.makeSeries("ks-foreign"); err != nil {
+		t.Fatal(err)
+	}
+	if err := receipts.createIndexed("ks-foreign", 0, foreign); err != nil {
+		t.Fatal(err)
+	}
+	before := pgRegistryOf(t, db)
+
+	target := pgTestDBBeside(t, db)
+	code, stdout, stderr := rotatePg(t, config, target, dir)
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "under key id "+unreached+", and no rotation in the registry leads from it") {
+		t.Fatalf("a record under an unreached key: %d %q %q", code, stdout, stderr)
+	}
+	if got := pgRegistryOf(t, db); got != before {
+		t.Fatalf("the refusal sealed what was open:\n%s", strings.TrimPrefix(got, before))
+	}
+	if rows := asOwnerIn(t, db, pgNoScope, `SELECT 1 FROM gateway.rotated`); len(rows.rows) != 0 {
+		t.Fatal("the old database is marked rotated")
+	}
+	if pgHasSchema(t, target) {
+		if got := pgRegistryOf(t, target); got != "" {
+			t.Fatalf("the new database holds a registry: %q", got)
+		}
+	}
+}
