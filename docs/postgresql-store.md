@@ -512,7 +512,7 @@ the run-time role, before anything is applied. It prints, as canonical JSON, wha
 part of the connection string:
 
 ```json
-{"applied":[1,2,3,4,5,6],"migrations":"sha256:…","schemaVersion":6}
+{"applied":[1,2,3,4,5,6,7],"migrations":"sha256:…","schemaVersion":7}
 ```
 
 A second run applies nothing (`"applied":[]`). A schema newer than the binary's migrations is
