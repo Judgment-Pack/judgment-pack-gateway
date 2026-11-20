@@ -54,13 +54,19 @@ func pgTestDBBeside(t *testing.T, db *pgTestDB) *pgTestDB {
 // target, by the migration login's connection string in a file in dir.
 func rotatePg(t *testing.T, config string, target *pgTestDB, dir string) (int, string, string) {
 	t.Helper()
+	return rotatePgAt(t, config, target, dir, nowStamp)
+}
+
+// rotatePgAt is rotatePg with the gateway's clock at the rotation stamp's.
+func rotatePgAt(t *testing.T, config string, target *pgTestDB, dir string, stamp func() string) (int, string, string) {
+	t.Helper()
 	connection := filepath.Join(dir, "migration-"+target.database)
 	if err := os.WriteFile(connection, []byte(pgTestURL(target.migrator)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
 	code := cmdStoreRotateAt([]string{"--config", config, "--connection-file", connection,
-		"--owner", target.roles.owner, "--runtime", target.roles.runtime, "--timeout", "60"}, &stdout, &stderr, nowStamp)
+		"--owner", target.roles.owner, "--runtime", target.roles.runtime, "--timeout", "60"}, &stdout, &stderr, stamp)
 	return code, stdout.String(), stderr.String()
 }
 

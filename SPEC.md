@@ -1625,7 +1625,9 @@ missing is written again, from the same bytes, only where it is the history name
 line is a store continuation that loads answers the history carried beside it, whose bytes must be the
 ones its `keyHistoryDigest` names, and which must hold by the check below from its own first key and end
 at the key that signed the continuation, then the keys the registry's own rotations reach; that key's entry
-is the carried one's, its `validTo` the rotation from it, if any. A continued registry with no history
+is the carried one's, its `validTo` the rotation from it, if any. The continuation's `continuedAt` falls
+while that key is in force: at or after its `validFrom`, if it has one, and before its `validTo`, if it
+has one; one outside is answered `500` as above. A continued registry with no history
 carried beside it, or one whose bytes are not the ones named -- changed, or cut to a later stretch that
 holds on its own -- or that does not so hold, and a history carried beside a registry that continues no
 store, are each answered `500` as above, never as a shorter history. On the PostgreSQL kind, every instance
@@ -1645,7 +1647,9 @@ holding its form (§3b) whose `keyId` is the entry before's and whose signature 
 naming this entry's key as `next`, and `keyContinuation` a `key-continuation` statement holding its form,
 of the same `rotation` and `rotatedAt`, whose `keyId` is this entry's and whose signature verifies under its
 key, naming the entry before's key as `previous`; that `rotatedAt` this entry's `validFrom` and the entry
-before's `validTo`; and every entry but the last with a `validTo`, the last without one. The `rotation`
+before's `validTo`, and later than the entry before's `validFrom`, if it has one, so that each rotation's
+`rotatedAt` is after the one before it (the form is fixed-width, so its order is its bytes'); and every
+entry but the last with a `validTo`, the last without one. The `rotation`
 ordinal is held to its form alone: it counts within one registry, and starts again at 1 after a store
 continuation. A receipt then verifies under the entry whose `keyId` it names. What a key's `validFrom` and
 `validTo` bound is the gateway's clock at each rotation, as `rotatedAt` is (§3b), and nothing more: an
