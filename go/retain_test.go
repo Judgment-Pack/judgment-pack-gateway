@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -98,7 +99,7 @@ func TestRetainRemovesAnAcknowledgedSessionPastTheWindow(t *testing.T) {
 
 	code, stdout, stderr := runRetain(config, acks, now)
 	summary := "retain: " + retentionSummary(1, "sha256:"+sum, []string{keyIDFor(retentionAckKey.Public().(ed25519.PublicKey))}) + "\n"
-	if code != 0 || !strings.Contains(stderr, "retain: removed 1 session(s), holding 2 receipt(s)") || !strings.HasSuffix(strings.TrimSuffix(stderr, scopeUnlockedLine()), summary) {
+	if code != 0 || !strings.Contains(stderr, "retain: removed 1 session(s), holding 2 receipt(s)") || !strings.HasSuffix(strings.TrimSuffix(stderr, retainUnlockedLine()), summary) {
 		t.Fatalf("retain: %d %q %q", code, stdout, stderr)
 	}
 	if lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n"); len(lines) != 1 || !strings.Contains(lines[0], `"kind":"session-removal"`) || !strings.Contains(lines[0], `"sessionId":"a1"`) {
@@ -197,8 +198,16 @@ func TestEngineConfigRetentionMember(t *testing.T) {
 	for i := byte(0); i < 5; i++ {
 		keys = append(keys, hex.EncodeToString(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{20 + i}, 32)).Public().(ed25519.PublicKey)))
 	}
+	root := t.TempDir()
+	at := func(name string) string {
+		text, err := json.Marshal(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(text)
+	}
 	base := func(version, retention string) string {
-		return `{"engineVersion":"` + version + `","authority":"gateway:test","seed":"/s","store":"/st","registry":"/r","decisionRecords":"/d","listen":"127.0.0.1:8787","catalog":"/c","platforms":{}` + retention + `}`
+		return `{"engineVersion":"` + version + `","authority":"gateway:test","seed":` + at("s") + `,"store":` + at("st") + `,"registry":` + at("r") + `,"decisionRecords":` + at("d") + `,"listen":"127.0.0.1:8787","catalog":` + at("c") + `,"platforms":{}` + retention + `}`
 	}
 	cfg, err := parseEngineConfig([]byte(base(retentionVersion, `,"retention":{"window":7,"acknowledgedBy":["`+key+`"]}`)))
 	if err != nil || cfg.retention == nil || cfg.retention.window != 7*24*time.Hour {
@@ -310,4 +319,13 @@ func mustParse(t *testing.T, text string) value {
 		t.Fatal(err)
 	}
 	return v
+}
+
+// retainUnlockedLine is the note gateway retain gives on a platform that
+// locks no registry, "" where it locks one.
+func retainUnlockedLine() string {
+	if registryLocked {
+		return ""
+	}
+	return "retain: this platform locks no registry, so a gateway still running was not looked for; the gateway was to be stopped\n"
 }
