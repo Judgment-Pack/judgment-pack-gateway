@@ -931,7 +931,8 @@ from the seed to a key service's key version, or from one key version to the nex
 - **A COMMIT that did not answer.** The record commits whole or not at all, so no part of it is
   left in the registry. The command says *the key may have rotated: rerun to check*. Run it again
   with the same keys. Where the record is whole, the walk ending at the next key by a rotation from
-  the key rotated from, it says *the rotation is made; nothing was changed* (exit 0). Where nothing
+  the key rotated from, it says *the registry's walk already ends at this rotation, ... which may be an earlier run's: nothing
+  was changed* (exit 0). Where nothing
   was kept, it rotates.
 
 It is refused, with exit status 1 and nothing changed:
@@ -944,6 +945,11 @@ It is refused, with exit status 1 and nothing changed:
 - while a session that holds a receipt is open: *session ... holds a receipt and is not sealed*;
 - when a signature does not verify, or the record would not walk to the next key: a rotation back
   to a key the registry rotated from is refused so.
+- when this host's clock stamps the rotation before the key history's last rotation, the
+  registry's or the one a store rotation carried in: *the rotation's rotatedAt ... is before the key
+  history's last rotation ...; correct this host's clock and run again*. The registry is
+  append-only, so such a record would leave `/publickey/history` refusing the history for good
+  (SPEC.md §3e). A rotation in the same second as the last one is taken.
 
 Exit 2 on a usage error. A configuration of the filesystem kind is one: its key is rotated by
 `gateway rotate-key` (the seed) or by SIGHUP (a key service). A coordinated rotation while

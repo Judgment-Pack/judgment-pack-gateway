@@ -70,6 +70,16 @@ func (s *rkStore) rotate(t *testing.T, version string, extra ...string) (int, st
 	return code, stdout.String(), stderr.String()
 }
 
+// rotateAt is rotate stamped at.
+func (s *rkStore) rotateAt(t *testing.T, at, version string, extra ...string) (int, string, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	args := append([]string{"--connection-file", s.connection, "--owner", s.db.roles.owner, "--runtime", s.db.roles.runtime,
+		"--config", s.versions[version], "--timeout", "60"}, extra...)
+	code := cmdStoreRotateKeyAt(args, &stdout, &stderr, func() string { return at })
+	return code, stdout.String(), stderr.String()
+}
+
 // from names a key version as the key rotated from.
 func rkFrom(t *testing.T, version string) []string {
 	return []string{"--from-key-version", version, "--from-public-key", hex.EncodeToString(mustKeyServiceSigner(t, version).publicKey())}
@@ -225,7 +235,7 @@ func TestAPostgresStoreRotateKeyMovesTheSeedToAKeyServiceAndOn(t *testing.T) {
 		t.Fatalf("the registry does not walk to key version 1: %v", err)
 	}
 	// run again, it finds the rotation made
-	if code, stdout, stderr := s.rotate(t, ksVersion1); code != 0 || stdout != "" || !strings.Contains(stderr, "the rotation is made; nothing was changed") || !bytes.Equal(s.registry(t), rotated) {
+	if code, stdout, stderr := s.rotate(t, ksVersion1); code != 0 || stdout != "" || !strings.Contains(stderr, "the registry's walk already ends at this rotation, rotation 1 from key "+seedKey+" to key "+oneKey+", which may be an earlier run's: nothing was changed") || !bytes.Equal(s.registry(t), rotated) {
 		t.Fatalf("a second run: %d %q %q", code, stdout, stderr)
 	}
 	code, stdout, stderr = s.rotate(t, ksVersion1, rkFrom(t, ksVersion1)...)
@@ -298,6 +308,38 @@ func TestAPostgresStoreRotateKeyIsRefusedWhileAnInstanceServes(t *testing.T) {
 	s.refused(t, "an instance serving", "stop the gateway, then rotate-key", code, stdout, stderr, before)
 }
 
+// A rotation stamped before the key history's last rotation, a host whose
+// clock is behind, is refused before the COMMIT, the registry unchanged:
+// the registry is append-only, and /publickey/history would refuse the
+// history for good (SPEC.md §3e). A key rotated from named by a well-formed
+// public key that is not its version's is refused the same way.
+func TestAPostgresStoreRotateKeyRefusesARotationBeforeTheHistorysLast(t *testing.T) {
+	standInKeyService(t)
+	s := newRkStore(t)
+	a := s.start(t, "", nil)
+	server := httptest.NewServer(a.service.handler())
+	rkCall(t, server, "rk-sealed", "plain", true)
+	server.Close()
+	a.stop(&s.said)
+	if code, stdout, stderr := s.rotateAt(t, "2026-12-01T12:00:00Z", ksVersion1); code != 0 {
+		t.Fatalf("the seed to key version 1: %d %q %q", code, stdout, stderr)
+	}
+	before := s.registry(t)
+	code, stdout, stderr := s.rotateAt(t, "2026-12-01T11:59:59Z", ksVersion2, rkFrom(t, ksVersion1)...)
+	want := "the rotation's rotatedAt 2026-12-01T11:59:59Z is before the key history's last rotation 2026-12-01T12:00:00Z; correct this host's clock and run again; nothing was written"
+	if code != 1 || stdout != "" || !strings.Contains(stderr, want) || !bytes.Equal(s.registry(t), before) {
+		t.Fatalf("a rotation stamped before the last: %d %q %q", code, stdout, stderr)
+	}
+	wrong := []string{"--from-key-version", ksVersion1, "--from-public-key", hex.EncodeToString(mustKeyServiceSigner(t, ksVersion2).publicKey())}
+	code, stdout, stderr = s.rotateAt(t, "2026-12-01T12:00:01Z", ksVersion2, wrong...)
+	if code != 1 || stdout != "" || !bytes.Equal(s.registry(t), before) {
+		t.Fatalf("a key rotated from under another public key: %d %q %q", code, stdout, stderr)
+	}
+	if code, stdout, stderr := s.rotateAt(t, "2026-12-01T12:00:00Z", ksVersion2, rkFrom(t, ksVersion1)...); code != 0 {
+		t.Fatalf("a rotation in the same second as the last: %d %q %q", code, stdout, stderr)
+	}
+}
+
 // A COMMIT whose answer did not arrive is settled by a rerun: where it did
 // not commit, the rerun rotates; where it did, the rerun finds the record
 // whole and changes nothing.
@@ -342,7 +384,7 @@ func TestAPostgresStoreRotateKeyRerunSettlesAnUncertainCommit(t *testing.T) {
 	if _, err := engineWalk(committed, mustKeyServiceSigner(t, ksVersion2).publicKey()); err != nil {
 		t.Fatalf("the committed rotation does not walk to version 2: %v", err)
 	}
-	if code, stdout, stderr := s.rotate(t, ksVersion2, rkFrom(t, ksVersion1)...); code != 0 || stdout != "" || !strings.Contains(stderr, "rotated to from key "+keyIDFor(mustKeyServiceSigner(t, ksVersion1).publicKey())+" at rotation 2: the rotation is made; nothing was changed") ||
+	if code, stdout, stderr := s.rotate(t, ksVersion2, rkFrom(t, ksVersion1)...); code != 0 || stdout != "" || !strings.Contains(stderr, "already ends at this rotation, rotation 2 from key "+keyIDFor(mustKeyServiceSigner(t, ksVersion1).publicKey())+" to key "+keyIDFor(mustKeyServiceSigner(t, ksVersion2).publicKey())+", which may be an earlier run's") ||
 		!bytes.Equal(s.registry(t), committed) {
 		t.Fatalf("the rerun after a COMMIT made: %d %q %q", code, stdout, stderr)
 	}

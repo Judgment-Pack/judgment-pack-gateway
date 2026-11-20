@@ -46,6 +46,12 @@ made, and changes nothing, or makes it.`
 // storeRotateKeyOpen refuses a rotation while a session holding a receipt
 // is open: its seal is made under the key rotated from, before the
 // rotation, so the seal's count bounds what that key signed in it.
+// storeRotateKeyBefore refuses a rotation whose rotatedAt, this host's
+// clock, is before the key history's last rotation: the registry is
+// append-only, so a history its own check refuses (SPEC.md §3e) would be
+// answered 500 by /publickey/history for good.
+const storeRotateKeyBefore = "the rotation's rotatedAt %s is before the key history's last rotation %s; correct this host's clock and run again; nothing was written"
+
 const storeRotateKeyOpen = "session %s holds a receipt and is not sealed: a rotation seals nothing; seal every session left open first, under the key in force, with gateway seal-open --config <the configuration naming it> --all, then rotate"
 
 // keyRotationOutcome is what the command did: the record it appended, or
@@ -118,7 +124,7 @@ func cmdStoreRotateKeyAt(args []string, stdout, stderr io.Writer, stamp func() s
 		return 1
 	}
 	if out.record == nil {
-		fmt.Fprintf(stderr, "%s: the registry's walk ends at key %s, rotated to from key %s at rotation %d: the rotation is made; nothing was changed\n", command, out.to.keyID, out.from.keyID, out.ordinal)
+		fmt.Fprintf(stderr, "%s: the registry's walk already ends at this rotation, rotation %d from key %s to key %s, which may be an earlier run's: nothing was changed\n", command, out.ordinal, out.from.keyID, out.to.keyID)
 		return 0
 	}
 	stdout.Write(bytes.TrimLeft(out.record, "\n"))
@@ -303,6 +309,23 @@ func rotateKeyRows(dsn pgDSN, roles pgRoles, from, to *signingKey, timeout time.
 			return failed(fmt.Errorf(storeRotateKeyOpen, f.series))
 		}
 	}
+	// the key history as /publickey/history makes it, from the registry
+	// and what a store rotation carried into gateway.key_history; held
+	// again with the record at its end before the COMMIT
+	carriedRows, err := tx.exec(`SELECT history FROM gateway.key_history`)
+	if err != nil {
+		return failed(err)
+	}
+	var carried []byte
+	carriedPresent := len(carriedRows.rows) == 1
+	if carriedPresent {
+		carried = carriedRows.rows[0][0]
+	}
+	before, err := registryKeyHistory(data, from.public, carried, carriedPresent)
+	if err != nil {
+		return failed(fmt.Errorf("the key history before the rotation does not hold: %w", err))
+	}
+	last := before[len(before)-1].validFrom
 	ordinal := walk.followed() + 1
 	record, err := rotationRecordSigned(data, ordinal, at, from, to)
 	if err != nil {
@@ -329,6 +352,12 @@ func rotateKeyRows(dsn pgDSN, roles pgRoles, from, to *signingKey, timeout time.
 	}
 	if _, err := engineWalk(again, to.public); err != nil {
 		return failed(fmt.Errorf("the rotation's record would not walk to the next key: %w", err))
+	}
+	if _, err := walkKeyHistory(again, to.public, carried, carriedPresent); err != nil {
+		if last == "" {
+			last = "(none)"
+		}
+		return failed(fmt.Errorf(storeRotateKeyBefore, at, last))
 	}
 	if rotateKeyBeforeCommit != nil {
 		rotateKeyBeforeCommit(c)
