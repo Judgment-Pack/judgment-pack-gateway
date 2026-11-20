@@ -577,9 +577,9 @@ process-contract command. The family has six vectors:
   both verifiers must check it explicitly. Go's `ecdsa.Verify` takes `(r, s)`. verify-ts must call
   `crypto.verify` with `'sha256'` named explicitly and `dsaEncoding: "ieee-p1363"`, and check the
   KeyObject's `asymmetricKeyType` against `alg` (`"ec"`, curve P-256, for `ES256`; `"ed25519"` otherwise)
-  before verifying. Neither is built yet.
-- **Not changed by this record:** the corpus README's process contract, `docs/design/engine-config.md` and
-  `docs/postgresql-store.md`. Each changes with the build.
+  before verifying. Both are built in v0.38.0.
+- **Changed with the build, not by this record:** the corpus README's process contract,
+  `docs/design/engine-config.md` and `docs/postgresql-store.md`, each in v0.38.0.
 
 ### Options not taken
 

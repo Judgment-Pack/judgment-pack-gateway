@@ -608,7 +608,9 @@ configuration to what the filesystem and the kernel report, and no further.
 
 ## What the engine reports: `/posture`
 
-`GET /posture` answers what `gateway posture --json` prints, for the engine as it runs: which of
+`GET /posture` answers what `gateway posture --json` prints, for the engine as it runs, with one
+line more where the gateway signs through a key service: `signing-key-custody` (below), which the
+command cannot give, since it calls no key service. It says which of
 the isolation protections in [SECURITY.md](../../SECURITY.md) this host enforces, judged against
 the seed and the sources the engine started with and the listener it serves on. It is the field
 a desk reads to show its managed gateway's posture beside the gateway's status. The answer is
@@ -2905,10 +2907,12 @@ back needs every session sealed first, too; the older engine then passes `labels
 
 Version 40 adds one member, `signingKeyAlgorithm` (ADR-0053). Its one value is `"ES256"`: the key
 version `signingKeyVersion` names is an ECDSA P-256 key, `EC_SIGN_P256_SHA256`, at the key service's
-`HSM` protection level. Absent, the key version is Ed25519, as from version 36.
+`HSM` protection level. Absent, the key version is Ed25519, as from version 36. The example names a
+regional location, so a copy of it holds wherever the service offers that protection level; the key
+ring's location is the operator's.
 
 ```json
-"signingKeyVersion": "projects/example-project/locations/global/keyRings/receipts/cryptoKeys/hsm/cryptoKeyVersions/1",
+"signingKeyVersion": "projects/example-project/locations/europe-west1/keyRings/receipts/cryptoKeys/hsm/cryptoKeyVersions/1",
 "signingPublicKey": "<the compressed point, 66 lowercase hexadecimal characters>",
 "signingKeyAlgorithm": "ES256"
 ```

@@ -927,8 +927,12 @@ from the seed to a key service's key version, or from one key version to the nex
   P-256, P-256 to P-256 and P-256 back to Ed25519 are each one rotation: the `key-rotation` names
   the next key's algorithm in `nextAlg`, the `key-continuation` the previous key's in `previousAlg`,
   and each statement a P-256 key signs carries `alg`. A move from the HSM key back to an Ed25519 key
-  is allowed, so that a rollback is never blocked, and is named on one line of the standard error;
-  the key history records it as any rotation.
+  is allowed, so that a rollback of the key is never blocked, and is named on one line of the
+  standard error; the key history records it as any rotation. It rolls back the key, to an Ed25519
+  key version of the key service, not to the seed, and it needs v0.38.0: it does not roll back the
+  binary. Once the registry holds a rotation into P-256, a v0.37.0 gateway refuses the store
+  (`rotation-break`) and never starts on it again, even after this rotation back (docs/releases/v0.38.0.md,
+  "Rollback").
 - **How it runs.** The connection is the migration login's. The command acts as the owner, in one
   transaction that holds the migration's lock and every row of the start lease, as `gateway store
   retain` does. In that transaction it reads the registry under the log's append lock, as every

@@ -952,6 +952,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		cfg.signingPublicKey = string(named)
 	}
 	if cfg.signingKeyVersion != "" && cfg.signingPublicKey == "" {
+		if cfg.signingKeyAlgorithm == algES256 {
+			return engineConfig{}, errSigningPublicKeyRequiredP256
+		}
 		return engineConfig{}, errSigningPublicKeyRequired
 	}
 	return cfg, nil

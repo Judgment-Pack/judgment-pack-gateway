@@ -94,7 +94,10 @@ var (
 	errKeyServicePublicKey      = errors.New("the key service answered no Ed25519 public key of the key version configured; the gateway does not start")
 	errKeyServicePublicKeyP256  = errors.New("the key service answered no P-256 public key of the key version configured; the gateway does not start")
 	errSigningPublicKeyRequired = errors.New("engine configuration: signingKeyVersion is not given without signingPublicKey, the key version's Ed25519 public key that pins it (ADR-0050)")
-	errKeyServiceNotExpected    = errors.New("the key service's key version answers a public key other than the one signingPublicKey names; nothing is signed with it")
+	// errSigningPublicKeyRequiredP256 is errSigningPublicKeyRequired under
+	// signingKeyAlgorithm ES256, naming the key's form there (ADR-0053 §4).
+	errSigningPublicKeyRequiredP256 = errors.New("engine configuration: signingKeyVersion is not given without signingPublicKey, the key version's P-256 public key that pins it, its compressed point in 66 lowercase hexadecimal characters (ADR-0053)")
+	errKeyServiceNotExpected        = errors.New("the key service's key version answers a public key other than the one signingPublicKey names; nothing is signed with it")
 )
 
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)

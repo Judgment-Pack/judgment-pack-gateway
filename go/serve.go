@@ -2482,10 +2482,18 @@ func verdictMap(rep *report) (map[string]any, error) {
 // publicKeyDocument is what a verifier fetches so it can check this gateway's
 // receipts without being able to produce any. Obtaining the key HERE and then
 // auditing this same gateway proves consistency, not authenticity (SPEC.md §5).
+// The key is read once, so a rotation while serving (SIGHUP) switching it
+// between the reads never answers one key's id beside another's bytes or
+// algorithm.
 func (g *gatewayService) publicKeyDocument() map[string]any {
+	alg, keyID, public := algEd25519, g.keyID, []byte(g.publicKey)
+	if g.store != nil && g.store.signing != nil {
+		k := g.store.signing.key()
+		alg, keyID, public = k.alg, k.keyID, k.public
+	}
 	return map[string]any{
-		"algorithm": algName(g.ownHeld().alg), "keyId": g.ownKeyID(),
-		"publicKey": hex.EncodeToString(g.ownKey()), "authority": g.authority,
+		"algorithm": algName(alg), "keyId": keyID,
+		"publicKey": hex.EncodeToString(public), "authority": g.authority,
 	}
 }
 
