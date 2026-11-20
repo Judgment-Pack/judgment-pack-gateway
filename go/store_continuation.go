@@ -2,8 +2,9 @@ package main
 
 // The store continuation (SPEC.md §3d; ADR-0048, S2): the first line of a
 // registry that a store rotation started, naming the registry before it --
-// its line count and the SHA-256 of its bytes, whole -- signed by the key in
-// force. A verifier given the new store alone observes continues-from, which
+// its line count and the SHA-256 of its bytes, whole -- and the key history
+// carried beside the new registry (§3e; ADR-0052) by the SHA-256 of its
+// bytes, signed by the key in force. A verifier given the new store alone observes continues-from, which
 // is no finding; given the registry before it (--previous), it holds the
 // statement to that registry's bytes and to the key its rotations end at.
 
@@ -43,7 +44,7 @@ const observationContinuesFrom = "continues-from"
 
 var continuationMembers = map[string]bool{
 	"kind": true, "continuationVersion": true, "continuedAt": true, "keyId": true,
-	"previousLines": true, "previousDigest": true, "signature": true,
+	"previousLines": true, "previousDigest": true, "keyHistoryDigest": true, "signature": true,
 }
 
 // storeContinuation is a store-continuation statement that loaded.
@@ -51,6 +52,9 @@ type storeContinuation struct {
 	keyID          string
 	previousLines  int64
 	previousDigest string
+	// keyHistoryDigest is the lowercase hexadecimal SHA-256 of the key
+	// history the rotation carried beside the new registry (SPEC.md §3e).
+	keyHistoryDigest string
 }
 
 // continuationLine is the object of a registry line that is a store
@@ -71,8 +75,8 @@ func continuationLine(line string) *vObject {
 }
 
 // continuationOf holds a store continuation to its form and to the key in
-// force at its line: exactly its members, each of its form, its keyId the
-// key's and its signature verifying under it.
+// force at its line: exactly its members, keyHistoryDigest among them, each
+// of its form, its keyId the key's and its signature verifying under it.
 func continuationOf(obj *vObject, key reachedKey) (*storeContinuation, bool) {
 	if len(obj.byName) != len(continuationMembers) {
 		return nil, false
@@ -86,11 +90,13 @@ func continuationOf(obj *vObject, key reachedKey) (*storeContinuation, bool) {
 	at, okAt := memberString(obj, "continuedAt")
 	keyID, okID := memberString(obj, "keyId")
 	last, okLast := memberString(obj, "previousDigest")
+	history, okHistory := memberString(obj, "keyHistoryDigest")
 	sigHex, okSig := memberString(obj, "signature")
 	linesV, _ := obj.get("previousLines")
 	lines, okLines := linesV.(vInt)
 	if version != continuationVersion || !okAt || !witnessTimeForm.MatchString(at) ||
 		!okID || !isLowerHexOfLen(keyID, 32) || !okLast || !isLowerHexOfLen(last, 64) ||
+		!okHistory || !isLowerHexOfLen(history, 64) ||
 		!okSig || !isLowerHexOfLen(sigHex, 128) || !okLines || int64(lines) < 0 {
 		return nil, false
 	}
@@ -98,7 +104,7 @@ func continuationOf(obj *vObject, key reachedKey) (*storeContinuation, bool) {
 	if keyID != key.keyID || len(key.key) != ed25519.PublicKeySize || !ed25519.Verify(key.key, continuationSigningInput(obj), signature) {
 		return nil, false
 	}
-	return &storeContinuation{keyID: keyID, previousLines: int64(lines), previousDigest: last}, true
+	return &storeContinuation{keyID: keyID, previousLines: int64(lines), previousDigest: last, keyHistoryDigest: history}, true
 }
 
 // continuationSigningInput is what a store continuation's signature covers:
@@ -153,14 +159,24 @@ func errStoreRotated(mark string) error {
 	return fmt.Errorf("the store was rotated away from (%s): nothing starts on it or appends to it again; start the gateway on the store it was rotated to", mark)
 }
 
+// keyHistoryDigestOf is what a store continuation names of the key history
+// carried beside its registry (SPEC.md §3e): the lowercase hexadecimal
+// SHA-256 of its exact bytes, the form of previousDigest.
+func keyHistoryDigestOf(history []byte) string {
+	sum := sha256.Sum256(history)
+	return hex.EncodeToString(sum[:])
+}
+
 // newContinuationLine is the store continuation a rotation writes as the new
-// registry's first line, signed by priv, naming the tail of previous.
-func newContinuationLine(priv ed25519.PrivateKey, previous []byte, at string) []byte {
+// registry's first line, signed by priv, naming the tail of previous and the
+// key history carried beside the new registry, by its exact bytes.
+func newContinuationLine(priv ed25519.PrivateKey, previous, history []byte, at string) []byte {
 	lines, last := registryLink(previous)
 	pub := priv.Public().(ed25519.PublicKey)
 	obj := newObject()
 	obj.set("continuationVersion", vString(continuationVersion))
 	obj.set("continuedAt", vString(at))
+	obj.set("keyHistoryDigest", vString(keyHistoryDigestOf(history)))
 	obj.set("keyId", vString(keyIDFor(pub)))
 	obj.set("kind", vString(continuationKind))
 	obj.set("previousDigest", vString(last))

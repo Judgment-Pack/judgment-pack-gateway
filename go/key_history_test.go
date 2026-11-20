@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -203,10 +204,11 @@ func TestTheKeyHistoryCheckRefusesWhatTheChainDoesNotProve(t *testing.T) {
 // store's gateway answers the old store's history, the key in force at the
 // rotation its last entry; a rotation in the new store, whose ordinals start
 // again at 1, ends that key; a second store rotation carries the whole
-// history on. A history carried that does not hold is answered 500; one
-// carried beside no store continuation too; and a continued store with
-// none carried answers from the key in force at its continuation, which a
-// consumer pinning the first key refuses.
+// history on. The carried history is the one the store continuation names
+// by its digest: one changed, one cut to a later stretch that holds on its
+// own, and one deleted are each answered 500, never as a shorter history,
+// and the history named is answered again once it is back; one carried
+// beside no store continuation is answered 500 too.
 func TestTheKeyHistoryIsCarriedAcrossStoreRotation(t *testing.T) {
 	g, _, _ := ksService(t, nil)
 	seed2, seed3 := historySeed("2"), historySeed("3")
@@ -261,18 +263,35 @@ func TestTheKeyHistoryIsCarriedAcrossStoreRotation(t *testing.T) {
 	if code, body := askKeyHistory(t, g3); code != http.StatusInternalServerError {
 		t.Fatalf("a carried history that does not hold: %d %s", code, body)
 	}
+	// cut to a later stretch: from the second key on, which holds on its own
+	// and ends at the key that signed the continuation
+	whole, err := checkKeyHistory(after, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stretch := slices.Clone(whole[1:])
+	stretch[0].validFrom, stretch[0].forward, stretch[0].reverse = "", "", ""
+	cut := keyHistoryDocument(stretch)
+	if held, err := checkKeyHistory(cut, keys[1]); err != nil || len(held) != 2 {
+		t.Fatalf("the stretch does not hold on its own: %v", err)
+	}
+	if err := os.WriteFile(carried, cut, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := askKeyHistory(t, g3); code != http.StatusInternalServerError {
+		t.Fatalf("a carried history cut to a later stretch: %d %s", code, body)
+	}
 	if err := os.Remove(carried); err != nil {
 		t.Fatal(err)
 	}
-	code, body := askKeyHistory(t, g3)
-	if code != http.StatusOK {
-		t.Fatalf("a continued store with no history carried: %d %s", code, body)
+	if code, body := askKeyHistory(t, g3); code != http.StatusInternalServerError || string(body) != `{"error":"the key history could not be read; the gateway says why on its stderr"}` {
+		t.Fatalf("a continued store whose carried history is deleted: %d %s", code, body)
 	}
-	if entries, err := checkKeyHistory(body, keys[2]); err != nil || len(entries) != 1 {
-		t.Fatalf("a continued store with no history carried answers from the key in force at its continuation: %v %s", err, body)
+	if err := os.WriteFile(carried, after, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := checkKeyHistory(body, keys[0]); err == nil {
-		t.Fatal("a consumer pinning the first key took a history that does not begin at it")
+	if _, back := historyPinned(t, g3, keys[0]); !bytes.Equal(back, after) {
+		t.Fatalf("the history named, back beside the registry, is not answered:\n%s", back)
 	}
 	if err := os.WriteFile(keyHistoryBeside(g.regPath), before, 0o600); err != nil {
 		t.Fatal(err)
@@ -283,9 +302,9 @@ func TestTheKeyHistoryIsCarriedAcrossStoreRotation(t *testing.T) {
 }
 
 // A store rotation stopped after its new registry was made and before its
-// mark is finished by a rerun, which carries the key history where none is
-// beside the new registry -- the history a rotation made before histories
-// were carried left out -- and the history it carries is the old store's.
+// mark is finished by a rerun, which carries the key history again where
+// none is beside the new registry, and the history it carries is the old
+// store's, the one the continuation names.
 func TestARerunOfAStoreRotationCarriesTheKeyHistory(t *testing.T) {
 	g, _, _ := ksService(t, nil)
 	seed2 := historySeed("2")
@@ -320,4 +339,40 @@ func badSignature(line string) string {
 		flipped = "01"
 	}
 	return line[:at] + flipped + line[at+2:]
+}
+
+// A rerun of a store rotation holds a key history beside the new registry to
+// the one its store continuation names: one changed since -- here cut to the
+// key in force, a history that holds on its own -- refuses the rerun, which
+// changes nothing, the old store left unmarked and the history as it was.
+func TestARerunOfAStoreRotationRefusesAKeyHistoryNotTheOneNamed(t *testing.T) {
+	g, _, _ := ksService(t, nil)
+	seed2 := historySeed("2")
+	if _, err := g.registry.rotateTo(newSeedSigner(seed2), "2026-11-19T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	newStore, newRegistry := filepath.Join(dir, "store"), filepath.Join(dir, "registry.jsonl")
+	seedPath := writeSeedFile(t, t.TempDir(), seed2)
+	if code, stdout, stderr := rotateOn(t, g, seedPath, newStore, newRegistry, "2026-11-19T00:00:01Z"); code != 0 {
+		t.Fatalf("store rotate: %d %s %s", code, stdout, stderr)
+	}
+	if err := os.Remove(rotatedMarkPath(g.regPath)); err != nil {
+		t.Fatal(err)
+	}
+	key := seedKeyOf(seed2)
+	changed := keyHistoryDocument([]keyHistoryEntry{{key: key, keyID: keyIDFor(key)}})
+	if err := os.WriteFile(keyHistoryBeside(newRegistry), changed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := rotateOn(t, g, seedPath, newStore, newRegistry, "2026-11-19T00:00:02Z")
+	if code == 0 || !strings.Contains(stderr, "its store continuation names; nothing was changed") {
+		t.Fatalf("a rerun over a key history not the one named: %d %s %s", code, stdout, stderr)
+	}
+	if _, err := os.Lstat(rotatedMarkPath(g.regPath)); !absent(err) {
+		t.Fatalf("the refused rerun marked the old store: %v", err)
+	}
+	if got := readFile(t, keyHistoryBeside(newRegistry)); got != string(changed) {
+		t.Fatalf("the refused rerun changed the key history:\n%s", got)
+	}
 }

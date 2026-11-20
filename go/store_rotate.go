@@ -83,7 +83,9 @@ func cmdStoreRotateAt(args []string, stdout, stderr io.Writer, stamp func() stri
 		// The PostgreSQL kind's rotation (#546) must also carry the key
 		// history of the database rotated from into the new one, as
 		// storeRotate carries it beside the new registry (carriedHistoryOf;
-		// ADR-0052), for gatewayService.carriedKeyHistory to read there.
+		// ADR-0052), name its bytes in the continuation it writes
+		// (newContinuationLine), and gatewayService.carriedKeyHistory must
+		// read it there.
 		fmt.Fprintln(stderr, "store rotate: the PostgreSQL kind is rotated to a new database or schema, which this release does not yet do; nothing was changed")
 		return 1
 	}
@@ -102,10 +104,13 @@ func cmdStoreRotateAt(args []string, stdout, stderr io.Writer, stamp func() stri
 // storeRotate is the command on the filesystem kind: the old registry held,
 // what was left open sealed, and the new store and registry made under the
 // hold, the registry's bytes read after the last seal appended; then the old
-// store marked rotated away from, still under the hold. A rerun after a
-// crash finds the new registry whole or not there: whole, and its only line
-// the continuation of the old registry as it stands, only the mark is
-// written.
+// store marked rotated away from, still under the hold. The continuation
+// names the key history carried beside the new registry by its digest. A
+// rerun after a crash finds the new registry whole or not there: whole, and
+// its only line the continuation of the old registry as it stands, the key
+// history beside it held to the digest the continuation names -- written
+// again where it is not there, refused where its bytes are other ones --
+// and only then the mark written.
 func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() string) ([]*vObject, []byte, error) {
 	if err := newStoreFree(newStore, newRegistry); err != nil {
 		return nil, nil, err
@@ -138,17 +143,15 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	} else if present {
 		// a rerun: the new registry is this one's continuation alone, made
 		// by a rotation stopped before its mark, or it is refused
-		if !continuesAlone(made, data, pub) {
+		named, ok := continuesAlone(made, data, pub)
+		if !ok {
 			return nil, nil, fmt.Errorf("%s is there already; a rotation starts a new store and registry, and nothing was changed", newRegistry)
 		}
-		// the history is written before the registry; one a rotation made
-		// before histories were carried is carried now, from the same bytes
-		if _, there, err := readCarriedKeyHistory(newRegistry); err != nil {
-			return nil, nil, fmt.Errorf("the new registry's key history: %w", err)
-		} else if !there {
-			if err := carryKeyHistory(o.registry, data, pub, newRegistry); err != nil {
-				return nil, nil, err
-			}
+		// the history is written before the registry, and the continuation
+		// names its bytes: one beside it is held to them, and one lost is
+		// carried again from the same bytes, which must be the ones named
+		if err := carryKeyHistory(o.registry, data, pub, newRegistry, named); err != nil {
+			return nil, nil, err
 		}
 		if err := markRotated(o.registry, made); err != nil {
 			return nil, nil, err
@@ -180,7 +183,7 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	if err != nil {
 		return sealed, nil, fmt.Errorf("%v; the store is not rotated", err)
 	}
-	line := newContinuationLine(priv, data, stamp())
+	line := newContinuationLine(priv, data, history, stamp())
 	if err := os.Mkdir(newStore, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return sealed, nil, fmt.Errorf("the new store: %w", err)
 	}
@@ -231,12 +234,16 @@ func newStoreFree(newStore, newRegistry string) error {
 }
 
 // continuesAlone is whether made is one line, a store continuation that
-// loads under the key and names previous's line count and digest.
-func continuesAlone(made, previous []byte, key ed25519.PublicKey) bool {
+// loads under the key and names previous's line count and digest, and the
+// key history it names.
+func continuesAlone(made, previous []byte, key ed25519.PublicKey) (string, bool) {
 	w := walkRegistry(made, key)
 	lines, digest := registryLink(previous)
-	return bytes.Count(made, []byte("\n")) == 1 && bytes.HasSuffix(made, []byte("\n")) && w.continuation != nil &&
-		w.continuationFinding == nil && w.continuation.previousLines == lines && w.continuation.previousDigest == digest
+	if bytes.Count(made, []byte("\n")) == 1 && bytes.HasSuffix(made, []byte("\n")) && w.continuation != nil &&
+		w.continuationFinding == nil && w.continuation.previousLines == lines && w.continuation.previousDigest == digest {
+		return w.continuation.keyHistoryDigest, true
+	}
+	return "", false
 }
 
 // newRegistryTemp is the file a new registry is written to, beside it, before
@@ -354,12 +361,29 @@ func carriedHistoryOf(registryPath string, data []byte, key ed25519.PublicKey) (
 	return keyHistoryDocument(entries), nil
 }
 
-// carryKeyHistory writes the history carriedHistoryOf gives beside the new
-// registry, durably.
-func carryKeyHistory(registryPath string, data []byte, key ed25519.PublicKey, newRegistry string) error {
+// carryKeyHistory is a rerun's carrying of the key history beside a new
+// registry whose continuation names the history by named, its digest: a
+// history there already is kept only when its bytes are the ones named,
+// and one not there is written, durably, only when the history
+// carriedHistoryOf gives is; otherwise the rerun is refused, nothing
+// changed.
+func carryKeyHistory(registryPath string, data []byte, key ed25519.PublicKey, newRegistry, named string) error {
+	there, present, err := readCarriedKeyHistory(newRegistry)
+	if err != nil {
+		return fmt.Errorf("the new registry's key history: %w", err)
+	}
+	if present {
+		if got := keyHistoryDigestOf(there); got != named {
+			return fmt.Errorf("the key history beside the new registry is %s, not the history %s its store continuation names; nothing was changed", got, named)
+		}
+		return nil
+	}
 	history, err := carriedHistoryOf(registryPath, data, key)
 	if err != nil {
 		return err
+	}
+	if got := keyHistoryDigestOf(history); got != named {
+		return fmt.Errorf("the store's key history is %s, not the history %s the new registry's store continuation names; nothing was changed", got, named)
 	}
 	if err := writeNewRegistry(keyHistoryBeside(newRegistry), history); err != nil {
 		return fmt.Errorf("the new registry's key history: %w", err)

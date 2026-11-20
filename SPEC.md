@@ -1527,6 +1527,7 @@ registry chain; this release refuses the PostgreSQL kind by name.
 | `keyId` | 32 lowercase hexadecimal characters | the key id of the key in force, which signs it |
 | `previousLines` | an integer from 0 to 2⁵³−1 | the old registry's line count |
 | `previousDigest` | 64 lowercase hexadecimal characters | the SHA-256 of the old registry's bytes, whole |
+| `keyHistoryDigest` | 64 lowercase hexadecimal characters | the SHA-256 of the key history the rotation carries beside the new registry (§3e), its exact bytes |
 | `signature` | 128 lowercase hexadecimal characters | Ed25519 over `"judgment-pack-gateway/store-continuation/1:"` and `canon` of the statement without `signature` |
 
 A registry's **line count** is the number of pieces its bytes split into at each `0x0A`, a last piece
@@ -1544,7 +1545,8 @@ refuses the store by the mark's name: *the store was rotated away from (store-ro
 stopped by a crash is finished by running it again: a new store directory that is empty, or holds only
 what the rotation left, does not refuse it, the new registry is written whole beside its place and
 renamed into it, and a new registry already there whose only line is the old registry's continuation, by
-its count and digest under the key in force, is kept, and only the mark is written.
+its count and digest under the key in force, is kept, its key history held to the `keyHistoryDigest` it
+names (§3e), and only then the mark is written.
 
 **Reading it.** A registry line is a store continuation when §1.1's parser reads it as one JSON object
 whose `kind` is `"store-continuation"`. It is never a seal or a rotation statement. At the registry's
@@ -1612,16 +1614,20 @@ it; so is a registry that cannot be read.
 
 **Across a store rotation.** `gateway store rotate` (§3d) writes the old store's key history, the exact
 bytes its gateway answers, beside the new registry -- on the filesystem kind the registry's path with
-`.key-history` appended, outside its bytes -- durably and before the new registry is made; a rerun that
-finds the new registry made writes it where it is missing; a history that does not hold refuses the
-rotation, nothing new made. A registry whose first line is a store continuation that loads answers the
-history carried beside it, which must hold by the check below from its own first key and end at the key
-that signed the continuation, then the keys the registry's own rotations reach; that key's entry is the
-carried one's, its `validTo` the rotation from it, if any. A carried history that does not so hold, or one
-beside a registry that continues no store, is answered `500` as above. A continued registry with none carried
--- a store rotated before this section -- answers from the key in force at its continuation, which a
-consumer pinning the first key refuses. On the PostgreSQL kind, whose store rotation this release refuses
-(§3d), a registry continues no store, and every instance answers the walk of the one registry they share.
+`.key-history` appended, outside its bytes -- durably and before the new registry is made, and the new
+registry's store continuation names those bytes by its `keyHistoryDigest` (§3d); a history that does not
+hold refuses the rotation, nothing new made. A rerun that finds the new registry made holds the history
+beside it to that digest: one whose bytes are other ones refuses the rerun, nothing changed, and one
+missing is written again, from the same bytes, only where it is the history named. A registry whose first
+line is a store continuation that loads answers the history carried beside it, whose bytes must be the
+ones its `keyHistoryDigest` names, and which must hold by the check below from its own first key and end
+at the key that signed the continuation, then the keys the registry's own rotations reach; that key's entry
+is the carried one's, its `validTo` the rotation from it, if any. A continued registry with no history
+carried beside it, or one whose bytes are not the ones named -- changed, or cut to a later stretch that
+holds on its own -- or that does not so hold, and a history carried beside a registry that continues no
+store, are each answered `500` as above, never as a shorter history. On the PostgreSQL kind, whose store
+rotation this release refuses (§3d), a registry continues no store, and every instance answers the walk of
+the one registry they share.
 
 **Checking it.** A consumer that pinned a key holds the answer, read by §1.1's parser, to: exactly the
 members above, each of its form; the first entry's `publicKey` the key pinned, with no `validFrom`,

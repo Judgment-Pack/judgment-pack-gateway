@@ -7,7 +7,8 @@ package main
 // from the answer alone, as it would follow the rotations in the registry.
 // It is read from the registry at each request, and so is current across a
 // rotation while serving, and, across a store rotation (§3d), from the
-// history the rotation carried into the new store beside its registry.
+// history the rotation carried into the new store beside its
+// registry, which the store continuation names by its digest.
 
 import (
 	"bytes"
@@ -77,10 +78,11 @@ func keyHistoryDocument(entries []keyHistoryEntry) []byte {
 // walk with a finding, of its rotations or of its store continuation, is no
 // history at all, never the keys reached before it. A registry whose first
 // line is a store continuation continues the history carried beside it
-// (present), which must hold from its own first key and end at the key that
-// signed the continuation; one carried beside a registry that continues
-// none is refused, and a continued registry with none carried is the
-// history from the key in force at its continuation.
+// (present), whose bytes must be the ones the continuation names by its
+// keyHistoryDigest, and which must hold from its own first key and end at
+// the key that signed the continuation; a continued registry with none
+// carried is refused, as is one carried beside a registry that continues
+// none: a history cut short, or lost, is never answered as the whole.
 func registryKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, present bool) ([]keyHistoryEntry, error) {
 	w := &registryWalk{seals: map[string]seal{}, conflicted: map[string]bool{}, keysOnly: true}
 	first := registryFirstKey(data, own)
@@ -101,11 +103,16 @@ func registryKeyHistory(data []byte, own ed25519.PublicKey, carried []byte, pres
 		return nil, fmt.Errorf("the registry's rotations end at key %s, not this gateway's key %s", w.current().keyID, keyIDFor(own))
 	}
 	entries := historyOfWalk(w.keys)
-	if !present {
+	switch {
+	case w.continuation == nil && !present:
 		return entries, nil
-	}
-	if w.continuation == nil {
+	case w.continuation == nil:
 		return nil, errors.New("a key history is carried beside a registry that continues no store")
+	case !present:
+		return nil, fmt.Errorf("the store continuation names the key history %s, and none is carried beside the registry", w.continuation.keyHistoryDigest)
+	}
+	if got := keyHistoryDigestOf(carried); got != w.continuation.keyHistoryDigest {
+		return nil, fmt.Errorf("the key history carried into the store is %s, not the history %s the store continuation names", got, w.continuation.keyHistoryDigest)
 	}
 	before, err := checkKeyHistory(carried, nil)
 	if err != nil {
@@ -290,9 +297,10 @@ func (g *gatewayService) carriedKeyHistory() ([]byte, bool, error) {
 		// The PostgreSQL kind's store rotation (#546) must carry the key
 		// history of the database rotated from into the new one, as the
 		// filesystem kind's carries it beside the new registry (storeRotate,
-		// ADR-0052), and this must read it there. Until it does, a
-		// PostgreSQL registry continues no store, and its walk is its whole
-		// history.
+		// ADR-0052), name it in the continuation (newContinuationLine), and
+		// this must read it there. Until it does, a PostgreSQL registry
+		// continues no store, and its walk is its whole history; one that
+		// did would name a history none carries, and be answered 500.
 		return nil, false, nil
 	}
 	return readCarriedKeyHistory(g.regPath)
