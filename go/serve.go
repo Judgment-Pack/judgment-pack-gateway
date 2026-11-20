@@ -234,6 +234,9 @@ type gatewayService struct {
 	// rotate-key requires it stopped.
 	provenanceKeyMu   sync.Mutex
 	provenanceKeyList []reachedKey
+	// keyHistoryKept is the last answer to /publickey/history, and what it
+	// was made of (key_history.go).
+	keyHistoryKept keyHistoryKept
 	// keyWalk walks the registry for provenanceKeys; nil is reachedKeys.
 	// beforeProvenanceRecheck runs just before the post-run provenance check.
 	// Both are test seams.
@@ -2955,7 +2958,8 @@ func (g *gatewayService) handler() http.Handler {
 
 	// /publickey/history is every key the registry proves this gateway
 	// signed under (SPEC.md §3e; key_history.go), read from the registry at
-	// each request, and open as /publickey is. A history that cannot be
+	// each request, made again when its bytes or the carried history's
+	// change, and open as /publickey is. A history that cannot be
 	// read, or does not hold, is answered 500 with a fixed sentence, as
 	// /registry is, and never as the keys reached before what stopped it.
 	const keyHistoryUnservable = "the key history could not be read; the gateway says why on its stderr"

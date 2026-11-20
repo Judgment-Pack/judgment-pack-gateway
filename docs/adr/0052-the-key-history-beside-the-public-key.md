@@ -44,7 +44,7 @@ The store continuation is a closed form (§3d), linked to the old registry by it
 
 ### Consequences
 
-- Each request reads the whole registry and parses each line, as `/registry` reads it; no seal's signature is checked.
+- Each request reads the whole registry and the carried history, and hashes them; the answer is made again, each line parsed, only when a byte of either, or the gateway's key, is not the last answer's. No seal's signature is checked.
 - Between a rotation's append and its switch (ADR-0050) the registry ends at a key the gateway does not yet hold, and the history answers `500` for that moment.
 - A carried history lost, in a restore or by its deletion, or cut, is answered `500` until the bytes named are back beside the registry: a consumer is told the history cannot be read rather than given a shorter one.
 - No corpus vectors: the corpus's families are readings of a store, of witness statements, or of a witness's storage, each with its runner in `gateway conform` and the process contract; this answer is none of them, and the statements it carries are §3b's, whose checks the rotation vectors of `corpus/stores` hold. Its checks are held by go/key_history_test.go. The store-continuation vectors of `corpus/stores` hold `keyHistoryDigest` as a member of the continuation, required and of its form; no vector holds the history itself, which a verifier is not given.

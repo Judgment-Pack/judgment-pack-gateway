@@ -5,18 +5,21 @@ package main
 // pinned first, each later key with the two statements of the rotation to
 // it (§3b), so that a consumer that pinned the first key checks every entry
 // from the answer alone, as it would follow the rotations in the registry.
-// It is read from the registry at each request, and so is current across a
-// rotation while serving, and, across a store rotation (§3d), from the
-// history the rotation carried into the new store beside its
-// registry, which the store continuation names by its digest.
+// It is read from the registry as it stands at each request, and so is
+// current across a rotation while serving, and, across a store rotation
+// (§3d), from the history the rotation carried into the new store beside its
+// registry, which the store continuation names by its digest; the answer is
+// kept while the registry's bytes and the carried history's are the same.
 
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 )
 
 // keyHistoryRoute is the open path that answers the key history, beside
@@ -306,10 +309,30 @@ func (g *gatewayService) carriedKeyHistory() ([]byte, bool, error) {
 	return readCarriedKeyHistory(g.regPath)
 }
 
+// keyHistoryAnswer is an answer to GET /publickey/history and what it was
+// made of: the SHA-256 of the registry's bytes, the carried history's, and
+// the gateway's key.
+type keyHistoryAnswer struct {
+	registry, carried [sha256.Size]byte
+	present           bool
+	own               string
+	doc               []byte
+}
+
+// keyHistoryKept is the last answer made, kept for the requests after it
+// while what it was made of is the same: the route is open, and a walk
+// parses every line and checks each rotation's signatures.
+type keyHistoryKept struct {
+	mu   sync.Mutex
+	last *keyHistoryAnswer
+}
+
 // keyHistory is the answer to GET /publickey/history: the history of the
 // registry as it stands, with what was carried into its store, held to the
 // consumer's check from its own first key before it is answered, so that an
-// entry the chain does not prove is never served.
+// entry the chain does not prove is never served. The registry and the
+// carried history are read at each request; the answer is made again
+// whenever a byte of either, or the gateway's key, is not the last answer's.
 func (g *gatewayService) keyHistory() ([]byte, error) {
 	data, err := g.registry.log.readLog(0)
 	if faultOf(err) == faultAbsent {
@@ -322,7 +345,15 @@ func (g *gatewayService) keyHistory() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the key history carried into the store: %w", err)
 	}
-	entries, err := registryKeyHistory(data, g.ownKey(), carried, present)
+	own := g.ownKey()
+	made := keyHistoryAnswer{registry: sha256.Sum256(data), carried: sha256.Sum256(carried), present: present, own: hex.EncodeToString(own)}
+	g.keyHistoryKept.mu.Lock()
+	defer g.keyHistoryKept.mu.Unlock()
+	if last := g.keyHistoryKept.last; last != nil && last.registry == made.registry && last.carried == made.carried &&
+		last.present == made.present && last.own == made.own {
+		return last.doc, nil
+	}
+	entries, err := registryKeyHistory(data, own, carried, present)
 	if err != nil {
 		return nil, err
 	}
@@ -330,5 +361,7 @@ func (g *gatewayService) keyHistory() ([]byte, error) {
 	if _, err := checkKeyHistory(doc, entries[0].key); err != nil {
 		return nil, fmt.Errorf("the key history does not hold: %w", err)
 	}
+	made.doc = doc
+	g.keyHistoryKept.last = &made
 	return doc, nil
 }
