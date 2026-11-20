@@ -107,7 +107,7 @@ func TestActCitationsHeldToTheCallersReach(t *testing.T) {
 	// then lists its last receipt's signature, and citing it is refused.
 	seedPath := writeSeedFile(t, t.TempDir(), testSeed)
 	var so, se bytes.Buffer
-	if c := cmdSealOpenAt([]string{"--store", g.storeRoot, "--seed", seedPath, "--registry", g.regPath, "--authority", g.authority, "--session", "s-b"}, &so, &se, fixedStamp("2026-11-16T00:00:01Z")); c != 0 {
+	if c := cmdSealOpenAt([]string{"--store", g.storeRoot, "--seed", seedPath, "--registry", g.regPath, "--authority", g.authority, "--no-sink", "--session", "s-b"}, &so, &se, fixedStamp("2026-11-16T00:00:01Z")); c != 0 {
 		t.Fatalf("seal-open: %d %s %s", c, so.String(), se.String())
 	}
 	resp, err := http.Get(server.URL + "/registry")

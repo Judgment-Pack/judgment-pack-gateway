@@ -2647,6 +2647,16 @@ it is acknowledged. The delivery, acknowledgment, retry and deadline rules are S
 The member names no credential: the sink checks each receipt against the gateway's public
 key, which it pins as any verifier does.
 
+`gateway seal-open --config` delivers each stored receipt of a session to the sink before it
+seals the session. `gateway seal-open` given the store by its flags (`--store`, `--seed`,
+`--registry`, `--authority`) cannot tell whether the gateway that wrote the store forwarded
+receipts, so it refuses, exit 1, with a fixed sentence: `a store given by its flags may have
+been written by a gateway that forwards receipts to a receipt sink, and a seal here would not
+deliver them first; give --config, which names the sink, or --no-sink for a store with no
+receipt sink; nothing was sealed`. With `--no-sink` it seals as before and first writes on
+stderr `seal-open: --no-sink: delivery to a receipt sink was skipped; no receipt was delivered
+before a seal`. `--no-sink` beside `--config` is a usage error.
+
 ## A signer in a key service (engine version 36)
 
 From engine version 36, `signingKeyVersion` names one Ed25519 key version in Cloud KMS

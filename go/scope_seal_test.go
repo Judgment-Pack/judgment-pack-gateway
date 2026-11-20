@@ -274,7 +274,7 @@ func TestAStoreV030WroteVerifiesUnchanged(t *testing.T) {
 
 	seedPath := writeSeedFile(t, t.TempDir(), testSeed)
 	var stdout, stderr bytes.Buffer
-	if code := cmdSealOpenAt([]string{"--store", storeRoot, "--seed", seedPath, "--registry", regPath, "--authority", fixture.Authority, "--session", "left-open"},
+	if code := cmdSealOpenAt([]string{"--store", storeRoot, "--seed", seedPath, "--registry", regPath, "--authority", fixture.Authority, "--no-sink", "--session", "left-open"},
 		&stdout, &stderr, fixedStamp("2026-11-16T00:00:00Z")); code != 0 {
 		t.Fatalf("seal-open: %d %s %s", code, stdout.String(), stderr.String())
 	}

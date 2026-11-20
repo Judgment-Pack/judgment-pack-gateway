@@ -131,9 +131,12 @@ from.
 A session the gateway minted into and did not seal before it stopped — a crash, a
 signal — is not continued or sealed by the gateway that starts next. With the gateway
 stopped, `./gateway seal-open --store ./store --seed gateway.seed --registry
-./registry.jsonl --authority gateway:demo --session s1` (or `--all`) seals each such
+./registry.jsonl --authority gateway:demo --no-sink --session s1` (or `--all`) seals each such
 session whose receipts are whole with a seal that says it was made after an interruption
-(SPEC.md §3c), and prints each seal it appends; `gateway serve --seal-open-at-start`, or
+(SPEC.md §3c), and prints each seal it appends. Given by its flags, the store names no
+receipt sink, so `--no-sink` is required, says on stderr that delivery to a sink was skipped,
+and is for a store no gateway forwarding receipts wrote; for one that did, give
+`--config <engine.json>` instead, and its receipts are delivered first; `gateway serve --seal-open-at-start`, or
 `sealOpenAtStart` in an engine configuration, does the same at the start. On Unix
 `seal-open` refuses while a gateway holds the registry; elsewhere it cannot tell, says so on
 stderr, and seals. A store belongs to one registry: give the command the registry the store's

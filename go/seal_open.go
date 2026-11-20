@@ -42,7 +42,7 @@ import (
 	"strings"
 )
 
-const sealOpenUsage = `usage: gateway seal-open (--config <engine.json> | --store <dir> --seed <file> --registry <file> --authority <authority>) (--session <id> | --all)
+const sealOpenUsage = `usage: gateway seal-open (--config <engine.json> | --store <dir> --seed <file> --registry <file> --authority <authority> --no-sink) (--session <id> | --all)
 Seals, the gateway stopped, a session an earlier process left open: one no
 seal closes whose receipts gateway verify finds every one whole, in sequence
 and chained. The seal says it was made after an interruption, over the
@@ -51,8 +51,19 @@ receipts the store holds (SPEC.md §3c); such a session is never continued.
 whole, which stays as it is. Prints each seal appended, as its registry line.
 With a receiptSink in the configuration, each receipt a session holds is
 first delivered to the sink, oldest first; a session whose receipts the sink
-does not all acknowledge is not sealed and is named.
-Nothing is deleted.`
+does not all acknowledge is not sealed and is named. The store by its flags
+names no receipt sink, and is sealed only with --no-sink, for a store no
+gateway forwarding receipts wrote: no receipt is delivered, and stderr says
+so. Nothing is deleted.`
+
+// sealOpenNeedsSink is the refusal of a store given by its flags without
+// --no-sink (#541): the flags cannot say whether the gateway that wrote it
+// forwarded receipts to a sink, which a seal would then skip.
+const sealOpenNeedsSink = "a store given by its flags may have been written by a gateway that forwards receipts to a receipt sink, and a seal here would not deliver them first; give --config, which names the sink, or --no-sink for a store with no receipt sink; nothing was sealed"
+
+// sealOpenNoSinkSaid is the line seal-open writes to stderr first under
+// --no-sink.
+const sealOpenNoSinkSaid = "seal-open: --no-sink: delivery to a receipt sink was skipped; no receipt was delivered before a seal\n"
 
 // sealOpenTarget is a session found whole and unsealed: its count and the
 // signature of its last receipt.
@@ -372,6 +383,9 @@ type sealOpenOptions struct {
 	// receiptSink is the configuration's receipt sink (ADR-0049), nil where
 	// there is none or no configuration is given.
 	receiptSink *receiptSinkSpec
+	// byFlags is a store given by its flags, not --config; noSink is
+	// --no-sink, which a store by its flags is sealed under alone (#541).
+	byFlags, noSink bool
 }
 
 // sink is the receipt sink the command delivers to before it seals, nil
@@ -385,7 +399,7 @@ func (o sealOpenOptions) sink() *sealOpenSink {
 
 func parseSealOpen(args []string) (sealOpenOptions, string) {
 	flags := map[string]string{}
-	all := false
+	all, noSink := false, false
 	for rest := args; len(rest) > 0; {
 		name := rest[0]
 		if name == "--all" {
@@ -393,6 +407,13 @@ func parseSealOpen(args []string) (sealOpenOptions, string) {
 				return sealOpenOptions{}, "--all is given twice"
 			}
 			all, rest = true, rest[1:]
+			continue
+		}
+		if name == "--no-sink" {
+			if noSink {
+				return sealOpenOptions{}, "--no-sink is given twice"
+			}
+			noSink, rest = true, rest[1:]
 			continue
 		}
 		switch name {
@@ -414,6 +435,9 @@ func parseSealOpen(args []string) (sealOpenOptions, string) {
 	}
 	o := sealOpenOptions{session: flags["--session"]}
 	if config := flags["--config"]; config != "" {
+		if noSink {
+			return sealOpenOptions{}, "--config names the receipt sink, or none; --no-sink is not given beside it"
+		}
 		for _, other := range []string{"--store", "--seed", "--registry", "--authority"} {
 			if flags[other] != "" {
 				return sealOpenOptions{}, "--config names the store, the seed, the registry and the authority; " + other + " is not given beside it"
@@ -444,6 +468,7 @@ func parseSealOpen(args []string) (sealOpenOptions, string) {
 		}
 	}
 	o.store, o.registry, o.authority, o.seedNames = flags["--store"], flags["--registry"], flags["--authority"], []string{flags["--seed"]}
+	o.byFlags, o.noSink = true, noSink
 	return o, "ok"
 }
 
@@ -462,6 +487,14 @@ func cmdSealOpenAt(args []string, stdout, stderr io.Writer, stamp func() string)
 	default:
 		fmt.Fprintf(stderr, "seal-open: %s\n%s\n", msg, sealOpenUsage)
 		return 2
+	}
+	// a store by its flags is sealed only under --no-sink, which is said
+	if o.byFlags && !o.noSink {
+		fmt.Fprintln(stderr, "seal-open:", sealOpenNeedsSink)
+		return 1
+	}
+	if o.noSink {
+		fmt.Fprint(stderr, sealOpenNoSinkSaid)
 	}
 	var sealed []*vObject
 	var refused []string
