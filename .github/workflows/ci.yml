@@ -218,7 +218,7 @@ jobs:
           m = json.load(open("dev.json", encoding="utf-8"))
           tc = m.get("toolchains", {})
           print("node=" + tc.get("node", {}).get("version", ""))
-          print("python=" + tc.get("python", {}).get("version", "3.12"))
+          print("python=" + tc.get("python", {}).get("exact", tc.get("python", {}).get("version", "3.12")))
           PY
           # The toolchain the release workflow names, exactly: the third-party notices carry the
           # toolchain's own licence, so they are held with the toolchain that links a release
@@ -327,7 +327,7 @@ jobs:
           m = json.load(open("dev.json", encoding="utf-8"))
           tc = m.get("toolchains", {})
           print("node=" + tc.get("node", {}).get("version", ""))
-          print("python=" + tc.get("python", {}).get("version", "3.12"))
+          print("python=" + tc.get("python", {}).get("exact", tc.get("python", {}).get("version", "3.12")))
           PY
           # The toolchain the release workflow names, exactly: the third-party notices carry the
           # toolchain's own licence, so they are held with the toolchain that links a release

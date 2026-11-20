@@ -973,6 +973,47 @@ beyond a witness's bounds on its submitters, and resistance to a local attacker 
 concurrently rename or replace store ancestors. Run it from a directory whose ownership and write
 permissions you control.
 
+### The receipt sink
+
+A configuration's `receiptSink` (engine version 35; SPEC.md §6a;
+[ADR-0049](docs/adr/0049-a-receipt-is-acknowledged-by-the-sink-before-it-is-answered.md)) sends
+each receipt `/acquire` mints to one endpoint before the caller is answered.
+
+**What the sink learns.** Every receipt the gateway answers, of every scope identifier:
+- session ids, call indexes and sources;
+- the caller each receipt names, and any delegation and witness it names;
+- the argument and result digests;
+- each session's scope salt (ADR-0042). With it, the sink can tell which seals in the public
+  registry are of which scope identifier, as any holder of a session's receipts can.
+
+It learns the payload too, but only where `payload` is `true`, and never for a source that
+keeps no payload. It does not learn the argument salts, which are in the caller's answer and
+in no receipt, so it cannot open an argument commitment.
+
+**What it is trusted for.**
+- *Availability.* While the sink does not acknowledge, every acquisition and every seal is
+  refused. Whoever controls the sink, or the path to it, can stop the gateway answering.
+- *Keeping what it acknowledged.* The gateway takes an acknowledgment as delivery. A sink that
+  acknowledges and then drops a receipt loses it, and the gateway cannot tell.
+
+**What it is not trusted for.** Verification. Receipts and seals verify against the gateway's
+public key and its registry, with or without the sink, and the sink holds nothing a verifier
+needs. The sink is sent the stored receipt bytes, which it can check against the gateway's
+pinned public key. Neither the sink nor anyone else who posts to it can make a receipt the key
+did not sign pass as one. The member names no credential for the sink. A party that posts old,
+valid receipts to the sink posts only what the sink deduplicates by digest.
+
+**The path.**
+- `https`: the certificate is verified for the url's host against the system roots, no proxy
+  is taken from the environment, and no redirect is followed.
+- Plain `http`: accepted only to a loopback address written as one, and the dial is held to a
+  loopback peer. Any local process that can bind that port can act as the sink. It then sees
+  what the sink sees, and can withhold the acknowledgment.
+
+**Not covered.** A receipt held, unacknowledged, when the process stops is in the store but is
+not delivered again by the next start. The operator reconciles it from the store's export.
+`/act` receipts and seals are not forwarded.
+
 ### Durable action identity
 
 Keyed `/act` requests reserve a private durable journal entry before mutation.

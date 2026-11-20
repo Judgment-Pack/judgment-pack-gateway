@@ -62,7 +62,7 @@ entry is `{"file": …}`, and a live one's may carry `tokenStep` beside `file`. 
 absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"34"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"35"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
   6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
   decision policy's `fix` and `closed`, version 10 a decision policy's `shape`, version 11
@@ -88,8 +88,9 @@ absolute.
   below), version 32 a token step's `federatedToken` ("A federated token from the
   platform's metadata server", below), version 33 a token step's `signedBy` and `subject`
   and an http path's `{numericId}` and `{alnumId}` ("A token step with a delegated subject
-  (engine version 33)", below), and version 34 a token step's `assertionAlgorithm` ("A live
-  operation's token step (engine version 21)", below). A
+  (engine version 33)", below), version 34 a token step's `assertionAlgorithm` ("A live
+  operation's token step (engine version 21)", below), and version 35 `receiptSink` ("A
+  receipt sink (engine version 35)", below). A
   file of an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 12 when it signs a captured snapshot, and to
   version 8 when it carries parameters without a capture, otherwise leaving the version as it found it —
@@ -2616,6 +2617,35 @@ derives the sources it did; a request naming a `query` member with `$` in it rea
 endpoint with `$` rather than `%24`, and its statement is unchanged. To bind templates, raise
 `engineVersion` to `"31"`. A gateway older than this one refuses a version-31 file by its
 version.
+
+## A receipt sink (engine version 35)
+
+Version 35 adds the optional `receiptSink` member
+([ADR-0049](../adr/0049-a-receipt-is-acknowledged-by-the-sink-before-it-is-answered.md),
+SPEC.md §6a, gateway #505). Each receipt `/acquire` mints is delivered to this one endpoint,
+and acknowledged by it, before `/acquire` answers.
+
+```json
+"receiptSink": {"url": "https://audit-log.example/receipts", "payload": false}
+```
+
+- `url` is required: 1 to 2048 bytes, absolute, with no user, query or fragment. It is
+  `https`, or plain `http` only to a loopback address written as one: `127.0.0.1` (any of
+  127.0.0.0/8) or `[::1]`. A name, `localhost` included, is refused for plain http, so a
+  plain-http sink is reached without a name being resolved.
+- `payload` is optional, `true` or `false`, and `false` when absent. With `true` the delivery
+  carries the result beside its digest, except for a platform whose `artifact` is
+  `"not-retained"`: its results are never carried.
+- Any other member is refused by name. The member under version 34 or earlier is refused as
+  `receiptSink is a version-35 member; engineVersion <n> has no receiptSink`. A refusal
+  repeats no value of the url.
+
+Without the member, `/acquire` answers as it did before. With it, a sink that does not
+acknowledge refuses the acquisition `503` with `code` `receipt_not_forwarded`. The receipt is
+held, and the session's next acquisition and its seal deliver it first and are refused until
+it is acknowledged. The delivery, acknowledgment, retry and deadline rules are SPEC.md §6a's.
+The member names no credential: the sink checks each receipt against the gateway's public
+key, which it pins as any verifier does.
 
 ## Keyed actions (engine version 14 and later)
 
