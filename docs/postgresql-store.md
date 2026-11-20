@@ -726,7 +726,7 @@ available with this kind yet").
 ## Removing one scope identifier's rows
 
 ```text
-gateway store remove-scope (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> --seed <file> --scope <identifier> --by <label> [--timeout <seconds>]
+gateway store remove-scope (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> (--seed <file> | --config <engine.json>) --scope <identifier> --by <label> [--timeout <seconds>]
 ```
 
 The command removes every row of one scope identifier, its sessions (`gateway.series`, and their
@@ -734,8 +734,10 @@ take-ups, `gateway.series_holders`), receipts
 (`gateway.entries`), payloads (`gateway.blobs`) and documents, and its row of
 `gateway.scope_identifiers`, and records the removal, in one transaction
 ([ADR-0034](adr/0034-removing-one-scope-identifiers-records.md)). It takes the migration login's
-connection string as `gateway store migrate` does, never printed, and the gateway's seed file, by
-which the records are signed.
+connection string as `gateway store migrate` does, never printed. The records are signed by the
+key in force. Given `--config`, that is the key service's key version the configuration names,
+held to `signingPublicKey`, or else the configuration's seed (ADR-0050). Given `--seed`, it is that
+seed's key, and a registry under a key service's key is refused.
 
 - **Who removes.** The migration login, by SET ROLE to the owner for the transaction alone: the
   owner holds DELETE as the tables' owner. No role, grant or function is added for it; the
