@@ -515,6 +515,13 @@ func TestSigningKeyAlgorithmIsAVersion40MemberBesideAKeyVersion(t *testing.T) {
 			t.Errorf("%s: %v", c.name, err)
 		}
 	}
+	// signingPublicKey left out names the key's form under ES256
+	if _, _, err := load(t, atVersion(t, p256SignerVersion, catalog, adapters+`,"signingKeyVersion":"`+ksP256One+`","signingKeyAlgorithm":"ES256"`, platform)); !errors.Is(err, errSigningPublicKeyRequiredP256) {
+		t.Errorf("ES256 without signingPublicKey: %v", err)
+	}
+	if _, _, err := load(t, atVersion(t, p256SignerVersion, catalog, adapters+`,"signingKeyVersion":"`+ksVersion1+`"`, platform)); !errors.Is(err, errSigningPublicKeyRequired) {
+		t.Errorf("Ed25519 without signingPublicKey: %v", err)
+	}
 	cfg, _, err := load(t, atVersion(t, p256SignerVersion, catalog, keyed(ksP256One, point, `"ES256"`), platform))
 	if err != nil || cfg.signingKeyAlgorithm != algES256 || cfg.signingPublicKey != point {
 		t.Fatalf("version 40 with ES256: %v", err)
