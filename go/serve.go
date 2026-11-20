@@ -64,8 +64,13 @@ type sessionState struct {
 	scopeSalt string
 	// forward holds the session's receipts minted and not yet acknowledged
 	// by the receipt sink (receipt_sink.go, ADR-0049), oldest first; nil
-	// until the first receipt is minted where a sink is configured.
+	// until the first receipt is minted where a sink is configured. A seal
+	// held for the sink (seal_sink.go) stands after them.
 	forward *forwardQueue
+	// forwardedSeal is the seal this process appended with seals forwarded
+	// (seal_sink.go) until a /seal answers it, once the sink has
+	// acknowledged it; nil otherwise.
+	forwardedSeal *vObject
 }
 
 // scopeSaltOf is the session's scope salt, drawn the first time it is
@@ -2274,37 +2279,88 @@ func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string
 	if err := g.redeliverReached(sessionID, reach); err != nil {
 		return nil, err
 	}
+	record, forwarding, err := g.sealUnderLock(sessionID, reach)
+	if err != nil {
+		return nil, err
+	}
+	if forwarding != nil {
+		// With seals forwarded (seal_sink.go), the seal is delivered after
+		// the session's receipts, outside the gateway's lock, and answered
+		// only once the sink has acknowledged it. One not acknowledged is
+		// held, in memory and by its marker in the store, and the caller is
+		// told the seal's fixed sentence and nothing of the seal.
+		if err := g.forwarder.deliver(g.forwardingContext(), forwarding, sealIndex); err != nil {
+			return nil, sealNotForwarded{}
+		}
+		g.mu.Lock()
+		if state := g.sessions[sessionID]; state != nil && state.forwardedSeal == record {
+			state.forwardedSeal = nil
+		}
+		g.mu.Unlock()
+	}
+	var out map[string]any
+	if err := json.Unmarshal(canon(record), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// sealUnderLock is the seal's part under the gateway's lock: the session
+// judged and its seal appended. With seals forwarded (seal_sink.go) the
+// seal's marker is written before the append, and the seal is held for the
+// sink after the session's receipts, in the queue it answers, which the
+// caller delivers once the lock is released; a seal this process appended
+// and the sink has since acknowledged is answered to the /seal that finds
+// it, once.
+func (g *gatewayService) sealUnderLock(sessionID string, reach scopeReach) (*vObject, *forwardQueue, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	state, seen := g.sessions[sessionID]
 	if seen && !reach.holds(state.scope) {
-		return nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
+		return nil, nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
 	}
 	if !seen {
 		if !reach.every {
 			if held, scope, known := g.storedScope(sessionID); !known || held && !reach.holds(scope) {
-				return nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
+				return nil, nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
 			}
 		}
 		if refused := g.leftInStore(sessionID, "", false); refused != nil {
-			return nil, refused
+			return nil, nil, refused
 		}
-		return nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
+		return nil, nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
 	}
 	// A seal must not overtake work the gateway already admitted, or that
 	// receipt would exist in the store while the sealed finalCount says it does
 	// not. Refusing is the registered policy: the caller retries once the
 	// in-flight acquisitions finish, and no registry record is written here.
 	if state.inFlight > 0 {
-		return nil, badRequest{fmt.Errorf(
+		return nil, nil, badRequest{fmt.Errorf(
 			"session has %d acquisition(s) in flight, retry after they finish: %s",
 			state.inFlight, sessionID)}
 	}
 	// A session is not sealed while a receipt of it is unacknowledged: one
 	// an acquisition minted since the delivery above is delivered by that
-	// acquisition, or held, and the seal is asked again.
-	if state.forward.unacknowledged() {
-		return nil, receiptNotForwarded{}
+	// acquisition, or held, and the seal is asked again. A seal still held,
+	// which another seal is delivering, is refused with its own sentence.
+	if refused := state.forward.refusal(); refused != nil {
+		return nil, nil, refused
+	}
+	if state.forwardedSeal != nil {
+		record := state.forwardedSeal
+		state.forwardedSeal = nil
+		return record, nil, nil
+	}
+	// The seal's marker is in the store before the seal is in the
+	// registry, and only once every receipt of the session is
+	// acknowledged (above), so a crash past the append leaves the seal for
+	// the next start to deliver (seal_sink.go). A session marked sealed
+	// already, whose seal may be written, is marked by that attempt.
+	sealing := g.forwarder != nil && g.forwarder.seals
+	if sealing && !state.sealed {
+		if err := g.sealForwarding().mark(sessionID); err != nil {
+			return nil, nil, fmt.Errorf("the seal's forwarding could not be recorded, so the session was not sealed: %w", err)
+		}
 	}
 	// a session of a scope identifier is sealed naming it (ADR-0036), over
 	// the scope salt its receipts carry (ADR-0042), one of no scope in §3's
@@ -2318,14 +2374,18 @@ func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string
 		if errors.As(err, new(sealMayBeWritten)) {
 			state.sealed = true
 		}
-		return nil, badRequest{err}
+		return nil, nil, badRequest{err}
 	}
 	state.sealed = true
-	var out map[string]any
-	if err := json.Unmarshal(canon(record), &out); err != nil {
-		return nil, err
+	if !sealing {
+		return record, nil, nil
 	}
-	return out, nil
+	if state.forward == nil {
+		state.forward = newForwardQueue()
+	}
+	state.forward.add(g.heldSealOf(sessionID, record))
+	state.forwardedSeal = record
+	return record, state.forward, nil
 }
 
 func (g *gatewayService) verify() (map[string]any, error) {
@@ -2444,6 +2504,13 @@ func (g *gatewayService) handler() http.Handler {
 		var unforwarded receiptNotForwarded
 		if errors.As(err, &unforwarded) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": unforwarded.Error(), "code": receiptNotForwardedCode})
+			return
+		}
+		// A seal the sink did not acknowledge (seal_sink.go): the same
+		// status and code, and the seal's own sentence.
+		var sealUnforwarded sealNotForwarded
+		if errors.As(err, &sealUnforwarded) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": sealUnforwarded.Error(), "code": receiptNotForwardedCode})
 			return
 		}
 		var expired *sourceReferenceExpired
