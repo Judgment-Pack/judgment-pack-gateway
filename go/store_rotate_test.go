@@ -13,12 +13,12 @@ import (
 	"testing"
 )
 
-// rotateOn runs gateway store rotate over g's store into newStore and
-// newRegistry, stamped at.
+// rotateOn runs gateway store rotate over g's store, by its flags and
+// --no-sink, into newStore and newRegistry, stamped at.
 func rotateOn(t *testing.T, g *gatewayService, seedPath, newStore, newRegistry, at string) (int, string, string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	code := cmdStoreRotateAt([]string{"--store", g.storeRoot, "--seed", seedPath, "--registry", g.regPath, "--authority", "gateway:test",
+	code := cmdStoreRotateAt([]string{"--store", g.storeRoot, "--seed", seedPath, "--registry", g.regPath, "--authority", "gateway:test", "--no-sink",
 		"--new-store", newStore, "--new-registry", newRegistry}, &stdout, &stderr, fixedStamp(at))
 	return code, stdout.String(), stderr.String()
 }
@@ -49,7 +49,7 @@ func TestStoreRotateSealsWhatIsOpenAndLinksTheNewRegistry(t *testing.T) {
 	newStore, newRegistry := filepath.Join(dir, "store"), filepath.Join(dir, "registry.jsonl")
 	receipts := storeTree(t, g.storeRoot)
 	code, stdout, stderr := rotateOn(t, g, seedPath, newStore, newRegistry, "2026-11-19T00:00:01Z")
-	if code != 0 || strings.TrimPrefix(stderr, sealOpenUnlocked()) != "" {
+	if code != 0 || stderr != storeRotateNoSinkSaid {
 		t.Fatalf("exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
 	}
 	out := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
@@ -355,7 +355,8 @@ func TestStoreRotateDeliversToTheReceiptSinkBeforeItSeals(t *testing.T) {
 	before := readFile(t, g.regPath)
 	var stdout, stderr bytes.Buffer
 	code := cmdStoreRotateAt([]string{"--config", config, "--new-store", newStore, "--new-registry", newRegistry}, &stdout, &stderr, fixedStamp("2026-11-19T00:00:01Z"))
-	if code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "left") {
+	refused := fmt.Sprintf(storeRotateNotSealed, fmt.Sprintf("session left is not sealed: %v; it is left open", receiptNotForwarded{}))
+	if code != 1 || stdout.Len() != 0 || stderr.String() != "store rotate: "+refused+"\n" {
 		t.Fatalf("store rotate past a sink that does not acknowledge: %d %q %q", code, stdout.String(), stderr.String())
 	}
 	if got, _ := sink.snapshot(); len(got) == 0 {

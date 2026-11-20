@@ -432,3 +432,39 @@ func TestAPostgresStoreRotationIsRefusedIntoADatabaseHoldingKeyHistoryOrRowsAlon
 		}
 	}
 }
+
+// On the PostgreSQL kind too, a seal held for the sink -- its marker among
+// the documents of no scope -- refuses a rotation that would not deliver
+// it, here by a configuration that names no receipt sink, before anything
+// is sealed: the session left open stays open, the marker stays, and the
+// new database is not migrated.
+func TestAPostgresStoreRotationRefusesASealHeldForTheSink(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	dir := tempDirAt(t, 0o700)
+	config, cfg := sealOpenPgConfig(t, db, dir, "engine.json", false, "")
+	stop := sealOpenPgLeaveOpen(t, cfg, sealOpenPgSources(t), []string{
+		`{"session":"s-1","source":"plain","arguments":{"q":"acme"}}`,
+		`{"session":"s-2","source":"plain","arguments":{"q":"acme"}}`,
+	}, "s-2")
+	stop()
+	marks := pgSealForwarding{db.open(t, nil).ofNoScope().documents()}
+	if err := marks.mark("s-2"); err != nil {
+		t.Fatal(err)
+	}
+	target := pgTestDBBeside(t, db)
+	before := pgRegistryOf(t, db)
+	code, stdout, stderr := rotatePg(t, config, target, dir)
+	if code != 1 || stdout != "" || stderr != "store rotate: "+storeRotateSealsHeld([]string{"s-2"}).Error()+"\n" {
+		t.Fatalf("a rotation past a held seal: %d %q %q", code, stdout, stderr)
+	}
+	if after := pgRegistryOf(t, db); after != before || strings.Contains(after, `"sessionId":"s-1"`) {
+		t.Fatal("a refused rotation sealed a session")
+	}
+	if pending := markedPending(t, marks); len(pending) != 1 || pending[0] != "s-2" {
+		t.Fatalf("the marker is not kept: %v", pending)
+	}
+	if pgHasSchema(t, target) || strings.Contains(stderr, "store-rotated") {
+		t.Fatal("a refused rotation migrated the new database")
+	}
+}

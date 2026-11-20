@@ -25,7 +25,7 @@ import (
 )
 
 const storeRotateUsage = `usage:
-  gateway store rotate (--config <engine.json> | --store <dir> --seed <file> --registry <file> --authority <authority>) --new-store <dir> --new-registry <file>
+  gateway store rotate (--config <engine.json> | --store <dir> --seed <file> --registry <file> --authority <authority> --no-sink) --new-store <dir> --new-registry <file>
   gateway store rotate --config <engine.json> (--connection-file <path> | --connection-env <NAME>) --owner <role> --runtime <role> [--timeout <seconds>]
 Rotates the store, the gateway stopped: seals every session left open in
 it, as seal-open --all does, then makes the new store directory and the new
@@ -35,7 +35,15 @@ the old store rotated away from, in a file beside its registry, and nothing
 starts on it again. Neither new path may be there already, but an empty new
 store directory, or what a rotation stopped by a crash left, which a rerun
 finishes. A session that cannot be sealed refuses the rotation, and nothing
-new is made. The old store is not changed but by the seals and the mark; it
+new is made. With a receiptSink in the configuration, what a session holds
+is delivered to the sink before it is sealed, as seal-open --config
+delivers it, and a session the sink does not acknowledge, or whose seal it
+does not, refuses the rotation. The store by its flags names no receipt
+sink, and is rotated only with --no-sink, for a store no gateway forwarding
+receipts wrote: no receipt is delivered, and stderr says so. A seal held
+for the sink, pending forwarding, that the rotation would not deliver
+refuses it, nothing sealed: deliver it first with seal-open --config, or by
+the gateway's start. The old store is not changed but by the seals and the mark; it
 is the operator's to archive or delete whole. Prints each seal appended,
 then the new registry's first line.
 With the PostgreSQL kind (--config alone names it) the new store is a new
@@ -43,6 +51,52 @@ database, which the migration login's connection string names, as gateway
 store migrate takes it: the database is to hold no store, and is migrated
 and given the registry in one transaction. The start lease of the old
 database is taken first: an instance serving it refuses the rotation.`
+
+// storeRotateNeedsSink is the refusal of a store given by its flags
+// without --no-sink, as seal-open refuses it (sealOpenNeedsSink, #541): the
+// flags cannot say whether the gateway that wrote it forwarded receipts to a
+// sink, which the rotation's seals would skip before it shuts the store.
+const storeRotateNeedsSink = "a store given by its flags may have been written by a gateway that forwards receipts to a receipt sink, and a rotation here would seal what was left open without delivering it first, then shut the old store for good; give --config, which names the sink, or --no-sink for a store with no receipt sink; nothing was rotated"
+
+// storeRotateNoSinkSaid is the line store rotate writes to stderr first
+// under --no-sink.
+const storeRotateNoSinkSaid = "store rotate: --no-sink: delivery to a receipt sink was skipped; no receipt was delivered before a seal\n"
+
+// storeRotateNotSealed is the refusal of a rotation past a session left
+// open that the seals did not settle: one not sealed, or one sealed whose
+// seal the receipt sink did not acknowledge and holds pending forwarding.
+const storeRotateNotSealed = "a session left open was not sealed, or its seal is held for the receipt sink, so the store is not rotated: %s"
+
+// storeRotateSealsHeld is the refusal of a rotation while the store holds
+// the marker of a seal pending forwarding (seal_sink.go) that the rotation
+// would not deliver: a rotation shuts the old store for good, and nothing
+// delivers the seal from it after that.
+func storeRotateSealsHeld(sessions []string) error {
+	return fmt.Errorf("a seal is held for the receipt sink, pending forwarding, of session %s; a rotation shuts the old store for good, so deliver it first with gateway seal-open --config, or by the gateway's start, then rotate; nothing was sealed, written or marked", strings.Join(sessions, ", "))
+}
+
+// refuseSealsPending refuses a rotation, before anything is sealed, while
+// the store holds a marker of a seal pending forwarding and forwardsSeals
+// is false: a store by its flags, or a configuration whose receipt sink
+// takes no seals, delivers none. With seals forwarded the rotation delivers
+// the pending seals first (sealOpenUnderSink), and one the sink does not
+// acknowledge refuses it (storeRotateNotSealed).
+func refuseSealsPending(marks sealForwarding, forwardsSeals bool) error {
+	if forwardsSeals {
+		return nil
+	}
+	marked, err := marks.pending()
+	if err != nil {
+		return fmt.Errorf("the seals pending forwarding could not be read, so nothing was sealed and the store is not rotated: %v", err)
+	}
+	if len(marked) > 0 {
+		return storeRotateSealsHeld(marked)
+	}
+	return nil
+}
+
+// forwardsSeals is whether the configuration's receipt sink takes seals.
+func (o sealOpenOptions) forwardsSeals() bool { return o.receiptSink != nil && o.receiptSink.seals }
 
 // storeRotateTargetFlags are the flags of the new store: its directory and
 // registry on the filesystem kind, its database on the PostgreSQL kind.
@@ -129,6 +183,14 @@ func cmdStoreRotateAt(args []string, stdout, stderr io.Writer, stamp func() stri
 			fmt.Fprintln(stderr, storeRotateUsage)
 			return 2
 		}
+		// a store by its flags is rotated only under --no-sink, which is said
+		if o.byFlags && !o.noSink {
+			fmt.Fprintln(stderr, "store rotate:", storeRotateNeedsSink)
+			return 1
+		}
+		if o.noSink {
+			fmt.Fprint(stderr, storeRotateNoSinkSaid)
+		}
 		sealed, continuation, err = storeRotate(o, targets["--new-store"], targets["--new-registry"], stamp)
 	}
 	for _, record := range sealed {
@@ -193,6 +255,7 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	if err := heldUnderAnotherKey(data, walk.keys, pub, newFsKind(fsLayout{store: o.store}).receipts()); err != nil {
 		return nil, nil, err
 	}
+	marks := fsSealOpenStore{o.store}.forwarding()
 	if made, present, err := readRegistryBytes(newRegistry); err != nil {
 		return nil, nil, fmt.Errorf("the new registry: %w", err)
 	} else if present {
@@ -201,6 +264,11 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 		named, ok := continuesAlone(made, data, pub)
 		if !ok {
 			return nil, nil, fmt.Errorf("%s is there already; a rotation starts a new store and registry, and nothing was changed", newRegistry)
+		}
+		// the rerun seals nothing, so delivers nothing: a seal held is
+		// refused whatever the sink
+		if err := refuseSealsPending(marks, false); err != nil {
+			return nil, nil, err
 		}
 		// the history is written before the registry, and the continuation
 		// names its bytes: one beside it is held to them, and one lost is
@@ -213,6 +281,11 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 		}
 		return nil, made, nil
 	}
+	// before anything is sealed: a seal held that this rotation does not
+	// deliver refuses it
+	if err := refuseSealsPending(marks, o.forwardsSeals()); err != nil {
+		return nil, nil, err
+	}
 	writer, err := newRegistryWriterWith(o.registry, seed, newSignerHolder(sig), func() (bool, error) { return true, nil })
 	if err != nil {
 		return nil, nil, err
@@ -222,7 +295,7 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 		return sealed, nil, fmt.Errorf("%v; the store is not rotated", err)
 	}
 	if len(refused) > 0 {
-		return sealed, nil, fmt.Errorf("a session left open could not be sealed, so the store is not rotated: %s", refused[0])
+		return sealed, nil, fmt.Errorf(storeRotateNotSealed, refused[0])
 	}
 	// the bytes are read after the seals, under the hold, and walked again
 	// as the gateway walks them: the continuation names the registry as it
