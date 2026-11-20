@@ -58,6 +58,11 @@ const (
 // store (the marker is written before the append).
 var sealAppendedHook = func(sessionID string) {}
 
+// sealDeliveredHook runs once /seal has delivered what the session holds
+// for the sink and before it takes the gateway's lock to seal; a test holds
+// a receipt there, which the seal under the lock refuses.
+var sealDeliveredHook = func(sessionID string) {}
+
 // sealNotForwarded is the refusal of a seal the sink did not acknowledge,
 // whatever went wrong: the seal is in the registry, and is held.
 type sealNotForwarded struct{}

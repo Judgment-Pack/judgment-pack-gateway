@@ -2282,6 +2282,7 @@ func (g *gatewayService) sealFor(sessionID string, reach scopeReach) (map[string
 	if err := g.redeliverReached(sessionID, reach); err != nil {
 		return nil, err
 	}
+	sealDeliveredHook(sessionID)
 	record, forwarding, err := g.sealUnderLock(sessionID, reach)
 	if err != nil {
 		return nil, err

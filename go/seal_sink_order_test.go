@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -89,4 +91,40 @@ func TestASealOpenStoppedPastItsAppendIsDeliveredByTheNextStart(t *testing.T) {
 		cmdSealOpenAt([]string{"--config", config, "--session", "sl-q"}, &stdout, &stderr, nowStamp)
 	})
 	startDelivers(t, sink, service, sinkURL, "sl-q")
+}
+
+// A receipt held between the seal's delivery and its hold of the gateway's
+// lock -- an acquisition the sink did not acknowledge, minted in that gap
+// -- is refused under the lock with the receipt's sentence: no marker is
+// written and nothing is appended (#558).
+func TestASealRefusesAReceiptHeldSinceItsDelivery(t *testing.T) {
+	sink, service, server, _ := sealSinkService(t)
+	acquireOK(t, server, "sl-r", "r0")
+	registry := readFile(t, service.regPath)
+	saved := sealDeliveredHook
+	t.Cleanup(func() { sealDeliveredHook = saved })
+	var ran atomic.Bool
+	sealDeliveredHook = func(session string) {
+		if session != "sl-r" || ran.Swap(true) {
+			return
+		}
+		sink.setAnswer(refuseAcknowledgments)
+		if code, body := post(t, server, "/acquire", `{"session":"sl-r","source":"kept","arguments":{"q":"r1"}}`); code != http.StatusServiceUnavailable {
+			t.Errorf("the acquisition in the gap was not held: %d %v", code, body)
+		}
+	}
+	code, body := post(t, server, "/seal", `{"session":"sl-r"}`)
+	if !ran.Load() {
+		t.Fatal("the hook did not run")
+	}
+	if code != http.StatusServiceUnavailable || len(body) != 2 ||
+		body["error"] != (receiptNotForwarded{}).Error() || body["code"] != receiptNotForwardedCode {
+		t.Fatalf("the seal behind a held receipt: %d %v", code, body)
+	}
+	if pending := markedPending(t, fsSealForwarding{service.storeRoot}); len(pending) != 0 {
+		t.Fatalf("a marker was written for a seal refused: %v", pending)
+	}
+	if got := readFile(t, service.regPath); got != registry {
+		t.Fatalf("the registry changed under a refused seal:\n%s", got)
+	}
 }
