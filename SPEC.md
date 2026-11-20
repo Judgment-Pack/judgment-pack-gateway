@@ -1528,6 +1528,7 @@ store"), its continuation this one, byte for byte, read through `gateway export`
 | `keyId` | 32 lowercase hexadecimal characters | the key id of the key in force, which signs it |
 | `previousLines` | an integer from 0 to 2⁵³−1 | the old registry's line count |
 | `previousDigest` | 64 lowercase hexadecimal characters | the SHA-256 of the old registry's bytes, whole |
+| `keyHistoryDigest` | 64 lowercase hexadecimal characters | the SHA-256 of the key history the rotation carries beside the new registry (§3e), its exact bytes |
 | `signature` | 128 lowercase hexadecimal characters | Ed25519 over `"judgment-pack-gateway/store-continuation/1:"` and `canon` of the statement without `signature` |
 
 A registry's **line count** is the number of pieces its bytes split into at each `0x0A`, a last piece
@@ -1547,7 +1548,8 @@ refuses the store by the mark's name: *the store was rotated away from (store-ro
 stopped by a crash is finished by running it again: a new store directory that is empty, or holds only
 what the rotation left, does not refuse it, the new registry is written whole beside its place and
 renamed into it, and a new registry already there whose only line is the old registry's continuation, by
-its count and digest under the key in force, is kept, and only the mark is written.
+its count and digest under the key in force, is kept, its key history held to the `keyHistoryDigest` it
+names (§3e), and only then the mark is written.
 
 **Reading it.** A registry line is a store continuation when §1.1's parser reads it as one JSON object
 whose `kind` is `"store-continuation"`. It is never a seal or a rotation statement. At the registry's
@@ -1582,6 +1584,73 @@ is not a rotation statement, and so as a seal (§4 step 2), which loads nothing:
 no observation of it, verifies the rest of the store as before, so a continued store is `ok` to it where
 it is `ok` here and a misplaced or forged continuation goes unreported; and it refuses `--previous` as a
 usage error, giving no verdict.
+
+## 3e. The key history
+
+A consumer that checks receipts one at a time holds no registry to follow rotations in. A gateway
+answers its **key history** at `GET /publickey/history` (§6), with no token: every key its registry
+proves it signed under, in order, each with what proves it, so that a consumer that pinned the first key
+(§5) checks every entry from the answer alone (`docs/adr/0052-the-key-history-beside-the-public-key.md`).
+It adds no trust: an entry the consumer cannot check is no entry.
+
+**The answer.** `canon` (§1.1) of `{keyHistoryVersion, keys}`: `keyHistoryVersion` the string `"1"`, and
+`keys` an array of one entry or more, each an object of these members and no other:
+
+| Member | Form | Entry |
+|---|---|---|
+| `keyId` | 32 lowercase hexadecimal characters | every: the key id (§1.2) of `publicKey` |
+| `publicKey` | 64 lowercase hexadecimal characters | every: the key's 32 bytes |
+| `validFrom` | `YYYY-MM-DDThh:mm:ssZ` | every but the first: the `rotatedAt` of the rotation to the key |
+| `validTo` | `YYYY-MM-DDThh:mm:ssZ` | every but the last, the key in force: the `rotatedAt` of the rotation from the key |
+| `keyRotation` | a string | every but the first: the rotation's `key-rotation` statement (§3b), its registry line without its `0x0A` |
+| `keyContinuation` | a string | every but the first: the rotation's `key-continuation` statement, likewise |
+
+The first key has no `validFrom`: no statement says when it came into force.
+
+**What a gateway answers.** Its registry, as it stands at the request, walked as its own reading walks it
+(§3b) -- from the key its first `key-continuation` names as `previous`, and from its own key where it has
+none -- every line that is not a rotation statement or a store continuation passed over; the first entry
+is the key the walk starts at, and each key a followed rotation reaches is the next. A walk that finds one
+of §3b's or §3d's findings, or that ends at a key other than the gateway's own, is answered `500`, `{"error":
+"the key history could not be read; the gateway says why on its stderr"}`, never as the keys reached before
+it; so is a registry that cannot be read.
+
+**Across a store rotation.** `gateway store rotate` (§3d) writes the old store's key history, the exact
+bytes its gateway answers, beside the new registry -- on the filesystem kind the registry's path with
+`.key-history` appended, outside its bytes -- durably and before the new registry is made, and the new
+registry's store continuation names those bytes by its `keyHistoryDigest` (§3d); a history that does not
+hold refuses the rotation, nothing new made. A rerun that finds the new registry made holds the history
+beside it to that digest: one whose bytes are other ones refuses the rerun, nothing changed, and one
+missing is written again, from the same bytes, only where it is the history named. A registry whose first
+line is a store continuation that loads answers the history carried beside it, whose bytes must be the
+ones its `keyHistoryDigest` names, and which must hold by the check below from its own first key and end
+at the key that signed the continuation, then the keys the registry's own rotations reach; that key's entry
+is the carried one's, its `validTo` the rotation from it, if any. A continued registry with no history
+carried beside it, or one whose bytes are not the ones named -- changed, or cut to a later stretch that
+holds on its own -- or that does not so hold, and a history carried beside a registry that continues no
+store, are each answered `500` as above, never as a shorter history. On the PostgreSQL kind, every instance
+answers the walk of the one registry they share, with the history carried into their database: the one
+row of `gateway.key_history`, which the store rotation (§3d) writes, as the owner, in the transaction
+that makes the new database's registry holding the continuation, so that the two commit together or not
+at all. The history it carries is the old database's answer, its registry's with what was carried into
+it in its turn; a rerun holds a row there to the bytes named, and writes a missing one only where it is
+the history named. The run-time role reads the row and cannot change it. A continued database whose row
+is missing or not the bytes named is answered `500` as above.
+
+**Checking it.** A consumer that pinned a key holds the answer, read by §1.1's parser, to: exactly the
+members above, each of its form; the first entry's `publicKey` the key pinned, with no `validFrom`,
+`keyRotation` or `keyContinuation`; each entry's `keyId` the key id of its `publicKey`, a key §8.4's rule
+accepts, the key of no earlier entry; for each later entry, `keyRotation` a `key-rotation` statement
+holding its form (§3b) whose `keyId` is the entry before's and whose signature verifies under its key,
+naming this entry's key as `next`, and `keyContinuation` a `key-continuation` statement holding its form,
+of the same `rotation` and `rotatedAt`, whose `keyId` is this entry's and whose signature verifies under its
+key, naming the entry before's key as `previous`; that `rotatedAt` this entry's `validFrom` and the entry
+before's `validTo`; and every entry but the last with a `validTo`, the last without one. The `rotation`
+ordinal is held to its form alone: it counts within one registry, and starts again at 1 after a store
+continuation. A receipt then verifies under the entry whose `keyId` it names. What a key's `validFrom` and
+`validTo` bound is the gateway's clock at each rotation, as `rotatedAt` is (§3b), and nothing more: an
+answer that holds is the history the gateway's registry proves, and, as `/publickey` is (§5), consistency
+with the gateway that answers it, unless the key pinned came from elsewhere.
 
 ## 4. Registry-anchored verification
 
@@ -2214,6 +2283,7 @@ written then verifies what is minted now. `gateway verify` takes
 | GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`, and `observations` when §4 has any (§4, "Observations") and `rotations` when the walk of §3b followed any, against the registry the gateway made when it started (§3): a registry that is not there is no verdict here, never the absent registry of §4.1 that loads no seals. The key it verifies from is the one its own reading of §3b starts at, taken from its registry — a reason more that this answer is not evidence (§5a.3). |
 | GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. A registry that cannot be read (§4.1), or that is not there — the gateway made it when it started (§3) — is answered `500`, never as the empty body a verifier reads as no seals; the answer's body is `{"error":"the registry could not be read; the gateway says why on its stderr"}` whatever the reason, naming neither the registry's path nor the platform's error, since a caller needs no token, and the reason is written on the gateway's stderr. |
 | GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |
+| GET    | `/publickey/history` | → canon of `{keyHistoryVersion, keys}`, every key the registry proves the gateway signed under, each later key with the two statements of the rotation to it, carried across a store rotation (§3e). A history that cannot be read or does not hold is answered `500` with `{"error":"the key history could not be read; the gateway says why on its stderr"}`, never in part. |
 
 A `source` is an operator-configured subprocess that reads the canonical arguments on
 stdin and emits a JSON result on stdout. The gateway attaches no transport of its own
@@ -2256,8 +2326,8 @@ The two `401`s are one sentence: `the token's scope_ids names a scope identifier
 configuration does not grant its subject`; neither names a scope identifier or the subject.
 They, and the claim's form refusal, are answered before the route reads the request on every
 route that takes a token, but the witness's `/witness/*` routes: those verify the token under
-the same identity, do not read the claim, and carry no scope data. `/registry` and
-`/publickey` take no token.
+the same identity, do not read the claim, and carry no scope data. `/registry`,
+`/publickey` and `/publickey/history` take no token.
 A claim wider than the entry is refused, never narrowed. A request under a delegation (§11)
 carries no claim and its subject is the issuing host's statement: it reaches the sources of no
 scope identifier where its subject's claimless token would, and never a scope identifier. With
@@ -2304,7 +2374,7 @@ not granted is still refused `401`, and the start and `/posture` say so.
   read where the configuration decides it, and with the same answer once the verdict finds a
   session of a scope identifier, one of a scope since removed from the configuration among
   them. The verdict covers every scope's sessions and is not cut by scope.
-- `/registry` and `/publickey` need no token and are served whole: no registry line carries a
+- `/registry`, `/publickey` and `/publickey/history` need no token and are served whole: no registry line carries a
   scope identifier or a caller, and a registry cut by scope would not walk. A seal of version 3
   names its session's scope by a digest over the session's scope salt, which no registry line
   holds (§3, "A seal of version 3"), so a reader of `/registry` who guesses a scope identifier

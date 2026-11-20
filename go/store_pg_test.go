@@ -1475,7 +1475,9 @@ func TestAPostgresLogRefusesARecordAnywhereButAtItsEnd(t *testing.T) {
 
 // pgGrantsOfVersion is the grants as a binary of the schema's version gave
 // them: without the tables a later version made, the record of the scope
-// identifiers (version 3) and the removal records (version 5). A table
+// identifiers (version 3), the removal records (version 5), the series'
+// holders (version 6), the mark of a store rotated away from (version 7)
+// and the key history carried (version 8). A table
 // named in the grants that the test does not find there fails it, so a
 // grant moved elsewhere is noticed.
 func pgGrantsOfVersion(t *testing.T, grants []byte, version int) []byte {
@@ -1488,6 +1490,7 @@ func pgGrantsOfVersion(t *testing.T, grants []byte, version int) []byte {
 		{5, "\n    EXECUTE pg_catalog.format('GRANT SELECT ON gateway.removal_records TO %I', runtime);"},
 		{6, ", gateway.series_holders"},
 		{7, "\n    EXECUTE pg_catalog.format('GRANT SELECT, INSERT ON gateway.rotated TO %I', runtime);"},
+		{8, "\n    EXECUTE pg_catalog.format('GRANT SELECT ON gateway.key_history TO %I', runtime);"},
 	} {
 		if version >= later.version {
 			continue

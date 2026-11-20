@@ -512,7 +512,7 @@ the run-time role, before anything is applied. It prints, as canonical JSON, wha
 part of the connection string:
 
 ```json
-{"applied":[1,2,3,4,5,6,7],"migrations":"sha256:…","schemaVersion":7}
+{"applied":[1,2,3,4,5,6,7,8],"migrations":"sha256:…","schemaVersion":8}
 ```
 
 A second run applies nothing (`"applied":[]`). A schema newer than the binary's migrations is
@@ -564,6 +564,7 @@ start refuses a table it was not restored on.
 | `gateway.scope_identifiers` (schema version 3: the scope identifiers recorded) | SELECT, INSERT | no scope's: every row is of no scope |
 | `gateway.removal_records` (schema version 5: the removal records) | SELECT | no scope's: every row is of no scope |
 | `gateway.rotated` (schema version 7: the mark of a store rotated away from) | SELECT, INSERT | every one: it carries no scope, and holds one row at most |
+| `gateway.key_history` (schema version 8: the key history a store rotation carried into the database) | SELECT | every one: it carries no scope, and holds one row at most |
 
 Append-only by privilege: nothing but a document and the start lease's rows are changed once written,
 and nothing but a document is removed; a scope identifier, once recorded, stays, and a removal
@@ -806,8 +807,16 @@ name the migration login on the new database, as `gateway store migrate` takes t
   that is rolled back at its end, and the database is held to hold no store. Once the seals are
   appended, the migrations run again. In the same transaction, under the migration's lock, the
   command checks the database again, reads the old registry again under the lease, and makes the
-  registry holding the store continuation alone. The migration and the registry commit together or
-  not at all.
+  registry holding the store continuation alone, with the key history it names in
+  `gateway.key_history`. The migration, the registry and the history commit together or not at
+  all.
+- **The key history.** SPEC.md §3e's history of the old database, as its instances answer
+  `GET /publickey/history`: its registry's, with what was carried into it in its turn, so a second
+  rotation carries the whole history on. The continuation names its bytes by `keyHistoryDigest`.
+  It is the one row of `gateway.key_history` (schema version 8), which the owner writes and the
+  run-time role reads alone, and every instance on the new database answers it with the walk of
+  the registry they share. A row missing or changed by the owner is answered `500`, never as a
+  shorter history. `gateway export --config` does not write it beside the exported registry.
 - **The grants.** The run-time role holds on the new database what `grants.sql` gives it on every
   migration, and nothing more (a test compares them with the old database's).
 - **The line.** SPEC.md §3d's `store-continuation`, signed by the seed's key, naming the old
@@ -823,7 +832,7 @@ It is refused, with exit status 1, by name:
 - while any instance's start lease on the old database is live (`start-lease-held: …; stop the
   gateway, then rotate`). Nothing is sealed, and the new database is not migrated.
 - when the new database cannot be migrated, or holds a store: a registry (`it holds a registry`),
-  a row of the start lease, a secret, or a row of no scope, the scope identifiers recorded among
+  a key history carried, a row of the start lease, a secret, or a row of no scope, the scope identifiers recorded among
   them (`it holds rows of a store`). The old database itself, or a database a rotation already
   made, is refused so. Nothing is changed. The check reads the scoped tables as rows of no scope
   only, and every store a gateway made holds a registry and rows of the start lease, which are of no
@@ -837,6 +846,10 @@ It is refused, with exit status 1, by name:
   store *may have rotated; rerun to check*: a run again into a new database that holds more than
   a registry is refused (`it holds a registry`), into one that holds the continuation of the old
   registry alone writes the mark below and nothing else, and into an empty one rotates the store.
+  The run into one holding the continuation alone holds its key history first: a row there that
+  is not the bytes the continuation names is refused, and nothing is changed or marked; a row
+  missing is written, in a transaction of the migration login, only where the history made is the
+  one named.
 
 The mark (SPEC.md §3d) is the one row of `gateway.rotated` (schema version 7): the hexadecimal
 SHA-256 of the continuation line and the time it was written. The command writes it last, as the
@@ -849,8 +862,8 @@ lease's rows without taking a row, is refused by the same sentence, since a remo
 the old registry would break the link the new store names. `grants.sql`
 gives the run-time role SELECT and INSERT on the table and nothing else, and the key admits one
 row: a run-time login can only mark its own store rotated, which it could already cause by
-holding the lease. Removing the mark is the owner's alone. A database at schema version 6 is
-refused by this release's open until it is migrated (`apply the store's migrations`).
+holding the lease. Removing the mark is the owner's alone. A database at an older schema version
+is refused by this release's open until it is migrated (`apply the store's migrations`).
 
 Exit 2 on a usage error: `--new-store` and `--new-registry` are the filesystem kind's, and the
 migration login's flags are refused beside a configuration of that kind. Dropping the old database

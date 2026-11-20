@@ -63,7 +63,7 @@ surrogate, and neither survives being written into a document each language
 re-parses with its own defaults. Accepting vectors carry `expectedHex`; refusing
 vectors carry `reject: true`.
 
-**`stores/*.json`** — 58 vectors, each a complete store (a `path → text` map plus
+**`stores/*.json`** — 60 vectors, each a complete store (a `path → text` map plus
 the registry text) and its expected `(ok, findings)`. There is one per status an
 implementation can emit. Two of them, `key-mismatch` and `unsupported-version`,
 exist because a second implementation pointed out that those statuses were
@@ -120,6 +120,19 @@ sign nothing real and must never be used by a deployment. A vector whose walk
 followed a rotation gives `rotations` in `expected`, `{"count", "keyId"}`, and a
 runner compares it whole with the implementation's; a vector without the member
 expects none, and an implementation that followed none leaves the member out.
+
+Nine hold the store continuation (`SPEC.md` §3d), each verified alone or with the
+registry before it under `--previous`: one that links (`store-continuation-links`),
+one read alone (`store-continuation-read-alone`), the three links that do not hold
+(`store-continuation-digest-mismatch`, `store-continuation-key-mismatch`,
+`store-continuation-key-not-the-seals`), one misplaced
+(`store-continuation-not-first`), and three forged though the test key signed each:
+a `keyId` not the test key's (`store-continuation-wrong-key-id`), no
+`keyHistoryDigest` (`store-continuation-key-history-digest-missing`), and a
+`keyHistoryDigest` not of `previousDigest`'s form, prefixed `sha256:`
+(`store-continuation-key-history-digest-malformed`). The member names the key
+history a store rotation carries beside the new registry (§3e); no vector holds that
+history, which a verifier is not given.
 
 Thirteen, each named `interruption-seal*`, hold the seal made after an
 interruption (`SPEC.md` §3c; issue #395), each over the three receipts of

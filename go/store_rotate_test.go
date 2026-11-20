@@ -124,7 +124,7 @@ func TestStoreRotateSealsWhatIsOpenAndLinksTheNewRegistry(t *testing.T) {
 func TestAStoreContinuationIsTheFirstLineOrAFinding(t *testing.T) {
 	priv := ed25519.NewKeyFromSeed(testSeed)
 	pub := priv.Public().(ed25519.PublicKey)
-	line := seedContinuation(t, priv, []byte("x\n"), "2026-11-19T00:00:00Z")
+	line := seedContinuation(t, priv, []byte("x\n"), []byte("h"), "2026-11-19T00:00:00Z")
 	if w := walkRegistry(line, pub); w.continuation == nil || w.continuationFinding != nil {
 		t.Fatalf("at the first line: %+v", w)
 	}
@@ -143,8 +143,33 @@ func TestAStoreContinuationIsTheFirstLineOrAFinding(t *testing.T) {
 		t.Fatalf("continued: %v", next.continuationFinding)
 	}
 	other := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, 32))
-	if w := walkRegistry(seedContinuation(t, other, nil, "2026-11-19T00:00:00Z"), pub); w.continuationFinding["status"] != statusContinuationForged {
+	if w := walkRegistry(seedContinuation(t, other, nil, nil, "2026-11-19T00:00:00Z"), pub); w.continuationFinding["status"] != statusContinuationForged {
 		t.Fatalf("signed by another key: %v", w.continuationFinding)
+	}
+	// the key history it names is one of its members, of previousDigest's
+	// form: a continuation without it, or with another form, is forged
+	// though the key in force signed it
+	for name, digest := range map[string]value{
+		"without keyHistoryDigest":     nil,
+		"a sha256:-prefixed digest":    vString("sha256:" + keyHistoryDigestOf([]byte("h"))),
+		"an upper-case digest":         vString(strings.ToUpper(keyHistoryDigestOf([]byte("h")))),
+		"a digest one character short": vString(keyHistoryDigestOf([]byte("h"))[1:]),
+		"a digest that is no string":   vInt(1),
+	} {
+		obj := continuationLine(strings.TrimSuffix(string(line), "\n"))
+		rest := newObject()
+		for _, n := range obj.names {
+			if v, _ := obj.get(n); n != "keyHistoryDigest" && n != "signature" {
+				rest.set(n, v)
+			}
+		}
+		if digest != nil {
+			rest.set("keyHistoryDigest", digest)
+		}
+		rest.set("signature", vString(hex.EncodeToString(ed25519.Sign(priv, continuationSigningInput(rest)))))
+		if w := walkRegistry(append(canon(rest), '\n'), pub); w.continuationFinding["status"] != statusContinuationForged || w.continuation != nil {
+			t.Errorf("%s: %v", name, w.continuationFinding)
+		}
 	}
 }
 
@@ -274,7 +299,7 @@ func TestALinkHoldsTheContinuationToTheOldRegistrysLastKey(t *testing.T) {
 		if err := os.WriteFile(previous, tc.old, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(registry, seedContinuation(t, priv, tc.old, "2026-11-19T00:00:00Z"), 0o600); err != nil {
+		if err := os.WriteFile(registry, seedContinuation(t, priv, tc.old, nil, "2026-11-19T00:00:00Z"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		f := linkOf(t, registry, previous)
@@ -299,9 +324,9 @@ func sealLineBy(key ed25519.PrivateKey, session string) []byte {
 
 // seedContinuation is the store continuation a rotation under priv's seed
 // writes after previous.
-func seedContinuation(t *testing.T, priv ed25519.PrivateKey, previous []byte, at string) []byte {
+func seedContinuation(t *testing.T, priv ed25519.PrivateKey, previous, history []byte, at string) []byte {
 	t.Helper()
-	line, err := newContinuationLine(newSigningKey(newSeedSigner(priv.Seed())), previous, at)
+	line, err := newContinuationLine(newSigningKey(newSeedSigner(priv.Seed())), previous, history, at)
 	if err != nil {
 		t.Fatal(err)
 	}

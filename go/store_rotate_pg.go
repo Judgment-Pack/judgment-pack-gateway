@@ -22,9 +22,13 @@ package main
 // transaction, under the migration's lock, the database is held to be
 // empty again, the old registry is read again under the lease and held to
 // what the continuation names, and the registry is made holding the store
-// continuation alone: the migration, the registry and its first line commit
-// together or not at all. The run-time role is given what every migration
-// gives it (grants.sql), and nothing more.
+// continuation alone, with the key history the continuation names written
+// beside it in gateway.key_history (SPEC.md §3e; ADR-0052): the migration,
+// the registry, its first line and the history commit together or not at
+// all. The history carried is the old database's answer to the key
+// history: its registry's, with what was carried into it in its turn. The
+// run-time role is given what every migration gives it (grants.sql), and
+// nothing more: it reads the history and cannot change it.
 
 import (
 	"bytes"
@@ -98,8 +102,28 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 			if prior != nil {
 				// the rerun: the new database holds the continuation of
 				// this registry as it ends, and the old one is marked
-				if err := continuesRegistry(prior, data, key.public); err != nil {
+				named, err := continuesRegistry(prior, data, key.public)
+				if err != nil {
 					return fmt.Errorf("the new database: it holds a registry; %v; a rotation starts a new store in a database that holds none", err)
+				}
+				// the history commits with the continuation: one there is
+				// held to the bytes it names, and one lost is carried again
+				// from the same bytes, which must be the ones named
+				_, err = migratePostgresThen(dsn, set, target.roles, target.timeout, func(tx pgTx) error {
+					again, err := pgRotationTargetContinued(tx)
+					if err != nil {
+						return err
+					}
+					if !bytes.Equal(again, prior) {
+						return errors.New("its registry changed after it was read")
+					}
+					return pgCarryKeyHistory(tx, named, func() ([]byte, error) { return pgCarriedHistoryOf(kind, data, key.public) })
+				}, true)
+				if errors.Is(err, errPgCommitUncertain) {
+					return fmt.Errorf("the new database: %v; its key history may have been written; rerun to check", err)
+				}
+				if err != nil {
+					return fmt.Errorf("the new database: %v; nothing was changed in it, and the old one is not marked rotated", err)
 				}
 				if err := pgMarkRotated(kind, prior); err != nil {
 					return fmt.Errorf("the new database holds the continuation, and the old one is not marked rotated: %v; rerun to mark it", err)
@@ -107,7 +131,13 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 				line = prior
 				return nil
 			}
-			made, err := newContinuationLine(key, data, stamp())
+			// the continuation names the old database's key history by its
+			// digest (SPEC.md §3e), and the new database carries its bytes
+			history, err := pgCarriedHistoryOf(kind, data, key.public)
+			if err != nil {
+				return fmt.Errorf("%v; the store is not rotated, and the seals appended stay in the old registry", err)
+			}
+			made, err := newContinuationLine(key, data, history, stamp())
 			if err != nil {
 				return fmt.Errorf("the continuation could not be signed: %v; the store is not rotated, and the seals appended stay in the old registry", err)
 			}
@@ -123,6 +153,9 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 					return errors.New("the old registry changed after it was read under the start lease")
 				}
 				if err := pgWriteContinuation(tx, made); err != nil {
+					return err
+				}
+				if err := pgWriteKeyHistory(tx, history); err != nil {
 					return err
 				}
 				// last before the commit: the lease is held still, with a
@@ -170,8 +203,8 @@ func pgRegistryUnderLease(k *pgKind) ([]byte, error) {
 
 // pgRotationTargetEmpty holds the database a migration runs in, as the
 // owner in the migration's transaction, to hold no store: no registry, no
-// row of the start lease, no secret, and no row of no scope -- the scope
-// identifiers recorded among them. A gateway makes the registry and takes
+// key history carried, no row of the start lease, no secret, and no row of
+// no scope -- the scope identifiers recorded among them. A gateway makes the registry and takes
 // the lease before it writes anything else, and a command of the migration
 // login writes nothing in a store with no registry. Row security is put
 // back on for the transaction: the scoped tables are read as 'none'.
@@ -185,7 +218,8 @@ func pgRotationTargetEmpty(tx pgTx) error {
 		EXISTS (SELECT 1 FROM gateway.start_lease) OR EXISTS (SELECT 1 FROM gateway.secrets)
 		OR EXISTS (SELECT 1 FROM gateway.scope_identifiers) OR EXISTS (SELECT 1 FROM gateway.series)
 		OR EXISTS (SELECT 1 FROM gateway.blobs) OR EXISTS (SELECT 1 FROM gateway.documents)
-		OR EXISTS (SELECT 1 FROM gateway.removal_records) OR EXISTS (SELECT 1 FROM gateway.rotated)`)
+		OR EXISTS (SELECT 1 FROM gateway.removal_records) OR EXISTS (SELECT 1 FROM gateway.rotated),
+		EXISTS (SELECT 1 FROM gateway.key_history)`)
 	if err != nil {
 		return err
 	}
@@ -194,21 +228,24 @@ func pgRotationTargetEmpty(tx pgTx) error {
 	}
 	registry, ok1 := pgBool(rows.rows[0][0])
 	other, ok2 := pgBool(rows.rows[0][1])
+	carried, ok3 := pgBool(rows.rows[0][2])
 	switch {
-	case !ok1 || !ok2:
+	case !ok1 || !ok2 || !ok3:
 		return errors.New("store: what the database holds did not read")
 	case registry && !other:
+		// with the key history carried with it, or without
 		return errPgTargetHoldsRegistry
 	case registry:
 		return errors.New("it holds a registry; a rotation starts a new store in a database that holds none")
-	case other:
+	case other || carried:
 		return errors.New("it holds rows of a store; a rotation starts a new store in a database that holds none")
 	}
 	return nil
 }
 
 // pgRotationTargetContinued is pgRotationTargetEmpty, except that a database
-// holding a registry of one record and nothing else gives that record back:
+// holding a registry of one record, the key history carried with it or not,
+// and nothing else gives that record back:
 // the continuation of a rotation rerun to write its mark, which the caller
 // holds to name the old registry.
 func pgRotationTargetContinued(tx pgTx) ([]byte, error) {
@@ -231,22 +268,89 @@ func pgRotationTargetContinued(tx pgTx) ([]byte, error) {
 var errPgTargetHoldsRegistry = errors.New("it holds a registry; a rotation starts a new store in a database that holds none")
 
 // continuesRegistry holds line to be a store continuation, signed by pub,
-// that names previous as it ends.
-func continuesRegistry(line, previous []byte, pub ed25519.PublicKey) error {
-	if _, err := engineWalk(line, pub); err != nil {
-		return err
+// that names previous as it ends, and answers the key history it names.
+func continuesRegistry(line, previous []byte, pub ed25519.PublicKey) (string, error) {
+	walk, err := engineWalk(line, pub)
+	if err != nil {
+		return "", err
 	}
 	var c struct {
 		Lines  *int64  `json:"previousLines"`
 		Digest *string `json:"previousDigest"`
 	}
-	if err := json.Unmarshal(bytes.TrimSuffix(line, []byte("\n")), &c); err != nil || c.Lines == nil || c.Digest == nil {
-		return errors.New("its one line is not a store continuation")
+	if err := json.Unmarshal(bytes.TrimSuffix(line, []byte("\n")), &c); err != nil || c.Lines == nil || c.Digest == nil || walk.continuation == nil {
+		return "", errors.New("its one line is not a store continuation")
 	}
 	if lines, digest := registryLink(previous); *c.Lines != lines || *c.Digest != digest {
-		return errors.New("its continuation names another registry")
+		return "", errors.New("its continuation names another registry")
 	}
-	return nil
+	return walk.continuation.keyHistoryDigest, nil
+}
+
+// carriedKeyHistory is the key history a store rotation carried into the
+// database the kind keeps, and whether there is one: the one row of
+// gateway.key_history, which the owner wrote with the registry's first
+// line, read alike by every instance on the database and changed by none.
+func (k *pgKind) carriedKeyHistory() ([]byte, bool, error) {
+	var data []byte
+	present := false
+	err := k.transact(pgRead, func(tx pgTx) error {
+		rows, err := tx.exec(`SELECT history FROM gateway.key_history`)
+		if err == nil && len(rows.rows) == 1 {
+			data, present = append([]byte(nil), rows.rows[0][0]...), true
+		}
+		return err
+	})
+	if err != nil {
+		return nil, false, pgFailure("read-key-history", false, err)
+	}
+	return data, present, nil
+}
+
+// pgCarriedHistoryOf is carriedHistoryOf on the PostgreSQL kind: the history
+// of the old registry's bytes as the rotation names them, walked from the
+// key in force, with what was carried into the old database in its turn.
+func pgCarriedHistoryOf(k *pgKind, data []byte, key ed25519.PublicKey) ([]byte, error) {
+	carried, present, err := k.carriedKeyHistory()
+	return historyToCarry(data, key, carried, present, err)
+}
+
+// pgWriteKeyHistory writes the one row of gateway.key_history, in the
+// migration's transaction that makes the registry: the key history the
+// registry's store continuation names, carried into the new database.
+func pgWriteKeyHistory(tx pgTx, history []byte) error {
+	if len(history) == 0 || len(history) > pgMaxValue {
+		return fmt.Errorf("store: a key history of %d bytes is not within the kind's bounds of 1 to %d", len(history), pgMaxValue)
+	}
+	_, err := tx.exec(`INSERT INTO gateway.key_history (history) VALUES ($1)`, history)
+	return err
+}
+
+// pgCarryKeyHistory is a rerun's carrying of the key history into the new
+// database, in the migration's transaction, whose registry's continuation
+// names the history by named, its digest: a history there already is kept
+// only when its bytes are the ones named, and one not there is written only
+// when the history made is; otherwise the rerun is refused, nothing
+// changed.
+func pgCarryKeyHistory(tx pgTx, named string, made func() ([]byte, error)) error {
+	rows, err := tx.exec(`SELECT history FROM gateway.key_history`)
+	if err != nil {
+		return err
+	}
+	if len(rows.rows) > 0 {
+		if got := keyHistoryDigestOf(rows.rows[0][0]); got != named {
+			return fmt.Errorf("the key history it carries is %s, not the history %s its store continuation names", got, named)
+		}
+		return nil
+	}
+	history, err := made()
+	if err != nil {
+		return err
+	}
+	if got := keyHistoryDigestOf(history); got != named {
+		return fmt.Errorf("the store's key history is %s, not the history %s its store continuation names", got, named)
+	}
+	return pgWriteKeyHistory(tx, history)
 }
 
 // pgMarkRotated writes the one row of gateway.rotated, as the run-time

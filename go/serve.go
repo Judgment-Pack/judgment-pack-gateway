@@ -234,6 +234,9 @@ type gatewayService struct {
 	// rotate-key requires it stopped.
 	provenanceKeyMu   sync.Mutex
 	provenanceKeyList []reachedKey
+	// keyHistoryKept is the last answer to /publickey/history, and what it
+	// was made of (key_history.go).
+	keyHistoryKept keyHistoryKept
 	// keyWalk walks the registry for provenanceKeys; nil is reachedKeys.
 	// beforeProvenanceRecheck runs just before the post-run provenance check.
 	// Both are test seams.
@@ -2953,6 +2956,24 @@ func (g *gatewayService) handler() http.Handler {
 		writeJSON(w, http.StatusOK, g.publicKeyDocument())
 	})
 
+	// /publickey/history is every key the registry proves this gateway
+	// signed under (SPEC.md §3e; key_history.go), read from the registry at
+	// each request, made again when its bytes or the carried history's
+	// change, and open as /publickey is. A history that cannot be
+	// read, or does not hold, is answered 500 with a fixed sentence, as
+	// /registry is, and never as the keys reached before what stopped it.
+	const keyHistoryUnservable = "the key history could not be read; the gateway says why on its stderr"
+	mux.HandleFunc(keyHistoryRoute, func(w http.ResponseWriter, r *http.Request) {
+		doc, err := g.keyHistory()
+		if err != nil {
+			g.reports.trafficf("serve: %s answered 500: %v", keyHistoryRoute, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": keyHistoryUnservable})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(doc)
+	})
+
 	// /posture is gateway posture's report for this gateway as it runs
 	// (posture.go), in canonical JSON so a desk can compare two answers
 	// byte for byte, its reasons naming no path, no account and no address;
@@ -3096,8 +3117,8 @@ func (g *gatewayService) announceAndServe(listener net.Listener) error {
 // The limits a listener other hosts can reach is served under, beside the
 // read timeouts every listener has. An idle connection is closed after a
 // minute and a request's headers are bounded, as the MCP server's are
-// (mcp_http.go). The answers of /registry and /publickey, the two that need
-// no token, are each written within openRouteWriteTimeout. The bound is per
+// (mcp_http.go). The answers of /registry, /publickey and /publickey/history,
+// the three that need no token, are each written within openRouteWriteTimeout. The bound is per
 // answer, never the server's WriteTimeout: that would count a handler's own
 // run against its answer, and an /acquire or /act has no fixed longest run
 // -- a source runs to its timeout, which --source-timeout sets up to
@@ -3110,7 +3131,7 @@ const (
 )
 
 // openRoutes are the endpoints that answer a caller with no token.
-var openRoutes = map[string]bool{"/registry": true, "/publickey": true}
+var openRoutes = map[string]bool{"/registry": true, "/publickey": true, keyHistoryRoute: true}
 
 // httpServer is serveOn's server for a listener bound at addr, which is
 // what /posture reports of the listener, from either form of serve. A

@@ -1800,7 +1800,10 @@ function isContinuation(v: Value | null): boolean {
   return kind?.type === "string" && kind.value === "store-continuation";
 }
 
-const continuationMembers = ["kind", "continuationVersion", "continuedAt", "keyId", "previousLines", "previousDigest", "signature"];
+// keyHistoryDigest names the key history the rotation carried beside the
+// new registry (§3e), by the SHA-256 of its bytes, of previousDigest's form;
+// a verifier is not given that history, and holds the member to its form.
+const continuationMembers = ["kind", "continuationVersion", "continuedAt", "keyId", "previousLines", "previousDigest", "keyHistoryDigest", "signature"];
 
 // continuationOf is a store continuation that holds its form and is signed
 // by the key in force at its line, or null.
@@ -1816,9 +1819,10 @@ function continuationOf(v: Value, key: ReachedKey): { readonly keyId: string; re
   const at = s("continuedAt", /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
   const keyId = s("keyId", /^[0-9a-f]{32}$/);
   const last = s("previousDigest", /^[0-9a-f]{64}$/);
+  const history = s("keyHistoryDigest", /^[0-9a-f]{64}$/);
   const signature = s("signature", /^[0-9a-f]{128}$/);
   const lines = member(v, "previousLines");
-  if (version === null || at === null || keyId === null || last === null || signature === null || lines?.type !== "number" || !/^(0|[1-9][0-9]*)$/.test(lines.text)) {
+  if (version === null || at === null || keyId === null || last === null || history === null || signature === null || lines?.type !== "number" || !/^(0|[1-9][0-9]*)$/.test(lines.text)) {
     return null;
   }
   const body = canonical({ type: "object", members: v.members.filter((m) => m.name !== "signature") });

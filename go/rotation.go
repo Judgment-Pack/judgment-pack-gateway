@@ -153,6 +153,11 @@ func (st *rotationStatement) signedBy(key ed25519.PublicKey) bool {
 type reachedKey struct {
 	key   ed25519.PublicKey
 	keyID string
+	// rotatedAt, forward and reverse are, for a key a rotation rotated to,
+	// that rotation's rotatedAt and its two statements' lines as the
+	// registry holds them: what the key history serves of it (SPEC.md §3e).
+	// They are "" for the key pinned.
+	rotatedAt, forward, reverse string
 }
 
 // registryWalk is what the walk of a registry establishes (SPEC.md §3b and
@@ -176,6 +181,11 @@ type registryWalk struct {
 	// lines is how many of the registry's lines the walk has passed: the
 	// place of the next line it reads.
 	lines int
+	// keysOnly is a walk that loads no seal, every line that is not a
+	// rotation statement or a store continuation passed over: what the key
+	// history needs of a registry (SPEC.md §3e), each seal's signature left
+	// unchecked, since a seal never moves the walk from one key to another.
+	keysOnly bool
 }
 
 // followed is how many rotations the walk followed.
@@ -254,6 +264,9 @@ func (w *registryWalk) walkLines(data []byte) {
 			continue
 		}
 		kind, obj := rotationKindOf(line)
+		if kind == "" && w.keysOnly {
+			continue
+		}
 		if kind == "" {
 			// a line whose kind is seal-after-interruption is read as
 			// that seal and as nothing else (SPEC.md §3c)
@@ -281,7 +294,7 @@ func (w *registryWalk) walkLines(data []byte) {
 			if i+1 < len(lines) {
 				next = lines[i+1]
 			}
-			status = w.follow(obj, next)
+			status = w.follow(obj, line, next)
 			if status == "" {
 				i++ // the continuation, taken with its rotation
 				continue
@@ -291,9 +304,10 @@ func (w *registryWalk) walkLines(data []byte) {
 	}
 }
 
-// follow takes the rotation a key-rotation statement states, with the line
-// after it, or answers the first check it fails (SPEC.md §3b, 1 to 5).
-func (w *registryWalk) follow(obj *vObject, nextLine string) string {
+// follow takes the rotation a key-rotation statement states, the object of
+// line, with the line after it, or answers the first check it fails
+// (SPEC.md §3b, 1 to 5).
+func (w *registryWalk) follow(obj *vObject, line, nextLine string) string {
 	st, ok := rotationStatementOf(rotationKindForward, obj)
 	if !ok {
 		return statusRotationBreak
@@ -317,7 +331,7 @@ func (w *registryWalk) follow(obj *vObject, nextLine string) string {
 		!bytes.Equal(reverse.named, current.key) || reverse.keyID != st.namedID || !reverse.signedBy(st.named) {
 		return statusRotationBreak
 	}
-	w.keys = append(w.keys, reachedKey{key: st.named, keyID: st.namedID})
+	w.keys = append(w.keys, reachedKey{key: st.named, keyID: st.namedID, rotatedAt: st.rotatedAt, forward: line, reverse: nextLine})
 	return ""
 }
 

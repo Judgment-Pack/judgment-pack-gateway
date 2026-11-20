@@ -15,7 +15,10 @@
 -- for each instance from version 6) are taken, renewed and released. The
 -- removal records (schema version 5) are SELECT alone: the migration login,
 -- acting as the owner, appends them, and the run-time role reads them for
--- an export. Nothing is TRUNCATE, REFERENCES, TRIGGER or DDL.
+-- an export. The key history a store rotation carried into the database
+-- (schema version 8) is SELECT alone: the migration login, acting as the
+-- owner, writes it with the registry's first line. Nothing is TRUNCATE,
+-- REFERENCES, TRIGGER or DDL.
 
 DO $grants$
 DECLARE
@@ -30,5 +33,6 @@ BEGIN
     EXECUTE pg_catalog.format('GRANT SELECT, INSERT, UPDATE ON gateway.start_lease TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT ON gateway.removal_records TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT, INSERT ON gateway.rotated TO %I', runtime);
+    EXECUTE pg_catalog.format('GRANT SELECT ON gateway.key_history TO %I', runtime);
 END
 $grants$;
