@@ -14,7 +14,9 @@ package main
 // holding the canonical {label, scope, sessionId}. It is written exclusively,
 // synced, and its directory synced, before the session's first receipt: a
 // crash after it leaves a mapping with no receipts, whose id the label's next
-// use takes up. The verifiers pass labels/ over (SPEC.md §3a).
+// use takes up. The verifiers pass labels/ over (SPEC.md §3a). The
+// PostgreSQL kind keeps a row of gateway.session_labels for each label
+// (session_labels_pg.go).
 
 import (
 	"crypto/rand"
@@ -65,6 +67,8 @@ type labelKeeper interface {
 	recordLabel(scope, label, id string) (string, error)
 	// labelEntries is every label the store keeps, of every namespace.
 	labelEntries() ([]labelEntry, error)
+	// labelsOf is the labels of scope's namespace alone, in label order.
+	labelsOf(scope string) ([]labelEntry, error)
 }
 
 // labelEntry is one label as the store keeps it; file is its name in
@@ -274,6 +278,20 @@ func (l fsLabels) labelEntries() ([]labelEntry, error) {
 	return entries, nil
 }
 
+func (l fsLabels) labelsOf(scope string) ([]labelEntry, error) {
+	entries, err := l.labelEntries()
+	if err != nil {
+		return nil, err
+	}
+	var of []labelEntry
+	for _, e := range entries {
+		if e.scope == scope {
+			of = append(of, e)
+		}
+	}
+	return of, nil
+}
+
 // removeLabelFiles removes the named files of labels/ and syncs it: the
 // labels of sessions a removal's records, already durable, name.
 func removeLabelFiles(storeRoot string, files []string) error {
@@ -403,11 +421,27 @@ func (g *gatewayService) unlabelledOpen() ([]string, error) {
 	for _, e := range entries {
 		labelled[e.sessionID] = true
 	}
+	var open []string
+	if pg, onKind := g.kind.(*pgKind); onKind {
+		// every series of every scope that holds a receipt, in one snapshot
+		held, err := pg.seriesHoldingEntries()
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range held {
+			if _, sealed := seals[s]; !sealed && !labelled[s] {
+				open = append(open, s)
+			}
+		}
+		return open, nil
+	}
+	if g.kind != nil {
+		return nil, errors.New("the store's kind lists no sessions to ask whether a label names them")
+	}
 	sessions, err := listSessions(g.storeRoot)
 	if err != nil {
 		return nil, err
 	}
-	var open []string
 	for _, s := range sessions {
 		if _, sealed := seals[s]; sealed || labelled[s] {
 			continue
@@ -512,24 +546,23 @@ func cmdSessions(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s %s\n", flags["--label"], id)
 		return 0
 	}
-	entries, err := keeper.labelEntries()
+	entries, err := keeper.labelsOf(scope)
 	if err != nil {
 		fmt.Fprintln(stderr, "gateway sessions: the labels could not be read:", err)
 		return 1
 	}
 	for _, e := range entries {
-		if e.scope == scope {
-			fmt.Fprintf(stdout, "%s %s\n", e.label, e.sessionID)
-		}
+		fmt.Fprintf(stdout, "%s %s\n", e.label, e.sessionID)
 	}
 	return 0
 }
 
 // labelKeeperFor is the labels of the store a configuration names, and what
-// closes what it opened.
+// closes what it opened: on the PostgreSQL kind, read through the run-time
+// login, each namespace through its own scope's view (pgLabelsFor).
 func labelKeeperFor(cfg engineConfig) (labelKeeper, func(), error) {
 	if cfg.storage != nil {
-		return nil, nil, storageUnsupported("gateway sessions, whose labels are read from a store on disk,")
+		return pgLabelsFor(cfg)
 	}
 	return fsLabels{root: cfg.store}, func() {}, nil
 }

@@ -230,8 +230,14 @@ type pgScopeRows struct {
 	// takeUps are the rows of gateway.series_holders: the instances that
 	// took up a session of the scope (schema version 6), removed with it
 	takeUps int64
+	// labels are the rows of gateway.session_labels of the scope's
+	// namespace (schema version 9, ADR-0051), removed with its sessions or,
+	// where it holds none, alone
+	labels int64
 }
 
+// none is whether the scope holds no session and no row of one; its labels
+// are not counted, and go whether or not it does.
 func (h pgScopeRows) none() bool {
 	return len(h.series) == 0 && h.entries == 0 && h.blobs == 0 && h.documents == 0
 }
@@ -367,7 +373,12 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 		lines = append(lines, line)
 		out.appended = append(out.appended, record)
 		// the rows of the scope, named in each statement, and each count
-		// held to what was read
+		// held to what was read: its labels first, before its receipts, as
+		// on the filesystem kind (ADR-0051, amended); the one transaction
+		// commits all of them with the records, or none
+		if err := pgRemoveScopeLabels(c, row, held.labels); err != nil {
+			return failed(err)
+		}
 		for _, d := range []struct {
 			table string
 			want  int64
@@ -381,6 +392,14 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 			}
 		}
 		notes = append(notes, fmt.Sprintf("removed %d session(s), %d sealed, holding %d receipt(s), %d payload(s), and %d document(s)", len(held.series), sealed, held.entries, held.blobs, held.documents))
+	} else if held.labels > 0 {
+		// a scope that holds labels and no session, as where a label was
+		// minted and its source failed: its labels go, and no record is
+		// made, since no session is removed
+		if err := pgRemoveScopeLabels(c, row, held.labels); err != nil {
+			return failed(err)
+		}
+		notes = append(notes, fmt.Sprintf("no session of the scope identifier is in the store; its %d session label(s), naming no session, are removed", held.labels))
 	}
 
 	// the records and the scope identifier's row, of no scope
@@ -398,6 +417,7 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 		return failed(err)
 	}
 	switch {
+	case held.none() && held.labels > 0:
 	case held.none() && gone.tag == "DELETE 1":
 		notes = append(notes, "the scope identifier was recorded and held no row; its record is removed, and nothing else was")
 	case held.none():
@@ -412,6 +432,24 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 	}
 	out.notes = notes
 	return out, nil
+}
+
+// pgRemoveScopeLabels removes, in the removal's transaction, the session
+// labels of the scope whose rows gateway.scope names, held to the count
+// read; and then runs removalCutOff where a test set it, so a run cut off
+// between the labels and the receipts is seen to roll back whole.
+func pgRemoveScopeLabels(c *pgConn, row string, want int64) error {
+	done, err := c.exec(`DELETE FROM gateway.session_labels WHERE scope = $1`, row)
+	if err != nil {
+		return err
+	}
+	if done.tag != fmt.Sprintf("DELETE %d", want) {
+		return errors.New("the scope's rows changed while they were removed")
+	}
+	if removalCutOff != nil {
+		return removalCutOff()
+	}
+	return nil
 }
 
 // pgSeriesSalt is the scope salt the first receipt of the session carries
@@ -452,14 +490,15 @@ func pgScopeHeld(tx pgTx, row string) (pgScopeRows, error) {
 	counts, err := tx.exec(`SELECT (SELECT count(*) FROM gateway.entries WHERE scope = $1),
 		(SELECT count(*) FROM gateway.blobs WHERE scope = $1),
 		(SELECT count(*) FROM gateway.documents WHERE scope = $1),
-		(SELECT count(*) FROM gateway.series_holders WHERE scope = $1)`, row)
+		(SELECT count(*) FROM gateway.series_holders WHERE scope = $1),
+		(SELECT count(*) FROM gateway.session_labels WHERE scope = $1)`, row)
 	if err != nil {
 		return h, err
 	}
 	if len(counts.rows) != 1 {
 		return h, errors.New("store: the scope's rows did not count")
 	}
-	for i, n := range []*int64{&h.entries, &h.blobs, &h.documents, &h.takeUps} {
+	for i, n := range []*int64{&h.entries, &h.blobs, &h.documents, &h.takeUps, &h.labels} {
 		v, ok := pgInt8(counts.rows[0][i])
 		if !ok {
 			return h, errors.New("store: the scope's rows did not count")
