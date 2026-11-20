@@ -1031,3 +1031,21 @@ target reports, not proof of its honesty or consistency. Neither an unknown
 read-back nor unsupported recovery authorizes a resend. An action key is not
 a lease fence or an authorization credential. The gateway does not validate
 an external lease merely because its caller supplied a key.
+
+### A signer in a key service (ADR-0050)
+
+With `signingKeyVersion` (engine version 36), an Ed25519 key version in Cloud KMS signs in place of
+the seed's key ([ADR-0050](docs/adr/0050-an-external-signer-in-a-key-service.md)).
+
+What holds:
+
+- **The private key never reaches the gateway's host.** It is not exportable, so a copy of the host's disk or memory holds no signing key.
+- **Every signing is an access-checked, audited call** of the service. Removing the gateway identity's permission stops signing at once.
+- **Every signature is checked before use.** It is verified under the public key read and checked at start before anything is written with it. A service that refuses, cannot be reached, or answers a signature that does not verify fails the acquisition closed, and nothing is minted unsigned.
+- **The API host is built in.** The API is asked at `https://cloudkms.googleapis.com`, which no configuration names, through no proxy and following no redirect. The access token comes from the metadata server at its fixed link-local address (ADR-0043).
+
+What does not hold:
+
+- **The compute's identity can ask the service to sign.** Whoever controls the compute, or the identity's permissions, can mint receipts the registry's key verifies, as ADR-0043 and ADR-0045 state for their calls. The key service bounds who can sign. It does not bound what is signed.
+- **The key is protected in software (FIPS 140-2 Level 1), not in hardware (Level 3).** The service offers Ed25519 at its software level only. ECDSA P-256 at Level 3 needs a specification change and is left for a later ADR.
+- **The seed file is still on disk and still secret.** It keys the arguments commitment, whose bound is stated above. It signs nothing, and its key is not the registry's.

@@ -132,7 +132,7 @@ secret, and it keeps every signed form as it is.
 ### 4. The upgrade
 
 - The behaviour is an engine configuration version of its own, numbered at the build: the
-  next free version, after receipt-sink seals (38).
+  next free version at the build (receipt-sink seals and retention take 37 and 38).
 - At an older version nothing changes, and the name a caller sends is the session id.
 - At the new version, the start refuses while any session is open, and names
   `gateway seal-open --all`. Sealed sessions keep their ids and need no mapping, since nothing

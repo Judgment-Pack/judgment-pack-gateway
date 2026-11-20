@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -789,7 +790,12 @@ func TestAnActionCitesAReceiptMintedBeforeTheRotation(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "other-registry.jsonl"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	foreign, err := newGatewayService(store, bytes.Repeat([]byte{5}, 32), "gateway:test", filepath.Join(root, "other-registry.jsonl"), sources)
+	// the foreign receipt is minted in a store of its own and laid in this
+	// one only once the gateway under the next key has started: a start is
+	// refused over a store holding a receipt under a key its walk never
+	// reached (ADR-0050), and the citation is held to it all the same
+	foreignStore := filepath.Join(root, "foreign-store")
+	foreign, err := newGatewayService(foreignStore, bytes.Repeat([]byte{5}, 32), "gateway:test", filepath.Join(root, "other-registry.jsonl"), sources)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -803,6 +809,16 @@ func TestAnActionCitesAReceiptMintedBeforeTheRotation(t *testing.T) {
 	}
 	second, err := newGatewayService(store, next, "gateway:test", registry, sources)
 	if err != nil {
+		t.Fatal(err)
+	}
+	foreignReceipt, err := os.ReadFile(filepath.Join(foreignStore, "receipts", "foreign", "0.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(store, "receipts", "foreign"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "receipts", "foreign", "0.json"), foreignReceipt, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	keys, err := second.reachedKeys()
@@ -924,4 +940,53 @@ func TestAWalkContinuedAtALinesEndIsTheWalkOfTheWhole(t *testing.T) {
 			t.Fatalf("registry %d was continued at %d lines' ends only", i, continuedAt)
 		}
 	}
+}
+
+// A store rotated away from (SPEC.md §3d) takes no key rotation, nor the
+// resume of one: either would append to the registry the new store's
+// continuation names, and switch the seed the new store starts under.
+func TestRotateKeyAndItsResumeAreRefusedOnAStoreRotatedAwayFrom(t *testing.T) {
+	mark := rotatedMarkPrefix + strings.Repeat("0", 64)
+	markIt := func(t *testing.T, registry string) {
+		t.Helper()
+		if err := os.WriteFile(rotatedMarkPath(registry), []byte(mark+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("rotate-key", func(t *testing.T) {
+		seedPath, registry, _, _ := rotationFixture(t, false)
+		markIt(t, registry)
+		before, _ := os.ReadFile(registry)
+		if _, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:00Z"), rand.Reader); err == nil || !strings.Contains(err.Error(), errStoreRotated(mark).Error()) {
+			t.Fatalf("rotate-key on a store rotated away from: %v", err)
+		}
+		if after, _ := os.ReadFile(registry); !bytes.Equal(before, after) {
+			t.Fatal("the registry changed")
+		}
+		if _, err := os.Lstat(seedPath + nextSeedSuffix); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("a next seed was made: %v", err)
+		}
+	})
+	t.Run("resume", func(t *testing.T) {
+		seedPath, registry, _, _ := rotationFixture(t, false)
+		tornLog(t, 0, true)
+		if _, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:00Z"), rand.Reader); !errors.Is(err, errRotationPending) {
+			t.Fatal(err)
+		}
+		openRotationLog = func(path string) (*fsLog, error) { return openFsLog(path) }
+		if err := os.Rename(seedPath, seedPath+".rotated-1"); err != nil {
+			t.Fatal(err)
+		}
+		markIt(t, registry)
+		before, _ := os.ReadFile(registry)
+		if _, err := resumeRotation(seedPath, registry, nil, nil); err == nil || !strings.Contains(err.Error(), errStoreRotated(mark).Error()) {
+			t.Fatalf("--resume on a store rotated away from: %v", err)
+		}
+		if after, _ := os.ReadFile(registry); !bytes.Equal(before, after) {
+			t.Fatal("the registry changed")
+		}
+		if _, err := os.Lstat(seedPath); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("the seed was switched: %v", err)
+		}
+	})
 }

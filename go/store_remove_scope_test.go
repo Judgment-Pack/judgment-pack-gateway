@@ -41,6 +41,7 @@ func TestTheStoreRemoveScopeCommandLine(t *testing.T) {
 		without("--owner"),
 		without("--runtime"),
 		without("--seed"),
+		append(slices.Clone(full), "--config", "c"),
 		without("--scope"),
 		without("--by"),
 		append(without("--by"), "--by", "operator\n1"),
