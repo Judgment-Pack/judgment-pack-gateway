@@ -238,11 +238,13 @@ Settled by the maintainer at the build of the filesystem kind (#550).
 
 ### Implementation note
 
-The filesystem kind is built first (#550, the first pull request). The PostgreSQL kind follows
-in a second: migration 0009, `gateway.session_labels`, the `labels` column of
-`gateway.start_lease` and its comparison, and the label removal of `gateway store
-remove-scope` and `gateway store retain`. Until it lands, a configuration of version 39 on the
-PostgreSQL kind is refused at the start, by a sentence naming that follow-up.
+The filesystem kind was built in the first pull request of #550, and the PostgreSQL kind in the
+second: migration 0009, `gateway.session_labels`, the `labels` column of `gateway.start_lease`
+and its comparison, and the label removal of `gateway store remove-scope` and `gateway store
+retain`, each in its one transaction. On both kinds an acquisition records a label it minted
+only once the acquisition is admitted, immediately before its source starts, so a call refused
+before then leaves no label; and a removal of a scope that holds labels and no session takes
+those labels too.
 
 ## More information
 

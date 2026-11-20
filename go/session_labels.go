@@ -14,7 +14,15 @@ package main
 // holding the canonical {label, scope, sessionId}. It is written exclusively,
 // synced, and its directory synced, before the session's first receipt: a
 // crash after it leaves a mapping with no receipts, whose id the label's next
-// use takes up. The verifiers pass labels/ over (SPEC.md §3a).
+// use takes up. The verifiers pass labels/ over (SPEC.md §3a). The
+// PostgreSQL kind keeps a row of gateway.session_labels for each label
+// (session_labels_pg.go).
+//
+// An acquisition records a label it mints only once the acquisition is
+// admitted, immediately before its source starts (acquireWithScope): a call
+// refused before then -- its session sealed, the reservation refused, the
+// delegation or its grant refused -- leaves no label, so a caller cannot
+// grow the store's labels by calls that are refused.
 
 import (
 	"crypto/rand"
@@ -65,6 +73,8 @@ type labelKeeper interface {
 	recordLabel(scope, label, id string) (string, error)
 	// labelEntries is every label the store keeps, of every namespace.
 	labelEntries() ([]labelEntry, error)
+	// labelsOf is the labels of scope's namespace alone, in label order.
+	labelsOf(scope string) ([]labelEntry, error)
 }
 
 // labelEntry is one label as the store keeps it; file is its name in
@@ -274,6 +284,20 @@ func (l fsLabels) labelEntries() ([]labelEntry, error) {
 	return entries, nil
 }
 
+func (l fsLabels) labelsOf(scope string) ([]labelEntry, error) {
+	entries, err := l.labelEntries()
+	if err != nil {
+		return nil, err
+	}
+	var of []labelEntry
+	for _, e := range entries {
+		if e.scope == scope {
+			of = append(of, e)
+		}
+	}
+	return of, nil
+}
+
 // removeLabelFiles removes the named files of labels/ and syncs it: the
 // labels of sessions a removal's records, already durable, name.
 func removeLabelFiles(storeRoot string, files []string) error {
@@ -310,31 +334,51 @@ func labelFilesOf(keeper labelKeeper, scope string, sessions []string) ([]string
 }
 
 // sessionOfLabel is the session id label names in scope's namespace, minted
-// and recorded on the label's first use there: a new id is minted again
-// where it is a session this process or the store holds already.
+// and recorded on the label's first use there (/act).
 func (g *gatewayService) sessionOfLabel(label, scope string) (string, error) {
+	id, minted, err := g.labelledSession(label, scope)
+	if err != nil || !minted {
+		return id, err
+	}
+	return g.recordMinted(label, scope, id)
+}
+
+// labelledSession is the session id label names in scope's namespace, and
+// minted false; or, where it names none there, a session id minted for its
+// first use, not recorded yet, and minted true: a new id is minted again
+// where it is a session this process or the store holds already. The
+// caller records a minted id (recordMinted) before the session's first
+// receipt, and an acquisition only once it is admitted.
+func (g *gatewayService) labelledSession(label, scope string) (string, bool, error) {
 	id, err := g.labels.labelSession(scope, label)
 	if err != nil {
-		return "", fmt.Errorf(refusalLabelUnread, label)
+		return "", false, fmt.Errorf(refusalLabelUnread, label)
 	}
 	if id != "" {
-		return id, nil
+		return id, false, nil
 	}
 	for attempt := 0; attempt < 4; attempt++ {
 		fresh, err := mintSessionID()
 		if err != nil {
-			return "", fmt.Errorf(refusalLabelUnstored, label)
+			return "", false, fmt.Errorf(refusalLabelUnstored, label)
 		}
 		if g.sessionTaken(fresh) {
 			continue
 		}
-		recorded, err := g.labels.recordLabel(scope, label, fresh)
-		if err != nil {
-			return "", fmt.Errorf(refusalLabelUnstored, label)
-		}
-		return recorded, nil
+		return fresh, true, nil
 	}
-	return "", fmt.Errorf(refusalLabelUnstored, label)
+	return "", false, fmt.Errorf(refusalLabelUnstored, label)
+}
+
+// recordMinted records id, minted by labelledSession, for label in scope's
+// namespace, and is the id the label names: id, or the one another request
+// or another instance recorded for it first.
+func (g *gatewayService) recordMinted(label, scope, id string) (string, error) {
+	recorded, err := g.labels.recordLabel(scope, label, id)
+	if err != nil {
+		return "", fmt.Errorf(refusalLabelUnstored, label)
+	}
+	return recorded, nil
 }
 
 // sessionTaken is whether a minted id is a session already: one this
@@ -403,11 +447,27 @@ func (g *gatewayService) unlabelledOpen() ([]string, error) {
 	for _, e := range entries {
 		labelled[e.sessionID] = true
 	}
+	var open []string
+	if pg, onKind := g.kind.(*pgKind); onKind {
+		// every series of every scope that holds a receipt, in one snapshot
+		held, err := pg.seriesHoldingEntries()
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range held {
+			if _, sealed := seals[s]; !sealed && !labelled[s] {
+				open = append(open, s)
+			}
+		}
+		return open, nil
+	}
+	if g.kind != nil {
+		return nil, errors.New("the store's kind lists no sessions to ask whether a label names them")
+	}
 	sessions, err := listSessions(g.storeRoot)
 	if err != nil {
 		return nil, err
 	}
-	var open []string
 	for _, s := range sessions {
 		if _, sealed := seals[s]; sealed || labelled[s] {
 			continue
@@ -512,24 +572,23 @@ func cmdSessions(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s %s\n", flags["--label"], id)
 		return 0
 	}
-	entries, err := keeper.labelEntries()
+	entries, err := keeper.labelsOf(scope)
 	if err != nil {
 		fmt.Fprintln(stderr, "gateway sessions: the labels could not be read:", err)
 		return 1
 	}
 	for _, e := range entries {
-		if e.scope == scope {
-			fmt.Fprintf(stdout, "%s %s\n", e.label, e.sessionID)
-		}
+		fmt.Fprintf(stdout, "%s %s\n", e.label, e.sessionID)
 	}
 	return 0
 }
 
 // labelKeeperFor is the labels of the store a configuration names, and what
-// closes what it opened.
+// closes what it opened: on the PostgreSQL kind, read through the run-time
+// login, each namespace through its own scope's view (pgLabelsFor).
 func labelKeeperFor(cfg engineConfig) (labelKeeper, func(), error) {
 	if cfg.storage != nil {
-		return nil, nil, storageUnsupported("gateway sessions, whose labels are read from a store on disk,")
+		return pgLabelsFor(cfg)
 	}
 	return fsLabels{root: cfg.store}, func() {}, nil
 }

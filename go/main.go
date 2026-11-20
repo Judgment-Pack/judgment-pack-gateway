@@ -440,8 +440,16 @@ func applyServeOptions(service *gatewayService, opts serveOptions) {
 	if opts.receiptSink != nil {
 		service.forwarder = newReceiptForwarder(opts.receiptSink)
 	}
-	if opts.labels && service.kind == nil {
-		service.labels = fsLabels{root: service.storeRoot}
+	if opts.labels {
+		// the store's labels: files of labels/ on the filesystem kind, and
+		// the rows of gateway.session_labels on the PostgreSQL kind; a kind
+		// that keeps none leaves labels nil, and its start is refused
+		switch kind := service.kind.(type) {
+		case nil:
+			service.labels = fsLabels{root: service.storeRoot}
+		case *pgKind:
+			service.labels = pgLabels{k: kind}
+		}
 	}
 }
 
@@ -862,6 +870,9 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 		// on one database signs under one key version (admitBeside)
 		kind.instance = instanceForKey(cfg.storage, r.signer.publicKey(), cfg.authority)
 	}
+	// the lease records whether the instance reads sessions by label: the
+	// instances on one database read them one way (admitBeside, ADR-0051)
+	kind.instance.labels = versionAtLeast(cfg.version, labelsVersion)
 	holder, err := newStartLeaseHolder()
 	if err != nil {
 		kind.close()
@@ -888,7 +899,7 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 		service, err = buildServiceOn(kind, seed, cfg.authority, served)
 	}
 	if err == nil && versionAtLeast(cfg.version, labelsVersion) && service.labels == nil {
-		err = fmt.Errorf("%w: session labels (engineVersion %s, ADR-0051) are kept by the filesystem kind alone so far, and the PostgreSQL kind keeps them in a follow-up of #550 (migration 0009); keep a configuration on this kind at engineVersion 38 until then", errStorageKindUnsupported, labelsVersion)
+		err = fmt.Errorf("%w: session labels (engineVersion %s, ADR-0051) are not kept by this store's kind", errStorageKindUnsupported, labelsVersion)
 	}
 	if err == nil {
 		_, err = service.kindRegistryWalk()
@@ -898,6 +909,11 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 		// served (SPEC.md §3c; seal_open_pg.go), and the seals pending
 		// forwarding delivered (seal_sink.go)
 		err = sealsAtStart(service, r.said, nowStamp, cfg.sealOpenAtStart)
+	}
+	if err == nil {
+		// from labelsVersion, refused while a session named before it is
+		// open (session_labels.go)
+		err = labelsAtStart(service)
 	}
 	if err == nil {
 		// a lease lost while the start ran ends it here

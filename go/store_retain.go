@@ -379,6 +379,17 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 		}); err != nil {
 			return failed(err)
 		}
+		// the session's label first, before its receipts, as on the
+		// filesystem kind (ADR-0051, amended); the one transaction commits
+		// it with the rest and the records, or none
+		if _, err := c.exec(`DELETE FROM gateway.session_labels WHERE scope = $1 AND series = $2`, row, session); err != nil {
+			return failed(err)
+		}
+		if removalCutOff != nil {
+			if err := removalCutOff(); err != nil {
+				return failed(err)
+			}
+		}
 		done, err := c.exec(`DELETE FROM gateway.entries WHERE scope = $1 AND series = $2`, row, session)
 		if err != nil {
 			return failed(err)
