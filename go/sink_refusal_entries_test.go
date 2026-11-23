@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -338,5 +339,30 @@ func TestARefusalJournalRecreatedUnderItsCursorIsNotForwarded(t *testing.T) {
 		if now, _ := cursors.read(standInJournal); now != at {
 			t.Fatalf("%s: the cursor moved to %+v", name, now)
 		}
+	}
+}
+
+// A journal stopped at a diverged cursor is named once, whatever the number
+// of passes over it, by its name alone.
+func TestARefusalJournalStoppedAtADivergedCursorIsNamedOnce(t *testing.T) {
+	source := standInJournalOf(3)
+	cursors := fsForwardingCursors{root: t.TempDir(), mu: &sync.Mutex{}}
+	_, url, _, _ := entrySink(t)
+	owner := ownerFor(t, url, source, lockChecked{cursors, source})
+	var said strings.Builder
+	owner.stderr = &said
+	owner.forwardAll(context.Background())
+	if said.Len() != 0 {
+		t.Fatalf("a journal forwarded was named: %q", said.String())
+	}
+	source.mu.Lock()
+	source.lines[standInJournal] = [][]byte{[]byte(`{"body":{"kind":"refusal","n":10},"ordinal":0}`), []byte(`{"body":{"kind":"refusal","n":11},"ordinal":1}`), []byte(`{"body":{"kind":"refusal","n":12},"ordinal":2}`)}
+	source.mu.Unlock()
+	for pass := 0; pass < 3; pass++ {
+		owner.forwardAll(context.Background())
+	}
+	want := fmt.Sprintf("refusal entry forwarding: journal %q: %v\n", standInJournal, errCursorDiverged)
+	if said.String() != want {
+		t.Fatalf("said %q; want once %q", said.String(), want)
 	}
 }

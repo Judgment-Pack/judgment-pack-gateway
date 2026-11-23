@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -270,6 +271,13 @@ type refusalEntryForwarding struct {
 	source    refusalEntrySource
 	cursors   forwardingCursors
 	inFlight  sync.Mutex
+	// stderr is where a journal that stops at a diverged cursor is named,
+	// once for each journal (diverged): it is forwarded no more until the
+	// maintainer looks at it, and a stop that says nothing is a journal
+	// forgotten for good
+	stderr     io.Writer
+	divergedMu sync.Mutex
+	diverged   map[string]bool
 }
 
 // newRefusalEntryForwarding is the owner for a sink, or nil: for a sink not
@@ -279,7 +287,20 @@ func newRefusalEntryForwarding(spec *receiptSinkSpec, source refusalEntrySource,
 	if spec == nil || !spec.deliveryV3 || !spec.refusalEntries {
 		return nil
 	}
-	return &refusalEntryForwarding{forwarder: newReceiptForwarder(spec), source: source, cursors: cursors}
+	return &refusalEntryForwarding{forwarder: newReceiptForwarder(spec), source: source, cursors: cursors, stderr: os.Stderr, diverged: map[string]bool{}}
+}
+
+// divergedOnce names a journal whose forwarding stopped at a diverged
+// cursor, the first time it is met. The line names the journal and nothing
+// of its entries: no key, no commitment, no digest.
+func (r *refusalEntryForwarding) divergedOnce(journal string) {
+	r.divergedMu.Lock()
+	defer r.divergedMu.Unlock()
+	if r.diverged[journal] {
+		return
+	}
+	r.diverged[journal] = true
+	fmt.Fprintf(r.stderr, "refusal entry forwarding: journal %q: %v\n", journal, errCursorDiverged)
 }
 
 // forwardJournal is one pass over one journal: the entries after its
@@ -349,7 +370,11 @@ func (r *refusalEntryForwarding) forwardAll(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		_ = r.forwardJournal(ctx, journal)
+		// a sink that is down is tried again on the next pass; a diverged
+		// cursor is not, and is named
+		if err := r.forwardJournal(ctx, journal); errors.Is(err, errCursorDiverged) {
+			r.divergedOnce(journal)
+		}
 	}
 }
 
