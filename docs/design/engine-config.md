@@ -2966,10 +2966,9 @@ may sign delegation statements with it (spec RFC 0030, amendment of 2026-11-22; 
 
 An earlier gateway refuses a version-41 file by its version.
 
-## Scope-bound delegations (version to be assigned)
+## Scope-bound delegations (engine version 46)
 
-The version `delegationScopeBindingVersion` (a placeholder; the maintainer assigns the number in
-merge order) lets an issuing host's entry in `delegation.hosts` name `scopeIds`, the scope
+Engine version 46 (`delegationScopeBindingVersion`) lets an issuing host's entry in `delegation.hosts` name `scopeIds`, the scope
 identifiers its delegation chains may be bound to (spec RFC 0030, amendment of 2026-11-22, §2
 *Binding a chain to one scope identifier*, open question 27; SPEC.md §11.1, §11.2):
 
@@ -2988,22 +2987,66 @@ identifiers its delegation chains may be bound to (spec RFC 0030, amendment of 2
 
 An earlier gateway refuses a file of this version by its version.
 
-## Scoped writes, dry-runs and approvals (ADR-0054; version to be assigned)
+## Scoped writes (ADR-0054; engine version 43)
 
-ADR-0054 adds, from the engine configuration version it assigns (`actScopeVersion` in
-`go/engine.go`, which this engine does not yet read, so a file of that version is refused by its
-version):
+ADR-0054 adds, from engine version 43 (`actScopeVersion` in `go/engine.go`, the
+newest of `engineVersions`):
 
 - **`scope` beside `write: true`.** Such a platform is refused at load unless `identity.callerScopes`
   is an object (a write takes no `"unchecked"`) and the platform names its own `decisionRecords`
   directory: not the gateway's, not another scoped platform's, and not beneath or above either, held
   to the ownership and permission check at start the gateway's directory is held to. An `/act` of that
   scope finds its decision record there and nowhere else; unscoped writes keep the gateway's
-  directory. `gateway verify --decision-records` takes a directory that holds them all.
-- **The request members `scope`, `dryRun` and `approvals`** on `/act` (SPEC.md §6, "`/act`: a scope,
-  a dry-run and approvals").
+  directory. `/verify` looks for a scoped action's record in its scope's directories alone.
+  `gateway verify --decision-records` takes a directory that holds them all.
+  On a filesystem that does not tell case apart, two directories whose names differ only by case
+  are one directory, and neither check folds case: the load check compares the cleaned paths byte
+  for byte, and the start check compares them byte for byte once each part that exists is resolved
+  through its links. Such a pair can load as apart, so spell each scope's directory apart by more
+  than case.
+- **The request member `scope`** on `/act` (SPEC.md §6, "`/act`: a scope, a dry-run and
+  approvals"). A scoped key is kept in its scope's own journal, `actions/scopes/<hash>/`, which
+  `gateway journal compact` compacts by the rule of the journal of none, and `gateway remove-scope`
+  removes once no key there is pending.
 
-Below that version each member is refused by name, as before.
+- **The request members `dryRun` and `approvals`** on `/act`, with or without a scoped write
+  source (SPEC.md §6). `"dryRun": true` runs the write's checks with no effect and answers a signed
+  dry-run receipt (§1.2c); `approvals` is carried as `action.approvals` and a key reserved with it
+  records identity version `"3"`, which an earlier release refuses as `action-journal-invalid`.
+
+Below that version `scope` and `decisionRecords` are refused by name, and `dryRun` and `approvals`
+as members `/act` does not read, as before.
+
+## A key history that marks each store continuation (engine version 42)
+
+Version 42 adds one member, `keyHistoryVersion` (ADR-0055). Its one value is `"2"`: `/publickey/history`
+answers the key history of version `"2"` (SPEC.md §3e), which lists the history one store at a time, each
+store after the first after its registry's store continuation, so that a consumer refuses a rotation given
+twice or passed over from the history alone. Absent, the gateway answers version `"1"`, byte for byte as
+before.
+
+```json
+"keyHistoryVersion": "2"
+```
+
+- **One value.** Any other value is refused with `engine configuration: keyHistoryVersion is "2", or
+  absent`, and the member in a file of an earlier version is refused by that version.
+- **Who reads it.** `serve` and its SIGHUP rotation, and `gateway store rotate --config` and
+  `gateway store rotate-key --config`, which carry or hold the history the route answers. `rotate-key`,
+  and `store rotate` given by its flags, take the version the carried history implies.
+- **Forward only.** A store whose carried history is of version `"2"` answers `"2"` whatever the
+  configuration says: with the member removed, it keeps answering `"2"`. A store that never carried
+  version `"2"` goes back to `"1"` when the member is removed.
+- **A version 1 history carried before.** It is answered as `base`, where its bytes are `canon` of its
+  value; inside it the ordinal is still held to its form alone.
+- **Several instances on one database.** Set the member on every instance before the first continued
+  rotation. Until then an instance without it answers `"1"`, which is still valid for that store; nothing
+  refuses the mixed state.
+- **Upgrade every reader first.** A consumer of an earlier release refuses version `"2"` whole, and a
+  gateway of an earlier release on a store that carries it answers `500` at `/publickey/history` and
+  refuses the rotate commands.
+
+An earlier gateway refuses a version-42 file by its version.
 
 ## Keyed actions (engine version 14 and later)
 

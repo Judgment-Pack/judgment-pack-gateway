@@ -1,0 +1,10 @@
+{
+  "name": "kh-v1-version-2-required",
+  "note": "kh-v1-one-key, with requireVersion 2.",
+  "pin": "TEST-PUBLIC-KEY",
+  "requireVersion": "2",
+  "history": "{\"keyHistoryVersion\":\"1\",\"keys\":[{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"publicKey\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\"}]}",
+  "expected": {
+    "refused": "version"
+  }
+}

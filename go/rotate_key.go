@@ -300,12 +300,12 @@ func rotateKey(seedPath, registryPath string, stamp func() string, random io.Rea
 	if err != nil {
 		return nil, fmt.Errorf("the key history carried into the store: %w; nothing was written", err)
 	}
-	before, err := registryKeyHistory(data, edKey(from), carried, carriedPresent)
+	before, err := registryKeyHistoryOf(data, edKey(from), carried, carriedPresent, "")
 	if err != nil {
 		return nil, fmt.Errorf("the key history before the rotation does not hold: %w; nothing was written", err)
 	}
 	at := stamp()
-	if err := keyHistoryWriteRefusal(before, at, storeRotateKeyBefore, keyHistoryRotationFault, nil); err != nil {
+	if err := keyHistoryWriteRefusalAt(before.last, at, storeRotateKeyBefore, keyHistoryRotationFault, nil); err != nil {
 		return nil, err
 	}
 
@@ -330,8 +330,8 @@ func rotateKey(seedPath, registryPath string, stamp func() string, random io.Rea
 	// registry: whatever stops the append, --resume knows exactly which
 	// bytes are the rotation's.
 	record := rotationRecord(data, ordinal, at, private, nextPrivate)
-	if err := keyHistoryWriteRefusal(before, at, storeRotateKeyBefore, keyHistoryRotationFault, func() error {
-		_, err := walkKeyHistory(append(bytes.Clone(data), record...), edKey(to), carried, carriedPresent)
+	if err := keyHistoryWriteRefusalAt(before.last, at, storeRotateKeyBefore, keyHistoryRotationFault, func() error {
+		_, err := walkKeyHistory(append(bytes.Clone(data), record...), edKey(to), carried, carriedPresent, "")
 		return err
 	}); err != nil {
 		os.Remove(nextPath)

@@ -38,6 +38,16 @@ const (
 // key. A request that sends neither keyScope nor reconcile behaves as it did.
 type actionKeyMembers struct {
 	key, keyScope, reconcile json.RawMessage
+	// scopeIdentifier is the request's scope member (ADR-0054), read at the
+	// scope step and never at the action-key step: it is no key scope.
+	scopeIdentifier json.RawMessage
+	// approvals is the request's approvals member (ADR-0054, decision 3),
+	// read at the approvals step; it enters the key's approved content.
+	approvals json.RawMessage
+	// dryRun is a request the dry-run step admitted as "dryRun": true
+	// (ADR-0054, decision 2): it runs the ladder to the dry-run point and
+	// does nothing of the key.
+	dryRun bool
 }
 
 // parseActionKeyScope reads keyScope and reconcile at the action-key step.

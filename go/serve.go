@@ -103,9 +103,12 @@ func scopeSaltOf(state *sessionState) (string, error) {
 // unless declared, because a source that cannot find `/bin/sh` is not a
 // source, and PATH carries no secret.
 type sourceSpec struct {
-	binding        string
-	actionRecovery map[string]*actionRecovery
-	sandbox        *sourceSandbox
+	binding string
+	// decisionRecords is a scoped write source's decision-record directory
+	// (ADR-0054), "" for every other source.
+	decisionRecords string
+	actionRecovery  map[string]*actionRecovery
+	sandbox         *sourceSandbox
 	// Descriptor provenance is selected by the operator's configuration. A
 	// source's own envelope cannot introduce or replace this reference.
 	descriptorProvenance *descriptorProvenance
@@ -226,6 +229,9 @@ const (
 
 type gatewayService struct {
 	requireActionKey bool
+	// dryRunApprovals is whether /act reads dryRun and approvals (ADR-0054,
+	// from actScopeVersion); without it each is a member /act does not read.
+	dryRunApprovals bool
 	// actionLocks holds one keyed action at a time per key (act).
 	actionLocks actionKeyLocks
 	// actionStep, when set, is told each named point of a keyed request (a test's
@@ -239,6 +245,9 @@ type gatewayService struct {
 	// keyHistoryKept is the last answer to /publickey/history, and what it
 	// was made of (key_history.go).
 	keyHistoryKept keyHistoryKept
+	// keyHistoryVersion is the configuration's keyHistoryVersion: "2", or
+	// "" for the history the carried one implies (ADR-0055 §4)
+	keyHistoryVersion string
 	// keyWalk walks the registry for provenanceKeys; nil is reachedKeys.
 	// beforeProvenanceRecheck runs just before the post-run provenance check.
 	// Both are test seams.
@@ -2273,16 +2282,18 @@ func (g *gatewayService) admit(sessionID, scope string) error {
 		state = &sessionState{scope: scope}
 		g.sessions[sessionID] = state
 	}
-	if state.sealed {
-		return badRequest{fmt.Errorf("session is sealed: %s", sessionID)}
-	}
 	// The session's receipts are of one scope, on every kind (ADR-0036):
 	// its seal names that scope, and on a kind that keeps each scope's rows
 	// apart the view of another scope could not stamp into it (its series
 	// is the first scope's). The source is not run for a receipt the
-	// session cannot have. The refusal names neither scope.
+	// session cannot have. The refusal names neither scope, and comes before
+	// the seal, so a request of one scope does not learn whether a session
+	// of another, or of none, is sealed (ADR-0054, §6).
 	if state.scope != scope {
 		return badRequest{fmt.Errorf(refusalOtherScope, sessionID)}
+	}
+	if state.sealed {
+		return badRequest{fmt.Errorf("session is sealed: %s", sessionID)}
 	}
 	state.inFlight++
 	g.gate.admitLocked()
@@ -2474,7 +2485,7 @@ func (g *gatewayService) verifyReport() (*report, error) {
 	if g.kind != nil {
 		return nil, storageUnsupported("/verify, which verifies the store on disk; export the store and verify the export,")
 	}
-	return verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.ownHeld())
+	return verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.scopeDecisionRecords(), g.ownHeld())
 }
 
 // verdictMap is a verdict as the JSON object /verify answers.
@@ -2791,8 +2802,8 @@ func (g *gatewayService) handler() http.Handler {
 		// (ADR-0026): a caller that does not reach the sources of none is
 		// refused before the body is read, with one answer whatever session
 		// it names (ADR-0037), on every kind.
-		if !g.reachOf(who).holds("") {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": reachRefusalAct, "refusedAt": "scope-identifier"})
+		if refusal := g.writeReachRefusal(who); refusal != "" {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": refusal, "refusedAt": "scope-identifier"})
 			return
 		}
 		// An action reads its session, its journal and its evidence on
@@ -2809,10 +2820,31 @@ func (g *gatewayService) handler() http.Handler {
 		// What the envelope may name at all is decided here, before the
 		// ladder: an action is a write, and a write taken from a member this
 		// engine does not read is one nobody asked for.
-		body, err := requestMembers(r.Body, members(actRequestMembers, "delegation", "reservation"))
+		allowed := members(actRequestMembers, "delegation", "reservation")
+		if g.scopedWrite() {
+			// read only where some write source is fixed to a scope
+			// identifier (ADR-0054); elsewhere a member /act does not read
+			allowed = withMember(allowed, "scope")
+		}
+		if g.dryRunApprovals {
+			// read from actScopeVersion (ADR-0054, decisions 2 and 3); below
+			// it each is a member /act does not read, so a dry-run sent to
+			// such an engine is refused whole and never sent as a write
+			allowed = withMember(allowed, "dryRun", "approvals")
+		}
+		body, err := requestMembers(r.Body, allowed)
 		if err != nil {
 			fail(w, badRequest{err})
 			return
+		}
+		// The dry-run step (ADR-0054, step 5): after the members, before the
+		// credential is presented or a reservation authenticated.
+		_, dryRun := body["dryRun"]
+		if dryRun {
+			if refusal := g.dryRunRefusal(body); refusal != "" {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": refusal, "refusedAt": "dry-run"})
+				return
+			}
 		}
 		if !presented(w, who, body["delegation"]) {
 			return
@@ -2845,12 +2877,12 @@ func (g *gatewayService) handler() http.Handler {
 			}
 			// the action is the delegation subject's now, held as a
 			// delegated request is (ADR-0037, decision 5)
-			if !g.reachOf(who).holds("") {
-				writeJSON(w, http.StatusForbidden, map[string]any{"error": reachRefusalAct, "refusedAt": "scope-identifier"})
+			if refusal := g.writeReachRefusal(who); refusal != "" {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": refusal, "refusedAt": "scope-identifier"})
 				return
 			}
 		}
-		out, err := g.actKeyed(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, actionKeyMembers{key: body["actionKey"], keyScope: body["keyScope"], reconcile: body["reconcile"]})
+		out, err := g.actKeyed(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, actionKeyMembers{key: body["actionKey"], keyScope: body["keyScope"], reconcile: body["reconcile"], scopeIdentifier: body["scope"], approvals: body["approvals"], dryRun: dryRun})
 		if err != nil {
 			var uncertain *actionUncertain
 			if errors.As(err, &uncertain) {

@@ -821,7 +821,10 @@ name the migration login on the new database, as `gateway store migrate` takes t
   It is the one row of `gateway.key_history` (schema version 8), which the owner writes and the
   run-time role reads alone, and every instance on the new database answers it with the walk of
   the registry they share. A row missing or changed by the owner is answered `500`, never as a
-  shorter history. `gateway export --config` does not write it beside the exported registry.
+  shorter history. The row holds a history of either version (SPEC.md §3e; ADR-0055) with no
+  schema change: a row of version `"2"` is answered as version `"2"` by every instance, whatever
+  its configuration says, and the rotation writes version `"2"` where its `--config` holds
+  `keyHistoryVersion: "2"` or the old row is of version `"2"`. `gateway export --config` does not write it beside the exported registry.
 - **The grants.** The run-time role holds on the new database what `grants.sql` gives it on every
   migration, and nothing more (a test compares them with the old database's).
 - **The line.** SPEC.md §3d's `store-continuation`, signed by the seed's key, naming the old

@@ -132,6 +132,8 @@ both of the following hold:
   names is there, whoever's record it is. Second, a write in one scope must not rest on a decision
   made for another. Unscoped writes keep the gateway's directory. `gateway verify --decision-records`
   takes a directory that holds them all, since its walk is recursive.
+  *2026-11-22:* `/verify`, the engine's own verdict, reads the scope's own `decisionRecords`
+  directory for a scoped action's record, and no other scope's directory or the gateway's.
 
 Below that version both members are refused by name, as today. `writeRequesters` holds as before, and
 the requester must pass both it and the caller-scope check. The MCP front still serves no write tool.
@@ -206,7 +208,7 @@ gateway's word.
 and the named-grant check of step 19, with the write's refusals at each step and the same bodies. In
 place of session admission it makes the same checks with no effect: the signer's gate is open, and the
 session is not sealed, is not held by another instance, and is of the request's scope. The session's
-directory is not made and the session is not held. Under `engineVersion` 14 and later it requires
+directory is not made and the session is not held. On the filesystem kind, "held by another instance" is read as a session directory this process did not make. On a kind whose store is shared between instances, it is read from the session's lease, read-only, once `/act` is served there (2026-11-22; `/act` answers 501 on those kinds today). Under `engineVersion` 14 and later it requires
 `actionKey`, as the write does. The key is applied to the idempotency argument, so the previewed
 request is the one that would be sent, and nothing else is done with it.
 

@@ -672,11 +672,19 @@ from those fields is not part of it, and neither are where the programs are
 installed, the platform environment and the operating-system user: a release
 that adds, renames or reorders a derived flag leaves the content of every key
 reserved under identity version 2 as it was. A reservation records the version
-of this identity it was made under (`identityVersion` `"2"`). A reservation that
+of this identity it was made under (`identityVersion` `"2"`). A request that names
+`approvals` (§6, "`/act`: a scope, a dry-run and approvals") is of identity version
+`"3"`: version 2's content plus `approvals`, in the order given. A request that
+names none is of version 2, byte for byte as before. A reservation of another
+identity version than the request's is other approved content, refused as
+`action-key-conflict`, so a key reserved with no approvals and replayed with some,
+or the reverse, conflicts, and the receipt of a dispatch names exactly the
+approvals of the request that dispatched it. A reservation that
 records none was made under version 1 (v0.23.0), which bound the derived command
 line without install paths instead of the named fields; it is held to the
-request's version 1 identity, and an identity version the gateway does not read
-refuses as `action-journal-invalid`. A version 1 reservation stays version 1, as
+request's version 1 identity, a request that names approvals has none, and an
+identity version the gateway does not read refuses as `action-journal-invalid`,
+as an earlier release refuses version 3. A version 1 reservation stays version 1, as
 no journal file is rewritten: under a release whose derived command line
 differs from v0.23.0's, such a key answers `action-key-conflict`, whether it is
 pending or settled, and nothing is sent. Before an action record cites a receipt, the receipt,
@@ -1777,7 +1785,7 @@ store"), its continuation this one, byte for byte, read through `gateway export`
 | `alg` | optional: the string `"ES256"` | present exactly when the key in force is a P-256 key (§1.5), from engine configuration version 40 |
 | `previousLines` | an integer from 0 to 2⁵³−1 | the old registry's line count |
 | `previousDigest` | 64 lowercase hexadecimal characters | the SHA-256 of the old registry's bytes, whole |
-| `keyHistoryDigest` | 64 lowercase hexadecimal characters | the SHA-256 of the key history the rotation carries beside the new registry (§3e), its exact bytes |
+| `keyHistoryDigest` | 64 lowercase hexadecimal characters | the SHA-256 of the key history the rotation carries beside the new registry (§3e), its exact bytes, of either version |
 | `signature` | 128 lowercase hexadecimal characters | Ed25519, or ES256 where `alg` is present (§1.5), over `"judgment-pack-gateway/store-continuation/1:"` and `canon` of the statement without `signature` |
 
 A registry's **line count** is the number of pieces its bytes split into at each `0x0A`, a last piece
@@ -1855,7 +1863,9 @@ It adds no trust: an entry the consumer cannot check is no entry.
 | `keyRotation` | a string | every but the first: the rotation's `key-rotation` statement (§3b), its registry line without its `0x0A` |
 | `keyContinuation` | a string | every but the first: the rotation's `key-continuation` statement, likewise |
 
-The first key has no `validFrom`: no statement says when it came into force.
+The first key has no `validFrom`: no statement says when it came into force. This is the history of version
+`"1"`. A gateway answers the history of version `"2"` (below) in its place where its engine configuration
+asks for it or its store carries one.
 
 **What a gateway answers.** Its registry, as it stands at the request, walked as its own reading walks it
 (§3b) -- from the key its first `key-continuation` names as `previous`, and from its own key where it has
@@ -1866,13 +1876,13 @@ of §3b's or §3d's findings, or that ends at a key other than the gateway's own
 it; so is a registry that cannot be read.
 
 **Across a store rotation.** `gateway store rotate` (§3d) writes the old store's key history, the exact
-bytes its gateway answers, beside the new registry -- on the filesystem kind the registry's path with
+bytes its gateway answers under the configuration the rotation is given (below), beside the new registry -- on the filesystem kind the registry's path with
 `.key-history` appended, outside its bytes -- durably and before the new registry is made, and the new
 registry's store continuation names those bytes by its `keyHistoryDigest` (§3d); a history that does not
 hold refuses the rotation, nothing new made. A rerun that finds the new registry made holds the history
 beside it to that digest: one whose bytes are other ones refuses the rerun, nothing changed, and one
 missing is written again, from the same bytes, only where it is the history named. A registry whose first
-line is a store continuation that loads answers the history carried beside it, whose bytes must be the
+line is a store continuation that loads answers, as version `"1"`, the history carried beside it, whose bytes must be the
 ones its `keyHistoryDigest` names, and which must hold by the check below from its own first key and end
 at the key that signed the continuation, then the keys the registry's own rotations reach; that key's entry
 is the carried one's, its `validTo` the rotation from it, if any. The continuation's `continuedAt` falls
@@ -1889,7 +1899,7 @@ it in its turn; a rerun holds a row there to the bytes named, and writes a missi
 the history named. The run-time role reads the row and cannot change it. A continued database whose row
 is missing or not the bytes named is answered `500` as above.
 
-**Checking it.** A consumer that pinned a key holds the answer, read by §1.1's parser, to: exactly the
+**Checking it.** A consumer that pinned a key holds an answer of version `"1"`, read by §1.1's parser, to: exactly the
 members above, each of its form; the first entry's `publicKey` the key pinned, with no `validFrom`,
 `keyRotation` or `keyContinuation`, and the algorithm the key was pinned with as its `alg`; each entry's `keyId`
 the key id of its `publicKey` by its algorithm, a key the key rule of that algorithm accepts (§8.4's, or §1.5's
@@ -1903,15 +1913,69 @@ before's `alg` as its `previousAlg`; each statement's own `alg` the algorithm of
 before's `validTo`, and not earlier than the entry before's `validFrom`, if it has one, so that each
 rotation's `rotatedAt` is not before the one before it (the form is fixed-width, so its order is its
 bytes'; two rotations of one second hold); and every
-entry but the last with a `validTo`, the last without one. The `rotation`
-ordinal is held to its form alone: it counts within one registry, and starts again at 1 after a store
-continuation. A receipt then verifies under the entry whose `keyId` it names, by that entry's algorithm, and only
+entry but the last with a `validTo`, the last without one. In a history of version `"1"` the
+`rotation` ordinal is held to its form alone: it counts within one registry, and starts again at 1 after a
+store continuation, which version `"1"` does not mark, so its consumer cannot tell a rotation given twice,
+which §3b's walk finds as `rotation-order`, from the first rotation after a store rotation. Version `"2"`
+marks each store continuation, and its consumer can. A receipt then verifies under the entry whose `keyId` it names, by that entry's algorithm, and only
 where the receipt's `alg` names it (§1.5). An entry holding `alg` is from engine configuration version 40; a
 history of Ed25519 keys alone is the bytes it was, its `keyHistoryVersion` still `"1"`, and so are the bytes a
 store rotation carries and the `keyHistoryDigest` that names them. What a key's `validFrom` and
 `validTo` bound is the gateway's clock at each rotation, as `rotatedAt` is (§3b), and nothing more: an
 answer that holds is the history the gateway's registry proves, and, as `/publickey` is (§5), consistency
 with the gateway that answers it, unless the key pinned came from elsewhere.
+
+**Version 2.** `canon` (§1.1) of `{keyHistoryVersion, stores}`, or of `{base, keyHistoryVersion, stores}`:
+`keyHistoryVersion` the string `"2"`; `stores` an array of one **store** or more, one for each registry the
+history crosses, in order, the gateway's own last; and `base`, where present, a history of version `"1"`
+that a store rotation carried into the first store, as the JSON value its bytes are. A store is an object
+of these members and no other:
+
+| Member | Form | Store |
+|---|---|---|
+| `keys` | an array of one entry or more, each of the members of version `"1"`'s table and no other | every: the keys its registry's walk reached (§3b), listed as version `"1"` lists the keys of a registry that continues no store |
+| `continuation` | a string | every but the first, and the first where `base` is present: its registry's first line, the store continuation (§3d), without its `0x0A` |
+
+A store's first entry is the key its registry's walk starts at, with no `validFrom`, `keyRotation` or
+`keyContinuation`, and its last entry is the key in force when its history was made, with no `validTo`:
+for the last store, the key in force when the gateway answers; for every other, the key that signed the
+next store's `continuation`. A gateway answering version `"2"` answers the stores carried into its store,
+and `base` where one is carried, as they were carried, byte for byte, and its own store after them;
+answering it over a carried history of version `"1"`, it answers that history as `base`, where `canon` of
+its value is its bytes, and `500` as above otherwise.
+
+**Checking version 2.** A consumer that pinned a key holds an answer of version `"2"`, read by §1.1's
+parser, to: exactly the members above, each of its form; `base`, where present, to the check of version
+`"1"` from the key pinned; and each store's `keys` to the check of version `"1"`, entry by entry, with these
+differences. A store's first entry is the key pinned, with the algorithm it was pinned with, where it is
+the first store and there is no `base`; otherwise it is the key of the last entry before it, of the same
+`keyId`, `alg` and `publicKey` -- the last of `base`, for the first store, and of the store before, for every
+other. No other entry is the key of an earlier entry, of either algorithm, in its store, an earlier one or
+`base`. The `keyRotation` and `keyContinuation` of the entry at place *i* of a store, the first at place 0,
+have `rotation` *i*: within a store the ordinals run from 1, one more at each entry, as §3b's walk of its
+registry follows them, and start again at 1 only after a `continuation`. A store's `continuation` holds
+§3d's form; its `keyId` and its `alg` are those of the store's first entry, and its signature verifies
+under that key by that algorithm; its `keyHistoryDigest` is the SHA-256 of `canon` of the history before
+it -- of `base`, for the first store, and otherwise of `{keyHistoryVersion, stores}`, `keyHistoryVersion`
+`"2"` and `stores` the stores before it, with `base` where present; and its `continuedAt` is not before any
+`rotatedAt` or `continuedAt` before it, and not after the `validTo` of its store's first entry, if it has
+one. Its `previousLines` and `previousDigest` are held to their form alone: a consumer holds no registry.
+A consumer may ask for version `"2"`, and then refuses an answer of version `"1"`.
+
+**What version 2 establishes.** What version `"1"` does, and, from the answer alone, that each store's
+rotations are its registry's in order, none given twice and none passed over, and that each store rotation
+the history crosses was signed by the key then in force over the exact history before it, so that no
+store, rotation or entry before a `continuation` is added, taken away or changed without that key. It does
+not establish that a `continuation` names the registry that was before it (§3d's `--previous` holds that),
+that no other history leads from the key pinned, or that the answer holds the gateway's latest rotation;
+and within `base` the ordinal is held to its form alone.
+
+**Which version is answered.** Version `"1"`, unless the gateway's engine configuration, of version 42 or
+later, holds `keyHistoryVersion: "2"`, or the history carried into its store is of version `"2"`; then
+version `"2"`. A history a store rotation has carried as version `"2"` is so answered by every store after
+it. `gateway store rotate` carries the history the old store's gateway answers under the configuration it
+is given, and, given by its flags, under none. A consumer learns the version from the answer's
+`keyHistoryVersion`; one written before version `"2"` refuses the answer whole.
 
 ## 4. Registry-anchored verification
 
@@ -2948,17 +3012,51 @@ of a scope identifier leaves".
 
 ### `/act`: a scope, a dry-run and approvals
 
-ADR-0054 adds three request members to `/act`, read from the engine configuration version it
-assigns, which this engine does not yet read: a file of that version is refused by its version, and
-below it each member is refused as one `/act` does not read, so nothing here changes an `/act`
-answer today. From that version a platform may set `scope` beside `write: true` where
-`identity.callerScopes` is an object and the platform names its own `decisionRecords`, disjoint from
-every other; `scope` is then read as `/acquire` reads it, and refused under a delegation or from a
-reservation sender until a delegation can be bound to a scope identifier; `"dryRun": true` runs the
-write's checks, signs a dry-run receipt (§1.2c) and answers `200` with exactly `{"dryRun", "request",
-"salts"}`, with no `receipt`, sending, reserving and recording nothing; and `approvals` is carried as
-`action.approvals` (§1.2a), checked for form alone. The order of the refusals, the key's namespace by
-scope, the read-back and `gateway remove-scope` are as ADR-0054 decision 1 states them.
+ADR-0054 adds three request members to `/act`. This engine reads the first, `scope`, from the
+engine configuration version 43 (`actScopeVersion`); below it `scope` is refused as a
+member `/act` does not read, as before. From that version a platform may set `scope` beside
+`write: true` where `identity.callerScopes` is an object and the platform names its own
+`decisionRecords`, disjoint from the gateway's and from every other scope's. `scope` is then read as
+`/acquire` reads it, and refused under a delegation or from a reservation sender until a delegation
+can be bound to a scope identifier. A scoped action's receipt carries `scope` and `scopeSalt`; it
+cites only receipts of its own scope; its decision record is found in its platform's directory alone,
+and `/verify` looks for it in its scope's directories alone; and its key is kept in its scope's own
+journal, so one key in two scopes names two actions. An action of none is answered, minted and kept
+as before. The order of the refusals, the key's namespace by scope, the read-back and
+`gateway remove-scope` are as ADR-0054 decision 1 states them.
+
+The other two, `dryRun` and `approvals`, this engine reads from the same version, with or without a
+scoped write source; below it each is refused as a member `/act` does not read, so a dry-run sent to
+such an engine is refused whole and never sent as a write.
+
+**The dry-run.** `"dryRun": true` is read at its own step, after the members `/act` reads and before
+the credential is presented or a reservation's sender authenticated. Only the JSON value `true` is
+read. Any other value, `dryRun` beside `keyScope`, `reconcile` or `reservation`, and `dryRun` under an
+engine that mints version 2 receipts are refused `400` with `{"error", "refusedAt": "dry-run"}`. A
+dry-run then runs the write's ladder through the decision record and its policy, with the write's
+refusals and bodies, then the publisher policy and the named-grant check, and in place of session
+admission the same checks with no effect: the signer's gate is open, and the session is not sealed,
+was not made by another instance or an earlier start, is of the request's scope, and holds no
+receipt the receipt sink has not acknowledged. A receipt held is read and not sent, and the dry-run
+is refused as the write is while the sink does not acknowledge it: `503`, the same code and
+sentence. Under
+`engineVersion` 14 and later it requires `actionKey`, which is set as the idempotency argument and
+nothing else. Under a delegation only the run's actor may ask; the grant's state is read, and §11.5
+steps 0 to 12 are made with the admission read at `"count": false`, so the host counts nothing. A
+dry-run does not lock, read, reserve, close or give a first scope to an action key, record a label,
+make a session directory, hold a session, deliver to the receipt sink, make a dispatch marker, use
+the grant or make its owner read, start the executor, run a read-back, or write to the store or the
+registry. It answers `200` with exactly `{"dryRun": <the dry-run receipt, §1.2c>, "request": {"tool",
+"arguments"}, "salts": {"request"}}`: the request the executor would be handed, and the salt that
+opens the receipt's `action.request`. The receipt is signed by the serving key, so under a key
+service each dry-run is one signing call; it is in no session and is not retained. A dry-run can pass
+where the write would then be refused at its key: it establishes nothing about the key. It is one
+`/act` request, and a per-scope limit on `/act` requests counts it.
+
+**Approvals.** `approvals` is §1.2a's form, read after the citations resolve and before the decision
+record is found, and refused `400` at `approvals` when out of form or empty. Nothing is read, fetched
+or compared: each entry is the requester's claim. The receipt carries it as `action.approvals`, in
+the order given, and it enters the key's approved content as identity version `"3"` (§1.2b).
 
 ### Who may ask for a write
 
@@ -4411,8 +4509,7 @@ token from that issuer:
   characters is refused, naming both forms, since its length would choose the algorithm; so is
   every other entry from version 41. Before version 41 the object is refused by name. A host may
   pin keys of both algorithms while it moves from one to the other, or of one. `scopeIds`, from
-  engine configuration version `delegationScopeBindingVersion` (a placeholder, assigned in merge
-  order), is optional: the scope identifiers the host's delegations may be bound to (§11.1), at
+  engine configuration version 46, is optional: the scope identifiers the host's delegations may be bound to (§11.1), at
   least one, each in §1.2a's form, none `"unscoped"`, none repeated. Absent is none, so every bound
   chain of that host is refused. Before that version it is refused by name. `admission` is where the gateway reads the
   host's state (§11.5): `url` an `https://` URL, and `credential` an absolute path to a file

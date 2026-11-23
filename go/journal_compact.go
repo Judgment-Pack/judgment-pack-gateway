@@ -18,7 +18,8 @@ package main
 // of an indexed entry under the same rule. Each move goes with a retirement
 // record. Every other entry stays as it is: closed, subject records, indexed
 // entries otherwise, entries that do not read, uncertain entries and entries
-// begun without a record. The first-scope index stays whole. No receipt is
+// begun without a record. Each scope identifier's journal (ADR-0054) is
+// compacted by the same rule. The first-scope index stays whole. No receipt is
 // touched, nothing is deleted, and nothing in the journal is rewritten.
 //
 // A retirement is made durable in an order that a crash at any point leaves
@@ -172,6 +173,9 @@ const retirementNames = 1 << 16
 
 type journalCompaction struct {
 	store, journal, archive string
+	// scopeJournal is the name of the scope identifier's journal being
+	// compacted, "" for the journal of none (ADR-0054)
+	scopeJournal            string
 	storeInfo               os.FileInfo
 	actions, archived       *os.Root
 	retention               time.Duration
@@ -231,6 +235,16 @@ func compactJournal(storePath, archivePath string, retention time.Duration, cloc
 	if err != nil {
 		return fmt.Errorf("action-journal-unavailable: the journal %s cannot be read: nothing was compacted", c.journal)
 	}
+	// Each scope identifier's journal (ADR-0054) is compacted by the same
+	// rule, its index read and its entries listed with the rest before
+	// anything moves.
+	top := heldJournal{path: c.journal, root: c.actions, reservations: c.reservations, subjects: c.subjects, entries: entries}
+	scoped, err := c.scopeJournals()
+	defer closeJournals(scoped)
+	c.use(top)
+	if err != nil {
+		return err
+	}
 	archiveLock, err := c.openArchive(archivePath)
 	if err != nil {
 		return err
@@ -240,13 +254,88 @@ func compactJournal(storePath, archivePath string, retention time.Duration, cloc
 	if err := c.finishInterrupted(); err != nil {
 		return err
 	}
-	for _, e := range entries {
-		if err := c.compactEntry(e); err != nil {
-			return err
+	for _, j := range append([]heldJournal{top}, scoped...) {
+		c.use(j)
+		for _, e := range j.entries {
+			if j.root == top.root && e.Name() == scopedActionJournals {
+				continue
+			}
+			if err := c.compactEntry(e); err != nil {
+				return err
+			}
 		}
 	}
-	fmt.Fprintf(out, "compacted %s: %d retired, %d kept, %d finished; the archive is %s\n", c.journal, c.retired, c.kept, c.finished, c.archive)
+	fmt.Fprintf(out, "compacted %s: %d retired, %d kept, %d finished; the archive is %s\n", top.path, c.retired, c.kept, c.finished, c.archive)
 	return nil
+}
+
+// heldJournal is one journal a compaction reads, the journal of none or a
+// scope identifier's: held, its first-scope index read, its entries listed.
+type heldJournal struct {
+	path, scopeJournal     string
+	root                   *os.Root
+	reservations, subjects map[string]bool
+	entries                []os.DirEntry
+}
+
+func (c *journalCompaction) use(j heldJournal) {
+	c.journal, c.scopeJournal, c.actions, c.reservations, c.subjects = j.path, j.scopeJournal, j.root, j.reservations, j.subjects
+}
+
+func closeJournals(journals []heldJournal) {
+	for _, j := range journals {
+		j.root.Close()
+	}
+}
+
+// scopeJournals holds each scope identifier's journal under the journal's
+// scopes directory, read as the journal of none is: one that is not a
+// private directory, or whose index does not read, refuses the whole
+// compaction. A name that is no scope identifier's journal is kept, as a
+// journal entry that is not one is. It returns what it held, also on error.
+func (c *journalCompaction) scopeJournals() ([]heldJournal, error) {
+	path := filepath.Join(c.journal, scopedActionJournals)
+	unreadable := fmt.Errorf("action-journal-unavailable: the journals %s cannot be read: nothing was compacted", path)
+	if info, err := c.actions.Lstat(scopedActionJournals); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, unreadable
+	} else if !privateDirectory(info) {
+		return nil, fmt.Errorf("action-journal-invalid: the journals %s are not a private directory: nothing was compacted", path)
+	}
+	scopes, err := openActionDirectory(c.actions, scopedActionJournals)
+	if err != nil {
+		return nil, unreadable
+	}
+	defer scopes.Close()
+	names, err := listHeld(scopes)
+	if err != nil {
+		return nil, unreadable
+	}
+	var held []heldJournal
+	for _, e := range names {
+		j := heldJournal{path: filepath.Join(path, e.Name()), scopeJournal: e.Name(), reservations: map[string]bool{}, subjects: map[string]bool{}}
+		if !isLowerHexOfLen(e.Name(), 64) {
+			c.kept++
+			fmt.Fprintf(c.out, "kept %s: not a scope identifier's journal\n", filepath.Join(scopedActionJournals, e.Name()))
+			continue
+		}
+		if info, err := scopes.Lstat(e.Name()); err != nil || !privateDirectory(info) {
+			return held, fmt.Errorf("action-journal-invalid: the journal %s is not a private directory: nothing was compacted", j.path)
+		}
+		if j.root, err = openActionDirectory(scopes, e.Name()); err != nil {
+			return held, fmt.Errorf("action-journal-unavailable: the journal %s cannot be read: nothing was compacted", j.path)
+		}
+		held = append(held, j)
+		c.use(j)
+		if err := c.readIndex(); err != nil {
+			return held, err
+		}
+		if held[len(held)-1].entries, err = listHeld(j.root); err != nil {
+			return held, fmt.Errorf("action-journal-unavailable: the journal %s cannot be read: nothing was compacted", j.path)
+		}
+	}
+	return held, nil
 }
 
 // resolvedDirectory is path made absolute, every link followed, and a directory.
@@ -781,7 +870,7 @@ func (c *journalCompaction) readsWhole(namespace string, claim *actionClaim, pre
 	if !present["action.json"] {
 		return "", nil, nil
 	}
-	return retainedReads(namespace, claim, present["scope.json"])
+	return retainedReads(namespace, claim, present["scope.json"], c.scopeJournal)
 }
 
 // intentReads is why an intent does not read as the gateway holds one to a
@@ -801,8 +890,11 @@ func intentReads(claim *actionClaim) string {
 	if version != actionJournalVersion || !isLowerHexOfLen(fingerprint, 64) {
 		return "intent.json does not read"
 	}
-	if identity, recorded := intent.get("identityVersion"); recorded && identity != vString(actionIdentityVersion) {
-		return "intent.json records an identity version this release does not read: upgrade rather than remove it"
+	// version 2, or version 3, a request's that named approvals (ADR-0054)
+	if identity, recorded := intent.get("identityVersion"); recorded {
+		if text, isString := identity.(vString); !isString || !readsIdentityVersion(string(text)) {
+			return "intent.json records an identity version this release does not read: upgrade rather than remove it"
+		}
 	}
 	return ""
 }
@@ -810,8 +902,9 @@ func intentReads(claim *actionClaim) string {
 // retainedReads reads an entry's action.json as a retained action: the members
 // the gateway retains, an action receipt with a delivery, and a receipt of
 // this entry's key, its namespace computed from the receipt as the gateway
-// computes it from the request (actionNamespace).
-func retainedReads(namespace string, claim *actionClaim, delegated bool) (string, *retainedEvidence, os.FileInfo) {
+// computes it from the request (actionNamespace, or actionNamespaceIn in
+// scopeJournal, a scope identifier's journal, whose receipts carry its scope).
+func retainedReads(namespace string, claim *actionClaim, delegated bool, scopeJournal string) (string, *retainedEvidence, os.FileInfo) {
 	const unreadable = "action.json does not read"
 	info, err := claim.root.Lstat("action.json")
 	if err != nil {
@@ -835,10 +928,18 @@ func retainedReads(namespace string, claim *actionClaim, delegated bool) (string
 	if err != nil || r.kind != "action" || r.delivery == nil || !isStamp(r.servedAt) || requireSession(r.sessionID) != nil {
 		return unreadable, nil, nil
 	}
+	carried, scoped := memberString(ro, "scope")
+	if scoped != (scopeJournal != "") || (scoped && scopedActionJournalName(carried) != scopeJournal) {
+		return "action.json is not this entry's key's", nil, nil
+	}
 	scope := newObject()
 	scope.set("authority", vString(r.authority))
 	scope.set("key", vString(r.delivery.key))
 	domain := "action-key"
+	if scoped {
+		scope.set("scope", vString(carried))
+		domain = "scoped-action-key"
+	}
 	if delegated {
 		recorded, err := claim.read("scope.json", actionScopeLimit)
 		if err != nil {

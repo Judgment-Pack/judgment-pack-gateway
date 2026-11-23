@@ -462,10 +462,15 @@ func applyServeOptions(service *gatewayService, opts serveOptions) {
 	}
 	service.receiptVersion = opts.receiptVersion
 	service.requireActionKey = opts.requireActionKey
+	service.dryRunApprovals = opts.dryRunApprovals
 	service.identity = opts.identity
 	service.decisionRecords = opts.decisionRecords
 	service.witnessedBy = opts.witnessedBy
 	service.seedPath = opts.seedPath
+	service.keyHistoryVersion = opts.keyHistoryVersion
+	if service.registry != nil {
+		service.registry.keyHistoryVersion = opts.keyHistoryVersion
+	}
 	if opts.receiptSink != nil {
 		service.forwarder = newReceiptForwarder(opts.receiptSink)
 	}
@@ -1022,6 +1027,7 @@ type serveOptions struct {
 	// signer signs in place of the seed's key where it is not nil (ADR-0050)
 	signer           signer
 	requireActionKey bool
+	dryRunApprovals  bool // /act reads dryRun and approvals (actScopeVersion and later)
 	sources          map[string]sourceSpec
 	port             string
 	// listen is the address --listen names (serve_listen.go); the zero
@@ -1060,6 +1066,9 @@ type serveOptions struct {
 	// labels is whether the session a request names is a label in its
 	// scope (labelsVersion, ADR-0051)
 	labels bool
+	// keyHistoryVersion is the configuration's keyHistoryVersion
+	// (keyHistoryV2Version, ADR-0055)
+	keyHistoryVersion string
 }
 
 // validateEnvKey accepts what an environment variable name can be on the

@@ -25,10 +25,12 @@ const delegationP256Version = "41"
 // an issuing host's entry may name scopeIds: the scope identifiers the
 // gateway lets that host's delegations be bound to (spec RFC 0030 §2, Binding
 // a chain to one scope identifier; open question 27; SPEC.md §11.2). None by
-// default, so a binding is opted into per host and never implied. It sits
-// below actScopeVersion, so a file of this version reads no member of that one.
-// placeholder: the maintainer assigns the number in merge order
-const delegationScopeBindingVersion = "42"
+// default, so a binding is opted into per host and never implied.
+// Its number is 46 in merge order, after request limits (44) and the
+// operator journal (45); it reads "44", the next on main today, because
+// engineVersions runs unbroken to the newest, and takes 46 at the merge of
+// main that brings those two.
+const delegationScopeBindingVersion = "44"
 
 // delegationHostSpec is one issuing host as configured.
 type delegationHostSpec struct {

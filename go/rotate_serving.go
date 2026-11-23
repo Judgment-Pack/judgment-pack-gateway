@@ -119,7 +119,7 @@ func (w *registryWriter) rotateTo(next signer, at string) (*signingKey, error) {
 	}
 	// the key history /publickey/history would make with the record, held
 	// before the append: no rotation is written that the history refuses
-	if err := rotationHoldsInKeyHistory(w.path, existing, record, from.held(), to.held(), at); err != nil {
+	if err := rotationHoldsInKeyHistory(w.path, existing, record, from.held(), to.held(), at, w.keyHistoryVersion); err != nil {
 		return nil, err
 	}
 	if n, err := w.log.appendRecord(record); err != nil {
@@ -137,19 +137,19 @@ func (w *registryWriter) rotateTo(next signer, at string) (*signingKey, error) {
 // data, would leave a key history the consumer's check refuses
 // (keyHistoryWriteRefusal): the history built as /publickey/history builds
 // it, with what a store rotation carried beside the registry at
-// registryPath. A history that does not hold before the rotation refuses it
+// registryPath, under the version configured (registryKeyHistoryOf). A history that does not hold before the rotation refuses it
 // too. Nothing is written.
-func rotationHoldsInKeyHistory(registryPath string, data, record []byte, from, to heldKey, at string) error {
+func rotationHoldsInKeyHistory(registryPath string, data, record []byte, from, to heldKey, at, configured string) error {
 	carried, present, err := readCarriedKeyHistory(registryPath)
 	if err != nil {
 		return fmt.Errorf("the key history carried into the store: %w; nothing was written", err)
 	}
-	before, err := registryKeyHistory(data, from, carried, present)
+	before, err := registryKeyHistoryOf(data, from, carried, present, configured)
 	if err != nil {
 		return fmt.Errorf("the key history before the rotation does not hold: %w; nothing was written", err)
 	}
-	return keyHistoryWriteRefusal(before, at, storeRotateKeyBefore, keyHistoryRotationFault, func() error {
-		_, err := walkKeyHistory(append(bytes.Clone(data), record...), to, carried, present)
+	return keyHistoryWriteRefusalAt(before.last, at, storeRotateKeyBefore, keyHistoryRotationFault, func() error {
+		_, err := walkKeyHistory(append(bytes.Clone(data), record...), to, carried, present, configured)
 		return err
 	})
 }

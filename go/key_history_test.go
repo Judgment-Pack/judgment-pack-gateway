@@ -18,6 +18,12 @@ import (
 )
 
 // askKeyHistory is GET /publickey/history of g, by its status and body.
+
+// edPin pins key as an Ed25519 key.
+func edPin(key []byte) *heldKey {
+	pin := edKey(key)
+	return &pin
+}
 func askKeyHistory(t *testing.T, g *gatewayService) (int, []byte) {
 	t.Helper()
 	rec := httptest.NewRecorder()
@@ -33,7 +39,7 @@ func historyPinned(t *testing.T, g *gatewayService, pinned ed25519.PublicKey) ([
 	if code != http.StatusOK {
 		t.Fatalf("the key history answered %d: %s", code, body)
 	}
-	entries, err := checkKeyHistory(body, pinned)
+	entries, err := checkKeyHistory(body, edPin(pinned))
 	if err != nil {
 		t.Fatalf("the key history does not hold from the key pinned: %v\n%s", err, body)
 	}
@@ -100,7 +106,7 @@ func TestTheKeyHistoryFollowsEachRotationWhileServing(t *testing.T) {
 	if g.publicKeyDocument()["keyId"] != entries[2].keyID {
 		t.Fatal("the key in force is not the key /publickey answers")
 	}
-	if _, err := checkKeyHistory(body, one.publicKey()); err == nil {
+	if _, err := checkKeyHistory(body, edPin(one.publicKey())); err == nil {
 		t.Fatal("a history held from a key it does not begin at")
 	}
 }
@@ -170,7 +176,7 @@ func TestTheKeyHistoryCheckRefusesWhatTheChainDoesNotProve(t *testing.T) {
 	}
 	doc := keyHistoryDocument(entries)
 	pinned := first.Public().(ed25519.PublicKey)
-	if _, err := checkKeyHistory(doc, pinned); err != nil {
+	if _, err := checkKeyHistory(doc, edPin(pinned)); err != nil {
 		t.Fatalf("the history itself: %v\n%s", err, doc)
 	}
 	var parsed map[string]any
@@ -216,11 +222,11 @@ func TestTheKeyHistoryCheckRefusesWhatTheChainDoesNotProve(t *testing.T) {
 		}
 		copied["keys"] = kept
 		out, _ := json.Marshal(copied)
-		if _, err := checkKeyHistory(out, pinned); err == nil {
+		if _, err := checkKeyHistory(out, edPin(pinned)); err == nil {
 			t.Errorf("%s: the check passed\n%s", name, out)
 		}
 	}
-	if _, err := checkKeyHistory(doc, second.Public().(ed25519.PublicKey)); err == nil {
+	if _, err := checkKeyHistory(doc, edPin(second.Public().(ed25519.PublicKey))); err == nil {
 		t.Error("a history held from a key it does not begin at")
 	}
 }
@@ -297,7 +303,7 @@ func TestTheKeyHistoryIsCarriedAcrossStoreRotation(t *testing.T) {
 	stretch := slices.Clone(whole[1:])
 	stretch[0].validFrom, stretch[0].forward, stretch[0].reverse = "", "", ""
 	cut := keyHistoryDocument(stretch)
-	if held, err := checkKeyHistory(cut, keys[1]); err != nil || len(held) != 2 {
+	if held, err := checkKeyHistory(cut, edPin(keys[1])); err != nil || len(held) != 2 {
 		t.Fatalf("the stretch does not hold on its own: %v", err)
 	}
 	if err := os.WriteFile(carried, cut, 0o600); err != nil {
@@ -415,7 +421,7 @@ func TestACarriedKeyHistoryEndsAtTheKeyThatSignedTheContinuation(t *testing.T) {
 			t.Fatal(err)
 		}
 		history := keyHistoryDocument([]keyHistoryEntry{{key: ending, keyID: keyIDFor(ending)}})
-		if _, err := checkKeyHistory(history, ending); err != nil {
+		if _, err := checkKeyHistory(history, edPin(ending)); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(keyHistoryBeside(newRegistry), history, 0o600); err != nil {
@@ -499,7 +505,7 @@ func TestTheKeyHistoryCheckRefusesARotationBeforeTheOneBefore(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = checkKeyHistory(keyHistoryDocument(entries), first.Public().(ed25519.PublicKey))
+		_, err = checkKeyHistory(keyHistoryDocument(entries), edPin(first.Public().(ed25519.PublicKey)))
 		want := "entry 2: the rotation's rotatedAt is before the rotatedAt of the rotation before it"
 		if at != "2026-11-19T00:00:00Z" {
 			if err != nil {

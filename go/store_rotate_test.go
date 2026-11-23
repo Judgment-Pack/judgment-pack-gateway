@@ -49,7 +49,9 @@ func TestStoreRotateSealsWhatIsOpenAndLinksTheNewRegistry(t *testing.T) {
 	newStore, newRegistry := filepath.Join(dir, "store"), filepath.Join(dir, "registry.jsonl")
 	receipts := storeTree(t, g.storeRoot)
 	code, stdout, stderr := rotateOn(t, g, seedPath, newStore, newRegistry, "2026-11-19T00:00:01Z")
-	if code != 0 || stderr != storeRotateNoSinkSaid {
+	// by its flags, from a store of no history carried, the history carried
+	// is of version "1", which stderr says
+	if code != 0 || stderr != storeRotateNoSinkSaid+storeRotateByFlagsVersion1 {
 		t.Fatalf("exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
 	}
 	out := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")

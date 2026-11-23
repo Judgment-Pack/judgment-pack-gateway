@@ -52,9 +52,13 @@ command line without install paths in place of the named fields. A reservation
 recorded under version 1 is held to the request's version 1 identity, computed
 beside version 2 as v0.23.0 computed it, so under this release a key v0.23.0
 reserved keeps answering: a replay, a read-back or a freed attempt, as before. It
-stays version 1 for good (see Known limits). Each version is
+stays version 1 for good (see Known limits). Version 3 is a request's that names
+`approvals` (ADR-0054): version 2's content plus `approvals`, under version 2's
+domain; a request that names none is of version 2, byte for byte, and has a
+version 1 identity, which a request with approvals has not. Each version is
 compared only with its own computation, and the two are hashed under different
-domains. An identity version this release does not read (one a later release
+domains; a reservation of another version than the request's is
+`action-key-conflict`. An identity version this release does not read (one a later release
 wrote, after a downgrade) refuses as `action-journal-invalid` and never grants
 dispatch.
 
@@ -384,7 +388,8 @@ has not been measured.
 The journal is compacted offline, without losing dispatch history, by this procedure.
 `gateway journal compact --store <dir> --archive <dir> --retention <duration>` does its
 steps 3 and 4 (below, "The command"); stopping the gateway processes, the backup and the
-restart stay the operator's.
+restart stay the operator's. Each scope identifier's journal, `actions/scopes/<hash>/`
+(ADR-0054), is compacted by the same procedure as the journal of none.
 
 1. Stop every gateway process that serves the store. The per-key lock holds one
    process only, and the journal's exclusive creation does not guard against a

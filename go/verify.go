@@ -713,8 +713,15 @@ func verifyOrdinarySealsOnly(storeRoot, registryPath, authority, decisionRecords
 // made at its start is required, so a registry that is not there is no
 // verdict, never "no seals" -- which, with no session left to enumerate,
 // would verify.
-func verifyAsEngine(storeRoot, registryPath, authority, decisionRecords string, own heldKey) (*report, error) {
-	return verifyAgainstPin(storeRoot, registryPath, authority, decisionRecords, "", own, true, false, "")
+//
+// scopeRecords is each scope identifier's decision-record directories, those
+// of its write platforms (ADR-0054): a scoped action's record is looked for
+// there alone, and every other action's in decisionRecords.
+func verifyAsEngine(storeRoot, registryPath, authority, decisionRecords string, scopeRecords map[string][]string, own heldKey) (*report, error) {
+	if scopeRecords == nil {
+		scopeRecords = map[string][]string{}
+	}
+	return verifyAgainstPinIn(storeRoot, registryPath, authority, decisionRecords, scopeRecords, "", own, true, false, "")
 }
 
 func verifyAgainst(storeRoot, registryPath, authority, decisionRecords, supplied string, publicKey []byte, registryRequired, ordinarySealsOnly bool, scope string) (*report, error) {
@@ -731,6 +738,13 @@ func verifySuppliedPin(storeRoot, registryPath, authority, decisionRecords, supp
 // verifyAgainstPin is the verdict under the key pinned, pin, read with the
 // algorithm it was given with.
 func verifyAgainstPin(storeRoot, registryPath, authority, decisionRecords, supplied string, pin heldKey, registryRequired, ordinarySealsOnly bool, scope string) (*report, error) {
+	return verifyAgainstPinIn(storeRoot, registryPath, authority, decisionRecords, nil, supplied, pin, registryRequired, ordinarySealsOnly, scope)
+}
+
+// verifyAgainstPinIn is verifyAgainstPin with each scope identifier's
+// decision-record directories, or nil where one directory holds every
+// record (gateway verify --decision-records, whose walk is recursive).
+func verifyAgainstPinIn(storeRoot, registryPath, authority, decisionRecords string, scopeRecords map[string][]string, supplied string, pin heldKey, registryRequired, ordinarySealsOnly bool, scope string) (*report, error) {
 	// A verdict by scope names a scope identifier of its form, and reads no
 	// decision record: an action receipt carries no scope, and a session of
 	// a scope identifier is refused one (SPEC.md §4, "A verdict by scope").
@@ -979,13 +993,29 @@ func verifyAgainstPin(storeRoot, registryPath, authority, decisionRecords, suppl
 	// Each record is wanted under the reading its receipt names: step 6's,
 	// one trailing 0x0D removed from a line, or, for a receipt whose
 	// decision.recordBytes is "exact", a line's exact bytes.
-	wanted, wantedExact := map[string]bool{}, map[string]bool{}
-	for _, r := range actions {
-		if r.exactRecord {
-			wantedExact[strings.TrimPrefix(r.recordDigest, "sha256:")] = true
-		} else {
-			wanted[strings.TrimPrefix(r.recordDigest, "sha256:")] = true
+	//
+	// Where each scope identifier's directories are given (the engine's own
+	// /verify; ADR-0054), a scoped action's record is wanted in its scope's
+	// directories alone, and every other action's in decisionRecords: a
+	// record in another scope's directory, or in the gateway's, is not its
+	// record.
+	dirsOf := func(r *receipt) []string {
+		if scopeRecords == nil {
+			return []string{decisionRecords}
 		}
+		if scope, held := memberString(r.obj, "scope"); held {
+			return scopeRecords[scope]
+		}
+		return []string{decisionRecords}
+	}
+	walkOrder := []string{decisionRecords}
+	scopeNames := make([]string, 0, len(scopeRecords))
+	for name := range scopeRecords {
+		scopeNames = append(scopeNames, name)
+	}
+	sort.Strings(scopeNames)
+	for _, name := range scopeNames {
+		walkOrder = append(walkOrder, scopeRecords[name]...)
 	}
 	// SPEC.md §4 step 7, resolved as each citing record is found -- the
 	// enumeration the citations resolve against is complete by now -- so
@@ -995,7 +1025,12 @@ func verifyAgainstPin(storeRoot, registryPath, authority, decisionRecords, suppl
 	// same enumeration; a member not of the shape is malformed. Once per
 	// record, by the digest of its bytes.
 	var recordFindings []finding
+	judged := map[string]bool{}
 	onRecord := func(r citingRecord) {
+		if judged[r.digest] {
+			return
+		}
+		judged[r.digest] = true
 		if r.malformed {
 			recordFindings = append(recordFindings, finding{"recordDigest": r.digest, "status": "record-citation-malformed"})
 			return
@@ -1020,9 +1055,31 @@ func verifyAgainstPin(storeRoot, registryPath, authority, decisionRecords, suppl
 			named[digestHex] = recordClaimsOf(data)
 		}
 	}
-	candidates, candidatesExact, recordsPresent, err := walkDecisionRecords(decisionRecords, wanted, decisionWalk{onRecord: onRecord, exact: wantedExact, onWanted: onNamed})
-	if err != nil {
-		return nil, err
+	type recordsIn struct {
+		found, foundExact map[string]bool
+		present           bool
+	}
+	walked := map[string]recordsIn{}
+	for _, dir := range walkOrder {
+		if _, done := walked[dir]; done {
+			continue
+		}
+		wanted, wantedExact := map[string]bool{}, map[string]bool{}
+		for _, r := range actions {
+			if !contains(dirsOf(r), dir) {
+				continue
+			}
+			if r.exactRecord {
+				wantedExact[strings.TrimPrefix(r.recordDigest, "sha256:")] = true
+			} else {
+				wanted[strings.TrimPrefix(r.recordDigest, "sha256:")] = true
+			}
+		}
+		found, foundExact, present, err := walkDecisionRecords(dir, wanted, decisionWalk{onRecord: onRecord, exact: wantedExact, onWanted: onNamed})
+		if err != nil {
+			return nil, err
+		}
+		walked[dir] = recordsIn{found, foundExact, present}
 	}
 	for _, r := range actions {
 		for _, c := range r.cites {
@@ -1035,11 +1092,22 @@ func verifyAgainstPin(storeRoot, registryPath, authority, decisionRecords, suppl
 			}
 		}
 		recordHex := strings.TrimPrefix(r.recordDigest, "sha256:")
-		found, claimsOf := candidates, named
+		claimsOf, inOwn := named, false
 		if r.exactRecord {
-			found, claimsOf = candidatesExact, namedExact
+			claimsOf = namedExact
 		}
-		if !recordsPresent || !found[recordHex] {
+		for _, dir := range dirsOf(r) {
+			in := walked[dir]
+			found := in.found
+			if r.exactRecord {
+				found = in.foundExact
+			}
+			if in.present && found[recordHex] {
+				inOwn = true
+				break
+			}
+		}
+		if !inOwn {
 			rep.Findings = append(rep.Findings, finding{
 				"sessionId": r.sessionID, "callIndex": r.callIndex, "status": "decision-record-mismatch",
 			})

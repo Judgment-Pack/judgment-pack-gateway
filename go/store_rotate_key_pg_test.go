@@ -140,7 +140,7 @@ func rkHistory(t *testing.T, server *httptest.Server) []string {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("%s: %d %s", keyHistoryRoute, resp.StatusCode, doc)
 	}
-	entries, err := checkKeyHistory(doc, ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey))
+	entries, err := checkKeyHistory(doc, edPin(ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey)))
 	if err != nil {
 		t.Fatalf("the key history does not hold: %v\n%s", err, doc)
 	}

@@ -1,0 +1,9 @@
+{
+  "name": "kh-v1-rotation-lone-surrogate",
+  "note": "A version 1 history whose keyRotation string holds the lone surrogate U+D800 after its kind.",
+  "pin": "TEST-PUBLIC-KEY",
+  "history": "{\"keyHistoryVersion\":\"1\",\"keys\":[{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"publicKey\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\",\"validTo\":\"2026-08-01T01:00:00Z\"},{\"keyContinuation\":\"{\\\"keyId\\\":\\\"33719bd9925ba0b0ef0ddb302e5a3ef4\\\",\\\"kind\\\":\\\"key-continuation\\\",\\\"previous\\\":\\\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\\\",\\\"previousKeyId\\\":\\\"ddb406e95cad582adc111a7d6fbff25d\\\",\\\"rotatedAt\\\":\\\"2026-08-01T01:00:00Z\\\",\\\"rotation\\\":1,\\\"rotationVersion\\\":\\\"1\\\",\\\"signature\\\":\\\"ab8af93192d5f09a687cd91f6cbc659a46ecb7bc96f4916952de502ec7be635a4e4ac829fa732b16a96020bf0e44c8b467245dca136abc0f93928524209d150f\\\"}\",\"keyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"keyRotation\":\"{\\\"keyId\\\":\\\"ddb406e95cad582adc111a7d6fbff25d\\\",\\\"kind\\\":\\\"key-rotation\\ud800\\\",\\\"next\\\":\\\"5adc7f0b58c7fd53d226650e7db2e618f9ed937844e441d44fe91f9dd283f5bf\\\",\\\"nextKeyId\\\":\\\"33719bd9925ba0b0ef0ddb302e5a3ef4\\\",\\\"rotatedAt\\\":\\\"2026-08-01T01:00:00Z\\\",\\\"rotation\\\":1,\\\"rotationVersion\\\":\\\"1\\\",\\\"signature\\\":\\\"04719f0982b834b878da757eb8646b729cfbe9e54601f48e09a343e6e6c18a24285b965f464cb898286d2222ef065433c20920531dc6107c024db38e80fe480b\\\"}\",\"publicKey\":\"5adc7f0b58c7fd53d226650e7db2e618f9ed937844e441d44fe91f9dd283f5bf\",\"validFrom\":\"2026-08-01T01:00:00Z\"}]}",
+  "expected": {
+    "refused": "form"
+  }
+}
