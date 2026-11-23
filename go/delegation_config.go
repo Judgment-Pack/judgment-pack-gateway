@@ -18,7 +18,6 @@ import (
 // <66 lowercase hexadecimal characters>}, beside Ed25519 keys as strings
 // (spec RFC 0030, amendment of 2026-11-22; SPEC.md §11.2). engine.go lists
 // it in engineVersions.
-// placeholder: the maintainer assigns the number in merge order
 const delegationP256Version = "41"
 
 // delegationScopeBindingVersion is the engine configuration version from which
