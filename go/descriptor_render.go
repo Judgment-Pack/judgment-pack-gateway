@@ -15,6 +15,9 @@ import (
 type servedTool struct {
 	description *string
 	schema      *jsonNode
+	// descriptorDigest is the snapshot entry's (versions 3 and 4), ""
+	// where the snapshot holds none.
+	descriptorDigest string
 }
 
 // servedPlatform is a platform's verified snapshot.

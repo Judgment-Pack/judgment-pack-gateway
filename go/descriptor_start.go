@@ -241,7 +241,7 @@ func readServedPlatform(dir *os.Root, dirName string, owner fileOwnerIDs, p plat
 			return nil, errors.New("the snapshot holds a tool the described operation does not allow")
 		}
 		candidates := snap.tools[tool]
-		var t servedTool
+		t := servedTool{descriptorDigest: candidates.descriptorDigest}
 		if d := candidates.description; d != nil {
 			if r := judgeText(*d, descriptionBound, "a description"); r != nil {
 				return nil, r
@@ -496,6 +496,18 @@ func listingEntry(t mcpTool, p *servedPlatform, limit int) (json.RawMessage, err
 	}
 	if t.taxonomy.Experimental {
 		meta["experimental"] = true
+	}
+	// From admissionReadV2Version (ADR-0058 decision 7): the digest a
+	// version "2" admission read names, from the snapshot the live
+	// operation pins, and the binding's label; information for a host
+	// approving the tool, granting nothing.
+	if t.versionMeta && !t.seal {
+		if p != nil && p.tools[t.tool].descriptorDigest != "" {
+			meta["descriptorDigest"] = p.tools[t.tool].descriptorDigest
+		}
+		if t.versionLabel != "" {
+			meta["versionLabel"] = t.versionLabel
+		}
 	}
 	entry["_meta"] = meta
 	out, err := json.Marshal(entry)

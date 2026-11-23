@@ -521,6 +521,9 @@ func engineStart(cfg *engineConfig, bindings map[string]binding, host engineHost
 		return nil, nil, err
 	}
 	sources := deriveSources(*cfg, bindings)
+	if err := holdToolVersions(*cfg, bindings, sources); err != nil {
+		return nil, nil, err
+	}
 	if err := holdAdapterSources(sources, host); err != nil {
 		return nil, nil, err
 	}

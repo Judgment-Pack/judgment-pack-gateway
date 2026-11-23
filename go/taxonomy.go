@@ -152,7 +152,7 @@ func annotationKey(k string) bool {
 func parseTaxonomyOperation(raw *vObject, name string) (operation, error) {
 	plain := &vObject{byName: map[string]value{}}
 	for _, key := range raw.names {
-		if key != "taxonomy" && key != "toolTaxonomies" {
+		if key != "taxonomy" && key != "toolTaxonomies" && key != "toolVersions" {
 			v, _ := raw.get(key)
 			plain.set(key, v)
 		}
@@ -176,6 +176,9 @@ func parseTaxonomyOperation(raw *vObject, name string) (operation, error) {
 	if op.shape == "airbyte" {
 		if _, present := raw.get("toolTaxonomies"); present {
 			return op, fmt.Errorf("history accepts taxonomy, not toolTaxonomies")
+		}
+		if _, present := raw.get("toolVersions"); present {
+			return op, fmt.Errorf("history accepts taxonomy, not toolVersions")
 		}
 		v, _ := raw.get("taxonomy")
 		op.taxonomy, err = taxonomyValue(v)
@@ -209,6 +212,9 @@ func parseTaxonomyOperation(raw *vObject, name string) (operation, error) {
 			return op, fmt.Errorf("operation write: every allowed tool is a write-back and declares operation act and effect act")
 		}
 		op.taxonomies[tool] = t
+	}
+	if op.toolVersions, err = parseToolVersions(raw, op.tools); err != nil {
+		return op, err
 	}
 	if _, err := ownerDeclaration(op); err != nil {
 		return op, err

@@ -181,7 +181,12 @@ type listenerReach struct{ loopback, authenticated bool }
 
 // delegationPosture is what posture reads of a delegation: whether a bearer
 // credential is admitted for a read-only chain.
-type delegationPosture struct{ bearerReadOnly bool }
+type delegationPosture struct {
+	bearerReadOnly bool
+	// readVersions is each issuing host's admission readVersion, from
+	// admissionReadV2Version; empty below it (ADR-0058 decision 11).
+	readVersions map[string]string
+}
 
 // delegationLines are the lines of SPEC.md §11.9, the grants line judged
 // over the sources the gateway serves.
@@ -195,12 +200,16 @@ func delegationLines(d *delegationPosture, sources map[string]sourceSpec) []post
 		sender = postureLine{protectionDelegationSender, postureNotEnforced,
 			"the operator admits a bearer delegation credential, living at most five minutes, for a chain that admits only pure, read and read-external calls"}
 	}
-	return []postureLine{
+	lines := []postureLine{
 		{protectionDelegationNarrowing, postureEnforced,
 			"the gateway enforces each delegation's scope before dispatch; no platform's standing credential is narrowed, so the narrowing is gateway-enforced, not platform-enforced"},
 		sender,
 		delegationGrantsLine(sources),
 	}
+	if len(d.readVersions) > 0 {
+		lines = append(lines, delegationReadVersionLine(d.readVersions))
+	}
+	return lines
 }
 
 // delegationGrantsNamed bounds how many platforms the grants line names;
@@ -599,7 +608,7 @@ func postureOfConfig(path string, account func(string) (int, string, error)) (po
 		in.callerScopes = callerScopesMode(&identityConfig{callers: cfg.identity.callers})
 	}
 	if cfg.delegation != nil {
-		in.delegation = &delegationPosture{bearerReadOnly: cfg.delegation.bearerReadOnly}
+		in.delegation = &delegationPosture{bearerReadOnly: cfg.delegation.bearerReadOnly, readVersions: cfg.delegation.readVersions()}
 	}
 	return in, nil
 }

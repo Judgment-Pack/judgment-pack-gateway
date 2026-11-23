@@ -20,6 +20,14 @@ import (
 // it in engineVersions.
 const delegationP256Version = "41"
 
+// admissionReadV2Version is the engine configuration version from which an
+// issuing host's admission may carry readVersion, "1" or "2" (ADR-0058; spec
+// RFC 0030 §2a), and from which the MCP server's tools/list names each
+// platform tool's descriptorDigest and versionLabel in _meta. The number is
+// a placeholder: it takes its number in merge order (47 expected). engine.go
+// lists it in engineVersions.
+const admissionReadV2Version = "45"
+
 // delegationHostSpec is one issuing host as configured.
 type delegationHostSpec struct {
 	host      string
@@ -28,6 +36,18 @@ type delegationHostSpec struct {
 	keys       map[string]heldKey
 	admission  string // an https URL
 	credential string // an absolute path to the admission credential
+	// readVersion is the version of every read sent to the host, "1" or
+	// "2", from admissionReadV2Version; "" below it, which is "1".
+	readVersion string
+}
+
+// sentVersion is the readVersion every read to the host carries: never
+// negotiated, never retried at another (RFC 0030 §2a).
+func (h delegationHostSpec) sentVersion() string {
+	if h.readVersion == "2" {
+		return "2"
+	}
+	return "1"
 }
 
 // delegationSpec is the member as written.
@@ -139,7 +159,11 @@ func parseDelegationHost(v value, version string) (delegationHostSpec, error) {
 	if err != nil {
 		return delegationHostSpec{}, err
 	}
-	if err := exactlyMembers(admission, map[string]bool{"url": true, "credential": true}, "admission"); err != nil {
+	readV2 := versionAtLeast(version, admissionReadV2Version)
+	if _, present := admission.get("readVersion"); present && !readV2 {
+		return delegationHostSpec{}, fmt.Errorf(`admission.readVersion is a version-%s member; engineVersion %s sends version "1" reads alone`, admissionReadV2Version, version)
+	}
+	if err := exactlyMembers(admission, map[string]bool{"url": true, "credential": true, "readVersion": false}, "admission"); err != nil {
 		return delegationHostSpec{}, err
 	}
 	h.admission, _ = memberString(admission, "url")
@@ -148,6 +172,16 @@ func parseDelegationHost(v value, version string) (delegationHostSpec, error) {
 	}
 	if h.credential, err = requireAbsolutePath(admission, "credential"); err != nil {
 		return delegationHostSpec{}, fmt.Errorf("admission.%v", err)
+	}
+	if readV2 {
+		h.readVersion = "1"
+		if rv, present := admission.get("readVersion"); present {
+			s, ok := rv.(vString)
+			if !ok || (s != "1" && s != "2") {
+				return delegationHostSpec{}, fmt.Errorf(`host %s: admission.readVersion is %s; it is "1" or "2"`, h.host, canon(rv))
+			}
+			h.readVersion = string(s)
+		}
 	}
 	return h, nil
 }

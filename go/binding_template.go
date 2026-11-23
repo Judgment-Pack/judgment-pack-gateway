@@ -234,6 +234,9 @@ func resolveParameters(b binding, parameters map[string]string, ref string) (bin
 		if op.taxonomies != nil {
 			resolved.taxonomies = map[string]ToolTaxonomy{}
 		}
+		if op.toolVersions != nil {
+			resolved.toolVersions = map[string]string{}
+		}
 		for _, tool := range op.tools {
 			name := fillTemplate(tool, parameter)
 			if contains(resolved.tools, name) {
@@ -242,6 +245,9 @@ func resolveParameters(b binding, parameters map[string]string, ref string) (bin
 			resolved.tools = append(resolved.tools, name)
 			if op.taxonomies != nil {
 				resolved.taxonomies[name] = op.taxonomies[tool]
+			}
+			if label, ok := op.toolVersions[tool]; ok {
+				resolved.toolVersions[name] = label
 			}
 		}
 		if op.probe != "" {
