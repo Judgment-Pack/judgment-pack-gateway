@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -109,5 +110,26 @@ func TestJournalRecordsMigrationRefusesAnOlderGateway(t *testing.T) {
 	}
 	if after := db.fingerprint(t); after != before {
 		t.Fatalf("a refusal changed the database:\n%s\n%s", before, after)
+	}
+}
+
+// An export of the PostgreSQL kind carries the operator journal alone, so a
+// journal whose rows the table holds and this release does not read, as a
+// later release or a hand may insert, is refused by its name, in name order,
+// never left out of a copy that would then verify (journal-unknown).
+func TestAPostgresExportRefusesAJournalItDoesNotRead(t *testing.T) {
+	kind, db := pgTestKind(t, "", nil)
+	if _, err := (pgEveryScope{kind}).snapshot(); err != nil {
+		t.Fatalf("a store of the operator journal alone: %v", err)
+	}
+	c := db.runtimeConn(t)
+	for _, journal := range []string{"refusal-west", "refusal-east"} {
+		if _, err := c.exec(`INSERT INTO gateway.journal_records (journal, ordinal, line) VALUES ($1, 0, '\x7b7d'::bytea)`, journal); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := (pgEveryScope{kind}).snapshot()
+	if !errors.Is(err, errUnknownJournal) || !strings.Contains(err.Error(), "refusal-east, refusal-west") {
+		t.Fatalf("an export of a store holding journals it does not read: %v", err)
 	}
 }

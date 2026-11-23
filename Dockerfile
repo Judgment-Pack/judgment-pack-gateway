@@ -20,14 +20,18 @@
 # builder's own platform for the target's, and only the stages that must
 # run on the target -- the launcher's compiler and the homes -- do.
 
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 AS build
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0 AS build
 ARG TARGETOS
 ARG TARGETARCH
 # The release tag, written into the gateway as the release archives write
 # it (.goreleaser.yml); empty outside a release, which leaves the binary
 # reporting what an unstamped build reports.
 ARG RELEASE_VERSION
-ENV CGO_ENABLED=0 GOFLAGS=-trimpath GOWORK=off
+ENV CGO_ENABLED=0 GOFLAGS=-trimpath GOWORK=off GOTOOLCHAIN=local
+# The builder's Go is the release's: release.yml's setup-go pin, which
+# .github/test_ci_evidence.py holds this line to. A digest moved to an
+# image of another Go release stops the build here.
+RUN go version | grep -q '^go version go1.26.11 '
 WORKDIR /src
 COPY go/ go/
 COPY adapters/ adapters/

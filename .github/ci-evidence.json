@@ -88,7 +88,7 @@
         ]
       },
       "pins": {
-        "go": "go version go1.26.5 linux/amd64",
+        "go": "go version go1.26.11 linux/amd64",
         "node": "v22.23.4",
         "python": "Python 3.12.16"
       }
@@ -107,7 +107,7 @@
         ]
       },
       "pins": {
-        "go": "go version go1.26.5 linux/amd64"
+        "go": "go version go1.26.11 linux/amd64"
       }
     },
     "go-macos": {
@@ -124,7 +124,7 @@
         ]
       },
       "pins": {
-        "go": "go version go1.26.5 darwin/arm64"
+        "go": "go version go1.26.11 darwin/arm64"
       }
     },
     "go-windows": {
@@ -141,7 +141,7 @@
         ]
       },
       "pins": {
-        "go": "go version go1.26.5 windows/amd64"
+        "go": "go version go1.26.11 windows/amd64"
       }
     }
   },

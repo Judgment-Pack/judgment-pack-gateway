@@ -31,12 +31,35 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // journalCutOff, where a test sets it, runs in a removal's transaction on
 // this kind after its entry is inserted and before COMMIT: a failure there
 // rolls the records and the entry back together.
 var journalCutOff func() error
+
+// pgUnknownJournals refuses, naming them in name order, the journals whose
+// rows the table holds and this release does not read: the schema admits
+// any name of the journal form, and a later release, or a hand, may insert
+// one. An export carries the operator journal and the refusal journals
+// (ADR-0059 §8) alone, so it would drop them.
+func pgUnknownJournals(tx pgTx) error {
+	rows, err := tx.exec(`SELECT DISTINCT journal FROM gateway.journal_records WHERE journal <> $1 ORDER BY journal`, operatorJournal)
+	if err != nil {
+		return err
+	}
+	var names []string
+	for _, r := range rows.rows {
+		if name := string(r[0]); !isRefusalJournalName(name) {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", errUnknownJournal, strings.Join(names, ", "))
+}
 
 // pgJournalFile is the journal's rows in ordinal order, as an export writes
 // them: each line and its 0x0A. Rows that do not run from 0 with no gap, or

@@ -2236,6 +2236,14 @@ of every other finding and of whether any action receipt names that record.
    entries}`, and `journal-torn-tail`, `{observation, journal, bytes}`, for a torn last piece; a
    refusal journal's name under `--require-journal` that the store does not hold is
    `journal-missing` whatever else it holds.
+   Each file of `journals/` that is not a journal the verifier reads (in this release,
+   `operator.jsonl`, `operator.pending`, and a refusal journal and its key, `<name>.jsonl` and
+   `<name>.key` where `<name>` has a refusal journal name's form, §3f) is `journal-unknown`,
+   `{status, file}`, in name order, and fails the verdict: a journal of a later release, or a file
+   put there, is never passed over as though it held. So is any of those names where it is not a
+   regular file (a link, a directory, a pipe), rather than read as no journal. An export
+   holding one is refused by its path, and an export of the PostgreSQL kind is refused where the
+   journal table holds rows of any journal but `operator` and the refusal journals, naming each.
 
 **Observations.** A report carries, beside `ok` and `findings`, a member
 `observations` when there is anything the verifier says of a receipt, or of a

@@ -2021,6 +2021,21 @@ export function refusalJournalName(scopeKey: string): string {
   return out;
 }
 
+// isKnownJournalFile is whether this verifier reads a file of journals/ so
+// named: the operator journal's two, and a refusal journal and its key, by
+// the refusal journal name's form (ADR-0059 §1, §8).
+function isKnownJournalFile(name: string): boolean {
+  if (name === "operator.jsonl" || name === "operator.pending") {
+    return true;
+  }
+  for (const suffix of [".jsonl", ".key"]) {
+    if (name.endsWith(suffix) && isRefusalJournalName(name.slice(0, -suffix.length))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isRefusalJournalName(s: string): boolean {
   return /^refusal-[a-p]{24}$/.test(s);
 }
@@ -2444,6 +2459,29 @@ function readUnder(root: string, ...names: string[]): Buffer | "absent" | "other
 function judgeJournals(root: string, registryPath: string, keys: readonly ReachedKey[], continued: boolean, required: readonly string[], only?: string): { findings: Finding[]; observations: Finding[] } {
   const findings: Finding[] = [];
   const observations: Finding[] = [];
+  // any file of journals/ but the operator journal's two, and a refusal
+  // journal and its key (ADR-0059 §8), is journal-unknown, by its name, in
+  // name order: a journal this verifier cannot judge is never passed over as
+  // though it held
+  const dir = path.join(root, "journals");
+  let entries: fs.Dirent[] = [];
+  try {
+    if (fs.lstatSync(dir).isDirectory()) {
+      entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => Buffer.compare(Buffer.from(a.name), Buffer.from(b.name)));
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT" && (err as NodeJS.ErrnoException).code !== "ENOTDIR") {
+      throw err;
+    }
+  }
+  // a known name that is not a regular file (a link, a directory, a pipe)
+  // is not read either, and is named with the rest rather than read as no
+  // journal
+  for (const e of entries) {
+    if (!isKnownJournalFile(e.name) || !e.isFile()) {
+      findings.push([["status", "journal-unknown"], ["file", e.name]]);
+    }
+  }
   const read = readUnder(root, "journals", "operator.jsonl");
   const data = typeof read === "string" ? Buffer.alloc(0) : read;
   const pending = readUnder(root, "journals", "operator.pending") !== "absent";

@@ -8,10 +8,11 @@ import (
 )
 
 // A verdict by scope reads its own scope's refusal journal alone (ADR-0059
-// §8), as verify-ts does: another scope's journal that cannot be read, a
-// directory in its place or a file no one may read, leaves scope-a's verdict
-// as v3-cut-a-refusal-journals-of-others states it. The verdict of the whole
-// store still has no answer over the file it cannot read.
+// §8), as verify-ts does: another scope's journal no one may read leaves
+// scope-a's verdict as v3-cut-a-refusal-journals-of-others states it, and
+// the verdict of the whole store still has no answer over it. A directory in
+// its place is named journal-unknown by its name, as journals/ is judged by
+// name whole (SPEC.md §4 step 9), and is never read.
 func TestRefusalJournalOfAnotherScopeUnreadableLeavesTheVerdict(t *testing.T) {
 	vector := readStoreVector(t, "v3-cut-a-refusal-journals-of-others")
 	publicKey, err := corpusPublicKey(filepath.Join("..", "corpus"))
@@ -49,8 +50,19 @@ func TestRefusalJournalOfAnotherScopeUnreadableLeavesTheVerdict(t *testing.T) {
 			if err != nil {
 				t.Fatalf("no verdict by %s: %v", vector.Scope, err)
 			}
-			if !rep.OK || len(rep.Findings) != 2 || len(rep.Observations) != 1 || rep.Observations[0]["journal"] != refusalJournalName("scope-a") {
-				t.Fatalf("the verdict by %s: ok %v, %d findings, observations %v", vector.Scope, rep.OK, len(rep.Findings), rep.Observations)
+			var unknown []any
+			rest := 0
+			for _, f := range rep.Findings {
+				if f["status"] == "journal-unknown" {
+					unknown = append(unknown, f["file"])
+				} else {
+					rest++
+				}
+			}
+			wantUnknown := !c.unreadable
+			if rep.OK == wantUnknown || rest != 2 || len(rep.Observations) != 1 || rep.Observations[0]["journal"] != refusalJournalName("scope-a") ||
+				(wantUnknown && (len(unknown) != 1 || unknown[0] != filepath.Base(ofB))) || (!wantUnknown && len(unknown) != 0) {
+				t.Fatalf("the verdict by %s: ok %v, findings %v, observations %v", vector.Scope, rep.OK, rep.Findings, rep.Observations)
 			}
 			if c.unreadable {
 				if _, err := verifySupplied(storeRoot, registryPath, vector.Authority, "", "", publicKey, false); err == nil {
