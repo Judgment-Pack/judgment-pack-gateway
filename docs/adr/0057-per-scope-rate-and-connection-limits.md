@@ -406,7 +406,9 @@ They are released by a deferred call, so a panic that the server recovers releas
 - **What isolation does not give.** A scope within its limit still shares the gateway's lock, the
   store's append and the signer with every scope, as today (context, fact 4). The limit bounds how many
   of one scope's requests can wait at them: at most its `inFlight`. It bounds one scope's effect on
-  another; it does not remove it. The same holds of the gateway-wide cap: a flood that keeps it full
+  another; it does not remove it. One wait comes before any charge: a `/seal` from a caller of
+  several scopes that names no scope takes the gateway's lock (`heldSessionScope`) to find the
+  scope of its session, and so waits there, uncounted, behind every scope's holder of the lock. The same holds of the gateway-wide cap: a flood that keeps it full
   refuses every scope's new arrivals before their tokens are read (decision 2).
 
 ### 5. `/posture`
