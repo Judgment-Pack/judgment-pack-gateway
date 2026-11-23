@@ -61,6 +61,12 @@ const storeRotateNeedsSink = "a store given by its flags may have been written b
 // under --no-sink.
 const storeRotateNoSinkSaid = "store rotate: --no-sink: delivery to a receipt sink was skipped; no receipt was delivered before a seal\n"
 
+// storeRotateByFlagsVersion1 is the line store rotate given by its flags
+// writes to stderr after carrying a key history of version "1": the flags
+// name no keyHistoryVersion, so the old store's version is carried, even
+// where the store's configuration names "2".
+const storeRotateByFlagsVersion1 = "store rotate: given by its flags, the key history carried is of version \"1\", the old store's; to carry version \"2\", rotate with --config naming keyHistoryVersion \"2\"\n"
+
 // storeRotateNotSealed is the refusal of a rotation past a session left
 // open that the seals did not settle: one not sealed, or one sealed whose
 // seal the receipt sink did not acknowledge and holds pending forwarding.
@@ -200,6 +206,13 @@ func cmdStoreRotateAt(args []string, stdout, stderr io.Writer, stamp func() stri
 		return 1
 	}
 	stdout.Write(continuation)
+	if o.byFlags {
+		if carried, present, err := readCarriedKeyHistory(targets["--new-registry"]); err == nil && present {
+			if checked, err := checkKeyHistoryOf(carried, nil, ""); err == nil && checked.version != keyHistoryVersion2 {
+				fmt.Fprint(stderr, storeRotateByFlagsVersion1)
+			}
+		}
+	}
 	return 0
 }
 
