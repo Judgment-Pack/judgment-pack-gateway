@@ -240,7 +240,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 213 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 224 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -539,19 +539,30 @@ runs them in process, with no process-contract command, whatever implementation 
 valid P-256 line, a high-S one, a DER one, one with an unknown `alg`, one with `alg` on a key listed
 as Ed25519, and a P-256 signature with no `alg`.
 
-**Approval citations** (ADR-0054 decision 3; `SPEC.md` §1.2a, `action.approvals`). Ten of
+**Scoped actions and their read-backs** (ADR-0054 decision 1; `SPEC.md` §1.2a, §1.2b).
+`v3-action-scope-valid` holds an action receipt in a session of a scope identifier, carrying `scope`
+and `scopeSalt`, under a version 3 seal: `ok`. `v3-action-scope-seal-mismatch` seals it over another
+scope: `seal-scope-mismatch`. `v3-readback-scope-same` holds an uncertain action and its read-back of
+one scope: the read-back resolves it, and every receipt is `ok`. In `v3-readback-scope-differs`
+(two scopes), `v3-readback-scoped-of-unscoped-action` and `v3-readback-unscoped-of-scoped-action`, the
+read-back is in another session, of another scope or of none, and is
+`action-reconciliation-unresolved`; v0.38.0 makes no such check.
+
+**Approval citations** (ADR-0054 decision 3; `SPEC.md` §1.2a, `action.approvals`). Fifteen of
 `v3/stores` hold an action receipt that cites approval records. `v3-action-approvals-valid` cites a
-single and a standing record and is `ok`. Seven are `malformed` at §1.4 order 1, one for each rule of
+single and a standing record and is `ok`. Twelve are `malformed` at §1.4 order 1, one for each rule of
 the form: a `kind` other than `"single"` or `"standing"` (`-kind-other`), a digest in uppercase
 (`-digest-uppercase`), an id holding a tab (`-id-control-character`), an empty array (`-empty`), nine
-entries (`-nine-entries`), one id twice (`-id-twice`), and an entry with a fourth member
-(`-member-extra`). `-appended-after-signing` adds a well-formed citation after the receipt was signed,
+entries (`-nine-entries`), one id twice (`-id-twice`), an entry with a fourth member
+(`-member-extra`), an object in place of the array (`-not-an-array`), an entry that is a string
+(`-entry-not-an-object`), an entry with no digest (`-entry-member-missing`), a digest with no
+`"sha256:"` prefix (`-digest-prefix-missing`), and an empty id (`-id-empty`). `-appended-after-signing` adds a well-formed citation after the receipt was signed,
 and is `signature-mismatch`. `v3-action-single-approval-cited-again` holds two action receipts that
 cite one single record, by id and digest: both are `ok`, and each carries the observation
 `approval-cited-again`. v0.38.0, which does not read the member, returns `ok` for every one but
 `-appended-after-signing`, and makes no such observation.
 
-**`dry-run/*.json`** — 8 vectors for the dry-run receipt (`SPEC.md` §1.2c), which `gateway
+**`dry-run/*.json`** — 10 vectors for the dry-run receipt (`SPEC.md` §1.2c), which `gateway
 verify-dry-run` and verify-ts's `verifyDryRun` read and no receipt verifier accepts. Each holds the
 receipt's bytes as `receipt`, `publicKeyAlg` `"ES256"` where it is signed by the P-256 test key,
 `expected`, the report's `ok` and the statuses of its `findings` (`malformed`, `key-mismatch` or

@@ -1,0 +1,43 @@
+{
+  "name": "v3-readback-unscoped-of-scoped-action",
+  "note": "An uncertain action in a session of scope-a, and its read-back in a session of no scope: action-reconciliation-unresolved under this release. v0.38.0 makes no such check.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+    "artifacts/fcf7ab9c82b86347bd13b869134e61a6fce72c067dbac9476f39a85d93ffbe96": "{\"ticket\":\"T-1\",\"status\":\"approved\",\"updatedAt\":\"2026-09-12T00:00:02Z\"}",
+    "artifacts/118b511a7709b502df7539d4d79318cb6ca65ef2db286a3016c9db5a355e9998": "{\"observer\":\"gateway\",\"outcome\":\"uncertain\"}",
+    "artifacts/0ec2149abc882505d2da8dae37c9a7cf5cc1c2025c1f34bd2c5cc53836c58945": "{\"key\":\"abababababababababababababababababababababababababababababababab\",\"state\":\"done\"}",
+    "receipts/s6/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"scope\":\"scope-a\",\"scopeSalt\":\"5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s6\",\"signature\":\"e1aa11e8bcd9723554e1ae7713581f8763c34b24d81054f9cf28bd09763e050217c57c1f9d4383b8b7f9f05e789598dd58a771f7c0aa56dc35e3434e93fd0709\",\"source\":\"corpus\"}\n",
+    "receipts/s6/1.json": "{\"action\":{\"adapter\":{\"digest\":\"sha256:5555555555555555555555555555555555555555555555555555555555555555\",\"name\":\"judgment-pack-gateway/uncertainty\",\"version\":\"1\"},\"cites\":[{\"callIndex\":0,\"sessionId\":\"s6\",\"signature\":\"e1aa11e8bcd9723554e1ae7713581f8763c34b24d81054f9cf28bd09763e050217c57c1f9d4383b8b7f9f05e789598dd58a771f7c0aa56dc35e3434e93fd0709\"}],\"decision\":{\"packDigest\":\"sha256:4e03c5e500d33132d9bda1452f82e2258acfa7ff8e45146796010a89f34cd081\",\"recordDigest\":\"sha256:c9dea9278f1c5eb9f89c3faf802219b4b41e1c1be4b6fbbe44eb4969647c141d\"},\"delivery\":{\"contract\":\"sha256:b2754d02a6fcf70c4c8e3197d17176a2f53256153e893193793662f53b489de0\",\"key\":\"abababababababababababababababababababababababababababababababab\",\"outcome\":\"uncertain\"},\"observedAt\":\"2026-09-12T00:00:02Z\",\"request\":\"sha256:b461db8d103fcf566d3cf666587eb1eae33ce4c7e471099a8777761378eaeb3a\",\"requester\":{\"issuer\":\"https://login.example.com/\",\"subject\":\"approver@example.com\",\"tokenDigest\":\"sha256:64a0412ff6e5c08ec8a5be685b9cb617d0138d270eaed1803082d9c41e8a97b2\"},\"tool\":{\"endpoint\":null,\"name\":\"update_ticket\",\"shape\":\"mcp\"}},\"argumentsCommitment\":\"sha256:710b94cc4ef897c021e70817373c64efe775a9193fbba3cbfcde0cb722635e91\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"caller\":{\"issuer\":\"https://login.example.com/\",\"subject\":\"approver@example.com\",\"tokenDigest\":\"sha256:64a0412ff6e5c08ec8a5be685b9cb617d0138d270eaed1803082d9c41e8a97b2\"},\"delegation\":{\"actor\":\"a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2\",\"admittedAt\":\"2026-09-12T00:00:01.250Z\",\"chain\":[\"sha256:e08bf1466e7d8690b423b48de56f90102719cf178f99541d62735c8c5155597a\",\"sha256:c842fa6cf4dcd5a91d84bafb059da2a5c67d660c189c4872eb2e2207d99664be\"],\"host\":\"desk\",\"id\":\"c0ffee00c0ffee00c0ffee00c0ffee00\",\"subject\":{\"issuer\":\"https://login.example.com/\",\"kind\":\"person\",\"subject\":\"approver@example.com\"}},\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"action\",\"prevSignature\":\"e1aa11e8bcd9723554e1ae7713581f8763c34b24d81054f9cf28bd09763e050217c57c1f9d4383b8b7f9f05e789598dd58a771f7c0aa56dc35e3434e93fd0709\",\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:118b511a7709b502df7539d4d79318cb6ca65ef2db286a3016c9db5a355e9998\",\"scope\":\"scope-a\",\"scopeSalt\":\"5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s6\",\"signature\":\"8b043929fdbf2133fd72801e70d1ed6e624775b086a4185298431cda3a4e661c2081bd3fd8d4832e885fd4ae1f1dfca3e304dcdd8ba45abf013c342545a75e0f\",\"source\":\"tickets/write\"}\n",
+    "receipts/s7/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:6666666666666666666666666666666666666666666666666666666666666666\",\"name\":\"adapter-mcp\",\"version\":\"1.0\"},\"endpoint\":null,\"observedAt\":\"2026-09-12T00:00:03Z\",\"peerIdentity\":null,\"reconciliation\":{\"action\":{\"callIndex\":1,\"sessionId\":\"s6\",\"signature\":\"8b043929fdbf2133fd72801e70d1ed6e624775b086a4185298431cda3a4e661c2081bd3fd8d4832e885fd4ae1f1dfca3e304dcdd8ba45abf013c342545a75e0f\"},\"contract\":\"sha256:b2754d02a6fcf70c4c8e3197d17176a2f53256153e893193793662f53b489de0\",\"key\":\"abababababababababababababababababababababababababababababababab\",\"outcome\":\"committed\"},\"schema\":null,\"shape\":\"mcp\",\"snapshot\":null,\"statement\":null,\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":{\"issuer\":\"https://login.example.com/\",\"subject\":\"approver@example.com\",\"tokenDigest\":\"sha256:90f0399350b13759cda71bbcbc1105a5ad78c06d69881eef7c6c8f83503ab3fb\"},\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"reconciler\":{\"issuer\":\"https://login.example.com/\",\"kind\":\"host\",\"subject\":\"service:desk\"},\"resultDigest\":\"sha256:0ec2149abc882505d2da8dae37c9a7cf5cc1c2025c1f34bd2c5cc53836c58945\",\"servedAt\":\"2026-09-12T00:00:03Z\",\"sessionId\":\"s7\",\"signature\":\"1d24e2eb50c32b840fc498b44074ad00816c9e84a7d890e8b02a9df062f76a49d3068243a72954c78acbf542bb53071a0b5ac4d4988ca4be4608dc17991a6f0c\",\"source\":\"tickets/live\"}\n"
+  },
+  "registry": "{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"scopeDigest\":\"sha256:36d06a192b5bd2f94407309561af3a6623b40d6c770d1f0954df732ab4e0d743\",\"sealVersion\":\"3\",\"sealedAt\":\"2026-09-12T00:00:09Z\",\"sessionId\":\"s6\",\"signature\":\"e515249cd68e3ebcb031e6f69c6dd7bf4eae1e3b9c9069b3cefef8b62074cc56cc17c2e7684de9ee79d5e802d8ac51781ffca6b3ae574b448a0c2128bdba3d02\"}\n{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-12T00:00:09Z\",\"sessionId\":\"s7\",\"signature\":\"f10226e0b196dda790f2ee8edb034e152e3fcae98a862ecf00360689dd7344378bc73fa3eef6c77bf7193f871da5a196fe524fbad4cd6fbed810324b201a9904\"}\n",
+  "decisionRecords": {
+    "audit/evaluations.jsonl": "{\"recordVersion\":\"1\",\"run\":\"run-1\",\"at\":\"2026-09-12T00:00:01Z\",\"kind\":\"evaluation\",\"disposition\":{\"kind\":\"outcome\",\"outcomeId\":\"approve\",\"reasons\":[],\"handoff\":{\"state\":\"none\"}}}\n"
+  },
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s6",
+        "status": "ok"
+      },
+      {
+        "callIndex": 1,
+        "sessionId": "s6",
+        "status": "ok"
+      },
+      {
+        "callIndex": 0,
+        "sessionId": "s7",
+        "status": "ok"
+      },
+      {
+        "callIndex": 0,
+        "sessionId": "s7",
+        "status": "action-reconciliation-unresolved"
+      }
+    ]
+  }
+}
