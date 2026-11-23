@@ -231,8 +231,9 @@ func (g *gatewayService) dryRunAct(in dryRunInput) (map[string]any, error) {
 // previewAdmission is admitAction's judgment with no effect (ADR-0054,
 // decision 2): the signer's gate is open, and the session is not sealed, is
 // not one another instance or an earlier start made, and is of the request's
-// scope. The session's directory is not made, the session is not held, and
-// nothing is reserved against the gate.
+// scope, and holds no receipt the sink has not acknowledged. The session's
+// directory is not made, the session is not held, nothing is reserved
+// against the gate, and nothing is sent to the sink.
 func (g *gatewayService) previewAdmission(sessionID, scope string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -244,6 +245,17 @@ func (g *gatewayService) previewAdmission(sessionID, scope string) error {
 	}
 	if reason := g.sessionMintedHere(sessionID, scope); reason != "" {
 		return actRefusal{"session", reason}
+	}
+	// What the session holds for the receipt sink, read and never sent: the
+	// write delivers it again before its executor runs and is refused while
+	// it is not (ADR-0049). A dry-run sends nothing, so a receipt held is
+	// its refusal, in the sentence the write's would be.
+	if g.forwarder != nil {
+		if state, seen := g.sessions[sessionID]; seen {
+			if err := state.forward.heldRefusal(sealIndex - 1); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

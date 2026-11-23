@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // /act's dry-run and approvals (ADR-0054, decisions 2 and 3), with the
@@ -345,5 +346,59 @@ func TestActNoApprovalsJournalBytesAsBefore(t *testing.T) {
 	// journal compact reads it as the gateway holds it
 	if reason := intentReads(claim); reason != "" {
 		t.Fatalf("a version 3 intent does not read: %s", reason)
+	}
+}
+
+// A receipt the session holds for the sink refuses the dry-run as it
+// refuses the write (ADR-0049): the same status, code and sentence. The
+// dry-run reads the hold and sends nothing: the sink is sent no request,
+// and the store, the journal and what the session holds are as they were.
+// The write then tries the sink, which acknowledges nothing, and is refused.
+func TestActDryRunRefusedWhileAReceiptIsHeldForTheSink(t *testing.T) {
+	h := actScopeSetup(t)
+	h.g.dryRunApprovals = true
+	write := h.dryRunBody("act-h", "tickets-b", scopeB, strings.Repeat("a", 64), h.decisionB, h.cite("b-read", h.scopedSig), "")
+	if code, out := authed(t, h.server, "/act", write, h.tokenB); code != http.StatusOK {
+		t.Fatalf("the first action: %d %v", code, out)
+	}
+	var hits atomic.Int32
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(sink.Close)
+	h.g.forwarder = newReceiptForwarder(&receiptSinkSpec{url: sink.URL})
+	h.g.forwarder.backoff = []time.Duration{time.Millisecond, time.Millisecond}
+	h.g.mu.Lock()
+	state := h.g.sessions["act-h"]
+	if state.forward == nil {
+		state.forward = newForwardQueue()
+	}
+	state.forward.add(heldReceipt{index: 1, body: []byte(`{"synthetic":true}`), digest: "sha256:" + strings.Repeat("5", 64)})
+	h.g.mu.Unlock()
+	tree, sessions := treeOf(t, h.root), sessionsOf(h.g)
+
+	second := h.dryRunBody("act-h", "tickets-b", scopeB, strings.Repeat("b", 64), h.decisionB, h.cite("b-read", h.scopedSig), "")
+	dryCode, dry := authed(t, h.server, "/act", strings.TrimSuffix(second, "}")+`,"dryRun":true}`, h.tokenB)
+	if dryCode != http.StatusServiceUnavailable || dry["code"] != receiptNotForwardedCode || dry["error"] != (receiptNotForwarded{}).Error() {
+		t.Fatalf("the dry-run was not refused as a receipt held for the sink: %d %v", dryCode, dry)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("the dry-run sent the sink %d request(s)", n)
+	}
+	sameTree(t, "everything under the root after the dry-run", treeOf(t, h.root), tree)
+	if now := sessionsOf(h.g); now != sessions {
+		t.Fatalf("the session state changed:\n%s\n->\n%s", sessions, now)
+	}
+	if !state.forward.unacknowledged() {
+		t.Fatal("the dry-run took the receipt off the hold")
+	}
+
+	writeCode, wrote := authed(t, h.server, "/act", second, h.tokenB)
+	if writeCode != dryCode || fmt.Sprint(wrote) != fmt.Sprint(dry) {
+		t.Fatalf("the write and the dry-run answer differently:\nwrite %d %v\ndry   %d %v", writeCode, wrote, dryCode, dry)
+	}
+	if hits.Load() == 0 {
+		t.Fatal("the write did not try the sink")
 	}
 }
