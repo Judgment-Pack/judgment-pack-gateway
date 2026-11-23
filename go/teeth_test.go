@@ -2909,6 +2909,10 @@ func (e editing) verify(storeRoot, registryPath, authority, decisionRecords, sup
 	if err != nil {
 		return contractVerdict{}, err
 	}
+	// the journals a vector requires, as the conform stub's "edit" mode
+	// takes them from --require-journal: without them, a vector stating
+	// journal-missing disagrees under every edit, the plain answer too
+	rep.requireJournals(requireJournal)
 	raw, err := rep.marshal()
 	if err != nil {
 		return contractVerdict{}, err
