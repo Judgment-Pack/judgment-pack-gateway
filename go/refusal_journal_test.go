@@ -571,6 +571,8 @@ func TestRefusalJournalRemovalTakesTheJournalAndNamesIt(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, s.name+".forwarded"), []byte("0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// the writer holds no journal file between rounds, so the removal
+	// deletes the files on every platform with no stop first
 	r, err := holdRefusalRemoval(h.g.storeRoot, callerScopeA)
 	if err != nil || len(r.data) == 0 {
 		t.Fatalf("hold: %v", err)
