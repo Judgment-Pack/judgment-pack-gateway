@@ -2986,6 +2986,27 @@ may sign delegation statements with it (spec RFC 0030, amendment of 2026-11-22; 
 
 An earlier gateway refuses a version-41 file by its version.
 
+## Scope-bound delegations (engine version 46)
+
+Engine version 46 (`delegationScopeBindingVersion`) lets an issuing host's entry in `delegation.hosts` name `scopeIds`, the scope
+identifiers its delegation chains may be bound to (spec RFC 0030, amendment of 2026-11-22, §2
+*Binding a chain to one scope identifier*, open question 27; SPEC.md §11.1, §11.2):
+
+```json
+{"host": "desk", "requester": "service:desk", "keys": ["<key>"], "scopeIds": ["<scope identifier>"],
+ "admission": {"url": "https://desk.example/delegation/admission", "credential": "/etc/engine/desk-admission-token"}}
+```
+
+- **None by default.** A host that names none has every bound chain refused, at binding and at
+  every call, as `scope-id-mismatch`. A binding is opted into per host, never implied.
+- **The form.** At least one scope identifier, each in SPEC.md §1.2a's form, none `"unscoped"`,
+  none repeated. Before the version the member is refused by name.
+- **What it does not grant.** A bound chain reaches its scope identifier's sources only where its
+  subject's own entry in `identity.callerScopes` grants that identifier, as a claimless token's
+  reach is the subject's.
+
+An earlier gateway refuses a file of this version by its version.
+
 ## Scoped writes (ADR-0054; engine version 43)
 
 ADR-0054 adds, from engine version 43 (`actScopeVersion` in `go/engine.go`):
@@ -2997,11 +3018,13 @@ ADR-0054 adds, from engine version 43 (`actScopeVersion` in `go/engine.go`):
   scope finds its decision record there and nowhere else; unscoped writes keep the gateway's
   directory. `/verify` looks for a scoped action's record in its scope's directories alone.
   `gateway verify --decision-records` takes a directory that holds them all.
-  On a filesystem that does not tell case apart, two directories whose names differ only by case
-  are one directory, and neither check folds case: the load check compares the cleaned paths byte
-  for byte, and the start check compares them byte for byte once each part that exists is resolved
-  through its links. Such a pair can load as apart, so spell each scope's directory apart by more
-  than case.
+  The load check compares the cleaned paths byte for byte. The start check compares them once each
+  part that exists is resolved through its links, a link that leads nowhere yet being followed by
+  its text a part at a time (so a `..` in it is taken where the filesystem would take it), and,
+  where a directory is there, compares the directory itself: two names for one directory, such as
+  a pair that differs only by case on a filesystem that does not tell case apart, are refused at
+  start, as is a directory beneath another under such a name. A pair neither of which is made yet
+  is compared by spelling alone, so spell each scope's directory apart by more than case.
 - **The request member `scope`** on `/act` (SPEC.md §6, "`/act`: a scope, a dry-run and
   approvals"). A scoped key is kept in its scope's own journal, `actions/scopes/<hash>/`, which
   `gateway journal compact` compacts by the rule of the journal of none, and `gateway remove-scope`

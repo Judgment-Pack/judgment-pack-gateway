@@ -339,7 +339,14 @@ func (g *gatewayService) reconcileAction(session, platform, scope string, args v
 	r := &actionReconciliationRequest{action: cited, key: key, contract: recovery.digest(), read: recovery.readBack}
 	// A scoped action's read-back runs its platform's live source in the
 	// action's session, of the same scope, and its receipt carries the scope
-	// (ADR-0054, decision 1).
+	// (ADR-0054, decision 1). It is acquired with the action's scope, never
+	// through acquireWithReconciliation, which names none and which a source
+	// fixed to a scope refuses; so is a delegated action's, whose chain is
+	// bound to that scope. A read-back is not a request under the delegation
+	// (spec RFC 0030 §2): it runs in the action's admitted session with the
+	// action's scope, which the request check already held at step 8, so
+	// acquireWithScope skips the request check for it (reconciliation set)
+	// and still holds it to the source's scope and the caller's reach.
 	read, err := g.acquireWithScope(session, platform+"/live", "", requestedScope{value: scope, named: scope != ""}, request, who, r)
 	var refused *readBackRefused
 	if errors.As(err, &refused) {

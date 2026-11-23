@@ -190,6 +190,20 @@ func reachOf(id *identityConfig, who *caller) (scopeReach, error) {
 	}
 	entry := id.callers.entryFor(who.issuer, who.subject, id.issuer)
 	if who.delegated != nil {
+		// A chain bound to one scope identifier (spec RFC 0030 §2) reaches
+		// that identifier's sources alone, and only where the subject's own
+		// entry grants it: the binding replaces decision 5 for a bound chain
+		// and widens nothing the configuration has not granted the subject.
+		// The request check (delegatedScopeRefused) has already held the
+		// request to the binding and to the issuing host's scopeIds.
+		if c := who.delegated.credential; c != nil {
+			if id, bound := c.chain.scopeBinding(); bound {
+				if entry.grant(id) {
+					return scopeReach{ids: map[string]bool{id: true}}, nil
+				}
+				return scopeReach{}, nil
+			}
+		}
 		// A chain's subject is stated by its issuing host, and a chain
 		// carries no claim: a delegated request reaches the sources of no
 		// scope identifier where the subject's own claimless token would,
