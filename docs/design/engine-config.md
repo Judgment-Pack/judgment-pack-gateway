@@ -2761,6 +2761,54 @@ With `seals: true`:
   `gateway verify` reads. The PostgreSQL kind needs no migration for it: the run-time role's
   grants on `gateway.documents` cover it.
 
+## Delivery version "3" at the receipt sink (ADR-0059; engine version 50, a placeholder)
+
+Version 50 (`sinkDeliveryV3Version` in `go/sink_delivery_v3.go`) adds `receiptSink`'s optional
+`deliveryVersion` and `refusalEntries` members (ADR-0059, section 9). The number is a placeholder,
+assigned at merge: ADR-0059 gives the member version 48, which the refusal journal takes, and 49
+is expected for the call reference.
+
+```json
+"receiptSink": {"url": "https://audit-log.example/receipts", "deliveryVersion": "3"}
+```
+
+- `deliveryVersion` is optional, and the string `"3"` alone. Absent, the sink is sent `"1"`, and
+  `"2"` under `seals: true`, exactly as before, byte for byte. `"1"` and `"2"` are not values the
+  member takes.
+- Under `"3"`, seals are always forwarded, and `seals` is refused if given:
+  `receiptSink: seals is implied by deliveryVersion "3"`.
+- `refusalEntries` is optional, `true` or `false`, valid beside `deliveryVersion: "3"` alone, and
+  `true` when absent there. `false` forwards no refusal entry, and writes no forwarding cursor;
+  receipts and seals are delivered as below. Without `deliveryVersion: "3"` it is refused as
+  `receiptSink: refusalEntries is a member of deliveryVersion "3"; a receiptSink without
+  deliveryVersion "3" has no refusalEntries`.
+- Under version 49 or earlier the member is refused as `receiptSink: deliveryVersion is a
+  version-50 member; engineVersion 49 has no deliveryVersion`.
+
+Under `"3"`, the sink is sent one `POST` per record, the canonical JSON of
+`{deliveryVersion, kind, digest, ...}`:
+- `kind` is `"acquisition-receipt"`, `"action-receipt"`, `"seal"` or `"refusal-entry"`;
+- `digest` is `sha256:` and the lowercase hexadecimal SHA-256 over
+  `judgment-pack-gateway/sink-delivery/3:`, the kind, a line feed, and the record's line without
+  its line feed: the receipt's under `receipts/`, the seal's in the registry, or the entry's in its
+  journal. No `"3"` digest is a `"1"` `receiptDigest`, so a sink that reads `"1"` acknowledges
+  nothing it is sent, and every acquisition is refused `503` `receipt_not_forwarded`;
+- an acquisition receipt carries `receipt`, `payloadDigest` and, where `payload` is on and the
+  source keeps its payload, `payload`; an action receipt carries `actionReceipt`; a seal `seal`;
+  a refusal entry `journal` and `entry`.
+
+The acknowledgment is `{"acknowledged":"<digest>"}`. Action receipts are held as acquisition
+receipts are: `/act` answers only once its receipt, and every earlier receipt of its session, is
+acknowledged. Not acknowledged, the action has been carried out and its receipt is in the store,
+and `/act` is refused `503` `receipt_not_forwarded` with its own sentence; the same `actionKey`
+answers it once the receipt is acknowledged, and the write is not repeated. While a receipt of
+either kind is held, the session's next acquisition, action and seal are refused. `seal-open
+--config` and `sealOpenAtStart` deliver the session's stored action receipts too before they seal
+it.
+
+Upgrade the sink to read `"3"` first, then the gateway, then the configuration. To roll back,
+remove `deliveryVersion` and lower the version: action receipts are then not forwarded, as before.
+
 ## Retention by acknowledgment (engine version 38)
 
 Version 38 adds the optional `retention` member

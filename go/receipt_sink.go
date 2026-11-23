@@ -65,14 +65,25 @@ type receiptSinkSpec struct {
 	url     string
 	payload bool
 	// seals is receiptSink.seals (sealSinkVersion; seal_sink.go): each seal
-	// is delivered to the sink too, after the session's receipts.
+	// is delivered to the sink too, after the session's receipts. It is
+	// implied by deliveryVersion "3".
 	seals bool
+	// deliveryV3 is receiptSink.deliveryVersion "3" (sinkDeliveryV3Version;
+	// sink_delivery_v3.go): every delivery is a "3" envelope, and action
+	// receipts are delivered too.
+	deliveryV3 bool
+	// refusalEntries is receiptSink.refusalEntries, valid under "3" alone
+	// and true when absent there: false declines refusal entries
+	// (ADR-0059 section 9, condition C11).
+	refusalEntries bool
 }
 
 // parseReceiptSink holds receiptSink to its form: {"url": …} with an
 // optional "payload", true or false, and from sealSinkVersion an optional
 // "seals", true or false, which a file of an earlier version is refused by
-// name for. The url is https, or plain http to a
+// name for. From sinkDeliveryV3Version it takes "deliveryVersion", the string
+// "3" alone, which implies seals and so refuses the member beside it, and,
+// beside it alone, "refusalEntries", true or false (ADR-0059 section 9). The url is https, or plain http to a
 // loopback address written as one -- 127.0.0.0/8 in dotted decimal or
 // [::1] -- so that a plain-http sink is reached without a name being
 // resolved. It carries no user, query or fragment. A refusal repeats no
@@ -82,7 +93,7 @@ func parseReceiptSink(v value, version string) (*receiptSinkSpec, error) {
 	if !ok {
 		return nil, errors.New("receiptSink is an object")
 	}
-	if err := exactlyMembers(obj, map[string]bool{"url": true, "payload": false, "seals": false}, "receiptSink"); err != nil {
+	if err := exactlyMembers(obj, map[string]bool{"url": true, "payload": false, "seals": false, "deliveryVersion": false, "refusalEntries": false}, "receiptSink"); err != nil {
 		return nil, err
 	}
 	raw, _ := obj.get("url")
@@ -101,7 +112,33 @@ func parseReceiptSink(v value, version string) (*receiptSinkSpec, error) {
 		}
 		spec.payload = bool(on)
 	}
+	if value, present := obj.get("deliveryVersion"); present {
+		if !versionAtLeast(version, sinkDeliveryV3Version) {
+			return nil, fmt.Errorf("receiptSink: deliveryVersion is a version-%s member; engineVersion %s has no deliveryVersion", sinkDeliveryV3Version, version)
+		}
+		if text, ok := value.(vString); !ok || string(text) != sinkDeliveryV3 {
+			return nil, errors.New(`receiptSink: deliveryVersion, when present, is the string "3"; versions "1" and "2" are chosen by its absence and by seals`)
+		}
+		spec.deliveryV3 = true
+		// seals are always forwarded under "3", and refusal entries unless
+		// declined below
+		spec.seals = true
+		spec.refusalEntries = true
+	}
+	if value, present := obj.get("refusalEntries"); present {
+		if !spec.deliveryV3 {
+			return nil, errors.New(`receiptSink: refusalEntries is a member of deliveryVersion "3"; a receiptSink without deliveryVersion "3" has no refusalEntries`)
+		}
+		on, ok := value.(vBool)
+		if !ok {
+			return nil, errors.New("receiptSink: refusalEntries, when present, is true or false")
+		}
+		spec.refusalEntries = bool(on)
+	}
 	if value, present := obj.get("seals"); present {
+		if spec.deliveryV3 {
+			return nil, errors.New(`receiptSink: seals is implied by deliveryVersion "3"`)
+		}
 		if !versionAtLeast(version, sealSinkVersion) {
 			return nil, fmt.Errorf("receiptSink: seals is a version-%s member; engineVersion %s has no seals", sealSinkVersion, version)
 		}

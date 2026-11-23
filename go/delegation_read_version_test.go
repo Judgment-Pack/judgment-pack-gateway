@@ -481,7 +481,7 @@ func TestEngineVersionGatesAdmissionReadVersion(t *testing.T) {
 			t.Fatalf("readVersion %s: %v", bad, err)
 		}
 	}
-	if !engineVersions[admissionReadV2Version] || engineVersion != admissionReadV2Version {
+	if !engineVersions[admissionReadV2Version] || !versionAtLeast(engineVersion, admissionReadV2Version) {
 		t.Fatalf("the engine reads %q, newest %q", admissionReadV2Version, engineVersion)
 	}
 }
