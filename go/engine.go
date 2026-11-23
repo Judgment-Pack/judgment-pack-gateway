@@ -154,10 +154,18 @@ import (
 // instance alone (ADR-0057; limits_config.go).
 // Version 45 (operatorJournalVersion) adds no member: from it the journaled
 // commands begin the store's operator journal (ADR-0056; operator_journal.go).
-// Version 46 (refusalJournalVersion; its number is a placeholder, taken in
-// merge order) adds refusalJournal: each refused request charged to a scope
-// is signed into that scope's refusal journal after it is answered
-// (ADR-0059; refusal_journal.go).
+// Version 46 (delegationScopeBindingVersion; delegation_config.go) lets an
+// issuing host's entry name scopeIds, the scope identifiers its delegations
+// may be bound to (spec RFC 0030 §2, Binding a chain to one scope identifier; open question 27;
+// delegation_scope_binding.go): an earlier version refuses the member by
+// name, and an issuing host that names none has every bound chain refused,
+// at binding and at a call. connect raises no file to it.
+// Version 47 (admissionReadV2Version)
+// adds an issuing host's admission.readVersion and the tools/list _meta
+// members descriptorDigest and versionLabel (ADR-0058; delegation_config.go).
+// Version 48 (refusalJournalVersion) adds refusalJournal: each refused
+// request charged to a scope is signed into that scope's refusal journal
+// after it is answered (ADR-0059; refusal_journal.go).
 const engineVersion = refusalJournalVersion
 
 // actScopeVersion is the engine configuration version from which a platform
@@ -169,7 +177,7 @@ const engineVersion = refusalJournalVersion
 // 2 and 3; act_dry_run.go).
 const actScopeVersion = "43"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true, requestLimitsVersion: true, operatorJournalVersion: true, refusalJournalVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true, requestLimitsVersion: true, operatorJournalVersion: true, delegationScopeBindingVersion: true, admissionReadV2Version: true, refusalJournalVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -402,6 +410,10 @@ type operation struct {
 	taxonomy   ToolTaxonomy
 	taxonomies map[string]ToolTaxonomy
 	profile    CapabilityProfile
+	// toolVersions are the binding author's version labels, by allowed
+	// tool (bindingVersion 2, admissionReadV2Version; ADR-0058 decision 8):
+	// served in tools/list _meta as versionLabel, read as no authority.
+	toolVersions map[string]string
 
 	shape string
 	image string
@@ -1018,7 +1030,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		}
 		return engineConfig{}, errSigningPublicKeyRequired
 	}
-	if err := decisionRecordsApart(cfg.decisionRecords, cfg.platforms, filepath.Clean); err != nil {
+	if err := decisionRecordsApart(cfg.decisionRecords, cfg.platforms, nestedAsSpelled); err != nil {
 		return engineConfig{}, err
 	}
 	if value, present := obj.get("limits"); present {
@@ -2291,7 +2303,7 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 			return nil, fmt.Errorf("platform %s: decisionRecords: %v", p.name, err)
 		}
 	}
-	if err := decisionRecordsApart(cfg.decisionRecords, cfg.platforms, resolvedOrClean); err != nil {
+	if err := decisionRecordsApart(cfg.decisionRecords, cfg.platforms, nestedOnDisk); err != nil {
 		return nil, err
 	}
 	seen := map[int]string{}
@@ -2972,6 +2984,9 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		b, err := loadBinding(cfg.catalog, p.binding)
 		if err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
+		}
+		if err := toolVersionsAdmitted(*p, b, cfg.version); err != nil {
+			return nil, err
 		}
 		// The binding's templates, filled with the platform's parameters:
 		// what every source is derived from, and what a policy's tool and

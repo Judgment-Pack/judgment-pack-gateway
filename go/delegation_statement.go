@@ -95,14 +95,18 @@ type scopeEntry struct {
 
 // delegationLink is one statement as verified.
 type delegationLink struct {
-	obj         *vObject
-	id, host    string
-	keyID       string
-	alg         string // algES256 where the link holds alg; algEd25519 where it holds none
-	sub         principalRef
-	agent       string
-	software    value
-	entries     []scopeEntry
+	obj      *vObject
+	id, host string
+	keyID    string
+	alg      string // algES256 where the link holds alg; algEd25519 where it holds none
+	sub      principalRef
+	agent    string
+	software value
+	entries  []scopeEntry
+	// scopeID is the one scope identifier the link is bound to, where bound
+	// (spec RFC 0030 §2, Binding a chain to one scope identifier).
+	scopeID     string
+	bound       bool
 	mayDelegate bool
 	issuedAt    time.Time
 	expiresAt   time.Time
@@ -392,9 +396,21 @@ func parseLink(obj *vObject) (*delegationLink, string) {
 		return nil, "act.software is not a software identity"
 	}
 	scopeV, _ := obj.get("scope")
+	// scope is {sources}, or, on a link bound to one scope identifier,
+	// {sources, scopeId}: a scope identifier in §1.2a's form, never the marker
+	// "unscoped" (RFC 0030 §2, Its form). Any other member is malformed, so a
+	// binding is never ignored.
 	scope, ok := exactObject(scopeV, "sources")
 	if !ok {
-		return nil, "scope is not {sources}"
+		if scope, ok = exactObject(scopeV, "sources", "scopeId"); !ok {
+			return nil, "scope is not {sources} or {sources, scopeId}"
+		}
+		idV, _ := scope.get("scopeId")
+		id, isString := stringOf(idV)
+		if !isString || !isScopeIdentifier(id) || id == unscopedMarker {
+			return nil, "scope.scopeId is not a scope identifier"
+		}
+		l.scopeID, l.bound = id, true
 	}
 	sourcesV, _ := scope.get("sources")
 	sources, ok := sourcesV.(vArray)
@@ -556,7 +572,7 @@ func verifyDelegationChain(chainV value, keys delegationKeys) (*delegationChain,
 			return nil, refuse(refusalChainBroken, "link %d names another host than its parent", k)
 		}
 	}
-	// Step 7: clauses 4 to 8.
+	// Step 7: clauses 4 to 9.
 	for k := 1; k < len(chain.links); k++ {
 		if why := narrows(chain.links[k], chain.links[k-1]); why != "" {
 			return nil, refuse(refusalWidened, "link %d %s", k, why)
@@ -565,7 +581,7 @@ func verifyDelegationChain(chainV value, keys delegationKeys) (*delegationChain,
 	return chain, nil
 }
 
-// narrows is clauses 4 to 8 for a child and its parent, or "" when they
+// narrows is clauses 4 to 9 for a child and its parent, or "" when they
 // hold.
 func narrows(c, p *delegationLink) string {
 	if c.sub != p.sub {
@@ -606,7 +622,20 @@ func narrows(c, p *delegationLink) string {
 	if !p.mayDelegate {
 		return "is below a link that permits no child"
 	}
+	// Clause 9: both unbound, or both bound to the same scope identifier. An
+	// unbound child under a bound parent does not inherit the binding, a child
+	// bound to another identifier changes it, and a bound child under an
+	// unbound parent names a reach its root never signed.
+	if c.bound != p.bound || c.scopeID != p.scopeID {
+		return "changes its parent's scope binding"
+	}
 	return ""
+}
+
+// scopeBinding is the scope identifier the chain is bound to, and whether it
+// is bound: the root's, which clause 9 makes every link's.
+func (c *delegationChain) scopeBinding() (string, bool) {
+	return c.root().scopeID, c.root().bound
 }
 
 // timeRefusal is step 8 at the gateway's time t: not yet valid, then expired,

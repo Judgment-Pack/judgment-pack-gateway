@@ -6,8 +6,7 @@ deciders: maintainer
 
 # A refused request charged to a scope becomes a signed entry in that scope's own refusal journal, written after the answer; a third sink delivery version carries action receipts, seals and refusal entries
 
-> **0059 is a placeholder, assigned at merge.** So is every engine version written here as
-> `<engine-version: assigned at merge>`.
+> **0059 is a placeholder, assigned at merge.** Its engine version is 48 (`refusalJournalVersion`).
 >
 > **Summary.**
 >
@@ -468,7 +467,7 @@ It is journaled once, in that scope's journal, and nowhere else. A charge needs 
 
 ### 6. Configuration and the engine version
 
-- **The member.** From engine configuration version `<engine-version: assigned at merge>`
+- **The member.** From engine configuration version `48`
   (`refusalJournalVersion`), a top-level `refusalJournal` member: `{"maxBytesPerScope": <integer>}`,
   where the member inside is optional and `{}` is valid. Without the top-level member nothing is
   journaled, and every answer, start line, posture report and store is as today.
@@ -584,7 +583,7 @@ It is journaled once, in that scope's journal, and nowhere else. A charge needs 
 ### 9. Delivery version `"3"`
 
 - **The member.** `receiptSink.deliveryVersion`, the string `"3"`, from engine version
-  `<engine-version: assigned at merge>`. It is refused by name under an earlier one:
+  `48`. It is refused by name under an earlier one:
   `receiptSink: deliveryVersion is a version-<n> member; engineVersion <m> has no deliveryVersion`.
   - Absent, the sink is sent `"1"`, and `"2"` under `seals: true`, exactly as today, byte for byte.
   - `"1"` and `"2"` are not values the member takes: those versions are chosen by its absence and by
@@ -977,7 +976,7 @@ The maintainer ruled each question as it recommends.
 
 ## What the release notes must say
 
-- From engine version `<engine-version: assigned at merge>` (`refusalJournalVersion`), a top-level
+- From engine version `48` (`refusalJournalVersion`), a top-level
   `refusalJournal` member keeps a signed refusal journal for each scope:
   - on the filesystem kind, `journals/refusal-<24 letters>.jsonl`;
   - on the PostgreSQL kind, the rows of `gateway.journal_records`, with no migration;

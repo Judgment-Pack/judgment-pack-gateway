@@ -85,6 +85,11 @@ type mcpTool struct {
 	// scope is the scope identifier the tool's platform is fixed to
 	// (ADR-0026); "" for a platform of none and for the seal tool.
 	scope string
+	// versionMeta is whether the listing names descriptorDigest and
+	// versionLabel in _meta (admissionReadV2Version); versionLabel is the
+	// binding's toolVersions label for the tool, "" for none.
+	versionMeta  bool
+	versionLabel string
 }
 
 // mcpSession is one transport session: over HTTP one per Mcp-Session-Id,
@@ -261,7 +266,8 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 			continue
 		}
 		for _, tool := range b.live.tools {
-			if err := add(mcpTool{name: p.name + "." + tool, platform: p.name, tool: tool, binding: p.binding, taxonomy: b.live.taxonomies[tool], scope: p.scope}); err != nil {
+			if err := add(mcpTool{name: p.name + "." + tool, platform: p.name, tool: tool, binding: p.binding, taxonomy: b.live.taxonomies[tool], scope: p.scope,
+				versionMeta: versionAtLeast(cfg.version, admissionReadV2Version), versionLabel: b.live.toolVersions[tool]}); err != nil {
 				return nil, err
 			}
 		}

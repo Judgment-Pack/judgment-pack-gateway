@@ -23,7 +23,17 @@ const (
 	maxAdmissionAnswer      = 4096
 	refusalAdmissionUnknown = "admission-unknown"
 	refusalStandingUnknown  = "standing-unknown"
+	// The answers to a body the issuing host does not read, taken from a
+	// version "2" sender alone (RFC 0030 §2a): reported where steps 8 to 10
+	// are, as admission-unknown is.
+	refusalReadVersionUnsupported = "read-version-unsupported"
+	refusalReadMalformed          = "read-malformed"
 )
+
+// The step-12 refusals a version "2" call read may also be answered, after
+// subject-mismatch and subject-unauthorized (RFC 0030 §2a): taken only for a
+// read that names a call.
+var callReadRefusalsV2 = []string{"tool-version-refused", "skill-refused"}
 
 // The refusals an issuing host may answer, steps 8 to 12 but the gateway's
 // own (SPEC.md §11.5).
@@ -123,6 +133,11 @@ func (c *delegationChain) delegationMember(t time.Time) *vObject {
 type delegatedCall struct {
 	source, tool, effect string
 	count                bool
+	// version is the descriptorDigest of the tool in the snapshot the
+	// call's operation pins, as the gateway read it at start
+	// (sourceSpec.versions), "" where there is none, sent as null; a
+	// version "2" read alone carries it (ADR-0058 decision 3).
+	version string
 }
 
 // post makes one read to a host: the body in canon, the host's credential,
@@ -158,7 +173,7 @@ func (d *delegationService) post(host *delegationHost, body *vObject) *vObject {
 // readBody is the body common to the two reads.
 func (d *delegationService) readBody(host *delegationHost, audience string) *vObject {
 	body := newObject()
-	body.set("readVersion", vString("1"))
+	body.set("readVersion", vString(host.sentVersion()))
 	body.set("host", vString(host.host))
 	a := newObject()
 	a.set("kind", vString("gateway"))
@@ -171,6 +186,7 @@ func (d *delegationService) readBody(host *delegationHost, audience string) *vOb
 // call, or none for a binding: nil when the host admits, the host's refusal
 // otherwise, and admission-unknown for anything else.
 func (d *delegationService) admissionReadAt(host *delegationHost, audience string, chain *delegationChain, call *delegatedCall, t time.Time) *delegationRefusal {
+	v2 := host.sentVersion() == "2"
 	body := d.readBody(host, audience)
 	body.set("chain", chain.digests())
 	if call == nil {
@@ -181,6 +197,16 @@ func (d *delegationService) admissionReadAt(host *delegationHost, audience strin
 		c.set("tool", vString(call.tool))
 		c.set("effect", vString(call.effect))
 		c.set("count", vBool(call.count))
+		if v2 {
+			// The gateway does not observe what a run has loaded, and takes
+			// no list from the caller: skills is always null (§2a).
+			c.set("skills", vNull{})
+			if call.version == "" {
+				c.set("version", vNull{})
+			} else {
+				c.set("version", vString(call.version))
+			}
+		}
 		body.set("call", c)
 	}
 	body.set("at", vString(delegationTime(t)))
@@ -188,6 +214,9 @@ func (d *delegationService) admissionReadAt(host *delegationHost, audience strin
 	answer := d.post(host, body)
 	if answer == nil {
 		return unknown
+	}
+	if bodyRefusal := readRefusal(answer, v2); bodyRefusal != nil {
+		return bodyRefusal
 	}
 	verdict, _ := memberString(answer, "admission")
 	switch {
@@ -204,10 +233,30 @@ func (d *delegationService) admissionReadAt(host *delegationHost, audience strin
 		}
 		return &delegationRefusal{name: refusalOutOfScope, scopeReason: reason, reason: "the issuing host answers that the call is outside the scope (" + reason + ")"}
 	}
-	if len(answer.byName) != 2 || !slices.Contains(hostRefusals, refusal) {
+	stepTwelve := v2 && call != nil && slices.Contains(callReadRefusalsV2, refusal)
+	if len(answer.byName) != 2 || !(slices.Contains(hostRefusals, refusal) || stepTwelve) {
 		return unknown
 	}
 	return refuse(refusal, "the issuing host answers %s", refusal)
+}
+
+// readRefusal is the refusal a version "2" sender takes from an answer of
+// exactly {"refusal": "read-version-unsupported"} or {"refusal":
+// "read-malformed"}, or nil: a version "1" sender reads neither form, which
+// is then admission-unknown (RFC 0030 §2a). Nothing is resent, at "1" or at
+// any version.
+func readRefusal(answer *vObject, v2 bool) *delegationRefusal {
+	if !v2 || len(answer.byName) != 1 {
+		return nil
+	}
+	name, _ := memberString(answer, "refusal")
+	switch name {
+	case refusalReadVersionUnsupported:
+		return refuse(name, "the issuing host does not read this gateway's read version")
+	case refusalReadMalformed:
+		return refuse(name, "the issuing host answers that it cannot read this gateway's read")
+	}
+	return nil
 }
 
 // admissionRead is admissionReadAt for the audience the binding's chain is
@@ -269,7 +318,7 @@ func (d *delegationService) admitDelegated(s *delegatedSender, call delegatedCal
 	switch {
 	case answer != nil && slices.Contains(beforeScope, answer.name):
 		return nil, answer
-	case answer != nil && answer.name == refusalAdmissionUnknown:
+	case answer != nil && (answer.name == refusalAdmissionUnknown || answer.name == refusalReadVersionUnsupported || answer.name == refusalReadMalformed):
 		return nil, answer
 	case own != nil:
 		return nil, own

@@ -47,6 +47,8 @@ type issuingHost struct {
 	bearer string
 	mu     sync.Mutex
 	reads  []map[string]any
+	// raws are the reads' bodies as sent, byte for byte.
+	raws [][]byte
 	// answer is what the host says to a read; nil admits every call and
 	// answers every subject current.
 	answer func(body map[string]any) (int, string)
@@ -73,6 +75,7 @@ func newIssuingHost(t *testing.T) *issuingHost {
 		}
 		h.mu.Lock()
 		h.reads = append(h.reads, body)
+		h.raws = append(h.raws, raw)
 		answer := h.answer
 		h.mu.Unlock()
 		status, text := http.StatusOK, `{"admission":"admit"}`
@@ -109,6 +112,13 @@ func (h *issuingHost) readCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.reads)
+}
+
+// rawReads are the bodies of the reads made so far, as sent.
+func (h *issuingHost) rawReads() [][]byte {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([][]byte(nil), h.raws...)
 }
 
 func (h *issuingHost) setAnswer(f func(body map[string]any) (int, string)) {

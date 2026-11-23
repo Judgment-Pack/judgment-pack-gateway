@@ -52,7 +52,9 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		return nil, actRefusal{"receipt-version", "an action receipt is a version 3 receipt; this engine mints version " + g.receiptVersion}
 	}
 	// The scope identifier the request names (ADR-0054, step 8), held before
-	// its session is looked up and before anything of its key is read.
+	// its session is looked up and before anything of its key is read; under
+	// a delegation, held to its chain's scope binding there too (spec RFC
+	// 0030 §2), before the session, the platform and any admission read.
 	asked, err := g.actScope(keyMembers.scopeIdentifier, who)
 	if err != nil {
 		return nil, err
@@ -344,7 +346,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 				return nil, refuse(refusalKeyUnauthenticated, "")
 			}
 			if !reconcile && !held && chain.scopeRefusal(g.authority, source, tool, spec.effects[tool]) != nil {
-				if _, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true}); refusal != nil {
+				if _, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true, version: spec.versions[tool]}); refusal != nil {
 					return nil, refusal
 				}
 				return nil, refuse(refusalKeyUnauthenticated, "")
@@ -609,7 +611,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 					return nil, refusal
 				}
 			}
-			member, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true})
+			member, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true, version: spec.versions[tool]})
 			if refusal != nil {
 				g.abandonUnminted(sessionID)
 				return nil, refusal

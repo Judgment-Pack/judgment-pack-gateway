@@ -150,6 +150,12 @@ type sourceSpec struct {
 	// live or write source, by tool (declaredEffects): what a delegation's
 	// scope is held to (SPEC.md §11.5). Nothing else reads it.
 	effects map[string]string
+	// versions is the descriptorDigest of each tool in the descriptor
+	// snapshot the source's operation pins, by tool, read once at start
+	// from the pinned bytes (holdToolVersions; ADR-0058 decision 3): what a
+	// version "2" admission read names as call.version. A tool it does not
+	// hold is null. Never taken from a request.
+	versions map[string]string
 	// grant is the connection grant a delegated call on the source's
 	// platform is admitted under, a write, an acquisition or the read-back
 	// of a delegated key (SPEC.md §10, rule 3; grant_gate.go); nil where the
@@ -1317,6 +1323,18 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	// source's once both hold, so on the PostgreSQL kind the transaction's
 	// view is one the identity reaches, never one the body alone names. The
 	// refusal is one sentence whatever differs, and names neither identifier.
+	// A request under a delegation is first held to its chain's binding (spec
+	// RFC 0030 §2, the request check, scope-id-mismatch), before the issuing
+	// host is read or anything is counted: under a bound chain it names that
+	// scope identifier, and under an unbound one it names none. A read-back
+	// (reconciliation set) is not a request under the delegation and is not
+	// checked here: it runs in its action's admitted session with the
+	// action's scope, which /act's step 8 held to the binding before the
+	// action was admitted (reconcileAction). The source's scope and the
+	// caller's reach below hold it as they hold every acquisition.
+	if reconciliation == nil && g.delegatedScopeRefused(who, scope) {
+		return nil, badRequest{errors.New(scopeRefusal)}
+	}
 	if !acquisitionHeld(spec, scope, g.reachOf(who)) {
 		return nil, badRequest{errors.New(scopeRefusal)}
 	}
@@ -1477,7 +1495,7 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 					return nil, refusal
 				}
 			}
-			member, refusal := g.delegation.admitDelegated(who.delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true})
+			member, refusal := g.delegation.admitDelegated(who.delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true, version: spec.versions[tool]})
 			if refusal != nil {
 				return nil, refusal
 			}
@@ -3231,7 +3249,7 @@ func (g *gatewayService) routes() http.Handler {
 			in.reach = &reach
 		}
 		if g.delegation != nil {
-			in.delegation = &delegationPosture{bearerReadOnly: g.delegation.bearerReadOnly}
+			in.delegation = &delegationPosture{bearerReadOnly: g.delegation.bearerReadOnly, readVersions: g.delegation.readVersions()}
 		}
 		if g.limits != nil {
 			// the count is of no scope, and every caller reads it

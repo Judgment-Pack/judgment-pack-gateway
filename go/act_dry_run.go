@@ -177,7 +177,7 @@ func (g *gatewayService) dryRunAct(in dryRunInput) (map[string]any, error) {
 				return nil, refusal
 			}
 		}
-		member, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: in.source, tool: in.tool, effect: spec.effects[in.tool], count: false})
+		member, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: in.source, tool: in.tool, effect: spec.effects[in.tool], count: false, version: spec.versions[in.tool]})
 		if refusal != nil {
 			return nil, refusal
 		}

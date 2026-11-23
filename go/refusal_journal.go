@@ -29,11 +29,9 @@ import (
 )
 
 // refusalJournalVersion is the first engine configuration version that
-// reads refusalJournal (ADR-0059 §6). Its number is a placeholder, the next
-// free one on this line: it takes its number in merge order, after 45
-// (operator journal), 46 (scope binding) and 47 (read version 2), and is
-// expected to be 48.
-const refusalJournalVersion = "46"
+// reads refusalJournal (ADR-0059 §6), after 46 (scope binding) and 47
+// (admission read version 2).
+const refusalJournalVersion = "48"
 
 const (
 	refusalJournalPrefix = "refusal-"

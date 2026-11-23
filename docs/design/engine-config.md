@@ -672,7 +672,8 @@ canonical JSON (SPEC.md §1.1), so two answers compare byte for byte:
   serve's command line it judges the address `--listen` writes out, or `127.0.0.1` where it names
   none; given `--config`, the configuration's `listen`, with callers authenticated where it has
   an `identity`; given neither, `not-applicable`.
-- After the six, a configuration with `delegation` adds its three lines (SPEC.md §11.9), and one
+- After the six, a configuration with `delegation` adds its three lines (SPEC.md §11.9), and from
+  engine version 47 a fourth, `delegation-read-version`, and one
   where some platform gives `writeRequesters` adds `write-requesters`: `enforced` when every
   write tool is held to a requester list, `not-enforced` otherwise, the tools counted and no
   requester named. One with an `identity`, or where some platform is fixed to a scope identifier,
@@ -1541,6 +1542,42 @@ What it changes for callers, all in SPEC.md §11:
   `enforced` otherwise.
 
 A file without the member, and every call made under no delegation, behave as before.
+
+### The admission read version (engine version 47)
+
+From engine version 47 (`admissionReadV2Version` in `go/delegation_config.go`; ADR-0058), each host's `admission` takes an optional `readVersion`, `"1"`
+or `"2"`, absent being `"1"`:
+
+```json
+"admission": {
+  "url": "https://issuer-a.example/delegation/admission",
+  "credential": "/etc/engine/issuer-a-admission-token",
+  "readVersion": "2"
+}
+```
+
+At `"2"` every read to that host is of version `"2"` (SPEC.md §11.5): a call read names the
+called tool's `descriptorDigest` from the snapshot its operation pins, or `null`, and `skills`
+`null`, and the host may answer `tool-version-refused`, `skill-refused`,
+`read-version-unsupported` or `read-malformed`, each refusing the call under its name. Where some
+host is read at `"2"`, the start reads each MCP operation's pinned snapshot by the checks the MCP
+server's start uses, and a snapshot that cannot be read refuses the start. Set `"2"` only once the
+host says it reads `"2"`: there is no negotiation and no fallback, so a host that does not read it
+refuses every delegated call, binding and standing read until the setting is undone. Any other
+value refuses the configuration; below version 47 the member is refused by name. `/posture` adds
+`delegation-read-version`, naming each host's version (`not-applicable` where none is at `"2"`), and
+to a caller whose reach is cut only the count of hosts at each version. Rollback: remove the member or set `"1"`,
+and restart.
+
+From the same version, the MCP server's tools/list `_meta` names, for each platform tool,
+`descriptorDigest` (the live operation's snapshot entry's, absent where there is none) and
+`versionLabel` (the binding's label, absent where it declares none), and a bindingVersion 2 MCP
+live operation may declare `toolVersions` (a write operation's tools are never listed, so one that
+declares it is refused), labels by allowed tool of 1 to 64 characters of
+`A-Z a-z 0-9 . _ + -`, the first a letter or digit. A configuration below version 47 refuses a
+binding that declares it. Declaring or changing a label changes the binding's digest and needs a
+recapture; the label is the binding author's name for a version, and nothing reads it as
+authority.
 
 ## Sealing at the start what was left open (engine version 17)
 
@@ -2986,6 +3023,27 @@ may sign delegation statements with it (spec RFC 0030, amendment of 2026-11-22; 
 
 An earlier gateway refuses a version-41 file by its version.
 
+## Scope-bound delegations (engine version 46)
+
+Engine version 46 (`delegationScopeBindingVersion`) lets an issuing host's entry in `delegation.hosts` name `scopeIds`, the scope
+identifiers its delegation chains may be bound to (spec RFC 0030, amendment of 2026-11-22, §2
+*Binding a chain to one scope identifier*, open question 27; SPEC.md §11.1, §11.2):
+
+```json
+{"host": "desk", "requester": "service:desk", "keys": ["<key>"], "scopeIds": ["<scope identifier>"],
+ "admission": {"url": "https://desk.example/delegation/admission", "credential": "/etc/engine/desk-admission-token"}}
+```
+
+- **None by default.** A host that names none has every bound chain refused, at binding and at
+  every call, as `scope-id-mismatch`. A binding is opted into per host, never implied.
+- **The form.** At least one scope identifier, each in SPEC.md §1.2a's form, none `"unscoped"`,
+  none repeated. Before the version the member is refused by name.
+- **What it does not grant.** A bound chain reaches its scope identifier's sources only where its
+  subject's own entry in `identity.callerScopes` grants that identifier, as a claimless token's
+  reach is the subject's.
+
+An earlier gateway refuses a file of this version by its version.
+
 ## Scoped writes (ADR-0054; engine version 43)
 
 ADR-0054 adds, from engine version 43 (`actScopeVersion` in `go/engine.go`):
@@ -2997,11 +3055,13 @@ ADR-0054 adds, from engine version 43 (`actScopeVersion` in `go/engine.go`):
   scope finds its decision record there and nowhere else; unscoped writes keep the gateway's
   directory. `/verify` looks for a scoped action's record in its scope's directories alone.
   `gateway verify --decision-records` takes a directory that holds them all.
-  On a filesystem that does not tell case apart, two directories whose names differ only by case
-  are one directory, and neither check folds case: the load check compares the cleaned paths byte
-  for byte, and the start check compares them byte for byte once each part that exists is resolved
-  through its links. Such a pair can load as apart, so spell each scope's directory apart by more
-  than case.
+  The load check compares the cleaned paths byte for byte. The start check compares them once each
+  part that exists is resolved through its links, a link that leads nowhere yet being followed by
+  its text a part at a time (so a `..` in it is taken where the filesystem would take it), and,
+  where a directory is there, compares the directory itself: two names for one directory, such as
+  a pair that differs only by case on a filesystem that does not tell case apart, are refused at
+  start, as is a directory beneath another under such a name. A pair neither of which is made yet
+  is compared by spelling alone, so spell each scope's directory apart by more than case.
 - **The request member `scope`** on `/act` (SPEC.md §6, "`/act`: a scope, a dry-run and
   approvals"). A scoped key is kept in its scope's own journal, `actions/scopes/<hash>/`, which
   `gateway journal compact` compacts by the rule of the journal of none, and `gateway remove-scope`
@@ -3106,7 +3166,7 @@ configuration may carry a top-level `limits` member. Below that version it is re
 - Without the member nothing is counted, and every answer, start line and posture report is as
   before, byte for byte. The limits are read at start; a `SIGHUP` does not change them.
 
-## The refusal journal (ADR-0059; engine version 46, a placeholder)
+## The refusal journal (ADR-0059; engine version 48)
 
 Engine version 46 (`refusalJournalVersion` in `go/engine.go`; its number is taken in merge order,
 expected 48) adds one optional member:
