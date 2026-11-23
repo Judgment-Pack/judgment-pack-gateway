@@ -158,7 +158,7 @@ func cmdVerify(args []string) int {
 		}
 		pinAlg, args = algES256, args[2:]
 	}
-	const usage = "usage: gateway verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] [--previous <registry>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
+	const usage = "usage: gateway verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] [--require-journal <name>]... [--previous <registry>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
 	// --scope <identifier>, first or not at all: the verdict is cut by the
 	// scope identifier (SPEC.md §4, "A verdict by scope"), and takes no
 	// decision-record directory. In any later place it is a usage error,
@@ -211,6 +211,28 @@ func cmdVerify(args []string) int {
 	for _, a := range args {
 		if a == "--artifacts" {
 			fmt.Fprintln(os.Stderr, "gateway verify: --artifacts goes before the store root, after --ordinary-seals-only; a directory so named is given as ./--artifacts")
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+	}
+	// --require-journal <name>, after --artifacts and before --previous, at
+	// most once for each name (ADR-0056 §6): a store that holds no such
+	// journal while it holds a removal record or a command seal is then
+	// journal-missing. In any later place it is a usage error, as the
+	// options before it are; a directory so spelled is given as
+	// ./--require-journal.
+	var requireJournal []string
+	for len(args) > 0 && args[0] == "--require-journal" {
+		if len(args) < 2 || !isJournalName(args[1]) || contains(requireJournal, args[1]) {
+			fmt.Fprintln(os.Stderr, "gateway verify: --require-journal names a journal, 1 to 32 lowercase letters or '-', at most once for each name")
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		requireJournal, args = append(requireJournal, args[1]), args[2:]
+	}
+	for _, a := range args {
+		if a == "--require-journal" {
+			fmt.Fprintln(os.Stderr, "gateway verify: --require-journal goes before the store root, after --artifacts and before --previous; a directory so named is given as ./--require-journal")
 			fmt.Fprintln(os.Stderr, usage)
 			return 2
 		}
@@ -286,6 +308,9 @@ func cmdVerify(args []string) int {
 	verdict, err = verifySuppliedPin(storeRoot, registryPath, authority, decisionRecords, supplied, heldKey{alg: pinAlg, key: publicKey}, ordinarySealsOnly, scope)
 	if err == nil {
 		err = linkPrevious(verdict, previous, heldKey{alg: pinAlg, key: publicKey})
+	}
+	if err == nil {
+		verdict.requireJournals(requireJournal)
 	}
 	if err != nil {
 		// Could not produce a verdict at all.
@@ -897,6 +922,13 @@ func (s *kindStart) stop(said io.Writer) {
 // startEngineOnKind is startOnKind with the lease's periods and no stop
 // signal.
 func startEngineOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, identity *identityConfig, said io.Writer) (*kindStart, error) {
+	// a staged operator-journal entry does not stop the start: it is named,
+	// and the gateway serves (ADR-0056 §5)
+	if cfg.storage == nil && said != nil {
+		if note := stagedJournalNotice(cfg.store); note != "" {
+			fmt.Fprintln(said, "gateway serve:", note)
+		}
+	}
 	return startOnKind(cfg, seed, sources, identity, kindRun{period: pgStartLeasePeriod, every: pgStartLeaseRenewal, stopped: context.Background(), said: said})
 }
 

@@ -311,6 +311,10 @@ func readPinnedSnapshots(configPath string, cfg engineConfig) ([]exportPin, erro
 	return out, nil
 }
 
+// errStagedJournalEntry is export's refusal of a store holding a staged
+// operator journal entry (ADR-0056, Amendment C).
+var errStagedJournalEntry = errors.New("a staged operator journal entry is not yet committed: rerun the command that staged it, then export")
+
 // readObservationJournal reads a journal the custody exported: a regular
 // file, bounded, holding one JSON object. Its members are the custody's;
 // the export names it by its digest and reads nothing else of it.
@@ -532,6 +536,43 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 	if present {
 		if err := w.put("store/"+removalsFile, data); err != nil {
 			return nil, err
+		}
+	}
+	// the operator journal, whole, in an export of the whole store alone: an
+	// export by scope carries none, since its entries name other scopes
+	// (ADR-0056 §1); a kind that keeps it itself gives its rows
+	// (storeCut.journal), each line and its 0x0A, the path and bytes of the
+	// filesystem kind's file, and one that keeps some beside a store
+	// directory holding a journal is refused, as for the removal records
+	// a staged operator entry (ADR-0056, Amendment C): the export carries
+	// the journal's committed lines alone, so a restored copy would lose the
+	// finding the store gives (journal-entry-missing); refused, whatever the
+	// scope, until the command that staged it is rerun
+	if in.storeRoot != "" {
+		if _, there, err := readJournalPath(in.storeRoot, operatorJournal+".pending"); err != nil {
+			return nil, err
+		} else if there {
+			return nil, errStagedJournalEntry
+		}
+	}
+	if in.scope == "" {
+		journal := cut.journal
+		if in.storeRoot != "" {
+			file, there, err := readJournalPath(in.storeRoot, operatorJournal+".jsonl")
+			if err != nil {
+				return nil, err
+			}
+			if there && len(file) > 0 && len(journal) > 0 {
+				return nil, errors.New("operator journal: the kind keeps one, and the store directory named beside it holds one; the export takes neither for the other")
+			}
+			if there && len(file) > 0 {
+				journal = file
+			}
+		}
+		if len(journal) > 0 {
+			if err := w.put("store/"+journalsDir+"/"+operatorJournal+".jsonl", journal); err != nil {
+				return nil, err
+			}
 		}
 	}
 	// the decision records, read after the cut, as verification walks them
@@ -869,6 +910,9 @@ func exportPathWritten(p string) bool {
 		return isLowerHexOfLen(parts[2], 64)
 	case len(parts) == 2 && parts[0] == "store" && parts[1] == removalsFile:
 		return true
+	case len(parts) == 3 && parts[0] == "store" && parts[1] == journalsDir:
+		name, ok := strings.CutSuffix(parts[2], ".jsonl")
+		return ok && isJournalName(name)
 	case len(parts) >= 2 && parts[0] == "decision-records":
 		return true
 	case len(parts) == 2 && parts[0] == "descriptors":
@@ -916,7 +960,7 @@ func checkExport(dir string) (*vObject, error) {
 		switch {
 		case d.IsDir():
 			switch parts := strings.Split(rel, "/"); {
-			case rel == "store", rel == "store/receipts", rel == "store/artifacts", rel == "descriptors", rel == "observations":
+			case rel == "store", rel == "store/receipts", rel == "store/artifacts", rel == "store/"+journalsDir, rel == "descriptors", rel == "observations":
 			case len(parts) == 3 && parts[0] == "store" && parts[1] == "receipts":
 				sessionDirs[parts[2]] = true
 			case parts[0] == "decision-records" && m.decisionRecords:

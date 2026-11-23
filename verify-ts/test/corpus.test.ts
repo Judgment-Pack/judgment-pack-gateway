@@ -113,7 +113,7 @@ test("every store vector", () => {
   assert.ok(vectors.length >= 39);
   for (const v of vectors) {
     const { root, registry, decisionRecords, artifacts, previous } = materialize(v);
-    const options = { ordinarySealsOnly: v.ordinarySealsOnly === true, ...(artifacts !== undefined && { artifacts }), ...(v.scope !== undefined && { scope: v.scope }), ...(previous !== undefined && { previous }) };
+    const options = { ordinarySealsOnly: v.ordinarySealsOnly === true, ...(artifacts !== undefined && { artifacts }), ...(v.scope !== undefined && { scope: v.scope }), ...(previous !== undefined && { previous }), ...(v.requireJournal !== undefined && { requireJournal: v.requireJournal }) };
     assert.ok(v.publicKeyAlg === undefined || v.publicKeyAlg === "ES256", v.name);
     const pin = v.publicKeyAlg === "ES256" ? p256Pin : publicKey;
     const verdict = JSON.parse(verdictText(verifyStore(root, registry, v.authority, decisionRecords, pin, options)));

@@ -109,6 +109,7 @@ func TestStoreVectors(t *testing.T) {
 			t.Errorf("%s: no verdict: %v", vec.Name, err)
 			continue
 		}
+		rep.requireJournals(vec.RequireJournal)
 		ok := true
 		if rep.OK != vec.Expected.OK {
 			t.Errorf("%s: ok=%v, want %v", vec.Name, rep.OK, vec.Expected.OK)
@@ -736,7 +737,7 @@ func TestREADMEVectorCounts(t *testing.T) {
 	for _, edit := range []struct{ what, from, to string }{
 		{"the canon count", "**`canon.json`** — 30 vectors", "**`canon.json`** — 31 vectors"},
 		{"the store count", "**`stores/*.json`** — 60 vectors", "**`stores/*.json`** — 57 vectors"},
-		{"the version 3 count", "**`v3/stores/*.json`** — 224 vectors", "**`v3/stores/*.json`** — 225 vectors"},
+		{"the version 3 count", "**`v3/stores/*.json`** — 234 vectors", "**`v3/stores/*.json`** — 235 vectors"},
 		{"the dry-run count", "**`dry-run/*.json`** — 11 vectors", "**`dry-run/*.json`** — 10 vectors"},
 		{"the witness count", "**`witness/*.json`** — 54 vectors", "**`witness/*.json`** — 55 vectors"},
 		{"a family's row", "| `chain` | 10 |", "| `chain` | 11 |"},

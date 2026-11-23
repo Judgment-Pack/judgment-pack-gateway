@@ -151,10 +151,12 @@ import (
 // Version 44 (requestLimitsVersion) adds limits: a request rate and an
 // in-flight cap for each scope and each caller within it, beside a
 // gateway-wide cap on the requests not yet tied to a scope, counted by each
-// instance alone (ADR-0057; limits_config.go). Version 45
-// (admissionReadV2Version, a placeholder numbered in merge order) adds an
-// issuing host's admission.readVersion and the tools/list _meta members
-// descriptorDigest and versionLabel (ADR-0058; delegation_config.go).
+// instance alone (ADR-0057; limits_config.go).
+// Version 45 (operatorJournalVersion) adds no member: from it the journaled
+// commands begin the store's operator journal (ADR-0056; operator_journal.go).
+// Version 46 (admissionReadV2Version, a placeholder numbered in merge order)
+// adds an issuing host's admission.readVersion and the tools/list _meta
+// members descriptorDigest and versionLabel (ADR-0058; delegation_config.go).
 const engineVersion = admissionReadV2Version
 
 // actScopeVersion is the engine configuration version from which a platform
@@ -166,7 +168,7 @@ const engineVersion = admissionReadV2Version
 // 2 and 3; act_dry_run.go).
 const actScopeVersion = "43"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true, requestLimitsVersion: true, admissionReadV2Version: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true, requestLimitsVersion: true, operatorJournalVersion: true, admissionReadV2Version: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.

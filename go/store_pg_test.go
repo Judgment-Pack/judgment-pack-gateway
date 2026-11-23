@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -1209,6 +1210,7 @@ func TestEveryCorpusStoreExportsFromThePostgresKindByteForByte(t *testing.T) {
 	if len(paths) == 0 {
 		t.Fatal("no store vectors: the test tests nothing")
 	}
+	staged := 0
 	for _, p := range paths {
 		raw, err := os.ReadFile(p)
 		if err != nil {
@@ -1227,6 +1229,26 @@ func TestEveryCorpusStoreExportsFromThePostgresKindByteForByte(t *testing.T) {
 			live := verdictBytes(t, storeRoot, registryPath, vector.Authority, records, publicKey)
 			fsKind := newFsKind(fsLayout{store: storeRoot, registry: registryPath})
 			fsOut := filepath.Join(t.TempDir(), "filesystem")
+			// a store holding a staged operator entry is refused by both
+			// kinds' export (ADR-0056, Amendment C)
+			if _, there, err := readJournalPath(storeRoot, operatorJournal+".pending"); err != nil {
+				t.Fatal(err)
+			} else if there {
+				staged++
+				if _, err := writeExport(exportInputs{authority: vector.Authority, keyID: keyIDFor(publicKey), kind: fsKind, storeRoot: storeRoot, decisionRecords: records}, fsOut); !errors.Is(err, errStagedJournalEntry) {
+					t.Fatalf("filesystem export of a store holding a staged entry: %v, want %v", err, errStagedJournalEntry)
+				}
+				kind, db := pgTestKind(t, "", nil)
+				cut, err := fsKind.snapshot()
+				if err != nil {
+					t.Fatal(err)
+				}
+				pgLoadCut(t, db, cut)
+				if _, err := writeExport(exportInputs{authority: vector.Authority, keyID: keyIDFor(publicKey), kind: kind, storeRoot: storeRoot, decisionRecords: records}, filepath.Join(t.TempDir(), "postgresql")); !errors.Is(err, errStagedJournalEntry) {
+					t.Fatalf("PostgreSQL export of a store holding a staged entry: %v, want %v", err, errStagedJournalEntry)
+				}
+				return
+			}
 			if _, err := writeExport(exportInputs{authority: vector.Authority, keyID: keyIDFor(publicKey), kind: fsKind, storeRoot: storeRoot, decisionRecords: records}, fsOut); err != nil {
 				t.Fatalf("export of the filesystem kind: %v", err)
 			}
@@ -1258,6 +1280,9 @@ func TestEveryCorpusStoreExportsFromThePostgresKindByteForByte(t *testing.T) {
 			}
 			requireSameTree(t, "postgresql across scopes", readTreeBytes(t, spreadOut), readTreeBytes(t, fsOut))
 		})
+	}
+	if staged == 0 {
+		t.Fatal("no store vector holds a staged operator entry: the refusal is untested")
 	}
 }
 
@@ -1477,7 +1502,8 @@ func TestAPostgresLogRefusesARecordAnywhereButAtItsEnd(t *testing.T) {
 // them: without the tables a later version made, the record of the scope
 // identifiers (version 3), the removal records (version 5), the series'
 // holders (version 6), the mark of a store rotated away from (version 7),
-// the key history carried (version 8) and the session labels (version 9). A
+// the key history carried (version 8), the session labels (version 9) and
+// the journals (version 10). A
 // table
 // named in the grants that the test does not find there fails it, so a
 // grant moved elsewhere is noticed.
@@ -1493,6 +1519,7 @@ func pgGrantsOfVersion(t *testing.T, grants []byte, version int) []byte {
 		{7, "\n    EXECUTE pg_catalog.format('GRANT SELECT, INSERT ON gateway.rotated TO %I', runtime);"},
 		{8, "\n    EXECUTE pg_catalog.format('GRANT SELECT ON gateway.key_history TO %I', runtime);"},
 		{9, ", gateway.session_labels"},
+		{10, ", gateway.journal_records"},
 	} {
 		if version >= later.version {
 			continue

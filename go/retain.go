@@ -432,6 +432,14 @@ nothing. On the PostgreSQL kind, gateway store retain removes the rows.`
 
 type retainOptions struct {
 	config, acks, scope, by string
+	// engineVersion is the configuration's engineVersion, "" where flags
+	// name the store, and journal the call's hold on the operator journal,
+	// set once the registry is held (ADR-0056)
+	engineVersion string
+	journal       *operatorJournalCall
+	// ackDigest is the acknowledgment file's SHA-256, its entry's
+	// acknowledgments
+	ackDigest string
 }
 
 func parseRetain(args []string) (retainOptions, string) {
@@ -578,6 +586,12 @@ func retain(o retainOptions, stamp func() string, now time.Time) (out removalOut
 	if err := heldUnderAnotherKey(data, walk.keys, key.public, newFsKind(fsLayout{store: cfg.store}).receipts()); err != nil {
 		return out, unlocked, err
 	}
+	// the operator journal, its staged entry settled before the call's own
+	// work (ADR-0056 §5)
+	if o.journal, err = beginOperatorJournal(cfg.store, cfg.registry, cfg.version, key, walk.keys, stamp); err != nil {
+		return out, unlocked, err
+	}
+	o.ackDigest = strings.TrimPrefix(sum, "sha256:")
 	out, err = retainFrom(cfg.store, cfg.authority, key, walk, acks, cfg.retention, o, stamp, now)
 	if err == nil && len(out.refused) == 0 {
 		out.notes = append(out.notes, retentionSummary(out.removed, sum, cfg.retention.keyIDs))
@@ -655,7 +669,16 @@ func retainFrom(storeRoot, authority string, priv *signingKey, walk *registryWal
 		out.appended = append(out.appended, record)
 	}
 	if len(lines) > 0 {
-		if err := appendRemovals(storeRoot, torn, lines); err != nil {
+		// the entry names the acknowledgments and their keys (ADR-0056 §4)
+		body := removalBody("retain", o.by, o.scope)
+		body.set("acknowledgments", vString(o.ackDigest))
+		ids := vArray{}
+		for _, id := range cfg.keyIDs {
+			ids = append(ids, vString(id))
+		}
+		body.set("acknowledgedBy", ids)
+		body.set("sessions", vInt(len(plan.sessions)+len(plan.empty)))
+		if err := journaledAppendRemovals(o.journal, storeRoot, torn, lines, body); err != nil {
 			n := len(out.appended)
 			out.appended = nil
 			return out, fmt.Errorf("%v; the %d record(s) may be in the file, and nothing was removed; a second run completes it", err, n)

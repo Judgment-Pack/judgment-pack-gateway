@@ -24,9 +24,10 @@ const delegationP256Version = "41"
 // issuing host's admission may carry readVersion, "1" or "2" (ADR-0058; spec
 // RFC 0030 §2a), and from which the MCP server's tools/list names each
 // platform tool's descriptorDigest and versionLabel in _meta. The number is
-// a placeholder: it takes its number in merge order (47 expected). engine.go
-// lists it in engineVersions.
-const admissionReadV2Version = "45"
+// a placeholder: it reads "46", the next on main, and takes its number in
+// merge order (47 expected, after the scope binding's 46). engine.go lists it
+// in engineVersions.
+const admissionReadV2Version = "46"
 
 // delegationHostSpec is one issuing host as configured.
 type delegationHostSpec struct {

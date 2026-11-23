@@ -427,7 +427,7 @@ func TestAPostgresTheStartAtLabelsVersionRefusesAnUnlabelledOpenSession(t *testi
 func TestAPostgresStoreAtSchemaEightMigratesToSessionLabels(t *testing.T) {
 	db := newPgTestDB(t)
 	set := pgShippedMigrations()
-	if len(set.versions) != 9 || set.versions[8].name != "0009_session_labels.sql" {
+	if len(set.versions) < 9 || set.versions[8].name != "0009_session_labels.sql" {
 		t.Fatalf("the shipped schema has %d versions: the test names version 9 as the session labels'", len(set.versions))
 	}
 	older := pgMigrationSet{versions: set.versions[:8], grants: pgGrantsOfVersion(t, set.grants, 8)}
@@ -437,8 +437,8 @@ func TestAPostgresStoreAtSchemaEightMigratesToSessionLabels(t *testing.T) {
 	asOwnerIn(t, db, pgNoScope, `INSERT INTO gateway.start_lease (holder, several, key_id, authority, renewed, expires)
 		SELECT $1, true, $2, 'gateway:test', n.now - interval '1 minute', n.now - interval '1 second' FROM (SELECT pg_catalog.clock_timestamp() AS now) n`,
 		newTestLeaseHolder(t), strings.Repeat("a", 32))
-	if applied, err := migratePostgres(db.migrator, set, db.roles, time.Minute); err != nil || !slices.Equal(applied, []int{9}) {
-		t.Fatalf("the migration to version 9: %v %v", applied, err)
+	if applied, err := migratePostgres(db.migrator, set, db.roles, time.Minute); err != nil || !slices.Equal(applied, []int{9, 10}) {
+		t.Fatalf("the migration from version 8: %v %v", applied, err)
 	}
 	rows := pgTestQuery(t, db.runtime, `SELECT labels FROM gateway.start_lease`)
 	if len(rows.rows) != 1 {
