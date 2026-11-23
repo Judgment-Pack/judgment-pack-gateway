@@ -11,20 +11,22 @@ deciders: maintainer
 > **Summary.**
 >
 > - **Chosen:** a top-level `limits` member (engine configuration version
->   `<engine-version: assigned at merge>`), keyed by scope identifier, with `"unscoped"` for the
+>   `44` (`requestLimitsVersion`)), keyed by scope identifier, with `"unscoped"` for the
 >   sources of none, and a `default` for every scope it does not name. Each entry gives a token bucket
 >   (`requestsPerMinute` and `burst`), an in-flight cap (`inFlight`), and the same three for each
 >   caller within the scope (`perCaller`). Beside them, one gateway-wide in-flight cap
 >   (`beforeScope`) holds the requests not yet tied to a scope. Without the member, nothing changes,
 >   byte for byte.
 > - **Counted:** every `/acquire`, `/act`, `/seal` and `/verify` request, `/act` dry-runs included
->   (ADR-0054 decision 6). Every request takes a slot of the gateway-wide cap when it arrives, before
->   its token is read. A request of those four routes is charged once, to one scope its caller
->   reaches, at the first step that knows that scope, and gives its gateway-wide slot back there. That
->   step comes before the body is read when the caller's token reaches one scope alone. Otherwise it
->   comes right after the route's own scope step. It is always before any session lookup, key lock,
->   source run, store walk, signing or delivery. A request never tied to a scope, an unauthenticated
->   one among them, holds its gateway-wide slot until it is answered.
+>   (ADR-0054 decision 6). Every request but `/publickey` and `/publickey/history` takes a slot of
+>   the gateway-wide cap when it arrives, before its token is read, and gives it back once its token
+>   is read: never across its body or its run (the maintainer's rulings, below). A request of those
+>   four routes is charged once, at the first step that knows its scope: to the one scope its caller
+>   reaches, or, for `/verify` from a caller of several, to every scope it reaches, all or nothing.
+>   That step comes before the body is read when the caller's token reaches one scope alone.
+>   Otherwise it comes right after the route's own scope step. It is always before any session
+>   lookup, key lock, source run, store walk, signing or delivery. A request with no token to read,
+>   `/registry` among them, holds its gateway-wide slot until it is answered.
 > - **Answered:** `429`, `Retry-After`, `{"error", "code": "limit_reached", "limit"}`, and
 >   `"refusedAt": "limit"` on `/act`. The sentence is fixed for each `limit`, names no scope and gives
 >   no other scope's state, and `Retry-After` comes from the refusing state alone. Nothing is minted,
@@ -139,7 +141,7 @@ Chosen: **C3, U3, P2 and I1.**
 
 ### 1. The configuration
 
-From engine configuration version `<engine-version: assigned at merge>`, a configuration may carry a
+From engine configuration version `44` (`requestLimitsVersion`), a configuration may carry a
 top-level `limits` member:
 
 ```json
@@ -220,8 +222,10 @@ rate.
   kind once `/act` is served there.
 - **Held by the gateway-wide cap alone:** every other request the listener serves.
   - `/posture`, which reads the configuration and signs nothing.
-  - The open routes, `/registry`, `/publickey` and `/publickey/history`, which have no caller and no
-    scope. They are bounded by `openRouteWriteTimeout` too.
+  - `/registry`, an open route with no caller and no scope, which serves the whole registry log
+    and is bounded by `openRouteWriteTimeout` too. `/publickey` and `/publickey/history` are not
+    held at all (the maintainer's rulings, below), so verifiers and probes still answer while the cap
+    is full.
   - The issuing host's endpoints, `/delegation/credential` and `/delegation/revoke`, whose caller is a
     host, not a scope.
   - A witness's `/witness/*`, and a route the gateway does not serve.
@@ -231,21 +235,24 @@ rate.
 
 **The gateway-wide cap** (`beforeScope`) holds the requests not yet tied to a scope.
 
-- Every request the listener serves takes one of its slots when it arrives, before its token is
-  read. A request over the cap is answered `429` `gateway-in-flight` at once, and its token is never
-  read.
-- A request of a route charged to a scope gives its slot back at the step that charges it, whether
-  that scope admits it or refuses it. From then on it holds its scope's slots alone.
-- A request never tied to a scope holds its slot until it is answered. That covers a request refused
-  at authentication, a malformed body, a scope the caller does not reach, an unauthenticated
-  `/verify`, and every request of the list above.
+- Every request the listener serves, but `/publickey` and `/publickey/history`, takes one of its
+  slots when it arrives, before its token is read. A request over the cap is answered `429`
+  `gateway-in-flight` at once, and its token is never read.
+- A request gives its slot back once its token is read, whatever the check answers, and so never
+  holds it across its body or its run. One middleware takes the slot and releases what the request
+  still holds when its handler returns, however it ends. A request of a route charged to a scope
+  holds its scope's slots from the step that charges it.
+- A request with no token to read holds its slot until it is answered: `/registry`, a witness's
+  open reads, and a route the gateway does not serve. A slow client holds no slot: the slot is taken
+  only once the headers are read, and the listener's read-header timeout (10 seconds) and read
+  timeout (30 seconds, headers and body) cut a client that sends slowly.
 - An unauthenticated flood therefore holds at most `beforeScope` requests in flight at once, each
   for the time its token check takes, and a request already charged to a scope holds no slot of the
   cap. The flood cannot starve every scope of the gateway. While the flood keeps the cap full,
   though, a request that arrives is refused before its token is read, whatever its scope. The cap
   bounds the flood's effect; it does not remove it.
-- The cap's refusals, and the refusals at authentication, are counted together since start as the
-  instance's unauthenticated refusals. `/posture` gives the count (decision 5), and a later refusal
+- The cap's refusals, and every `401` answer, are counted together since start as the instance's
+  unauthenticated refusals. `/posture` gives the count (decision 5), and a later refusal
   journal relies on it.
 
 **The scope a request is charged to.** A request is charged to exactly one scope, and only to one its
@@ -264,12 +271,12 @@ caller reaches.
   as today. That step runs nothing and signs nothing. Charging the request to the scope it named
   would let a caller spend a scope it does not reach. It holds its gateway-wide slot until answered.
 - **A `/verify`** names no scope and has no body. It is charged after authentication and its reach
-  check, before the store is read. A caller whose reach takes one scope alone is charged to that
-  scope; where no platform is fixed to a scope identifier (ADR-0037), that is `"unscoped"`. A
-  `/verify` reached unauthenticated, with no identity configured, is charged to no scope and holds
-  its gateway-wide slot until answered. So does a caller whose reach takes several scopes, or every
-  source (the installation's caller, `"unchecked"`): its verdict is of every scope, and no one of them
-  is its own. A `/verify` refused `403` for its reach is refused before the step.
+  check, before the store is read, to every scope the caller reaches, all or nothing (the
+  maintainer's rulings, below): a caller whose reach takes one scope alone is charged to that scope
+  (where no platform is fixed to a scope identifier, ADR-0037, that is `"unscoped"`), and a caller
+  whose reach takes several, or every source (the installation's caller, `"unchecked"`, or no
+  identity), to each of them. Where one refuses, none is charged and that scope's refusal answers.
+  A `/verify` refused `403` for its reach is refused before the step.
 
 **The step, on each route.**
 
@@ -278,7 +285,7 @@ caller reaches.
 | `/acquire` | after authentication, before the body is read | after the source's scope check (§6: "before the trail, the publisher policy, the grant, the admission, a delegation's count or the source"), and before them |
 | `/act` | step 3a: after `storage`, before step 4 reads the members | step 8a: after step 8 holds `scope` to the caller's reach, before step 9 looks up the label. A request naming no scope is charged to `"unscoped"` only where the caller reaches none |
 | `/seal` | after authentication, before the body is read | after the members are read, where the request names `scope` (held to the reach by `narrowedTo`). Otherwise after the session is found and held to the reach, before the seal is signed or delivered |
-| `/verify` | after authentication and the reach check, before the store is read | charged to no scope: the request holds its gateway-wide slot until answered, as it does with no identity configured |
+| `/verify` | after authentication and the reach check, before the store is read | the same step, charged to every scope the caller reaches, all or nothing |
 
 The body of a request whose scope comes from the body is read before it is counted. That read is
 bounded by the body cap and the read timeout, and it takes no shared lock.
@@ -336,7 +343,7 @@ They are released by a deferred call, so a panic that the server recovers releas
   - `caller-in-flight`: `limit: this caller has as many requests in flight within this request's scope
     as it is allowed; send it again after Retry-After`;
   - `callers`: `limit: this request's scope holds as many callers as it can count, each with a request
-    in flight; send it again after Retry-After` (decision 4);
+    in flight or a spent bucket; send it again after Retry-After` (decision 4);
   - `gateway-in-flight`: `limit: the gateway has as many requests in flight that are not yet tied to
     a scope as it is allowed; send it again after Retry-After` (decision 2, "The gateway-wide cap").
 - **The sentence is fixed.** Each sentence is a constant, chosen by `limit` alone. None names a scope
@@ -384,7 +391,9 @@ They are released by a deferred call, so a panic that the server recovers releas
 - **Bounded memory.** A scope holds at most 4096 callers (`maxLimitedCallers`), roughly 100 bytes each.
   - A caller whose bucket is full and who has nothing in flight is **idle**. A fresh entry would be
     the same, so dropping it loses nothing.
-  - A new caller that finds the table full sweeps the idle entries.
+  - A new caller that finds the table full sweeps the idle entries, at most once a second
+    (`limitSweepInterval`), so a full table of busy callers costs one walk a second and not one per
+    newcomer. A newcomer refused in between is told `Retry-After: 1`.
   - If none is idle, the request is refused `429` with `limit: "callers"` and `Retry-After: 1`. It is
     not served uncounted (driver 6). Only that scope, which has `perCaller` set, is affected.
 - **What isolation does not give.** A scope within its limit still shares the gateway's lock, the
@@ -455,7 +464,7 @@ They are released by a deferred call, so a panic that the server recovers releas
 - **Rollback.** Remove `limits` and set the version back. The limits keep nothing in the store, so
   there is nothing to undo.
 - **What the release notes must say.**
-  - From engine version `<engine-version: assigned at merge>`, a top-level `limits` member sets, for
+  - From engine version `44` (`requestLimitsVersion`), a top-level `limits` member sets, for
     each scope identifier, for `"unscoped"`, or by `default`, a request rate (`requestsPerMinute`,
     `burst`), a cap on requests in flight (`inFlight`), and the same for each caller within the scope
     (`perCaller`), beside one gateway-wide cap on the requests not yet tied to a scope
@@ -545,10 +554,12 @@ request, each on a safeguard and in a scratch copy, and each must make a named t
      - **Posture.** A caller of scope A reads the same `request-limits` line and `limits` member, byte
        for byte, whether B's entry exists, changes or is removed.
      - **Gateway-wide cap.** With `beforeScope: 1`, a request of a caller of several scopes is held
-       while its body is unread, on a pipe the test holds. A second request, with a bad token, is
-       answered `429` `gateway-in-flight` and not `401`, and `unauthenticatedRefusals` rises by one.
-       The test then sends the first body; once that request is charged, scope B's request is
-       answered `200`, which asserts order, not timing.
+       while its body is unread, after its token is read. A second request, with a bad token, is
+       answered `401` and not `429` (the slot was given back at the token), and
+       `unauthenticatedRefusals` rises by one. With the cap held full, `/publickey` and
+       `/publickey/history` answer, and `/registry` and every other route are refused `429`
+       `gateway-in-flight`. A client that stalls in its headers holds no slot and is cut at the
+       read-header timeout.
      - **`/verify`.** A `/verify` from a caller of one scope at its `inFlight` is answered `429`
        `scope-in-flight` before the store is read; with no identity configured, it holds the
        gateway-wide cap.
@@ -649,6 +660,37 @@ settles:
 7. **A limiter refusal is `429` with a fixed sentence** that names no other scope and gives no other
    scope's state. `Retry-After` comes from the caller's own scope, or from the gateway-wide cap where
    that refused, alone. The build plan names a test for it (decisions 3 and 8).
+
+## The maintainer's rulings for the build (2026-11-23)
+
+These rulings were made for the second build pull request. Each one is folded into the decision it
+changes above, and where this list and earlier text differ, this list holds.
+
+1. **The gateway-wide slot is held only until the token is read,** never across the body or the run.
+   The listener's read-header timeout (`listenerReadHeaderTimeout`, 10 seconds) and read timeout
+   (`listenerReadTimeout`, 30 seconds, headers and body) already bound a slow client, so no
+   configuration member is added for them. A request whose headers have not arrived has no handler
+   and holds no slot. One middleware takes the slot and releases what the request holds when its
+   handler returns, however it ends; a route gives the slot back at the token (`leaveBefore`). This
+   supersedes "holds its gateway-wide slot until it is answered" for a request with a token, and the
+   body-unread hold of a caller of several scopes.
+2. **`limits.beforeScope`** is the gateway-wide cap, 1024 when left out (open question 8).
+3. **`/verify` from a caller of several scopes is charged to every scope it reaches, all or
+   nothing** (open question 9). If any one refuses, the request is refused and none is charged.
+   `charge` takes every scope and gives back what the others took where one refuses. A gateway with
+   no identity reaches every source, and its `/verify` is charged so too.
+4. **Every `401` counts as an unauthenticated refusal,** beside the cap's own (open question 10).
+5. **The unauthenticated count is given to every `/posture` caller.** It names no scope (open
+   question 11).
+6. **Every route is under the gateway-wide cap but `/publickey` and `/publickey/history`,** so
+   verifiers still answer while the cap is full. `/registry` is under the cap: it serves the whole
+   registry log on an open route, the cheapest to flood. The gateway has no `/healthz`.
+7. **The engine configuration version is 44** (`requestLimitsVersion`), the newest of
+   `engineVersions`.
+
+The review of the limiter added three changes: a second charge of one request is an error the route
+answers (`500`, nothing served), not a panic; a full callers' table is swept at most once a second;
+and the `callers` sentence says "or a spent bucket".
 
 ## More information
 
