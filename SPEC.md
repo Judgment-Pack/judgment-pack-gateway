@@ -588,6 +588,13 @@ nothing beyond what `scope` does; a verifier written before the member tolerates
 tolerates `scope`, and it is under the signature, so one added, removed or changed after
 signing is `signature-mismatch` under either.
 
+`callRef` (ADR-0060), optional, on either kind: the call reference the gateway sent the binding
+in the `tools/call` request's `params._meta` as `judgment-pack/callRef`, beside the receipt's
+`sessionId` as `judgment-pack/sessionId`, for a platform whose operator set `callReference`. It is
+64 lowercase hexadecimal characters; any other form is `malformed`. It is drawn once per call and
+names nothing else; `_meta` is unsigned, and the receipt is the evidence. A verifier written
+before the member tolerates it, as it tolerates any signed member it does not know.
+
 **`artifact`** — optional: the top-level string `"not-retained"`, and no other value, on a
 receipt whose `kind` is `"acquisition"`. It says that the gateway kept no payload for the
 call: it returned the result to the caller with the receipt and kept only its digest,
