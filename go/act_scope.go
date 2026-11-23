@@ -166,13 +166,42 @@ func decisionRecordsApart(gateway string, platforms []platformConfig, resolve fu
 	return nil
 }
 
-// resolvedOrClean is the path with every link followed where it resolves,
-// and cleaned where it does not yet.
-func resolvedOrClean(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return resolved
+// resolvedOrClean is the path with every link followed: where the path is
+// not there yet, its nearest ancestor that is there is resolved and the rest
+// appended, so a directory not made yet beneath a link is held where the link
+// leads, never where its spelling seems to be. A link that leads nowhere yet
+// is followed by its text, for the same reason.
+func resolvedOrClean(path string) string { return resolvedFrom(path, 0) }
+
+// resolvedLinkDepth bounds the links resolvedFrom follows by their text.
+const resolvedLinkDepth = 40
+
+func resolvedFrom(path string, depth int) string {
+	path = filepath.Clean(path)
+	var rest []string // the components not there yet, deepest first
+	beneath := func(dir string) string {
+		for i := len(rest) - 1; i >= 0; i-- {
+			dir = filepath.Join(dir, rest[i])
+		}
+		return dir
 	}
-	return filepath.Clean(path)
+	for at := path; ; {
+		if resolved, err := filepath.EvalSymlinks(at); err == nil {
+			return beneath(resolved)
+		}
+		if target, err := os.Readlink(at); err == nil && depth < resolvedLinkDepth {
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(resolvedFrom(filepath.Dir(at), depth+1), target)
+			}
+			return resolvedFrom(beneath(target), depth+1)
+		}
+		parent := filepath.Dir(at)
+		if parent == at {
+			return path
+		}
+		rest = append(rest, filepath.Base(at))
+		at = parent
+	}
 }
 
 // pathsNested is whether two clean absolute paths are one, or one is beneath
