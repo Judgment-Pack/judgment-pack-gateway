@@ -317,6 +317,11 @@ func (s *refusalScope) countLimit(limit string) {
 type refusalNote struct {
 	reason, refusal, outOfScope string
 	noDelegation                bool
+	// tool is the tool the route resolved, one its source's configuration
+	// names, "" before then; descriptorDigest is that tool's digest in the
+	// operation's pinned snapshot (sourceSpec.versions), "" where none is
+	// pinned, and never without tool (ADR-0059's amendment).
+	tool, descriptorDigest string
 }
 
 // handOff makes the record of an answered refusal and offers it to its
@@ -340,6 +345,12 @@ func (j *refusalJournals) handOff(s *refusalScope, route string, note refusalNot
 		body.set("refusal", vString(note.refusal))
 		if note.outOfScope != "" {
 			body.set("outOfScope", vString(note.outOfScope))
+		}
+	}
+	if note.tool != "" {
+		body.set("tool", vString(note.tool))
+		if note.descriptorDigest != "" {
+			body.set("descriptorDigest", vString(note.descriptorDigest))
 		}
 	}
 	body.set("status", vInt(int64(status)))
@@ -822,16 +833,19 @@ func (f refusalFS) close() {}
 // have set, flushed, and only then handed off.
 type refusalAnswer struct {
 	http.ResponseWriter
-	j      *refusalJournals
-	pass   *limitPass
-	route  string
-	note   refusalNote
-	noted  bool
-	wrote  bool
-	held   bool
-	status int
-	body   bytes.Buffer
-	read   *refusalTee
+	j     *refusalJournals
+	pass  *limitPass
+	route string
+	note  refusalNote
+	noted bool
+	// resolvedTool and resolvedDigest are what noteResolved held: a later
+	// note replaces a.note, never these
+	resolvedTool, resolvedDigest string
+	wrote                        bool
+	held                         bool
+	status                       int
+	body                         bytes.Buffer
+	read                         *refusalTee
 }
 
 func (a *refusalAnswer) Unwrap() http.ResponseWriter { return a.ResponseWriter }
@@ -919,6 +933,7 @@ func (a *refusalAnswer) finish() {
 // handler noted, or, on /act, the step its answer names.
 func (a *refusalAnswer) classify(body []byte) (refusalNote, bool) {
 	note := a.note
+	note.tool, note.descriptorDigest = a.resolvedTool, a.resolvedDigest
 	if a.route == "/act" && !a.noted {
 		var answer struct {
 			RefusedAt string `json:"refusedAt"`
@@ -929,6 +944,15 @@ func (a *refusalAnswer) classify(body []byte) (refusalNote, bool) {
 		note.reason = answer.RefusedAt
 	}
 	return note, note.reason != "" && refusalReasons[a.route][note.reason]
+}
+
+// noteResolved is the tool the route resolved, as soon as it is one its
+// source's configuration names, and its descriptor digest from versions:
+// an entry made from then on names them. A tool of "" notes nothing.
+func noteResolved(w http.ResponseWriter, tool string, versions map[string]string) {
+	if a, ok := w.(*refusalAnswer); ok && tool != "" {
+		a.resolvedTool, a.resolvedDigest = tool, versions[tool]
+	}
 }
 
 // noteRefusal is a handler's code for the refusal it is about to answer.

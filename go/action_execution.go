@@ -347,7 +347,7 @@ func (g *gatewayService) reconcileAction(session, platform, scope string, args v
 	// action's scope, which the request check already held at step 8, so
 	// acquireWithScope skips the request check for it (reconciliation set)
 	// and still holds it to the source's scope and the caller's reach.
-	read, err := g.acquireWithScope(session, platform+"/live", "", requestedScope{value: scope, named: scope != ""}, request, who, r)
+	read, err := g.acquireWithScope(session, platform+"/live", "", requestedScope{value: scope, named: scope != ""}, request, who, r, nil)
 	var refused *readBackRefused
 	if errors.As(err, &refused) {
 		if refused.grant {

@@ -1269,8 +1269,12 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 // acquireScoped is an acquisition whose request named a scope identifier,
 // or none (ADR-0026): held to the source's before anything else of the
 // source is looked at.
-func (g *gatewayService) acquireScoped(sessionID, source, trail string, scope requestedScope, arguments value, who *caller) (map[string]any, error) {
-	return g.acquireWithScope(sessionID, source, trail, scope, arguments, who, nil)
+//
+// resolved, when not nil, is told the tool a delegated call names once it is
+// one the source's configuration names (the refusal journal's, ADR-0059's
+// amendment).
+func (g *gatewayService) acquireScoped(sessionID, source, trail string, scope requestedScope, arguments value, who *caller, resolved func(tool string, versions map[string]string)) (map[string]any, error) {
+	return g.acquireWithScope(sessionID, source, trail, scope, arguments, who, nil, resolved)
 }
 
 // acquireForTrail is an acquisition whose request named a trail, or ""
@@ -1296,10 +1300,10 @@ func (r *readBackRefused) Error() string { return r.err.Error() }
 // identifier: a read-back, and every caller but /acquire's handler. A source
 // fixed to a scope identifier refuses it.
 func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail string, arguments value, who *caller, reconciliation *actionReconciliationRequest) (map[string]any, error) {
-	return g.acquireWithScope(sessionID, source, trail, requestedScope{}, arguments, who, reconciliation)
+	return g.acquireWithScope(sessionID, source, trail, requestedScope{}, arguments, who, reconciliation, nil)
 }
 
-func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope requestedScope, arguments value, who *caller, reconciliation *actionReconciliationRequest) (map[string]any, error) {
+func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope requestedScope, arguments value, who *caller, reconciliation *actionReconciliationRequest, resolved func(tool string, versions map[string]string)) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err} // refuse before running anything
 	}
@@ -1481,6 +1485,9 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 			tool := ""
 			if obj, isObject := arguments.(*vObject); isObject && spec.shape == "mcp" {
 				tool, _ = memberString(obj, "tool")
+			}
+			if resolved != nil && contains(spec.tools, tool) {
+				resolved(tool, spec.versions)
 			}
 			// The platform's connection grant (SPEC.md §10, rule 3), in two
 			// parts around the counting admission, as for /act. Its state
@@ -2836,7 +2843,7 @@ func (g *gatewayService) routes() http.Handler {
 				return
 			}
 		}
-		out, err := g.acquireScoped(session, source, trail, scope, arguments, who)
+		out, err := g.acquireScoped(session, source, trail, scope, arguments, who, func(tool string, versions map[string]string) { noteResolved(w, tool, versions) })
 		if err != nil {
 			noteRefusal(w, acquireRefusalCode(err))
 			fail(w, err)
@@ -2962,7 +2969,8 @@ func (g *gatewayService) routes() http.Handler {
 				return
 			}
 		}
-		out, err := g.actKeyed(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, actionKeyMembers{key: body["actionKey"], keyScope: body["keyScope"], reconcile: body["reconcile"], scopeIdentifier: body["scope"], approvals: body["approvals"], dryRun: dryRun, limit: limit})
+		out, err := g.actKeyed(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, actionKeyMembers{key: body["actionKey"], keyScope: body["keyScope"], reconcile: body["reconcile"], scopeIdentifier: body["scope"], approvals: body["approvals"], dryRun: dryRun, limit: limit,
+			resolved: func(tool string, versions map[string]string) { noteResolved(w, tool, versions) }})
 		if err != nil {
 			var limited *limitRefusal
 			if errors.As(err, &limited) || errors.Is(err, errLimitCharged) {

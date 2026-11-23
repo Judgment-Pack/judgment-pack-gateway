@@ -2048,7 +2048,7 @@ function refusalBodyOf(body: ObjectValue, journal: string): Omit<JournalEntry, "
   }
   const e = { kind: kind ?? "", registryFrom: 0, removalFrom: 0, removal: false, removalBytes: 0, removalDigest: "", sealing: false, seals: 0, sealDigest: "", continuation: "" };
   if (kind === "refusal") {
-    if (!onlyMembers(body, ["kind", "scope", "route", "reason", "refusal", "outOfScope", "status", "answeredAt", "caller", "delegation", "nonce", "request"])) {
+    if (!onlyMembers(body, ["kind", "scope", "route", "reason", "refusal", "outOfScope", "tool", "descriptorDigest", "status", "answeredAt", "caller", "delegation", "nonce", "request"])) {
       return null;
     }
     const route = str(member(body, "route"));
@@ -2062,6 +2062,15 @@ function refusalBodyOf(body: ObjectValue, journal: string): Omit<JournalEntry, "
     }
     const outOfScope = member(body, "outOfScope");
     if ((outOfScope !== undefined) !== (str(refusal) === "out-of-scope") || (outOfScope !== undefined && (str(outOfScope) ?? "") === "")) {
+      return null;
+    }
+    // a descriptor digest is the resolved tool's, never without it
+    const tool = member(body, "tool");
+    if (tool !== undefined && (str(tool) ?? "") === "") {
+      return null;
+    }
+    const descriptorDigest = member(body, "descriptorDigest");
+    if (descriptorDigest !== undefined && (tool === undefined || !digestForm.test(str(descriptorDigest) ?? ""))) {
       return null;
     }
     const status = member(body, "status");

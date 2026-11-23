@@ -85,6 +85,22 @@ func TestRefusalJournalVectorsAreWritten(t *testing.T) {
 		return lines
 	}
 	file := func(lines ...[]byte) string { return string(bytes.Join(lines, nil)) }
+	// resolved is a refusal made after the route resolved its tool (ADR-0059's
+	// amendment): the tool, and its pinned descriptor digest where digest
+	resolved := func(i int, tool, digest string) *vObject {
+		b := refusal(i, scope)
+		b.set("route", vString("/act"))
+		b.set("reason", vString("decision"))
+		b.set("tool", vString(tool))
+		if digest != "" {
+			b.set("descriptorDigest", vString(digest))
+		}
+		return b
+	}
+	descriptor := sha256.Sum256([]byte("corpus descriptor"))
+	pinned := "sha256:" + hex.EncodeToString(descriptor[:])
+	loose := refusal(1, scope)
+	loose.set("descriptorDigest", vString(pinned))
 	holds := chain(refusal(0, scope), refusal(1, scope), tally(false))
 	forged := bytes.Clone(holds[1])
 	forged[len(forged)-3] ^= 1
@@ -119,6 +135,10 @@ func TestRefusalJournalVectorsAreWritten(t *testing.T) {
 			file(holds...), true, nil, []map[string]any{from(3)}},
 		{"v3-journal-refusal-tally-full", "A refusal journal closed by its tally with full: true (ADR-0059 §4, the cap): no finding, and journal-from.",
 			file(chain(refusal(0, scope), tally(true))...), false, nil, []map[string]any{from(2)}},
+		{"v3-journal-refusal-tool-holds", "A refusal journal whose first entry names the tool its route resolved and the tool's pinned descriptor digest, and whose second names the tool alone (ADR-0059's amendment): no finding, and journal-from.",
+			file(chain(resolved(0, "create_ticket", pinned), resolved(1, "create_ticket", ""))...), false, nil, []map[string]any{from(2)}},
+		{"v3-journal-refusal-digest-without-tool", "A refusal journal whose second entry, signed by the key in force, names a descriptor digest and no tool: journal-entry-forged at ordinal 1 (ADR-0059's amendment).",
+			file(chain(refusal(0, scope), loose)...), false, finding("journal-entry-forged", 1), nil},
 		{"v3-journal-refusal-forged", "A refusal journal whose second entry's signature does not hold: journal-entry-forged at ordinal 1 (ADR-0059 §8).",
 			file(holds[0], forged, holds[2]), false, finding("journal-entry-forged", 1), nil},
 		{"v3-journal-refusal-scope-mismatch", "A refusal journal whose second entry, signed by the key in force, names a scope whose journal is another: journal-entry-forged at ordinal 1 (ADR-0059 §8).",

@@ -241,7 +241,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 242 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 244 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). Ten of them,
@@ -255,10 +255,10 @@ the registry no longer holds (`journal-entry-mismatch`, at ordinal 1); a staged 
 never committed (`journal-entry-missing`); a torn last piece of the removal file that loads as no
 record, the observation `journal-torn-tail` beside `journal-from` and no finding; the same piece
 when it loads as a record, `journal-entry-missing`; and a store with no journal under the option,
-`journal-missing`. The eight `v3-journal-refusal-*` vectors are the refusal journals' (ADR-0059
+`journal-missing`. The ten `v3-journal-refusal-*` vectors are the refusal journals' (ADR-0059
 §8): each is `v3-journal-holds` with `journals/refusal-<name>.jsonl` beside its operator journal,
 the journal of the synthetic scope `corpus-a`: one that holds (`journal-from`, with its `entries`);
-one closed by its tally with `full: true`; an entry forged; an entry of another scope's journal; an
+one closed by its tally with `full: true`; one whose entries name the tool their route resolved, the first with its pinned `descriptorDigest`; an entry naming a `descriptorDigest` and no `tool` (`journal-entry-forged`, at ordinal 1); an entry forged; an entry of another scope's journal; an
 operator body in a refusal journal (each `journal-entry-forged`, at ordinal 1); a `previous` that
 is not the line before it (`journal-order`); a torn last piece (`journal-torn-tail`, with its
 `bytes`); and the journal's name under the option with no journal (`journal-missing`). They cover: a valid sealed version 3 session; an action receipt whose

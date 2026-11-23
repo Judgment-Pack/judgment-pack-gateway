@@ -79,7 +79,7 @@ func refusalBodyLoads(body *vObject, journal string) (string, bool) {
 	switch kind {
 	case "refusal":
 		if !exactMembers(body, map[string]bool{"kind": true, "scope": true, "route": true, "reason": true, "refusal": true,
-			"outOfScope": true, "status": true, "answeredAt": true, "caller": true, "delegation": true, "nonce": true, "request": true}) {
+			"outOfScope": true, "tool": true, "descriptorDigest": true, "status": true, "answeredAt": true, "caller": true, "delegation": true, "nonce": true, "request": true}) {
 			return kind, false
 		}
 		route, _ := memberString(body, "route")
@@ -93,6 +93,15 @@ func refusalBodyLoads(body *vObject, journal string) (string, bool) {
 		}
 		outOfScope, hasOut := memberString(body, "outOfScope")
 		if _, given := body.get("outOfScope"); given != (refusal == refusalOutOfScope) || (given && (!hasOut || outOfScope == "")) {
+			return kind, false
+		}
+		// a descriptor digest is the resolved tool's, never without it
+		tool, hasTool := memberString(body, "tool")
+		if _, given := body.get("tool"); given && (!hasTool || tool == "") {
+			return kind, false
+		}
+		digest, hasDigest := memberString(body, "descriptorDigest")
+		if _, given := body.get("descriptorDigest"); given && (!hasTool || !hasDigest || !isDigest(digest)) {
 			return kind, false
 		}
 		status, _ := body.get("status")

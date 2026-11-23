@@ -267,6 +267,11 @@ func TestRefusalJournalAnswersNeverWaitOnTheWriter(t *testing.T) {
 		answerOf(t, h, "/seal", `{"session":"s-none"}`, "a")
 		answerOf(t, h, "/seal", `{"session":"s-none"}`, "b")
 	}
+	// the hand-off follows the flushed answer, so a caller can read the
+	// answer before it is made: wait for it, never for the writer
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline) && (len(a.queue) != 2 || b.tally[dropQueueFull].Load() != before+2); {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if len(a.queue) != 2 || b.tally[dropQueueFull].Load() != before+2 {
 		t.Errorf("A's queue %d (want 2), B's queue-full %d (want %d)", len(a.queue), b.tally[dropQueueFull].Load(), before+2)
 	}

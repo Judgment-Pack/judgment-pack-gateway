@@ -8,6 +8,15 @@ deciders: maintainer
 
 > **0059 is a placeholder, assigned at merge.** Its engine version is 48 (`refusalJournalVersion`).
 >
+> **Amendment, 2026-11-23 (the maintainer).** A `refusal` body gains two optional members inside its
+> signed body (section 3): `tool`, once the route has resolved the request's tool to one its
+> source's configuration names, and `descriptorDigest`, that tool's digest in the operation's
+> pinned snapshot, only beside `tool`. A refusal before resolution names neither, so a caller's
+> own unconfigured text never reaches an entry in the clear. Both readers refuse an entry naming
+> `descriptorDigest` without `tool`; the corpus holds `v3-journal-refusal-tool-holds` and
+> `v3-journal-refusal-digest-without-tool`. The record version, the name and the commitment are
+> unchanged.
+>
 > **Summary.**
 >
 > - **Chosen:** one refusal journal for each scope, on ADR-0056's machinery. Its name is
@@ -268,6 +277,8 @@ Chosen: **P2, J2, S3, W2 and V2.**
 | `reason` | a code from section 4's closed list for the route | the step that refused |
 | `refusal` | optional: a refusal code of SPEC.md §11.5 | present exactly where `reason` is `delegation` or `grant` |
 | `outOfScope` | optional: one of §11.5 step 11's reasons | present exactly where `refusal` is `out-of-scope` |
+| `tool` | optional: a non-empty string | the tool the route resolved, present exactly where the refusal came after the route held the request's tool to one its source's configuration names: on `/act`, once step 9 holds it to the write binding's; on `/acquire`, once a delegated call's tool is one the source names (amendment of 2026-11-23) |
+| `descriptorDigest` | optional: a digest (§1.2a) | that tool's descriptor digest in the operation's pinned snapshot, taken from the source's versions and from nowhere else; present only beside `tool`, and only where the operation pins one. An entry naming it without `tool` is not of its form (amendment of 2026-11-23) |
 | `status` | an integer from 400 to 499 | the answer's status |
 | `answeredAt` | `YYYY-MM-DDThh:mm:ss.sssZ` | the gateway's clock when the answer was written |
 | `caller` | `{issuer, subject, tokenDigest}`, of §1.2a's form | the identity the request was authenticated as. Under a delegation it is the chain's `sub`, with the credential's digest, as §11.7 sets it on a receipt |
