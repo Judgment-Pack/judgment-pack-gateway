@@ -147,8 +147,8 @@ const engineVersion = actScopeVersion
 // approvals (docs/adr/0054-act-takes-a-scope-a-dry-run-is-signed-as-no-action-and-an-action-cites-approval-records.md).
 // From it a platform may set scope beside write: true, with its own
 // decisionRecords and checked caller scopes, and /act reads scope there
-// (decision 1; act_scope.go). dryRun and approvals stay members /act does
-// not read until /act serves them.
+// (decision 1; act_scope.go), and dryRun and approvals everywhere (decisions
+// 2 and 3; act_dry_run.go).
 const actScopeVersion = "41" // placeholder: the maintainer assigns the number in merge order
 
 var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, actScopeVersion: true}
@@ -2838,7 +2838,7 @@ func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, e
 // engineServeOptions is what `serve` runs for a configuration: the derived
 // sources, the receipt version the design assumes, and the defaults.
 func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec, identity *identityConfig) serveOptions {
-	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed, receiptSink: cfg.receiptSink, labels: versionAtLeast(cfg.version, labelsVersion)}
+	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), dryRunApprovals: versionAtLeast(cfg.version, actScopeVersion), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed, receiptSink: cfg.receiptSink, labels: versionAtLeast(cfg.version, labelsVersion)}
 }
 
 // maxKeySetBytes bounds the issuer's key file.

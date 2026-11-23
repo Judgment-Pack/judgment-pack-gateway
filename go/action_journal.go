@@ -248,7 +248,7 @@ func reservationRecords(identity actionIdentity, scope *vObject) []actionRecord 
 	if scope != nil {
 		records = append(records, actionRecord{"scope.json", canon(scope), actionScopeLimit})
 	}
-	raw, _ := json.Marshal(actionIntent{Version: actionJournalVersion, Identity: actionIdentityVersion, Fingerprint: identity.fingerprint})
+	raw, _ := json.Marshal(actionIntent{Version: actionJournalVersion, Identity: identity.version(), Fingerprint: identity.fingerprint})
 	return append(records, actionRecord{"intent.json", raw, 1024})
 }
 
@@ -280,17 +280,31 @@ func (c *actionClaim) holdsIdentity(identity actionIdentity, scope *vObject) err
 	if version != actionJournalVersion || !isLowerHexOfLen(stored, 64) {
 		return errors.New("action-journal-invalid: invalid intent")
 	}
+	// A reservation of another identity version than the request's is other
+	// approved content: one that records no approvals (version 1 or 2) is not
+	// a request's that names some (version 3), nor the reverse (ADR-0054,
+	// decision 3).
 	want := identity.previous
 	if _, present := object.get("identityVersion"); present {
-		if recorded, _ := memberString(object, "identityVersion"); recorded != actionIdentityVersion {
+		recorded, _ := memberString(object, "identityVersion")
+		if !readsIdentityVersion(recorded) {
 			return errors.New("action-journal-invalid: the reservation records an identity version this release does not read")
 		}
 		want = identity.fingerprint
+		if recorded != identity.version() {
+			want = ""
+		}
 	}
 	if stored != want {
 		return errors.New("action-key-conflict: this key already identifies different approved content")
 	}
 	return nil
+}
+
+// readsIdentityVersion is whether this release reads a reservation's
+// recorded identityVersion: 2, and 3, a request's that named approvals.
+func readsIdentityVersion(recorded string) bool {
+	return recorded == actionIdentityVersion || recorded == actionIdentityVersion3
 }
 
 // errActionScopeConflict is a delegated key the same subject reserved under
