@@ -229,6 +229,9 @@ const (
 
 type gatewayService struct {
 	requireActionKey bool
+	// dryRunApprovals is whether /act reads dryRun and approvals (ADR-0054,
+	// from actScopeVersion); without it each is a member /act does not read.
+	dryRunApprovals bool
 	// actionLocks holds one keyed action at a time per key (act).
 	actionLocks actionKeyLocks
 	// actionStep, when set, is told each named point of a keyed request (a test's
@@ -2815,10 +2818,25 @@ func (g *gatewayService) handler() http.Handler {
 			// identifier (ADR-0054); elsewhere a member /act does not read
 			allowed = withMember(allowed, "scope")
 		}
+		if g.dryRunApprovals {
+			// read from actScopeVersion (ADR-0054, decisions 2 and 3); below
+			// it each is a member /act does not read, so a dry-run sent to
+			// such an engine is refused whole and never sent as a write
+			allowed = withMember(allowed, "dryRun", "approvals")
+		}
 		body, err := requestMembers(r.Body, allowed)
 		if err != nil {
 			fail(w, badRequest{err})
 			return
+		}
+		// The dry-run step (ADR-0054, step 5): after the members, before the
+		// credential is presented or a reservation authenticated.
+		_, dryRun := body["dryRun"]
+		if dryRun {
+			if refusal := g.dryRunRefusal(body); refusal != "" {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": refusal, "refusedAt": "dry-run"})
+				return
+			}
 		}
 		if !presented(w, who, body["delegation"]) {
 			return
@@ -2856,7 +2874,7 @@ func (g *gatewayService) handler() http.Handler {
 				return
 			}
 		}
-		out, err := g.actKeyed(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, actionKeyMembers{key: body["actionKey"], keyScope: body["keyScope"], reconcile: body["reconcile"], scopeIdentifier: body["scope"]})
+		out, err := g.actKeyed(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, actionKeyMembers{key: body["actionKey"], keyScope: body["keyScope"], reconcile: body["reconcile"], scopeIdentifier: body["scope"], approvals: body["approvals"], dryRun: dryRun})
 		if err != nil {
 			var uncertain *actionUncertain
 			if errors.As(err, &uncertain) {

@@ -371,7 +371,7 @@ func TestJournalCompactClasses(t *testing.T) {
 	handEntry(t, actions, bare, map[string]string{"intent.json": handIntent})
 	handEntry(t, actions, begun, map[string]string{"intent.json": handIntent, "dispatch-1.json": `{"attempt":1}`})
 	handEntry(t, actions, broken, map[string]string{"intent.json": `{"journalVersion":"2"`})
-	handEntry(t, actions, later, map[string]string{"intent.json": `{"journalVersion":"2","identityVersion":"3","fingerprint":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}`})
+	handEntry(t, actions, later, map[string]string{"intent.json": `{"journalVersion":"2","identityVersion":"4","fingerprint":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}`})
 	handEntry(t, actions, odd, map[string]string{"intent.json": handIntent, "notes.txt": `{}`})
 	handEntry(t, actions, gap, map[string]string{"intent.json": handIntent, "dispatch-2.json": `{"attempt":2}`, "not-dispatched-2.json": `{"attempt":2}`})
 	handEntry(t, actions, orphan, map[string]string{"intent.json": handIntent, "not-dispatched-1.json": `{"attempt":1}`})

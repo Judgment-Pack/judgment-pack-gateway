@@ -2988,9 +2988,13 @@ newest of `engineVersions`):
   `gateway journal compact` compacts by the rule of the journal of none, and `gateway remove-scope`
   removes once no key there is pending.
 
-Below that version `scope` and `decisionRecords` are refused by name, as before. The request
-members `dryRun` and `approvals` are read at no version yet: each is refused as a member `/act`
-does not read.
+- **The request members `dryRun` and `approvals`** on `/act`, with or without a scoped write
+  source (SPEC.md §6). `"dryRun": true` runs the write's checks with no effect and answers a signed
+  dry-run receipt (§1.2c); `approvals` is carried as `action.approvals` and a key reserved with it
+  records identity version `"3"`, which an earlier release refuses as `action-journal-invalid`.
+
+Below that version `scope` and `decisionRecords` are refused by name, and `dryRun` and `approvals`
+as members `/act` does not read, as before.
 
 ## A key history that marks each store continuation (engine version 42)
 

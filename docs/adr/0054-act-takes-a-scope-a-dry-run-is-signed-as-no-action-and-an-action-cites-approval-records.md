@@ -208,7 +208,7 @@ gateway's word.
 and the named-grant check of step 19, with the write's refusals at each step and the same bodies. In
 place of session admission it makes the same checks with no effect: the signer's gate is open, and the
 session is not sealed, is not held by another instance, and is of the request's scope. The session's
-directory is not made and the session is not held. Under `engineVersion` 14 and later it requires
+directory is not made and the session is not held. On the filesystem kind, "held by another instance" is read as a session directory this process did not make. On a kind whose store is shared between instances, it is read from the session's lease, read-only, once `/act` is served there (2026-11-22; `/act` answers 501 on those kinds today). Under `engineVersion` 14 and later it requires
 `actionKey`, as the write does. The key is applied to the idempotency argument, so the previewed
 request is the one that would be sent, and nothing else is done with it.
 

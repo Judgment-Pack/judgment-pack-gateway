@@ -672,11 +672,19 @@ from those fields is not part of it, and neither are where the programs are
 installed, the platform environment and the operating-system user: a release
 that adds, renames or reorders a derived flag leaves the content of every key
 reserved under identity version 2 as it was. A reservation records the version
-of this identity it was made under (`identityVersion` `"2"`). A reservation that
+of this identity it was made under (`identityVersion` `"2"`). A request that names
+`approvals` (§6, "`/act`: a scope, a dry-run and approvals") is of identity version
+`"3"`: version 2's content plus `approvals`, in the order given. A request that
+names none is of version 2, byte for byte as before. A reservation of another
+identity version than the request's is other approved content, refused as
+`action-key-conflict`, so a key reserved with no approvals and replayed with some,
+or the reverse, conflicts, and the receipt of a dispatch names exactly the
+approvals of the request that dispatched it. A reservation that
 records none was made under version 1 (v0.23.0), which bound the derived command
 line without install paths instead of the named fields; it is held to the
-request's version 1 identity, and an identity version the gateway does not read
-refuses as `action-journal-invalid`. A version 1 reservation stays version 1, as
+request's version 1 identity, a request that names approvals has none, and an
+identity version the gateway does not read refuses as `action-journal-invalid`,
+as an earlier release refuses version 3. A version 1 reservation stays version 1, as
 no journal file is rewritten: under a release whose derived command line
 differs from v0.23.0's, such a key answers `action-key-conflict`, whether it is
 pending or settled, and nothing is sent. Before an action record cites a receipt, the receipt,
@@ -3015,11 +3023,38 @@ journal, so one key in two scopes names two actions. An action of none is answer
 as before. The order of the refusals, the key's namespace by scope, the read-back and
 `gateway remove-scope` are as ADR-0054 decision 1 states them.
 
-The other two, `dryRun` and `approvals`, this engine does not read yet: each is refused as a member
-`/act` does not read, so neither changes an `/act` answer. Where they are read, `"dryRun": true`
-runs the write's checks, signs a dry-run receipt (§1.2c) and answers `200` with exactly `{"dryRun",
-"request", "salts"}`, with no `receipt`, sending, reserving and recording nothing; and `approvals` is
-carried as `action.approvals` (§1.2a), checked for form alone.
+The other two, `dryRun` and `approvals`, this engine reads from the same version, with or without a
+scoped write source; below it each is refused as a member `/act` does not read, so a dry-run sent to
+such an engine is refused whole and never sent as a write.
+
+**The dry-run.** `"dryRun": true` is read at its own step, after the members `/act` reads and before
+the credential is presented or a reservation's sender authenticated. Only the JSON value `true` is
+read. Any other value, `dryRun` beside `keyScope`, `reconcile` or `reservation`, and `dryRun` under an
+engine that mints version 2 receipts are refused `400` with `{"error", "refusedAt": "dry-run"}`. A
+dry-run then runs the write's ladder through the decision record and its policy, with the write's
+refusals and bodies, then the publisher policy and the named-grant check, and in place of session
+admission the same checks with no effect: the signer's gate is open, and the session is not sealed,
+was not made by another instance or an earlier start, is of the request's scope, and holds no
+receipt the receipt sink has not acknowledged. A receipt held is read and not sent, and the dry-run
+is refused as the write is while the sink does not acknowledge it: `503`, the same code and
+sentence. Under
+`engineVersion` 14 and later it requires `actionKey`, which is set as the idempotency argument and
+nothing else. Under a delegation only the run's actor may ask; the grant's state is read, and §11.5
+steps 0 to 12 are made with the admission read at `"count": false`, so the host counts nothing. A
+dry-run does not lock, read, reserve, close or give a first scope to an action key, record a label,
+make a session directory, hold a session, deliver to the receipt sink, make a dispatch marker, use
+the grant or make its owner read, start the executor, run a read-back, or write to the store or the
+registry. It answers `200` with exactly `{"dryRun": <the dry-run receipt, §1.2c>, "request": {"tool",
+"arguments"}, "salts": {"request"}}`: the request the executor would be handed, and the salt that
+opens the receipt's `action.request`. The receipt is signed by the serving key, so under a key
+service each dry-run is one signing call; it is in no session and is not retained. A dry-run can pass
+where the write would then be refused at its key: it establishes nothing about the key. It is one
+`/act` request, and a per-scope limit on `/act` requests counts it.
+
+**Approvals.** `approvals` is §1.2a's form, read after the citations resolve and before the decision
+record is found, and refused `400` at `approvals` when out of form or empty. Nothing is read, fetched
+or compared: each entry is the requester's claim. The receipt carries it as `action.approvals`, in
+the order given, and it enters the key's approved content as identity version `"3"` (§1.2b).
 
 ### Who may ask for a write
 

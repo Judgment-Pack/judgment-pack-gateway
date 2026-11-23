@@ -211,6 +211,22 @@ func (q *forwardQueue) unacknowledged() bool {
 	return len(q.held) > 0
 }
 
+// heldRefusal is the refusal deliver up to upTo answers while the sink
+// acknowledges nothing: the sentence of the first receipt q holds, where it
+// is at or below upTo; nil for none. It sends nothing and changes nothing.
+// The caller may hold the gateway's lock.
+func (q *forwardQueue) heldRefusal(upTo int64) error {
+	if q == nil {
+		return nil
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.held) == 0 || q.held[0].index > upTo {
+		return nil
+	}
+	return q.held[0].refusal()
+}
+
 // receiptForwarder delivers to the configured sink.
 type receiptForwarder struct {
 	url            string
