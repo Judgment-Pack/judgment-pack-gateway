@@ -774,6 +774,8 @@ func serveUntilStopped(service *gatewayService, cfg engineConfig, delegation *de
 	// the signer's admission gate, for the rotation contract: SIGUSR1
 	// closes it, SIGUSR2 reopens it
 	installOperatorControls(service.ctx, service)
+	// refusal entries at a sink on delivery "3" (sink_refusal_entries.go)
+	startRefusalEntryForwarding(service)
 	// a loss keep reports, or a rotation at SIGHUP whose append failed,
 	// stops the gateway (exit 1); room for both, so neither send waits
 	lost := make(chan error, 2)
