@@ -40,16 +40,28 @@ func TestOnlyARefusalJournalsExactNameIsKnown(t *testing.T) {
 		t.Fatal(err)
 	}
 	misses := refusalNearMisses(name)
+	var want []string
 	for _, file := range append([]string{name + ".jsonl", name + ".key"}, misses...) {
-		if err := os.WriteFile(filepath.Join(dir, file), []byte("{}\n"), 0o600); err != nil {
+		at := filepath.Join(dir, file)
+		if _, err := os.Lstat(at); err == nil {
+			// a filesystem that folds case holds it as a known file's name
+			// already: the name alone is judged, below
+			if isKnownJournalFile(file) {
+				t.Errorf("%s is known", file)
+			}
+			continue
+		}
+		if err := os.WriteFile(at, []byte("{}\n"), 0o600); err != nil {
 			t.Fatal(err)
+		}
+		if slices.Contains(misses, file) {
+			want = append(want, file)
 		}
 	}
 	names, err := unknownJournalFiles(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := slices.Clone(misses)
 	slices.Sort(want)
 	if !slices.Equal(names, want) {
 		t.Fatalf("journal-unknown:\n got %q\nwant %q", names, want)

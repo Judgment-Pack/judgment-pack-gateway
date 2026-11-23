@@ -296,6 +296,9 @@ func TestRefusalJournalCountsALimitRefusalInTheTally(t *testing.T) {
 	a := j.scopes[callerScopeA]
 	a.since = a.since.Add(-time.Minute)
 	j.store = refusalFS{root: h.g.storeRoot}
+	// the tally reopens the journal the stop closed: close it again, as a
+	// platform without flock deletes no file a handle holds
+	t.Cleanup(j.closeFiles)
 	j.writeTally(a, time.Now())
 	bodies := refusalBodies(t, h.g.storeRoot, callerScopeA)
 	if len(bodies) != 2 {
@@ -572,6 +575,11 @@ func TestRefusalJournalRemovalTakesTheJournalAndNamesIt(t *testing.T) {
 	dir := filepath.Join(h.g.storeRoot, journalsDir)
 	if err := os.WriteFile(filepath.Join(dir, s.name+".forwarded"), []byte("0\n"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if !journalFilesLock {
+		// remove-scope runs with the gateway stopped where there is no
+		// flock: the writer holds no file then
+		j.closeFiles()
 	}
 	r, err := holdRefusalRemoval(h.g.storeRoot, callerScopeA)
 	if err != nil || len(r.data) == 0 {
