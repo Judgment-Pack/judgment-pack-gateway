@@ -45,6 +45,7 @@ export type StoreVector = {
   suppliedArtifacts?: Record<string, string>;
   scope?: string;
   previousRegistry?: string;
+  requireJournal?: string[];
   expected: {
     ok: boolean;
     findings: Record<string, unknown>[];
@@ -122,7 +123,7 @@ function only(file: string, o: unknown, ...names: string[]): void {
 // not read, at the top or in expected.
 export function readStoreVector(file: string): StoreVector {
   const v = readVector(file) as StoreVector;
-  only(file, v, "name", "note", "authority", "files", "registry", "decisionRecords", "absentRegistry", "emptySessions", "ordinarySealsOnly", "suppliedArtifacts", "scope", "previousRegistry", "publicKeyAlg", "expected");
+  only(file, v, "name", "note", "authority", "files", "registry", "decisionRecords", "absentRegistry", "emptySessions", "ordinarySealsOnly", "suppliedArtifacts", "scope", "previousRegistry", "requireJournal", "publicKeyAlg", "expected");
   only(file, v.expected, "ok", "findings", "witnesses", "rotations", "observations", "cut");
   return v;
 }

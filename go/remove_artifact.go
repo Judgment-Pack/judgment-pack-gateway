@@ -76,6 +76,11 @@ type removeArtifactOptions struct {
 	by                         string
 	scope                      string
 	scoped                     bool
+	// engineVersion is the configuration's engineVersion, "" where flags
+	// name the store, and journal the call's hold on the operator journal,
+	// set once the registry is held (ADR-0056)
+	engineVersion string
+	journal       *operatorJournalCall
 }
 
 // callIndexForm is a call index as a receipt's file names it: decimal, no
@@ -156,6 +161,7 @@ func parseRemoveArtifact(args []string) (removeArtifactOptions, string) {
 			return removeArtifactOptions{}, err.Error()
 		}
 		o.keyVersion, o.keyPublic, o.keyAlg = cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm
+		o.engineVersion = cfg.version
 		o.store, o.registry, o.authority, o.seedNames = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}
 		// the seed by the name it resolves to as well, as seal-open looks
 		// for a rotation under way beside both
@@ -254,6 +260,9 @@ func removeArtifact(o removeArtifactOptions, stamp func() string) (out removalOu
 	// history under a key the walk did not reach -- a store a key service
 	// signs for, given here the seed by --seed -- is refused (ADR-0050)
 	if err := heldUnderAnotherKey(data, walk.keys, key.public, newFsKind(fsLayout{store: o.store}).receipts()); err != nil {
+		return out, unlocked, err
+	}
+	if o.journal, err = beginOperatorJournal(o.store, o.registry, o.engineVersion, key, walk.keys, stamp); err != nil {
 		return out, unlocked, err
 	}
 	out, err = removeArtifactsUnder(o.store, o.authority, key, walk.keys, o, stamp)
@@ -486,7 +495,7 @@ func removeArtifactsUnder(storeRoot, authority string, key *signingKey, keys []r
 		out.appended = append(out.appended, record)
 	}
 	if len(lines) > 0 {
-		if err := appendRemovals(storeRoot, torn, lines); err != nil {
+		if err := journaledAppendRemovals(o.journal, storeRoot, torn, lines, removalBody("remove-artifact", o.by, "")); err != nil {
 			appended := out.appended
 			out.appended = nil
 			return out, fmt.Errorf("%v; the %d record(s) may be in the file, and nothing was removed; a second run completes it", err, len(appended))

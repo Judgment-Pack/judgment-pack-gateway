@@ -2937,6 +2937,26 @@ ring's location is the operator's.
 
 An earlier gateway refuses a version-40 file by its version.
 
+## The operator journal (ADR-0056; engine version 45)
+
+Engine version 45 (`operatorJournalVersion` in `go/engine.go`) adds no member. From it, `gateway retain`,
+`gateway remove-scope`, `gateway remove-artifact`, `gateway seal-open` and `gateway store rotate`
+given the configuration begin the store's operator journal, `journals/operator.jsonl`, and write one
+signed entry for each call that changes the store. A store that holds the journal is written to by
+every one of them, whatever the configuration's version and whether it is given flags instead. A
+configuration of an earlier version, on a store with no journal, writes none, as before. Roll the
+commands back to an earlier release only with the version lowered on a store that holds no journal:
+an earlier command makes its change with no entry, which `gateway verify` reports as
+`journal-entry-missing`.
+
+On the PostgreSQL kind the journal is the table `gateway.journal_records`, made by migration 0010
+(schema version 10), which is one-way: back the database up before migrating, as
+docs/postgresql-store.md says. The commands on that kind do not write it yet.
+
+A removal call that finds the removal file ending in an unterminated line refuses when that line
+loads as a removal record, naming the file and saying to cut it back to the end of its last complete
+line; otherwise its entry's range starts at that line, so ending it covers it.
+
 ## P-256 issuing-host keys (engine version 41)
 
 Version 41 lets `delegation.hosts[].keys` pin an issuing host's ECDSA P-256 key, so that the host
@@ -3028,7 +3048,7 @@ An earlier gateway refuses a version-42 file by its version.
 
 ## Request limits (ADR-0057; engine version 44)
 
-From engine version 44 (`requestLimitsVersion` in `go/limits_config.go`, the newest of `engineVersions`), a
+From engine version 44 (`requestLimitsVersion` in `go/limits_config.go`), a
 configuration may carry a top-level `limits` member. Below that version it is refused by name:
 `limits is a version-44 member; engineVersion <m> has no limits`.
 

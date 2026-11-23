@@ -873,6 +873,7 @@ decision record, the policy and any delegation's budget can all change in betwee
                                                 of a payload or of a session
 <root>/labels/<hex>.json                        optional: the reference gateway's session labels
                                                 (§3a); a verifier passes the directory over
+<root>/journals/<journal>.jsonl                 optional: one journal entry per line (§3f)
 ```
 
 The registry is a separate file: one canonical seal object per line, newline
@@ -1977,6 +1978,90 @@ it. `gateway store rotate` carries the history the old store's gateway answers u
 is given, and, given by its flags, under none. A consumer learns the version from the answer's
 `keyHistoryVersion`; one written before version `"2"` refuses the answer whole.
 
+## 3f. The journals
+
+A store may hold journals: append-only files of entries, each signed by the key in force, one chain
+per journal, in `<root>/journals/<journal>.jsonl` (on the PostgreSQL kind the rows of
+`gateway.journal_records`, one per entry, from schema version 10, written by `gateway export` as
+that path). An entry is one canonical JSON object
+of exactly the members of the table of ADR-0056, section 2, on one line of at most 4096 bytes, its
+`0x0A` not counted, signed over `"judgment-pack-gateway/journal-entry/1:"` and `canon` of the entry
+without `signature`. It loads when its `keyId` names a key the walk of §3b reached, its signature
+verifies under that key, and its key is the entry before's or one the walk reached after it. The
+operator journal, `operator`, holds one entry for each call of `retain`, `store retain`,
+`remove-scope`, `store remove-scope`, `remove-artifact`, `seal-open` and `store rotate` that changed
+the store, of the kinds of ADR-0056, section 4.
+
+| Member | Form | Statement |
+|---|---|---|
+| `journal` | a journal's name | the journal the entry is in; it must be the name of the file or log that holds it |
+| `journalVersion` | the string `"1"` | the envelope's form |
+| `ordinal` | an integer from 0 to 2⁵³−1 | the entry's place: the first entry is 0, and each later entry is one more than the entry before it |
+| `previous` | 64 lowercase hexadecimal characters; absent at ordinal 0 | the SHA-256 of the line of the entry before, without its `0x0A` |
+| `at` | `YYYY-MM-DDThh:mm:ssZ`, the form of `rotatedAt` | the writer's clock when it signed |
+| `keyId` | 32 lowercase hexadecimal characters | the key in force, which signs the entry |
+| `alg` | optional: the string `"ES256"` | present exactly when the key in force is a P-256 key (SPEC.md §1.5) |
+| `body` | one JSON object holding a string `kind` | the journal's own; each kind holds exactly its own members |
+| `signature` | 128 lowercase hexadecimal characters | Ed25519, or ES256 where `alg` is present, over `"judgment-pack-gateway/journal-entry/1:"` and `canon` of the entry without `signature` |
+
+| `kind` | Written by | Its other members, and no others |
+|---|---|---|
+| `retain` | `retain`, `store retain` | `by`; `scope`, present exactly when `--scope` was given; `acknowledgments`, the SHA-256 of the acknowledgment file read (64 hex); `acknowledgedBy`, the key ids `retention.acknowledgedBy` lists, in its order (1 to 4); `sessions`, the sessions removed; `removalBytes`; `removalDigest` |
+| `remove-scope` | `remove-scope`, `store remove-scope` | `by`; `scope`; `removalBytes`; `removalDigest` |
+| `remove-artifact` | `remove-artifact` | `by`; `removalBytes`; `removalDigest` |
+| `seal-open` | `seal-open` | `seals`; `sealDigest`; `delivered`, `true` where each session's receipts went to the configured sink first, `false` under `--no-sink` |
+| `store-rotate` | `store rotate`, in the store rotated **from** | `seals`; `sealDigest`; `delivered` |
+| `store-continued` | `store rotate`, in the store rotated **to**, as ordinal 0 | `continuation`, the SHA-256 of the new registry's first line without its `0x0A` (the mark's digest, §3d); `previousJournalBytes`; `previousJournalDigest`, the SHA-256 of the old journal's bytes, whole (of no bytes where the old store holds none) |
+
+1. **`journal-entry-forged`.** A complete line, one that ends in `0x0A`, does not load. That is, one of
+   these is true:
+   - the line is over the bound;
+   - it is not one JSON object with exactly the envelope's members, each once and of its form;
+   - its `body` is not of a kind with exactly that kind's members;
+   - its `journal` is not the name of the file or log that holds it;
+   - its key is not one the walk reached;
+   - its signature does not verify.
+
+   A torn last piece, with no `0x0A` after it, is not an entry and is no finding.
+2. **`journal-order`.** One of these is true:
+   - an entry's `ordinal` is not its place;
+   - its `previous` is not the SHA-256 of the line before it;
+   - it holds `previous` at ordinal 0;
+   - its key is earlier in the walk than the key of the entry before it.
+
+   This finding is what makes removing the first entry, removing one in the middle, or reordering entries
+   show.
+3. **`journal-entry-mismatch`.** An entry names something the store does not hold:
+   - a removal range whose bytes are not of its digest, or that runs past the file;
+   - a `removalFrom` short of the end of the ranges before it;
+   - a `registryFrom` past the registry's length, or less than the entry before's;
+   - seals beyond the command seals that remain, or seals not of its digest;
+   - a `store-continued` entry that is not ordinal 0, or not the digest of a continuation at the
+     registry's first line.
+4. **`journal-entry-missing`.** The store holds a change that no entry names:
+   - bytes of the removal file, past the first entry's `removalFrom`, that no range covers, but for
+     a torn last piece (below);
+   - a command seal at or after the first entry's `registryFrom` that no entry takes.
+
+   - a staged entry, `<journal>.pending` on the filesystem kind, that has not been committed, whether or
+     not the journal's file is there.
+
+   This finding is what makes removing the last entries show. The ordinal reported is the one the next
+   entry would take. A command seal is a registry line that §1.1's parser reads as one JSON object of
+   `kind` `"seal-after-interruption"` and `sealedVia` `"command"`, whether or not it loads.
+
+   A torn last piece of the removal file is the bytes after its last `0x0A`. It is no finding when
+   it is the only bytes no range covers, no entry is staged, every command seal is taken, and it
+   loads as no removal record of any kind (§1.3a) under the keys the walk reached: it is a write
+   that stopped before its line was ended, and the next removal call's range starts at it. The
+   verdict then carries the observation `journal-torn-tail`, with `journal`, `removalFrom` (where
+   the piece starts) and `bytes` (its length). A piece that loads as a record is
+   `journal-entry-missing`: once ended it would be a record no entry names, and a removal call
+   refuses to run while it is there.
+
+The call's entry in the operator journal is written as ADR-0056, section 5, sets out, by `retain`,
+`seal-open` and `store rotate` as by the commands of §6.
+
 ## 4. Registry-anchored verification
 
 `verify_with_registry(verify_store, store_root, key, registry_path, authority)`:
@@ -2133,6 +2218,12 @@ findings, and each is independent of the others and of every other finding.
 Step 7 reports once per citing record, as `{recordDigest, status}`, independent
 of every other finding and of whether any action receipt names that record.
 
+9. For each journal the store holds (§3f), at most one finding, `{status, journal, ordinal}`, the first
+   of `journal-entry-forged`, `journal-order`, `journal-entry-mismatch` and `journal-entry-missing`;
+   otherwise the observation `journal-from`. A store that holds no journal is reported nothing of one,
+   unless `--require-journal <name>` is given and it holds a removal record or a command seal: then
+   `journal-missing`, `{status, journal}`.
+
 **Observations.** A report carries, beside `ok` and `findings`, a member
 `observations` when there is anything the verifier says of a receipt, or of a
 session, without failing it: an array of `{sessionId, callIndex, observation}`,
@@ -2270,6 +2361,8 @@ a verdict at all.
 | `<root>/artifact-removals.jsonl` does not exist | no removal record loads (§1.3a) — a receipt whose bytes are gone and that does not carry `artifact: "not-retained"` is `artifact-missing`, and a sealed session absent from the store is `sealed-session-missing` |
 | `<root>/artifact-removals.jsonl` exists and is not a regular file: a directory, a FIFO or another special file, or a link, whatever it leads to, nowhere included | not read: no removal record loads (§1.3a, "Loading"), as where the file does not exist — a receipt whose bytes are gone and that does not carry `artifact: "not-retained"` is `artifact-missing`, and a sealed session absent from the store is `sealed-session-missing`. A link is not followed, so a verifier reads no record from outside the store |
 | `<root>/artifact-removals.jsonl` is a regular file that cannot be read | no verdict — the verifier refuses (non-zero exit); the records are present and unreadable, not absent |
+| `<root>/journals/<journal>.jsonl` absent | no journal |
+| `<root>/journals/<journal>.jsonl` there and not a regular file | not read, no journal |
 | the supplied-bytes directory (§4, `--artifacts`) does not exist, is not a directory, or cannot be read, or the path is spelled so that the platform could resolve it otherwise (below), or a file in it that the verifier reads (§1.3a, step 3) is not a regular file or cannot be read | no verdict — the verifier refuses (non-zero exit); a reader that names a directory of bytes is answered about those bytes or not at all |
 
 The registry and the decision-record directory are taken by their spelling, and a path the
@@ -2925,7 +3018,7 @@ stopped, held as `gateway seal-open` holds it (§3c): `--receipt <sessionId>/<ca
 once or more, `--by <label>`, and `--scope <identifier>` for a receipt that carries one,
 beside `--config <engine.json>` or the store, seed, registry and authority by flag. For each
 receipt named, in the order given, it refuses, naming the receipt and changing nothing for
-it, a receipt that:
+it, a receipt that: The call's entry in the operator journal (§3f) is written as ADR-0056, section 5, sets out.
 
 - is not in the store, or does not have ladder status `ok` (§1.4) under the keys the walk
   of its registry reached — so bytes changed before their removal are `artifact-mismatch`
@@ -2967,7 +3060,7 @@ registry reached, so the `scope` it carries is signed, and that `scope` is `--sc
 for byte; its artifact step may find it `ok`, `artifact-missing` or `artifact-mismatch`. The
 command removes each session that holds a receipt and all of whose receipts carry the scope
 identifier. It refuses the whole call, naming each session and receipt, and appends and removes
-nothing, where:
+nothing, where: The call's entry in the operator journal (§3f) is written as ADR-0056, section 5, sets out.
 
 - a session holds a receipt that carries the scope identifier beside one that does not — of
   another scope identifier, of none, or not passing orders 1 to 6 — since a store an earlier

@@ -271,6 +271,11 @@ func (k *pgKind) exportCut() (*storeCut, error) {
 			if removals, _, err = pgRemovalFile(tx); err != nil {
 				return err
 			}
+			// and the operator journal in the same snapshot, so its
+			// entries name the records and seals the cut holds
+			if cut.journal, err = pgJournalFile(tx, operatorJournal); err != nil {
+				return err
+			}
 			docs, err := tx.exec(`SELECT name, revision, data FROM gateway.documents WHERE scope = $1`, row)
 			if err != nil {
 				return err
