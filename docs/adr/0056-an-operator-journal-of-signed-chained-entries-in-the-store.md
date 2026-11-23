@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-22
 deciders: maintainer
 ---
@@ -26,6 +26,24 @@ deciders: maintainer
 >   commands begin a journal. The maintainer assigns its number in merge order.
 > - **Unchanged:** every receipt, seal, removal record, rotation statement, store continuation and
 >   key-history form, and every report on a store that holds no journal, byte for byte.
+
+## Acceptance
+
+The maintainer accepted this record with these answers, each folded into the body below.
+
+1. **`--require-journal <name>` ships in the build's pull request** (section 6).
+2. **A staged entry left at start is named on stderr, and the gateway serves** (section 5). The next run
+   of the same command commits the staged entry or replaces it, and never writes a second one beside
+   it. `gateway verify --require-journal operator` reports a staged, uncommitted entry as
+   `journal-entry-missing` until it commits (section 6). The case has a vector.
+3. **No journal `rotate-key` now.** An entry's `keyId` follows the store signer's key history, so an
+   entry signed under a key since rotated from is checked through the key history (ADR-0055).
+4. **`retain` records the configured key ids** in `acknowledgedBy`, as the stderr summary prints them.
+5. **An export by scope carries no journal.** Its entries name other scopes, so carrying them would
+   disclose across scopes. A projection of the journal by scope is issue #588.
+
+The open item, what an older reader does with an export that holds the journal, is answered in
+section 7: a reader of v0.38.0 refuses it.
 
 ## Context and problem statement
 
@@ -166,7 +184,8 @@ A journal's name is 1 to 32 characters, each a lowercase letter or `-`. This rec
 `operator`.
 
 An export by scope writes no journal. An entry names the bytes of the whole removal file and registry,
-which a cut by scope does not hold.
+which a cut by scope does not hold, and its entries name other scopes, so carrying them would disclose
+across scopes. A projection of the journal by scope is issue #588.
 
 ### 2. The envelope (reusable)
 
@@ -243,7 +262,8 @@ order. The kinds and their other members:
 - **Writing no entry.** A call that refuses, or that changes nothing ("nothing was removed", nothing
   sealed), writes no entry.
 - **`rotate-key` is not journaled.** Its rotation statements are signed registry lines already (§3b).
-  Making it a seventh kind is open question 3.
+  An entry's `keyId` follows the store signer's key history, so an entry signed under a key a
+  `rotate-key` later rotated from is checked through that history (ADR-0055).
 - **The start's seals.** The start's `--seal-open-at-start` seals carry `sealedVia: "start"` and are not
   an operator command's. No entry names them.
 
@@ -276,7 +296,12 @@ order. The kinds and their other members:
   as it does for the carried key history (ADR-0052). A `store-rotate` entry already in the old journal
   is not written again.
 - **What the start does.** The start reads no journal, and serving appends nothing to the removal file,
-  so a staged entry does not stop a start. The start says on stderr that one is there (open question 2).
+  so a staged entry does not stop a start. The start names the staged entry on stderr, and serves.
+- **The next run.** The next journaled command, the same command's rerun first of all, settles the staged
+  entry as above: it commits it or removes it, and then writes its own entry only for what it changes
+  itself. So a rerun never writes a second entry beside the staged one for the same bytes.
+- **What verify says meanwhile.** Until the staged entry commits, `gateway verify` reports the journal
+  `journal-entry-missing`, with or without `--require-journal` (section 6).
 
 ### 6. What `gateway verify` reports
 
@@ -312,6 +337,9 @@ then fails.
 4. **`journal-entry-missing`.** The store holds a change that no entry names:
    - bytes of the removal file, past the first entry's `removalFrom`, that no range covers;
    - a command seal at or after the first entry's `registryFrom` that no entry takes.
+
+   - a staged entry, `<journal>.pending` on the filesystem kind, that has not been committed, whether or
+     not the journal's file is there.
 
    This finding is what makes removing the last entries show. The ordinal reported is the one the next
    entry would take. A command seal is a registry line that §1.1's parser reads as one JSON object of
@@ -362,15 +390,20 @@ registry's walk does.
   file (`go/verify.go:1134-1146`), so it passes `journals/` over, as it passes `labels/` over. It reports
   nothing of a journal, so a journaled store is `ok` to it where it is `ok` here, and a forged or missing
   journal goes unreported. It refuses `--require-journal` as a usage error and gives no verdict.
-- **Older readers of an export.** The build confirms what an older reader of an export does with
-  `store/journals/operator.jsonl` (`go/export.go:860-870`, and the exact manifest at `:731`), and states
-  it in the upgrade notes. It must be a refusal, never a silent pass. An export of a store with no journal
-  is unchanged.
+- **Older readers of an export.** A reader of v0.38.0 refuses an export that holds
+  `store/journals/operator.jsonl`. Its `gateway export --check` answers
+  `manifest: a file is not one an export writes: "store/journals/operator.jsonl"`, because the manifest's
+  file check (`go/export.go:793` at tag v0.38.0) admits only the paths `exportPathWritten` names
+  (`:857-880`), and no journal path is among them. It is a refusal, never a silent pass, and the release
+  notes say so. An export of a store with no journal is unchanged, and an older reader reads it as
+  before. A test holds the refusal (`TestOperatorJournalExportOlderReaderRefuses`).
 - **`retain`'s stderr summary stays as it is.**
 
 ### 8. Reuse by later journals
 
-A later journal, the refusal journal first, reuses sections 1, 2 and 3 unchanged:
+This section is the contract. A later journal reuses sections 1, 2 and 3 unchanged. The first expected
+reuse is the refusal journal: its entries are this envelope with `journal: "refusal"`, in
+`journals/refusal.jsonl` and the log `journal/refusal`.
 
 - **Placement.** `journals/<name>.jsonl`, the log `journal/<name>`, and the export path.
 - **The envelope.** The envelope, its prefix and its line bound.
@@ -451,7 +484,8 @@ signature for each entry.
 - the order broken at the head and in the middle;
 - a missing tail, and a missing command seal;
 - a range mismatch, and a continuation mismatch;
-- a journal missing under `--require-journal`.
+- a journal missing under `--require-journal`;
+- a staged, uncommitted entry under `--require-journal`, reported `journal-entry-missing`.
 
 **Mutation checks**, each in a scratch copy, each to fail a named test:
 1. Skip the entry's signature check.
@@ -506,20 +540,3 @@ written as ADR-0056, section 5, sets out."
 
 Issue #543 and #535. ADR-0048 (decision 2, R1, S2), ADR-0050, ADR-0052, ADR-0053 (decisions 1, 2 and 4),
 ADR-0031 (decision 6), ADR-0034 and ADR-0035. SPEC.md §1.3, §1.3a, §3b, §3c, §3d, §3e, §4 and §4.1.
-
-## Open questions, each with a recommendation first
-
-1. **Should `--require-journal` ship in this PR?** Recommended: yes. It is the only way a reader can tell
-   a whole journal deleted from one never begun, and it is small: one option, one finding. Deferring it
-   leaves that case silent.
-2. **Should the start refuse a store with a staged entry?** Recommended: no. It should name the entry on
-   stderr and serve, since serving appends nothing the entry covers. The next journaled command settles
-   it. Refusing would make an interrupted `retain` stop the gateway, which it does not do today.
-3. **Should `rotate-key` be journaled?** Recommended: not in this PR. Its statements are signed registry
-   lines that §3b already holds, and the issue does not list it. It could be a seventh kind later, with
-   no change to the envelope.
-4. **Should a `retain` entry record the key ids that signed the lines acted on, instead of the configured
-   list?** Recommended: the configured list, as `acknowledgedBy` and as the stderr summary prints it
-   today. Each acknowledgment line names its own `keyId`, and the file is named by its digest.
-5. **Should an export by scope carry the journal?** Recommended: no. The journal names bytes of the whole
-   store, which a cut does not hold. A full export carries it.
