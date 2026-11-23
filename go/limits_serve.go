@@ -60,8 +60,8 @@ func (g *gatewayService) limitedHandler(next http.Handler) http.Handler {
 		// the answer is flushed before its refusal is handed off, and the
 		// hand-off is made before the pass releases the scope's slots
 		answer := &refusalAnswer{ResponseWriter: w, j: g.refusals, pass: pass, route: r.URL.Path}
+		defer answer.finish()
 		next.ServeHTTP(answer, r)
-		answer.finish()
 	})
 }
 

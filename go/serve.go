@@ -1305,7 +1305,7 @@ func (g *gatewayService) acquireWithReconciliation(sessionID, source, trail stri
 
 func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope requestedScope, arguments value, who *caller, reconciliation *actionReconciliationRequest, resolved func(tool string, versions map[string]string)) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
-		return nil, badRequest{err} // refuse before running anything
+		return nil, ofSession(badRequest{err}) // refuse before running anything
 	}
 	spec, known := g.sources[source]
 	if !known || strings.HasSuffix(source, "/write") {
@@ -1438,7 +1438,7 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	// source started for a session whose count is already sealed could only
 	// fail at its stamp, after whatever it did.
 	if refusal := g.sealedElsewhere(sessionID); refusal != "" {
-		return nil, badRequest{errors.New(refusal)}
+		return nil, ofSession(badRequest{errors.New(refusal)})
 	}
 	if g.beforeReadAdmit != nil {
 		g.beforeReadAdmit()
@@ -1448,7 +1448,7 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 		g.afterReadAdmit(admitted)
 	}
 	if admitted != nil {
-		return nil, admitted
+		return nil, ofSession(admitted)
 	}
 	// held is the session the reservation is of, released on every way out
 	held := sessionID
@@ -1532,10 +1532,10 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 			g.release(held)
 			held, sessionID = "", recorded
 			if refusal := g.sealedElsewhere(sessionID); refusal != "" {
-				return nil, badRequest{errors.New(refusal)}
+				return nil, ofSession(badRequest{errors.New(refusal)})
 			}
 			if refused := g.admit(sessionID, spec.scope); refused != nil {
-				return nil, refused
+				return nil, ofSession(refused)
 			}
 			held = sessionID
 			if err := g.redeliver(sessionID); err != nil {

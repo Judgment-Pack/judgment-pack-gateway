@@ -1062,6 +1062,20 @@ func teeBody(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// sessionRefused marks a refusal of /acquire's session -- not a flat token,
+// sealed, held by another instance or by the store, the registry unreadable
+// -- for its code "session" (ADR-0059 §4); its text is the refusal's.
+type sessionRefused struct{ error }
+
+// ofSession marks a badRequest as a refusal of the session; any other
+// error is as it was.
+func ofSession(err error) error {
+	if b, ok := err.(badRequest); ok {
+		return badRequest{sessionRefused{b.error}}
+	}
+	return err
+}
+
 // acquireRefusalCode is the code of an error acquireScoped answers.
 func acquireRefusalCode(err error) string {
 	var delegationRefused *delegationRefusal
@@ -1083,7 +1097,12 @@ func acquireRefusalCode(err error) string {
 		case strings.HasPrefix(text, "trail: "):
 			return "trail"
 		}
-		return "session"
+		if _, ok := caller.error.(sessionRefused); ok {
+			return "session"
+		}
+		// a refusal no code is made for is answered as before and not
+		// journaled (ADR-0059 §4)
+		return ""
 	}
 	if strings.HasPrefix(err.Error(), "publisher-") {
 		return "publisher-policy"
