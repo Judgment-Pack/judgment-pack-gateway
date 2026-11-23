@@ -449,12 +449,17 @@ func TestAdmissionReadV2Standing(t *testing.T) {
 // admission.readVersion is the new engine version's member: refused by name
 // below it; "1", "2" or absent from it, and nothing else.
 func TestEngineVersionGatesAdmissionReadVersion(t *testing.T) {
+	// an absolute path on every platform, written as a JSON string
+	credential, err := json.Marshal(filepath.Join(t.TempDir(), "issuer-a-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	host := func(readVersion string) value {
 		member := ""
 		if readVersion != "" {
 			member = `,"readVersion":` + readVersion
 		}
-		v, err := parseJSON([]byte(`{"host":"desk","requester":"service:desk","keys":["00028d283e279178a6ce561e45f1b89f2a6ac45690fbb5ac48313ad61ab04584"],"admission":{"url":"https://issuer-a.example/admission","credential":"/etc/engine/issuer-a-token"` + member + `}}`))
+		v, err := parseJSON([]byte(`{"host":"desk","requester":"service:desk","keys":["00028d283e279178a6ce561e45f1b89f2a6ac45690fbb5ac48313ad61ab04584"],"admission":{"url":"https://issuer-a.example/admission","credential":` + string(credential) + member + `}}`))
 		if err != nil {
 			t.Fatal(err)
 		}
