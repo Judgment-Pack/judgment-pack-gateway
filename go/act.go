@@ -52,18 +52,12 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		return nil, actRefusal{"receipt-version", "an action receipt is a version 3 receipt; this engine mints version " + g.receiptVersion}
 	}
 	// The scope identifier the request names (ADR-0054, step 8), held before
-	// its session is looked up and before anything of its key is read.
+	// its session is looked up and before anything of its key is read; under
+	// a delegation, held to its chain's scope binding there too (spec RFC
+	// 0030 §2), before the session, the platform and any admission read.
 	asked, err := g.actScope(keyMembers.scopeIdentifier, who)
 	if err != nil {
 		return nil, err
-	}
-	// The request check of a chain's scope binding (spec RFC 0030 §2), at
-	// this step, before the session, the platform and any admission read.
-	// A delegated /act names no scope yet (actScope), so under a bound chain
-	// it is refused here with /acquire's sentence, and under an unbound chain
-	// it is unchanged.
-	if g.delegatedScopeRefused(who, asked) {
-		return nil, actRefusal{"scope-identifier", scopeRefusal}
 	}
 	// Each member is read at its own step, so a request with several
 	// faults -- a member of the wrong type among them -- is answered by

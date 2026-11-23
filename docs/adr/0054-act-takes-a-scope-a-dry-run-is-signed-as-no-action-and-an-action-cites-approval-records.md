@@ -108,14 +108,20 @@ reaches (ADR-0037). It is read only where the configuration fixes some write sou
 identifier. Elsewhere it is refused as a member `/act` does not read, as it is today, so driver 1
 holds. `keyScope` keeps its meaning: it is the authority-keyed first scope, not a scope identifier.
 
-**Who may name it.** A request under a delegation, and a sender that names a `reservation` (§11.8),
-reach no scope identifier (§6: "never a scope identifier"). Either one that names `scope` is refused
-at the scope step. Delegation and scope identifiers stay disjoint. A scoped write is not delegated until a
-delegation can be held to a scope identifier. That record is the RFC 0030 amendment that binds a
-delegation chain to exactly one scope identifier, built with this one for v0.40.0. From that build a
-delegated `/act` may name a scope only when its chain is bound to that same scope identifier, and is
-refused otherwise with admission step 8's sentence (SPEC.md §11.5). A chain bound to no scope, or to
-another, never names one. Until that build the refusal above holds.
+**Who may name it.** A sender that names a `reservation` (§11.8) has no chain and reaches no scope
+identifier (§6: "never a scope identifier"); one that names `scope` is refused at the scope step. A
+request under a delegation is held to its chain's scope binding, the RFC 0030 amendment of 2026-11-22
+that binds a delegation chain to exactly one scope identifier (§2; SPEC.md §11.1). A delegated `/act`
+may name a scope only when its chain is bound to that same scope identifier, the issuing host's
+`scopeIds` lists it, and the subject's own caller entry grants it. Otherwise it is refused at the scope
+step with step 8's sentence, before the session, the platform and any admission read. A chain bound to
+no scope, or to another, never names one, and a chain bound to one names it. Delegation and scope
+identifiers stay disjoint apart from that binding.
+
+*Status.* Built for v0.40.0 with the binding. Until then every delegated request that named `scope`
+was refused at the scope step. Step 10 holds a delegated request as it holds every caller: a write
+source of another scope is refused with step 8's sentence. A scoped delegated action's read-back is
+acquired with the action's scope in its admitted session, and the request check is not made for it.
 
 **The configuration** (engine configuration version `<engine-version: assigned at merge>`). From that
 version a platform may set `scope` beside `write: true`. Such a platform is refused at load unless
@@ -150,7 +156,7 @@ the requester must pass both it and the caller-scope check. The MCP front still 
 | 5 | `dry-run` | 400 | *new*; see decision 2 |
 | 6 | `delegation`, `action-key` | as today | credential presented; `reservation` authenticated |
 | 7 | `receipt-version` | 400 | unchanged |
-| 8 | `scope-identifier` | 400 | *new*. `scope` is not a string; is named under a delegation or by a reservation sender; or is an identifier the caller does not reach. The error is `/acquire`'s sentence, `scope: the request's scope does not match the source's` |
+| 8 | `scope-identifier` | 400 | *new*. `scope` is not a string; is named by a reservation sender; under a delegation, fails the chain's scope binding (spec RFC 0030 §2: a bound chain names its own identifier, which the issuing host's `scopeIds` lists, and an unbound chain names none); or is an identifier the caller does not reach. The error is `/acquire`'s sentence, `scope: the request's scope does not match the source's` |
 | 9 | `session` | 400 | the label is looked up in the namespace of the request's scope, or none's when the request names none (ADR-0051). The session must be open, as today |
 | 10 | `platform` or `scope-identifier` | 400 | a platform that is unknown or not a write. A caller that does not reach every source gets step 8's sentence at `scope-identifier` instead of `platform … allows no writes`, so it does not learn which platform names other scopes use (§6, `/acquire`). A write source whose scope identifier is not the request's, or that has one where the request names none, or none where the request names one, gets step 8's answer. The current refusal of every scoped write source here is removed from the new version |
 | 11–14 | `tool`, `write-requesters`, `arguments`, `action-key` (form) | as today | unchanged |
@@ -424,7 +430,7 @@ gateway's corpus (RFC 0014, "Conformance"). The specification pull request chang
   write.
 - **Bad:** a new signed form, a new prefix and two new verifier entry points. Each must be carried in
   Go and in verify-ts.
-- **Revisit when:** a delegation is to reach a scope identifier; approvals are to be resolved or
+- **Revisit when:** a delegation is to reach more than one scope identifier; approvals are to be resolved or
   required (K, L); a single approval is to be refused on reuse rather than observed; or dry-runs are to
   be retained or rate-limited.
 

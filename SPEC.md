@@ -3017,8 +3017,14 @@ engine configuration version 43 (`actScopeVersion`); below it `scope` is refused
 member `/act` does not read, as before. From that version a platform may set `scope` beside
 `write: true` where `identity.callerScopes` is an object and the platform names its own
 `decisionRecords`, disjoint from the gateway's and from every other scope's. `scope` is then read as
-`/acquire` reads it, and refused under a delegation or from a reservation sender until a delegation
-can be bound to a scope identifier. A scoped action's receipt carries `scope` and `scopeSalt`; it
+`/acquire` reads it. A reservation sender reaches no scope identifier, and one that names `scope` is
+refused. Under a delegation the chain's scope binding governs (§11.1, *A chain bound to one scope
+identifier*): a delegated `/act` names a scope exactly when its chain is bound to that same scope
+identifier, the issuing host's `scopeIds` lists it and the subject's entry grants it; otherwise it is
+refused at the scope step, before the session, the platform and any admission read, with `/acquire`'s
+sentence. Under a bound chain a request that names no scope is refused there too, and an unbound chain
+names none. A write source of another scope than the one named is refused at the platform step with
+the same sentence, under a delegation as for every caller. A scoped action's receipt carries `scope` and `scopeSalt`; it
 cites only receipts of its own scope; its decision record is found in its platform's directory alone,
 and `/verify` looks for it in its scope's directories alone; and its key is kept in its scope's own
 journal, so one key in two scopes names two actions. An action of none is answered, minted and kept
@@ -4431,8 +4437,12 @@ nothing and dispatches nothing. It refuses a request that, under a bound chain, 
 another than `scopeId`, or names one the issuing host's `scopeIds` (§11.2) does not list; and,
 under an unbound chain, names any scope. On `/acquire` it is answered as a wrong scope, `400` with
 `scope: the request's scope does not match the source's`, which names no scope identifier; on
-`/act`, at `refusedAt: "scope-identifier"` with the same sentence (ADR-0054, decision 1, *Who may
-name it*). The last case is also refused at binding (§11.3), as `scope-id-mismatch`, before step 8,
+`/act`, at the scope step (ADR-0054, step 8), at `refusedAt: "scope-identifier"` with the same
+sentence (ADR-0054, decision 1, *Who may name it*): a delegated `/act` names a scope only under a
+chain bound to it, on a write fixed to it, and its receipt carries `scope` and `scopeSalt` as every
+scoped action's does. A read-back is not a request under the delegation and is not checked: it runs
+in its action's admitted session with the action's scope, which the check held before the action was
+admitted. The last case is also refused at binding (§11.3), as `scope-id-mismatch`, before step 8,
 so no credential is bound to a chain every call would be refused under. A request that passes the
 check reaches only that scope identifier's sources, and only where its subject's own entry in
 `identity.callerScopes` grants it (§6); a source fixed to another scope identifier, or to none, is
