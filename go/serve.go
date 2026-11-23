@@ -3076,6 +3076,16 @@ func (g *gatewayService) routes() http.Handler {
 					writeLimitFailure(w, err, "")
 					return
 				}
+			} else if refused := limitPassOf(r).holdBefore(); refused != nil {
+				// charged to no scope, and still not served unbounded: a
+				// session this process does not hold is looked for in the
+				// registry and the store (sealedElsewhere, sealUnderLock),
+				// since one another process or instance sealed or holds is
+				// answered so, never as no such session (ADR-0035,
+				// ADR-0037). That lookup holds a gateway-wide slot until the
+				// answer is written, as /registry does (ADR-0057, decision 2)
+				writeLimitRefusal(w, refused, "")
+				return
 			}
 		}
 		var out map[string]any

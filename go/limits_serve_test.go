@@ -24,14 +24,18 @@ import (
 const (
 	subjectOfNone = "caller-of-none"
 	subjectOfAll  = "caller-of-all"
+	subjectOfAB   = "caller-of-a-and-b"
+	limitsScopeC  = "équipe-c"
 )
 
-// a caller of each scope identifier, one of the sources of none alone, and
-// the installation's caller, which reaches every source
+// a caller of each scope identifier, one of the sources of none alone, one
+// of A and B and not none, and the installation's caller, which reaches
+// every source
 var limitsTestCallers = callerScopes{entries: map[string]callerEntry{
 	subjectA:      {grants: map[string]bool{callerScopeA: true}},
 	subjectB:      {grants: map[string]bool{callerScopeB: true}},
 	subjectOfNone: unscopedEntry,
+	subjectOfAB:   {grants: map[string]bool{callerScopeA: true, callerScopeB: true}},
 	subjectOfAll:  {installation: true},
 }}
 
@@ -58,6 +62,7 @@ func limitsSetup(t *testing.T, cfg *limitsConfig) *limitsHarness {
 		map[string]sourceSpec{
 			"scoped-a": {argv: []string{os.Args[0]}, env: helperEnv, scope: callerScopeA},
 			"scoped-b": {argv: []string{os.Args[0]}, env: helperEnv, scope: callerScopeB},
+			"scoped-c": {argv: []string{os.Args[0]}, env: helperEnv, scope: limitsScopeC},
 			"plain":    {argv: []string{os.Args[0]}, env: helperEnv},
 		})
 	if err != nil {
@@ -83,6 +88,7 @@ func limitsSetup(t *testing.T, cfg *limitsConfig) *limitsHarness {
 		"a":    tokenFor(t, issuer, subjectA, []any{callerScopeA}),
 		"b":    tokenFor(t, issuer, subjectB, []any{callerScopeB}),
 		"none": tokenFor(t, issuer, subjectOfNone, nil),
+		"ab":   tokenFor(t, issuer, subjectOfAB, []any{callerScopeA, callerScopeB}),
 		"all":  tokenFor(t, issuer, subjectOfAll, nil),
 		"bad":  "not-a-token",
 	}}
@@ -110,8 +116,14 @@ func (h *limitsHarness) post(t *testing.T, path, body, who string) (int, http.He
 // its labels and the registry.
 func (h *limitsHarness) stored(t *testing.T) string {
 	t.Helper()
+	return storedUnder(t, h.root)
+}
+
+// storedUnder is every byte under root, each file's path beside it.
+func storedUnder(t *testing.T, root string) string {
+	t.Helper()
 	var sb strings.Builder
-	err := filepath.WalkDir(h.root, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -528,4 +540,47 @@ func mustParseJSON(t *testing.T, text string) value {
 		t.Fatal(err)
 	}
 	return v
+}
+
+// A /seal whose scope is not established -- from a caller of several scopes
+// naming none, of a session this process does not hold, or naming a scope
+// its caller does not reach -- is charged to no scope, and still looks for
+// the session in the registry and the store before it is answered, since
+// one another process or instance sealed or holds is answered so (#595).
+// It takes a gateway-wide slot again once its body is read and holds it
+// until its answer is written: with the cap full it is refused, and the
+// refusal is not counted as unauthenticated; with a slot free it is
+// answered as before, the slot held through the lookup.
+func TestLimitsSealNotEstablishedHoldsAGatewayWideSlot(t *testing.T) {
+	for _, tc := range []struct{ name, who, body string }{
+		{"naming no scope", "all", `{"session":"s-elsewhere"}`},
+		{"naming a scope not reached", "ab", `{"session":"s-elsewhere","scope":"` + limitsScopeC + `"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := limitsSetup(t, &limitsConfig{beforeScope: 1, scopes: map[string]limitEntry{callerScopeA: rateOf(60, 1)}})
+			finish := holdBody(t, h.server, "/seal", h.tokens[tc.who], tc.body)
+			held, refused := h.g.limiter.enter()
+			if refused != nil {
+				t.Fatal("the held request kept its gateway-wide slot past its token")
+			}
+			unauthenticated := h.g.limiter.unauthenticatedRefusals()
+			if status := finish(); status != http.StatusTooManyRequests {
+				t.Fatalf("a seal not established under a full cap: %d, want 429", status)
+			}
+			held.release()
+			if n := h.g.limiter.unauthenticatedRefusals(); n != unauthenticated {
+				t.Fatalf("the refusal of an authenticated request was counted as unauthenticated: %d -> %d", unauthenticated, n)
+			}
+			during := int64(-1)
+			saved := sealDeliveredHook
+			t.Cleanup(func() { sealDeliveredHook = saved })
+			sealDeliveredHook = func(string) { during = h.g.limiter.beforeHeld.Load() }
+			code, _, body := h.post(t, "/seal", tc.body, tc.who)
+			sealDeliveredHook = saved
+			if code != http.StatusBadRequest || !strings.Contains(body, "no such session") || during != 1 {
+				t.Fatalf("with a slot free: %d %s, slots held during the lookup %d, want 400, no such session, 1", code, body, during)
+			}
+			assertLimitNothingHeld(t, h.g.limiter)
+		})
+	}
 }

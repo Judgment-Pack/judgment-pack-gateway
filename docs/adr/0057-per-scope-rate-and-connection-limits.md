@@ -270,6 +270,12 @@ caller reaches.
   no scope where the caller does not reach none. Such a request is refused by its route's own step,
   as today. That step runs nothing and signs nothing. Charging the request to the scope it named
   would let a caller spend a scope it does not reach. It holds its gateway-wide slot until answered.
+  One such request still runs a lookup before its answer: a `/seal` from a caller of several scopes,
+  of a session this process does not hold, looks for it in the registry and the store, since a
+  session another process or instance sealed or holds is answered so (ADR-0035), never as no such
+  session. That `/seal` takes a gateway-wide slot again once its body is read, and holds it until its
+  answer is written, as `/registry` does; over the cap it is refused `429` `gateway-in-flight`, not
+  counted as unauthenticated (#595).
 - **A `/verify`** names no scope and has no body. It is charged after authentication and its reach
   check, before the store is read, to every scope the caller reaches, all or nothing (the
   maintainer's rulings, below): a caller whose reach takes one scope alone is charged to that scope
@@ -284,7 +290,7 @@ caller reaches.
 |---|---|---|
 | `/acquire` | after authentication, before the body is read | after the source's scope check (§6: "before the trail, the publisher policy, the grant, the admission, a delegation's count or the source"), and before them |
 | `/act` | step 3a: after `storage`, before step 4 reads the members | step 8a: after step 8 holds `scope` to the caller's reach, before step 9 looks up the label. A request naming no scope is charged to `"unscoped"` only where the caller reaches none |
-| `/seal` | after authentication, before the body is read | after the members are read, where the request names `scope` (held to the reach by `narrowedTo`). Otherwise after the session is found and held to the reach, before the seal is signed or delivered |
+| `/seal` | after authentication, before the body is read | after the members are read, where the request names `scope` (held to the reach by `narrowedTo`). Otherwise after the session is found and held to the reach, before the seal is signed or delivered. A request whose scope is not established takes a gateway-wide slot at that step instead, held until it is answered |
 | `/verify` | after authentication and the reach check, before the store is read | the same step, charged to every scope the caller reaches, all or nothing |
 
 The body of a request whose scope comes from the body is read before it is counted. That read is

@@ -540,6 +540,27 @@ func (p *limitPass) leaveBefore() {
 	}
 }
 
+// holdBefore takes a gateway-wide slot again, once the request's body is
+// read, for a request whose scope is not established and that still runs a
+// lookup no scope pays for: a /seal from a caller of several scopes, naming
+// none, of a session this process does not hold walks the registry and the
+// store before it is answered, the work /registry does under the cap. The
+// slot is held until the answer is written, and given back with the rest
+// (release). Over the cap the request is refused gateway-in-flight, and
+// the refusal is not counted as unauthenticated: its token was accepted. A
+// pass already charged, or holding the slot, takes nothing; so does the
+// zero pass.
+func (p *limitPass) holdBefore() *limitRefusal {
+	if p.l == nil || p.charged || p.before {
+		return nil
+	}
+	if !takeSlot(&p.l.beforeHeld, p.l.beforeMost) {
+		return limitFull(limitGatewayInFlight)
+	}
+	p.before = true
+	return nil
+}
+
 // release gives back every slot the pass still holds: the gateway-wide
 // slot of a request that never left it, or its scopes' and its callers'.
 // It may be called more than once.
