@@ -1917,8 +1917,9 @@ with the gateway that answers it, unless the key pinned came from elsewhere.
 ## 3f. The journals
 
 A store may hold journals: append-only files of entries, each signed by the key in force, one chain
-per journal, in `<root>/journals/<journal>.jsonl` (on the PostgreSQL kind the log
-`journal/<journal>`, written by `gateway export` as that path). An entry is one canonical JSON object
+per journal, in `<root>/journals/<journal>.jsonl` (on the PostgreSQL kind the rows of
+`gateway.journal_records`, one per entry, from schema version 10, written by `gateway export` as
+that path). An entry is one canonical JSON object
 of exactly the members of the table of ADR-0056, section 2, on one line of at most 4096 bytes, its
 `0x0A` not counted, signed over `"judgment-pack-gateway/journal-entry/1:"` and `canon` of the entry
 without `signature`. It loads when its `keyId` names a key the walk of §3b reached, its signature
@@ -1974,7 +1975,8 @@ the store, of the kinds of ADR-0056, section 4.
    - a `store-continued` entry that is not ordinal 0, or not the digest of a continuation at the
      registry's first line.
 4. **`journal-entry-missing`.** The store holds a change that no entry names:
-   - bytes of the removal file, past the first entry's `removalFrom`, that no range covers;
+   - bytes of the removal file, past the first entry's `removalFrom`, that no range covers, but for
+     a torn last piece (below);
    - a command seal at or after the first entry's `registryFrom` that no entry takes.
 
    - a staged entry, `<journal>.pending` on the filesystem kind, that has not been committed, whether or
@@ -1983,6 +1985,15 @@ the store, of the kinds of ADR-0056, section 4.
    This finding is what makes removing the last entries show. The ordinal reported is the one the next
    entry would take. A command seal is a registry line that §1.1's parser reads as one JSON object of
    `kind` `"seal-after-interruption"` and `sealedVia` `"command"`, whether or not it loads.
+
+   A torn last piece of the removal file is the bytes after its last `0x0A`. It is no finding when
+   it is the only bytes no range covers, no entry is staged, every command seal is taken, and it
+   loads as no removal record of any kind (§1.3a) under the keys the walk reached: it is a write
+   that stopped before its line was ended, and the next removal call's range starts at it. The
+   verdict then carries the observation `journal-torn-tail`, with `journal`, `removalFrom` (where
+   the piece starts) and `bytes` (its length). A piece that loads as a record is
+   `journal-entry-missing`: once ended it would be a record no entry names, and a removal call
+   refuses to run while it is there.
 
 The call's entry in the operator journal is written as ADR-0056, section 5, sets out, by `retain`,
 `seal-open` and `store rotate` as by the commands of §6.

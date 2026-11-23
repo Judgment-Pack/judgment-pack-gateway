@@ -168,10 +168,21 @@ place:
 `gateway verify` takes a store directory and a registry file: it reads an export of this kind
 (`gateway export --config`), never the database.
 
-The operator journal (ADR-0056) is not written on this kind yet: `gateway store retain`,
-`gateway store remove-scope`, `gateway seal-open` and `gateway store rotate` on this kind write no
-entry, and an export of this kind carries no journal. The log the record names, `journal/operator`,
-is not one the schema's `gateway.logs` admits, which holds the log `registry` alone.
+Schema version 10 (migration 0010) makes the journals' table of ADR-0056, `gateway.journal_records`:
+a row per entry, keyed by the journal's name and the entry's ordinal, each row after the first
+naming the one before it through a foreign key, so the database admits a row only at the end of its
+journal's chain, and each row's line of 1 to 4096 bytes with no `0x0A`. The run-time login may read
+and insert rows, and never update, delete or truncate them; the start refuses a login that may.
+
+The operator journal is not written on this kind yet: `gateway store retain`, `gateway store
+remove-scope`, `gateway seal-open` and `gateway store rotate` on this kind write no entry, and an
+export of this kind carries no journal.
+
+Migration 0010 is one-way. A gateway whose migrations end at version 9 (v0.39.0 and earlier)
+refuses a database at schema version 10, by its start and by its `gateway store migrate` alike: "a
+gateway older than its schema does not run on it". Stop every instance and back the database up
+before `gateway store migrate` applies it; going back to v0.39.0 or earlier means restoring that
+backup.
 
 ## One instance per database
 
@@ -572,6 +583,7 @@ start refuses a table it was not restored on.
 | `gateway.rotated` (schema version 7: the mark of a store rotated away from) | SELECT, INSERT | every one: it carries no scope, and holds one row at most |
 | `gateway.key_history` (schema version 8: the key history a store rotation carried into the database) | SELECT | every one: it carries no scope, and holds one row at most |
 | `gateway.session_labels` (schema version 9: each session label and the session id minted for it) | SELECT, INSERT | its namespace's: the scope it is of, or none |
+| `gateway.journal_records` (schema version 10: the journals' entries, a row each) | SELECT, INSERT | every one: it carries no scope, and a row is admitted only at the end of its journal's chain |
 
 Append-only by privilege: nothing but a document and the start lease's rows are changed once written,
 and nothing but a document is removed; a scope identifier, once recorded, stays, and a removal

@@ -2948,6 +2948,14 @@ commands back to an earlier release only with the version lowered on a store tha
 an earlier command makes its change with no entry, which `gateway verify` reports as
 `journal-entry-missing`. The number is assigned in merge order.
 
+On the PostgreSQL kind the journal is the table `gateway.journal_records`, made by migration 0010
+(schema version 10), which is one-way: back the database up before migrating, as
+docs/postgresql-store.md says. The commands on that kind do not write it yet.
+
+A removal call that finds the removal file ending in an unterminated line refuses when that line
+loads as a removal record, naming the file and saying to cut it back to the end of its last complete
+line; otherwise its entry's range starts at that line, so ending it covers it.
+
 ## Scoped writes, dry-runs and approvals (ADR-0054; version to be assigned)
 
 ADR-0054 adds, from the engine configuration version it assigns (`actScopeVersion` in
