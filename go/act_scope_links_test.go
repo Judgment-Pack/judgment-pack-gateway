@@ -24,12 +24,12 @@ func TestActScopeDecisionRecordsBeneathALink(t *testing.T) {
 	}
 	for _, dir := range []string{filepath.Join(root, "link", "b"), filepath.Join(root, "link", "b", "c"), filepath.Join(root, "dangling", "b")} {
 		platforms := []platformConfig{{name: "tickets-b", scope: callerScopeB, decisionRecords: dir}}
-		if err := decisionRecordsApart(gateway, platforms, resolvedOrClean); err == nil {
+		if err := decisionRecordsApart(gateway, platforms, nestedOnDisk); err == nil {
 			t.Errorf("%s: a directory beneath the gateway's through a link loaded", dir)
 		}
 	}
 	apart := []platformConfig{{name: "tickets-b", scope: callerScopeB, decisionRecords: filepath.Join(root, "b", "records")}}
-	if err := decisionRecordsApart(gateway, apart, resolvedOrClean); err != nil {
+	if err := decisionRecordsApart(gateway, apart, nestedOnDisk); err != nil {
 		t.Fatalf("a directory apart, not made yet: %v", err)
 	}
 }

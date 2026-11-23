@@ -173,22 +173,59 @@ func parsePlatformDecisionRecords(p *vObject, name, version string, write bool, 
 // and never beneath or above either, so a write in one scope rests on no
 // record made for another, and no /act learns whether a record of another
 // scope is there. Platforms of one scope identifier may share a directory.
-// resolve is filepath.Clean at load, and resolvedOrClean at start.
-func decisionRecordsApart(gateway string, platforms []platformConfig, resolve func(string) string) error {
+// nested is nestedAsSpelled at load, and nestedOnDisk at start.
+func decisionRecordsApart(gateway string, platforms []platformConfig, nested func(a, b string) bool) error {
 	for i, p := range platforms {
 		if p.decisionRecords == "" {
 			continue
 		}
-		if gateway != "" && pathsNested(resolve(p.decisionRecords), resolve(gateway)) {
+		if gateway != "" && nested(p.decisionRecords, gateway) {
 			return fmt.Errorf("engine configuration: platform %s: decisionRecords is the gateway's decisionRecords, or beneath or above it; a write fixed to a scope identifier finds its record in a directory of its own", p.name)
 		}
 		for _, q := range platforms[i+1:] {
-			if q.decisionRecords != "" && q.scope != p.scope && pathsNested(resolve(p.decisionRecords), resolve(q.decisionRecords)) {
+			if q.decisionRecords != "" && q.scope != p.scope && nested(p.decisionRecords, q.decisionRecords) {
 				return fmt.Errorf("engine configuration: platforms %s and %s are fixed to different scope identifiers, and one's decisionRecords is the other's, or beneath or above it", p.name, q.name)
 			}
 		}
 	}
 	return nil
+}
+
+// nestedAsSpelled is the load check: the cleaned paths, byte for byte.
+func nestedAsSpelled(a, b string) bool {
+	return pathsNested(filepath.Clean(a), filepath.Clean(b))
+}
+
+// nestedOnDisk is the start check: the paths once every part that exists is
+// resolved through its links, and, where one of them is there, the directory
+// itself (os.SameFile), so two names for one directory, as a filesystem that
+// does not tell case apart gives, are one, and so is a directory beneath
+// another under a name of that kind.
+func nestedOnDisk(a, b string) bool {
+	return pathsNested(resolvedOrClean(a), resolvedOrClean(b)) || sameDirOrBeneath(a, b) || sameDirOrBeneath(b, a)
+}
+
+// statOnDisk is os.Stat; a test stands a filesystem that does not tell case
+// apart in its place.
+var statOnDisk = os.Stat
+
+// sameDirOrBeneath is whether path, or a directory above it that is there,
+// is the directory dir is, where dir is there.
+func sameDirOrBeneath(dir, path string) bool {
+	held, err := statOnDisk(dir)
+	if err != nil || !held.IsDir() {
+		return false
+	}
+	for at := resolvedOrClean(path); ; {
+		if info, err := statOnDisk(at); err == nil && os.SameFile(held, info) {
+			return true
+		}
+		parent := filepath.Dir(at)
+		if parent == at {
+			return false
+		}
+		at = parent
+	}
 }
 
 // resolvedOrClean is the path with every link followed: where the path is
@@ -215,10 +252,16 @@ func resolvedFrom(path string, depth int) string {
 			return beneath(resolved)
 		}
 		if target, err := os.Readlink(at); err == nil && depth < resolvedLinkDepth {
+			// the link's text is taken a part at a time, each resolved before
+			// the next, so a ".." in it leaves the directory the filesystem
+			// would reach, not the one its spelling seems to name
+			base := string(filepath.Separator)
 			if !filepath.IsAbs(target) {
-				target = filepath.Join(resolvedFrom(filepath.Dir(at), depth+1), target)
+				base = resolvedFrom(filepath.Dir(at), depth+1)
+			} else if vol := filepath.VolumeName(target); vol != "" {
+				base = vol + string(filepath.Separator)
 			}
-			return resolvedFrom(beneath(target), depth+1)
+			return resolvedFrom(beneath(linkTextFrom(base, target, depth+1)), depth+1)
 		}
 		parent := filepath.Dir(at)
 		if parent == at {
@@ -227,6 +270,23 @@ func resolvedFrom(path string, depth int) string {
 		rest = append(rest, filepath.Base(at))
 		at = parent
 	}
+}
+
+// linkTextFrom is a link's text taken from base a part at a time: "." is
+// passed over, ".." is the parent of what is reached so far, which is
+// resolved, and any other part is joined and resolved before the next.
+func linkTextFrom(base, text string, depth int) string {
+	text = strings.TrimPrefix(text, filepath.VolumeName(text))
+	for _, part := range strings.Split(filepath.ToSlash(text), "/") {
+		switch part {
+		case "", ".":
+		case "..":
+			base = filepath.Dir(base)
+		default:
+			base = resolvedFrom(filepath.Join(base, part), depth)
+		}
+	}
+	return base
 }
 
 // pathsNested is whether two clean absolute paths are one, or one is beneath

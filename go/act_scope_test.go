@@ -317,12 +317,12 @@ func TestActScopePlatformLoadChecks(t *testing.T) {
 		{"another scope's directory", "", platforms("/records/a", "/records/a")},
 		{"beneath another scope's", "", platforms("/records/a", "/records/a/b")},
 	} {
-		if err := decisionRecordsApart(c.gateway, c.platforms, filepath.Clean); err == nil {
+		if err := decisionRecordsApart(c.gateway, c.platforms, nestedAsSpelled); err == nil {
 			t.Errorf("%s: loaded", c.name)
 		}
 	}
 	same := []platformConfig{{name: "p0", scope: callerScopeB, decisionRecords: "/records/b"}, {name: "p1", scope: callerScopeB, decisionRecords: "/records/b"}}
-	if err := decisionRecordsApart("/records/gateway", append(same, platformConfig{name: "p2", scope: callerScopeA, decisionRecords: "/records/a"}), filepath.Clean); err != nil {
+	if err := decisionRecordsApart("/records/gateway", append(same, platformConfig{name: "p2", scope: callerScopeA, decisionRecords: "/records/a"}), nestedAsSpelled); err != nil {
 		t.Fatalf("apart directories, one shared within a scope: %v", err)
 	}
 }

@@ -1017,7 +1017,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		}
 		return engineConfig{}, errSigningPublicKeyRequired
 	}
-	if err := decisionRecordsApart(cfg.decisionRecords, cfg.platforms, filepath.Clean); err != nil {
+	if err := decisionRecordsApart(cfg.decisionRecords, cfg.platforms, nestedAsSpelled); err != nil {
 		return engineConfig{}, err
 	}
 	if value, present := obj.get("limits"); present {
@@ -2273,7 +2273,7 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 			return nil, fmt.Errorf("platform %s: decisionRecords: %v", p.name, err)
 		}
 	}
-	if err := decisionRecordsApart(cfg.decisionRecords, cfg.platforms, resolvedOrClean); err != nil {
+	if err := decisionRecordsApart(cfg.decisionRecords, cfg.platforms, nestedOnDisk); err != nil {
 		return nil, err
 	}
 	seen := map[int]string{}
