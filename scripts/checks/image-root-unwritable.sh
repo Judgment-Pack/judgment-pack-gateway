@@ -7,7 +7,7 @@
 # signer and each of the eight platform users are refused at the
 # root, and root, as the control, is not.
 set -e
-docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath -v "$PWD":/src -w /src docker.io/library/golang:1.26-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 sh -c 'CGO_ENABLED=0 go build -o /src/probe build/probe.go'
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath -v "$PWD":/src -w /src docker.io/library/golang:1.26-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0 sh -c 'CGO_ENABLED=0 go build -o /src/probe build/probe.go'
 # The probe's refusal is its exit 3; under the runner's bash -e a
 # failing substitution would end the step first, so it is caught.
 for user in 65532 65601 65602 65603 65604 65605 65606 65607 65608; do
