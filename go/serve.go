@@ -3376,11 +3376,20 @@ var openRoutes = map[string]bool{"/registry": true, "/publickey": true, keyHisto
 
 // httpServer is serveOn's server for a listener bound at addr, which is
 // what /posture reports of the listener, from either form of serve. A
-// loopback listener is served as it always was; one that is not loopback
+// loopback listener is served as it always was, but that under the request
+// limits its open routes' answers are bounded too; one that is not loopback
 // (boundToLoopback) is served under the limits above.
 func (g *gatewayService) httpServer(addr net.Addr) *http.Server {
 	g.listening = addr
 	server := listenerServer(addr, g.handler())
+	if g.limiter != nil && boundToLoopback(addr) {
+		// Under the request limits an open route holds a gateway-wide slot
+		// until its answer is written (ADR-0057, decision 2), so its answer
+		// is bounded on loopback too: readers that take the registry slowly
+		// would otherwise hold the cap. Without limits, loopback is served
+		// as it always was.
+		server.Handler = boundOpenWrites(server.Handler, openRouteWriteTimeout)
+	}
 	if g.readHeaderTimeout > 0 {
 		server.ReadHeaderTimeout = g.readHeaderTimeout
 	}

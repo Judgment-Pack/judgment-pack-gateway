@@ -223,7 +223,8 @@ rate.
 - **Held by the gateway-wide cap alone:** every other request the listener serves.
   - `/posture`, which reads the configuration and signs nothing.
   - `/registry`, an open route with no caller and no scope, which serves the whole registry log
-    and is bounded by `openRouteWriteTimeout` too. `/publickey` and `/publickey/history` are not
+    and is bounded by `openRouteWriteTimeout` too, on a loopback listener as on any other once
+    limits are configured (#595). `/publickey` and `/publickey/history` are not
     held at all (the maintainer's rulings, below), so verifiers and probes still answer while the cap
     is full.
   - The issuing host's endpoints, `/delegation/credential` and `/delegation/revoke`, whose caller is a
