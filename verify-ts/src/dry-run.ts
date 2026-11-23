@@ -47,15 +47,17 @@ function dryRunStatus(bytes: Uint8Array, publicKey: Uint8Array | Pin): string | 
   if (parsed === null || parsed.type !== "object" || hasDuplicate(parsed) || !dryRunForm(parsed)) {
     return "malformed";
   }
+  // canonical JSON before the key, as the Go verifier refuses a value
+  // canonical JSON admits none of when it parses
+  const body = canonical({ type: "object", members: parsed.members.filter((m) => m.name !== "signature") });
+  if (body === null) {
+    return "malformed";
+  }
   const raw = publicKey instanceof Uint8Array ? publicKey : Buffer.from(publicKey.key, "hex");
   const pinAlg = publicKey instanceof Uint8Array ? "" : es256;
   const alg = recordAlg(parsed, "alg");
   if (text(parsed, "keyId") !== keyIdOf(raw) || alg !== pinAlg) {
     return "key-mismatch";
-  }
-  const body = canonical({ type: "object", members: parsed.members.filter((m) => m.name !== "signature") });
-  if (body === null) {
-    return "malformed";
   }
   const message = Buffer.concat([Buffer.from(dryRunPrefix, "utf8"), body]);
   return verifyByAlg(alg, { alg: pinAlg, key: keyObject(pinAlg, raw) }, message, text(parsed, "signature")!) ? null : "signature-mismatch";

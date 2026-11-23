@@ -117,7 +117,7 @@ delegated `/act` may name a scope only when its chain is bound to that same scop
 refused otherwise with admission step 8's sentence (SPEC.md §11.5). A chain bound to no scope, or to
 another, never names one. Until that build the refusal above holds.
 
-**The configuration** (engine configuration version `<engine-version: assigned at merge>`). From that
+**The configuration** (engine configuration version `43`). From that
 version a platform may set `scope` beside `write: true`. Such a platform is refused at load unless
 both of the following hold:
 
@@ -341,7 +341,7 @@ against `servedAt`.
   rollback, settle every key that a request with approvals reserved: an earlier release answers it
   `action-journal-invalid`. A store that holds scoped action receipts verifies under the earlier
   release.
-- **Engine configuration.** `<engine-version: assigned at merge>`, for the scoped write platform, the
+- **Engine configuration.** `43`, for the scoped write platform, the
   platform's `decisionRecords`, and the request members `scope`, `dryRun` and `approvals`. Below it
   everything is refused as today.
 
@@ -430,7 +430,7 @@ gateway's corpus (RFC 0014, "Conformance"). The specification pull request chang
 
 ### What the release notes must say
 
-- From engine version `<engine-version: assigned at merge>`, a platform may set `scope` with
+- From engine version `43`, a platform may set `scope` with
   `write: true`. It then needs `identity.callerScopes` as an object and its own `decisionRecords`.
   `/act` then takes `scope` as `/acquire` does, and its receipts carry `scope` and `scopeSalt`.
 - A scoped action's key is a different key from the same key in another scope or in none. A

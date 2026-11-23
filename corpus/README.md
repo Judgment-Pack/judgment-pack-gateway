@@ -594,7 +594,7 @@ cite one single record, by id and digest: both are `ok`, and each carries the ob
 `approval-cited-again`. v0.38.0, which does not read the member, returns `ok` for every one but
 `-appended-after-signing`, and makes no such observation.
 
-**`dry-run/*.json`** — 10 vectors for the dry-run receipt (`SPEC.md` §1.2c), which `gateway
+**`dry-run/*.json`** — 11 vectors for the dry-run receipt (`SPEC.md` §1.2c), which `gateway
 verify-dry-run` and verify-ts's `verifyDryRun` read and no receipt verifier accepts. Each holds the
 receipt's bytes as `receipt`, `publicKeyAlg` `"ES256"` where it is signed by the P-256 test key,
 `expected`, the report's `ok` and the statuses of its `findings` (`malformed`, `key-mismatch` or
@@ -604,8 +604,9 @@ command. `gateway conform` runs them in process, whatever implementation is unde
 under each key (`valid`, `p256-valid`), one whose action carries `adapter` (`adapter-present`), one
 with no `request` (`member-missing`), a receipt's members signed under the dry-run prefix
 (`relabelled-as-receipt`, `signature-mismatch` as a receipt), a scoped one as a store holds it
-(`in-a-store`), one naming another key (`key-mismatch`), and one signed under the receipt prefix
-(`signed-under-the-receipt-prefix`).
+(`in-a-store`), one naming another key (`key-mismatch`), the same holding a number canonical JSON
+admits none of (`non-canonical-under-another-key`, `malformed` before the key is compared), and one
+signed under the receipt prefix (`signed-under-the-receipt-prefix`).
 
 **The key and the signature vectors.** `TEST-P256-SCALAR` is the synthetic scalar, the 32 bytes `01`
 repeated, published for building vectors alone, as `TEST-SEED` is. `TEST-P256-PUBLIC-KEY` is its

@@ -3028,7 +3028,7 @@ An earlier gateway refuses a version-42 file by its version.
 
 ## Request limits (ADR-0057; engine version 44)
 
-From engine version 44 (`requestLimitsVersion` in `go/engine.go`, the newest of `engineVersions`), a
+From engine version 44 (`requestLimitsVersion` in `go/limits_config.go`, the newest of `engineVersions`), a
 configuration may carry a top-level `limits` member. Below that version it is refused by name:
 `limits is a version-44 member; engineVersion <m> has no limits`.
 
