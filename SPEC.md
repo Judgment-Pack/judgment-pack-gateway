@@ -2978,7 +2978,10 @@ engine that mints version 2 receipts are refused `400` with `{"error", "refusedA
 dry-run then runs the write's ladder through the decision record and its policy, with the write's
 refusals and bodies, then the publisher policy and the named-grant check, and in place of session
 admission the same checks with no effect: the signer's gate is open, and the session is not sealed,
-was not made by another instance or an earlier start, and is of the request's scope. Under
+was not made by another instance or an earlier start, is of the request's scope, and holds no
+receipt the receipt sink has not acknowledged. A receipt held is read and not sent, and the dry-run
+is refused as the write is while the sink does not acknowledge it: `503`, the same code and
+sentence. Under
 `engineVersion` 14 and later it requires `actionKey`, which is set as the idempotency argument and
 nothing else. Under a delegation only the run's actor may ask; the grant's state is read, and §11.5
 steps 0 to 12 are made with the admission read at `"count": false`, so the host counts nothing. A
