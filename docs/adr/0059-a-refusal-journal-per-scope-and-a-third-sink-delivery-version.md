@@ -297,8 +297,8 @@ request = "sha256:" + hex(SHA-256(salt || "refusal-request:" || route || 0x0A ||
   refused. That is no bytes where it had read none, and never more than the route's body cap. It is
   raw bytes, not `canon`, because a refused body may not parse. It follows §1.2a's form,
   `salt || label || value`, with a label of its own.
-- **`K_scope`** is the scope's commitment key: 32 random bytes, drawn when the journal's first entry
-  is written.
+- **`K_scope`** is the scope's commitment key: 32 random bytes, drawn when the gateway starts for the
+  scope (as built, 2026-11-24; the decision first said when the journal's first entry is written).
   - **Filesystem kind:** `<root>/journals/<name>.key`, created exclusively, `0600`, and synced before
     that entry, by the store's create-once secret put (`secretSpace.putSecret`,
     `go/store_contract.go`).
@@ -868,6 +868,15 @@ forwarding, follow it. Where R2 departs from the text above:
   the file is another than the one it read, or its length is not the end it holds. A `remove-scope`
   cut off between the `.jsonl` and the `.key` therefore never has the journal made again under the
   old key. The PostgreSQL kind is unchanged.
+- **2026-11-24, the key is drawn at start, and a key file is no journal.** `K_scope` is drawn, or
+  read where it is already held, when the gateway starts for each scope the configuration names,
+  as the K_scope paragraph above now says, not when the first entry is written. A `.key`
+  beside no `.jsonl` is therefore the state of a scope that has refused nothing yet, and verify
+  names nothing for it. A `.jsonl` beside no `.key` is judged whole, as an export's is, since no
+  verdict reads the key; the writer names that loss (`write-failed`), and so does reading an entry
+  back. No export carries a key (section 8): the export check names one put beside an export's
+  journals `unlisted`, as any file its manifest does not list. verify-ts reads a store directory
+  and has no export check, so a key there is named by the Go reader alone.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on

@@ -15,7 +15,7 @@ import { canonical } from "../src/canon.ts";
 import { maxValues, parse } from "../src/json.ts";
 import { verifyByAlg } from "../src/alg.ts";
 import { reached } from "../src/rotation.ts";
-import { checkKeyHistory, verifyStore } from "../src/verify.ts";
+import { checkKeyHistory, refusalJournalName, verifyStore } from "../src/verify.ts";
 import {
   corpus,
   materialize,
@@ -455,4 +455,38 @@ test("a near miss of a refusal journal's name is journal-unknown", () => {
   const unknown = verdict.findings.filter((f: Record<string, unknown>) => f.status === "journal-unknown").map((f: Record<string, unknown>) => f.file).sort();
   assert.deepEqual(unknown, [...misses].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))));
   assert.equal(verdict.ok, false);
+});
+
+// A verdict by scope reads its own scope's refusal journal alone (ADR-0059
+// §8), as in Go: another scope's journal no one may read leaves scope-a's
+// verdict as the vector states it. A directory in its place is named
+// journal-unknown by its name, as journals/ is judged by name whole (SPEC.md
+// §4 step 9), and is never read.
+test("a verdict by scope reads no other scope's refusal journal", () => {
+  const v = storeVectors().find((s) => s.name === "v3-cut-a-refusal-journals-of-others")!;
+  const modeKeepsOut = process.platform !== "win32" && process.getuid?.() !== 0;
+  for (const make of modeKeepsOut ? ["directory", "unreadable"] : ["directory"]) {
+    const { root, registry, decisionRecords } = materialize(v);
+    const ofB = path.join(root, "journals", refusalJournalName("scope-b") + ".jsonl");
+    if (make === "directory") {
+      fs.rmSync(ofB);
+      fs.mkdirSync(ofB);
+    } else {
+      fs.chmodSync(ofB, 0);
+    }
+    try {
+      const verdict = JSON.parse(verdictText(verifyStore(root, registry, v.authority, decisionRecords, publicKey, { scope: v.scope! })));
+      const unknown = verdict.findings.filter((f: Record<string, unknown>) => f.status === "journal-unknown");
+      const rest = verdict.findings.filter((f: Record<string, unknown>) => f.status !== "journal-unknown");
+      assert.deepEqual(unknown.map((f: Record<string, unknown>) => f.file), make === "directory" ? [path.basename(ofB)] : [], make);
+      assert.equal(verdict.ok, make === "directory" ? false : v.expected.ok, make);
+      assert.deepEqual(multiset(rest), multiset(v.expected.findings), make);
+      assert.deepEqual(multiset(verdict.observations ?? []), multiset(v.expected.observations ?? []), make);
+      assert.deepEqual(verdict.cut, v.expected.cut, make);
+    } finally {
+      if (make === "unreadable") {
+        fs.chmodSync(ofB, 0o600);
+      }
+    }
+  }
 });
