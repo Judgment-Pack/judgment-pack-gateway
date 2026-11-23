@@ -2986,6 +2986,27 @@ may sign delegation statements with it (spec RFC 0030, amendment of 2026-11-22; 
 
 An earlier gateway refuses a version-41 file by its version.
 
+## Scope-bound delegations (engine version 46)
+
+Engine version 46 (`delegationScopeBindingVersion`) lets an issuing host's entry in `delegation.hosts` name `scopeIds`, the scope
+identifiers its delegation chains may be bound to (spec RFC 0030, amendment of 2026-11-22, §2
+*Binding a chain to one scope identifier*, open question 27; SPEC.md §11.1, §11.2):
+
+```json
+{"host": "desk", "requester": "service:desk", "keys": ["<key>"], "scopeIds": ["<scope identifier>"],
+ "admission": {"url": "https://desk.example/delegation/admission", "credential": "/etc/engine/desk-admission-token"}}
+```
+
+- **None by default.** A host that names none has every bound chain refused, at binding and at
+  every call, as `scope-id-mismatch`. A binding is opted into per host, never implied.
+- **The form.** At least one scope identifier, each in SPEC.md §1.2a's form, none `"unscoped"`,
+  none repeated. Before the version the member is refused by name.
+- **What it does not grant.** A bound chain reaches its scope identifier's sources only where its
+  subject's own entry in `identity.callerScopes` grants that identifier, as a claimless token's
+  reach is the subject's.
+
+An earlier gateway refuses a file of this version by its version.
+
 ## Scoped writes (ADR-0054; engine version 43)
 
 ADR-0054 adds, from engine version 43 (`actScopeVersion` in `go/engine.go`):

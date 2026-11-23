@@ -199,8 +199,10 @@ func TestActScopeOneKeyInTwoScopes(t *testing.T) {
 	}
 }
 
-// A delegated request, and a reservation's sender, reach no scope
-// identifier: one that names a scope is refused at the scope step.
+// A delegated sender with no chain, as a reservation's sender is, reaches no
+// scope identifier: one that names a scope is refused at the scope step. A
+// chain bound to the scope identifier names it
+// (TestADelegatedActNamesItsChainsScope).
 func TestActScopeDelegatedNamesNoScope(t *testing.T) {
 	h := actScopeSetup(t)
 	who := &caller{issuer: h.g.identity.issuer, subject: subjectB, tokenDigest: "sha256:" + strings.Repeat("c", 64), delegated: &delegatedSender{kind: "actor"}}

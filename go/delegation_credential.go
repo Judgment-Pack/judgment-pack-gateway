@@ -121,6 +121,12 @@ func (d *delegationService) bind(host *delegationHost, body map[string]json.RawM
 	if chain.root().host != host.host {
 		return nil, refuse("host-unauthenticated", "the chain was issued by another host than the one asking")
 	}
+	// The request check's case 3, before step 8 and the admission read: a
+	// chain bound to a scope identifier this host's entry does not name gets
+	// no credential, since every call under it would be refused.
+	if d.bindingRefused(host, chain) {
+		return nil, refuse(refusalScopeIDMismatch, "the chain is bound to a scope identifier this gateway does not let the issuing host bind")
+	}
 	softwareRaw, present := body["software"]
 	softwareV, err := parseJSONWithin(softwareRaw, 64)
 	if !present || err != nil || !validSoftware(softwareV) {
