@@ -95,7 +95,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.26.11"
       - name: Formatting is canonical
         if: matrix.os == 'ubuntu-latest'
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
@@ -420,7 +420,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.26.11"
       - name: The PostgreSQL kind's tests, none skipped
         if: matrix.role == 'superuser'
         env:
