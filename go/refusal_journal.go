@@ -222,6 +222,9 @@ type refusalScope struct {
 	refusalsFull bool
 	closed       bool
 	file         *os.File
+	// lost is where the journal's key went, or became another, while the
+	// gateway served (remove-scope): its records are dropped from then on
+	lost bool
 }
 
 // refusalEnd is a journal's end as its lock holder read it.
@@ -792,12 +795,65 @@ func (f refusalFS) load(s *refusalScope) error {
 	return nil
 }
 
+// errRefusalKeyLost is an entry's whose journal no longer holds the key it
+// was made under; the entry is dropped and counted (write-failed).
+var errRefusalKeyLost = errors.New("the journal's key is gone, or is another than the one its records were made under")
+
+// readKey is the journal's key as its file holds it, making none.
+func (f refusalFS) readKey(name string) ([]byte, error) {
+	raw, err := os.ReadFile(filepath.Join(f.dir(), name+".key"))
+	if err != nil {
+		return nil, err
+	}
+	k, err := hex.DecodeString(strings.TrimSuffix(string(raw), "\n"))
+	if err != nil || len(k) != 32 {
+		return nil, errors.New("the key file is not 32 bytes in hexadecimal")
+	}
+	return k, nil
+}
+
+// holdsPath is whether the file the writer holds is the journal's path's.
+func (f refusalFS) holdsPath(s *refusalScope) bool {
+	held, err := s.file.Stat()
+	if err != nil {
+		return false
+	}
+	at, err := os.Lstat(filepath.Join(f.dir(), s.name+".jsonl"))
+	return err == nil && os.SameFile(held, at)
+}
+
 func (f refusalFS) append(s *refusalScope, entry func(end refusalEnd) ([]byte, error)) error {
+	if s.lost {
+		return errRefusalKeyLost
+	}
 	if err := f.open(s); err != nil {
 		return err
 	}
 	if err := lockJournalFile(s.file); err != nil {
 		return err
+	}
+	if !f.holdsPath(s) {
+		// The file is no longer the journal's, as after remove-scope while
+		// the gateway serves: an entry goes to the journal at the path,
+		// under the key it was made under, or nowhere, and never to the
+		// unlinked file or into a journal made anew without its key.
+		unlockJournalFile(s.file)
+		s.file.Close()
+		s.file, s.loaded = nil, false
+		if k, err := f.readKey(s.name); err != nil || !bytes.Equal(k, s.secret) {
+			s.lost = true
+			return errRefusalKeyLost
+		}
+		if err := f.open(s); err != nil {
+			return err
+		}
+		if err := lockJournalFile(s.file); err != nil {
+			return err
+		}
+		if !f.holdsPath(s) {
+			unlockJournalFile(s.file)
+			return errors.New("the journal's file changed while it was opened")
+		}
 	}
 	defer unlockJournalFile(s.file)
 	if info, err := s.file.Stat(); err != nil || !s.loaded || info.Size() != s.end.bytes {

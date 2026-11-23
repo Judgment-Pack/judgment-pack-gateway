@@ -849,6 +849,13 @@ forwarding, follow it. Where R2 departs from the text above:
   only in the verdict of the scope whose journal it is, by section 1's name of `--scope`'s
   identifier (`keeps` in `go/scope_cut.go` and in `verify-ts/src/verify.ts`); a finding of any
   other journal is kept as before. `v3-cut-a-refusal-journals-of-others` is mutant 6.
+- **2026-11-23, a writer that `remove-scope` left behind.** On the filesystem kind the writer, under
+  the journal's lock, compares the file it holds with the journal's path. Where the path is gone or
+  is another file, it reads the key again, and opens the path only where the key is the one the
+  queued entries were made under; otherwise that scope's entries are dropped, counted as
+  `write-failed`, until the next start. On the PostgreSQL kind each append's transaction reads the
+  key row under the lock and drops the entry, counted the same way, where the row is gone or holds
+  another key. Neither kind writes into a journal that no key opens.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on

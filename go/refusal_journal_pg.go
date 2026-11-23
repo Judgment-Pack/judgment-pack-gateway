@@ -8,6 +8,7 @@ package main
 // the run-time role may read and insert and never replace (condition C8).
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -110,6 +111,17 @@ func (p *refusalPG) append(s *refusalScope, entry func(end refusalEnd) ([]byte, 
 	err := p.onOwn(func(tx pgTx) error {
 		if _, err := tx.exec(pgRefusalLock, pgRefusalJournalLockClass, refusalLockKey(s.name)); err != nil {
 			return err
+		}
+		// The key the entry was made under is the journal's still:
+		// remove-scope takes the key and the rows under this lock while an
+		// instance serves, and an entry written after it would begin a
+		// journal no key opens (ADR-0059 §8).
+		held, err := tx.exec(`SELECT value FROM gateway.secrets WHERE name = $1`, refusalKeyName(s.name))
+		if err != nil {
+			return err
+		}
+		if len(held.rows) != 1 || !bytes.Equal(held.rows[0][0], s.secret) {
+			return errRefusalKeyLost
 		}
 		end := s.end
 		from := p.counted[s.name]
