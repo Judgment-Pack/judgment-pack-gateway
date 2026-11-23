@@ -27,7 +27,11 @@ ARG TARGETARCH
 # it (.goreleaser.yml); empty outside a release, which leaves the binary
 # reporting what an unstamped build reports.
 ARG RELEASE_VERSION
-ENV CGO_ENABLED=0 GOFLAGS=-trimpath GOWORK=off
+ENV CGO_ENABLED=0 GOFLAGS=-trimpath GOWORK=off GOTOOLCHAIN=local
+# The builder's Go is the release's: release.yml's setup-go pin, which
+# .github/test_ci_evidence.py holds this line to. A digest moved to an
+# image of another Go release stops the build here.
+RUN go version | grep -q '^go version go1.26.11 '
 WORKDIR /src
 COPY go/ go/
 COPY adapters/ adapters/

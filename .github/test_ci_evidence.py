@@ -705,6 +705,28 @@ class ConfigurationTest(unittest.TestCase):
         self.assertEqual(len(found), 1, '%s is uploaded by %d legs of the jobs this one needs' % (name, len(found)))
         return found[0]
 
+    def test_the_image_builder_runs_the_go_release_yml_names(self):
+        """The engine image's builder image is held to release.yml's setup-go pin: its build stage
+        stops unless `go version` names that release, with toolchain switching off, and the image
+        check that runs the builder names the same image."""
+        dockerfile = read('Dockerfile')
+        stages = re.split(r'^FROM ', dockerfile, flags=re.M)
+        build = [stage for stage in stages if re.match(r'\S+ +\S+ +AS +build\s*$', stage.split('\n', 1)[0])]
+        self.assertEqual(len(build), 1, 'the Dockerfile has one build stage')
+        image = re.match(r'(\S+) +(\S+)', build[0]).group(2)
+        self.assertRegex(image, r'@sha256:[0-9a-f]{64}$')
+        checks = re.findall(r"^RUN go version \| grep -q '\^go version go([0-9.]+) '$", build[0], re.M)
+        self.assertEqual(checks, [release_go()])
+        body = build[0].split('\n')
+        first_build = next(i for i, line in enumerate(body) if 'go build' in line)
+        check = next(i for i, line in enumerate(body) if line.startswith('RUN go version'))
+        self.assertLess(check, first_build, 'the check runs before the first go build')
+        env = [line for line in body[:check] if line.startswith('ENV ')]
+        self.assertTrue(any(re.search(r'(^| )GOTOOLCHAIN=local( |$)', line) for line in env),
+                        'the build stage sets GOTOOLCHAIN=local before the check')
+        short = re.sub(r'^docker\.io/library/', '', image)
+        self.assertEqual(re.findall(r'golang:[^\s"]+', read('scripts/checks/image-root-unwritable.sh')), [short])
+
     def test_every_leg_runs_the_go_release_yml_names_and_its_profile_pins_it(self):
         version = release_go()
         go = self.ci['jobs']['go']
