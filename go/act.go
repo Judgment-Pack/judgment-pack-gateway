@@ -346,7 +346,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 				return nil, refuse(refusalKeyUnauthenticated, "")
 			}
 			if !reconcile && !held && chain.scopeRefusal(g.authority, source, tool, spec.effects[tool]) != nil {
-				if _, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true}); refusal != nil {
+				if _, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true, version: spec.versions[tool]}); refusal != nil {
 					return nil, refusal
 				}
 				return nil, refuse(refusalKeyUnauthenticated, "")
@@ -611,7 +611,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 					return nil, refusal
 				}
 			}
-			member, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true})
+			member, refusal := g.delegation.admitDelegated(delegated, delegatedCall{source: source, tool: tool, effect: spec.effects[tool], count: true, version: spec.versions[tool]})
 			if refusal != nil {
 				g.abandonUnminted(sessionID)
 				return nil, refusal

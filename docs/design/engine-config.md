@@ -672,7 +672,8 @@ canonical JSON (SPEC.md §1.1), so two answers compare byte for byte:
   serve's command line it judges the address `--listen` writes out, or `127.0.0.1` where it names
   none; given `--config`, the configuration's `listen`, with callers authenticated where it has
   an `identity`; given neither, `not-applicable`.
-- After the six, a configuration with `delegation` adds its three lines (SPEC.md §11.9), and one
+- After the six, a configuration with `delegation` adds its three lines (SPEC.md §11.9), and from
+  engine version 47 a fourth, `delegation-read-version`, and one
   where some platform gives `writeRequesters` adds `write-requesters`: `enforced` when every
   write tool is held to a requester list, `not-enforced` otherwise, the tools counted and no
   requester named. One with an `identity`, or where some platform is fixed to a scope identifier,
@@ -1541,6 +1542,42 @@ What it changes for callers, all in SPEC.md §11:
   `enforced` otherwise.
 
 A file without the member, and every call made under no delegation, behave as before.
+
+### The admission read version (engine version 47)
+
+From engine version 47 (`admissionReadV2Version` in `go/delegation_config.go`; ADR-0058), each host's `admission` takes an optional `readVersion`, `"1"`
+or `"2"`, absent being `"1"`:
+
+```json
+"admission": {
+  "url": "https://issuer-a.example/delegation/admission",
+  "credential": "/etc/engine/issuer-a-admission-token",
+  "readVersion": "2"
+}
+```
+
+At `"2"` every read to that host is of version `"2"` (SPEC.md §11.5): a call read names the
+called tool's `descriptorDigest` from the snapshot its operation pins, or `null`, and `skills`
+`null`, and the host may answer `tool-version-refused`, `skill-refused`,
+`read-version-unsupported` or `read-malformed`, each refusing the call under its name. Where some
+host is read at `"2"`, the start reads each MCP operation's pinned snapshot by the checks the MCP
+server's start uses, and a snapshot that cannot be read refuses the start. Set `"2"` only once the
+host says it reads `"2"`: there is no negotiation and no fallback, so a host that does not read it
+refuses every delegated call, binding and standing read until the setting is undone. Any other
+value refuses the configuration; below version 47 the member is refused by name. `/posture` adds
+`delegation-read-version`, naming each host's version (`not-applicable` where none is at `"2"`), and
+to a caller whose reach is cut only the count of hosts at each version. Rollback: remove the member or set `"1"`,
+and restart.
+
+From the same version, the MCP server's tools/list `_meta` names, for each platform tool,
+`descriptorDigest` (the live operation's snapshot entry's, absent where there is none) and
+`versionLabel` (the binding's label, absent where it declares none), and a bindingVersion 2 MCP
+live operation may declare `toolVersions` (a write operation's tools are never listed, so one that
+declares it is refused), labels by allowed tool of 1 to 64 characters of
+`A-Z a-z 0-9 . _ + -`, the first a letter or digit. A configuration below version 47 refuses a
+binding that declares it. Declaring or changing a label changes the binding's digest and needs a
+recapture; the label is the binding author's name for a version, and nothing reads it as
+authority.
 
 ## Sealing at the start what was left open (engine version 17)
 

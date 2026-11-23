@@ -4631,7 +4631,12 @@ token from that issuer:
   least one, each in §1.2a's form, none `"unscoped"`, none repeated. Absent is none, so every bound
   chain of that host is refused. Before that version it is refused by name. `admission` is where the gateway reads the
   host's state (§11.5): `url` an `https://` URL, and `credential` an absolute path to a file
-  holding the bearer credential the gateway presents there, read once at start.
+  holding the bearer credential the gateway presents there, read once at start. From engine
+  version 47 (ADR-0058), `admission` also takes an
+  optional `readVersion`, the string `"1"` or `"2"`: the version of every read the gateway sends
+  that host (§11.5), absent being `"1"`. Any other value refuses the configuration, naming the
+  host and the value; below version 47 the member is refused by name. It is read once at start,
+  is never negotiated, and is never retried at another version.
 - `operators`: optional, the subjects of the configured issuer that the gateway accepts as its
   operators for §11.8's sender table, none of them a host's `requester`. Absent is none.
 - `bearerReadOnly`: optional, `false` when absent. `true` is the operator's acceptance of a
@@ -4748,6 +4753,24 @@ fails, it still reads, with `count` `false`; a refusal of steps 8 to 10 the host
 read that cannot be made, is reported before the gateway's own, and the gateway's own before the
 host's step 11 or 12. A lost answer to a counting read refuses
 the call, which the host may already have counted: that fails closed.
+
+**Version "2"** (spec RFC 0030 §2a; ADR-0058). For a host whose `admission.readVersion` is `"2"`,
+every read carries `readVersion` `"2"`: the binding read with `call` `null`, the standing read
+(§11.8), and the call read, whose `call` is `{"source", "tool", "effect", "count", "version",
+"skills"}`. `version` is the `descriptorDigest` of the called tool's entry in the descriptor
+snapshot the call's operation pins (the live operation's for `/acquire`, the write operation's for
+`/act` and a dry run), read once at start from the pinned bytes, or `null` where the operation
+pins no snapshot or one of a version holding none; it is never taken from the request. `skills` is
+always `null`: the gateway does not observe what a run has loaded. Beside the three answers above,
+such a read takes `{"admission": "refuse", "refusal": R}` with *R* `tool-version-refused` or
+`skill-refused` for a read that names a call (step 12, reported after the gateway's own part of
+step 11, as `subject-mismatch` is), and `{"refusal": "read-version-unsupported"}` or
+`{"refusal": "read-malformed"}` for any read, reported where steps 8 to 10 are. Each refuses the
+call, or at `POST /delegation/credential` the binding, under its own name; a step-12 refusal
+answering a binding read is `admission-unknown`, and a standing read answered either form is
+`standing-unknown`. A host at `"1"` is sent exactly the bodies above, and every one of these
+answers is `admission-unknown` there. A refused read is never sent again at `"1"`, nor at any
+version.
 
 **Refusals** are answered `403` with `{"error", "refusal"}` (and `reason` for `out-of-scope`);
 `/act` adds `"refusedAt": "delegation"`, or `"refusedAt": "grant"` for the grant's refusals.
@@ -4875,7 +4898,8 @@ race), it is refused as `action-key-scope-conflict`; an entry there whose attemp
 answers `action-journal-exhausted`. That tells it a first scope exists and nothing of whose, and leaves
 the journal as it was. The **standing read** (spec #284 NC5) is a `POST` to the host's
 `admission.url`, as an admission read is, with the body
-`{"readVersion": "1", "host", "audience", "standing": <principal reference>}`, answered `200` with
+`{"readVersion": "1", "host", "audience", "standing": <principal reference>}` (`readVersion` `"2"`
+for a host read at `"2"`, §11.5), answered `200` with
 exactly `{"standing": "current"}` or `{"standing": "removed"}`; `removed` refuses as
 `action-key-unauthenticated`, and anything else as `standing-unknown`.
 
@@ -4927,8 +4951,14 @@ call. Its reason names each platform reached that names no grant, sorted, at mos
 rest counted, as refusing every delegated call `grant-unknown` until it names one: such a
 platform is refused, never open, so the line is never `not-enforced`. Served to a caller that
 does not reach every source, the line is judged over the sources it reaches (§6, `/posture`), so
-a platform of another scope identifier is neither counted nor named. A gateway without
-`delegation` reports none of the three lines, and its posture is the one it was.
+a platform of another scope identifier is neither counted nor named. From engine version 47 a
+fourth line follows, `delegation-read-version`, naming each issuing host with its
+`admission.readVersion`: `enforced` when every host is read at `"2"`, so each is named the called
+tool's descriptor digest, `partial` when some are, and `not-applicable` when none is (version `"1"`
+is the default, not a protection turned off). Served to a caller that does not reach every source,
+it names no host and counts the hosts at each version alone, since a host's name can say which
+scope identifiers its delegations are bound to. Below version 47 the line is absent. A gateway without `delegation` reports none of these lines, and its posture
+is the one it was.
 
 ### 11.10 Definitions and departures
 
