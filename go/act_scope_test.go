@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -248,6 +249,9 @@ func TestActScopeReadBackAndRemoval(t *testing.T) {
 
 // The load checks of a scoped write platform (ADR-0054, decision 1).
 func TestActScopePlatformLoadChecks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a scoped write needs durable keyed actions, which this platform does not have (action_journal.go), and these cases name POSIX paths")
+	}
 	checked := &callerScopes{entries: map[string]callerEntry{}}
 	member := func(text string) *vObject {
 		v, err := parseJSON([]byte(text))

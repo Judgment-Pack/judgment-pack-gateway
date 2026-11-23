@@ -245,6 +245,9 @@ type gatewayService struct {
 	// keyHistoryKept is the last answer to /publickey/history, and what it
 	// was made of (key_history.go).
 	keyHistoryKept keyHistoryKept
+	// keyHistoryVersion is the configuration's keyHistoryVersion: "2", or
+	// "" for the history the carried one implies (ADR-0055 §4)
+	keyHistoryVersion string
 	// keyWalk walks the registry for provenanceKeys; nil is reachedKeys.
 	// beforeProvenanceRecheck runs just before the post-run provenance check.
 	// Both are test seams.
@@ -2271,16 +2274,18 @@ func (g *gatewayService) admit(sessionID, scope string) error {
 		state = &sessionState{scope: scope}
 		g.sessions[sessionID] = state
 	}
-	if state.sealed {
-		return badRequest{fmt.Errorf("session is sealed: %s", sessionID)}
-	}
 	// The session's receipts are of one scope, on every kind (ADR-0036):
 	// its seal names that scope, and on a kind that keeps each scope's rows
 	// apart the view of another scope could not stamp into it (its series
 	// is the first scope's). The source is not run for a receipt the
-	// session cannot have. The refusal names neither scope.
+	// session cannot have. The refusal names neither scope, and comes before
+	// the seal, so a request of one scope does not learn whether a session
+	// of another, or of none, is sealed (ADR-0054, §6).
 	if state.scope != scope {
 		return badRequest{fmt.Errorf(refusalOtherScope, sessionID)}
+	}
+	if state.sealed {
+		return badRequest{fmt.Errorf("session is sealed: %s", sessionID)}
 	}
 	state.inFlight++
 	g.gate.admitLocked()

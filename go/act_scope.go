@@ -60,8 +60,16 @@ func (g *gatewayService) writeReachRefusal(who *caller) string {
 // named under a delegation or by a reservation's sender (neither reaches a
 // scope identifier, SPEC.md §6), and one the caller's token does not reach
 // are one refusal, /acquire's sentence, which quotes neither identifier.
+// So is a request that names no scope from a caller whose token does not
+// reach none, where some write source is fixed to a scope identifier: its
+// label would be looked up in the namespace of none, which the caller does
+// not reach (steps 8 and 9), and the session step's answer would tell it the
+// state of a session of none.
 func (g *gatewayService) actScope(raw json.RawMessage, who *caller) (requestedScope, error) {
 	if len(raw) == 0 {
+		if g.scopedWrite() && !g.reachOf(who).holds("") {
+			return requestedScope{}, actRefusal{"scope-identifier", scopeRefusal}
+		}
 		return requestedScope{}, nil
 	}
 	v, err := parseJSON(raw)
@@ -158,13 +166,42 @@ func decisionRecordsApart(gateway string, platforms []platformConfig, resolve fu
 	return nil
 }
 
-// resolvedOrClean is the path with every link followed where it resolves,
-// and cleaned where it does not yet.
-func resolvedOrClean(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return resolved
+// resolvedOrClean is the path with every link followed: where the path is
+// not there yet, its nearest ancestor that is there is resolved and the rest
+// appended, so a directory not made yet beneath a link is held where the link
+// leads, never where its spelling seems to be. A link that leads nowhere yet
+// is followed by its text, for the same reason.
+func resolvedOrClean(path string) string { return resolvedFrom(path, 0) }
+
+// resolvedLinkDepth bounds the links resolvedFrom follows by their text.
+const resolvedLinkDepth = 40
+
+func resolvedFrom(path string, depth int) string {
+	path = filepath.Clean(path)
+	var rest []string // the components not there yet, deepest first
+	beneath := func(dir string) string {
+		for i := len(rest) - 1; i >= 0; i-- {
+			dir = filepath.Join(dir, rest[i])
+		}
+		return dir
 	}
-	return filepath.Clean(path)
+	for at := path; ; {
+		if resolved, err := filepath.EvalSymlinks(at); err == nil {
+			return beneath(resolved)
+		}
+		if target, err := os.Readlink(at); err == nil && depth < resolvedLinkDepth {
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(resolvedFrom(filepath.Dir(at), depth+1), target)
+			}
+			return resolvedFrom(beneath(target), depth+1)
+		}
+		parent := filepath.Dir(at)
+		if parent == at {
+			return path
+		}
+		rest = append(rest, filepath.Base(at))
+		at = parent
+	}
 }
 
 // pathsNested is whether two clean absolute paths are one, or one is beneath
@@ -348,8 +385,9 @@ func pendingScopedKeys(storeRoot, scope string, all []*storedReceipt) ([]string,
 				pending("it is uncertain, and no read-back in the store resolves it")
 			}
 		case errors.Is(readErr, os.ErrNotExist):
+			// attempt counts a dispatch record that does not read as begun
 			if _, begun, err := claim.attempt(); err == nil && begun {
-				pending("it was dispatched without an answer")
+				pending("it was dispatched without an answer, or its dispatch record does not read")
 			}
 		default:
 			pending("its record does not read")
@@ -390,24 +428,35 @@ func savedActionOf(saved []byte) (key string, uncertain bool, at *vObject) {
 	return key, outcome != "response", receipt
 }
 
-// readBackHeld is whether a read-back receipt in the store names the action
-// receipt, by session, index and signature.
-func readBackHeld(receipt *vObject, all []*storedReceipt) bool {
-	if receipt == nil {
+// readBackHeld is whether a read-back receipt in the store resolves the
+// action receipt as /verify resolves one (reconciliationMatches): the
+// action's receipt, named by session, index and signature, and a read-back
+// that names it, each verifying ok. A read-back that names the action and
+// does not resolve it -- of another key, contract, platform or scope, or one
+// that does not verify -- settles nothing, and the key stays pending.
+func readBackHeld(at *vObject, all []*storedReceipt) bool {
+	if at == nil {
 		return false
 	}
-	session, _ := memberString(receipt, "sessionId")
-	signature, _ := memberString(receipt, "signature")
-	index, _ := receipt.get("callIndex")
+	session, _ := memberString(at, "sessionId")
+	signature, _ := memberString(at, "signature")
+	index, _ := at.get("callIndex")
 	if index == nil {
 		return false
 	}
+	var action *receipt
 	for _, s := range all {
-		if s.r.reconciliation == nil {
-			continue
+		if s.status == "ok" && s.r != nil && s.r.sessionID == session && s.r.signature == signature && strconv.FormatInt(s.r.callIndex, 10) == string(canon(index)) {
+			action = s.r
+			break
 		}
-		c := s.r.reconciliation.action
-		if c.sessionID == session && c.signature == signature && strconv.FormatInt(c.callIndex, 10) == string(canon(index)) {
+	}
+	if action == nil {
+		return false
+	}
+	named := citation{action.sessionID, action.callIndex, action.signature}
+	for _, s := range all {
+		if s.status == "ok" && s.r != nil && s.r.reconciliation != nil && s.r.reconciliation.action == named && reconciliationMatches(s.r, action) {
 			return true
 		}
 	}
@@ -416,20 +465,57 @@ func readBackHeld(receipt *vObject, all []*storedReceipt) bool {
 
 // removeScopedActionJournal removes the scope identifier's action journal,
 // after its sessions (ADR-0054): a scope re-created under the same identifier
-// starts with no keys.
+// starts with no keys. The journal is first renamed, in one step, to a name
+// no scope identifier's journal has (scopedJournalRemoving), and deleted
+// there: a delete that fails part way leaves no half-deleted journal under
+// the live name, whose entries a second run would read as pending with the
+// sessions that resolved them gone, and the second run finishes the delete.
 func removeScopedActionJournal(storeRoot, scope string, out *removalOutcome) error {
 	path := scopedActionJournalPath(storeRoot, scope)
+	removing := filepath.Join(filepath.Dir(path), scopedJournalRemoving(scope))
+	finished, err := deleteRemovingJournal(removing)
+	if err != nil {
+		return err
+	}
 	info, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil || !info.IsDir():
+		return fmt.Errorf("the scope identifier's action journal is not a directory; it is left as it is, and a second run completes the removal")
+	default:
+		if err := os.Rename(path, removing); err != nil {
+			return fmt.Errorf("the scope identifier's action journal could not be removed: %v; a second run completes the removal", err)
+		}
+		syncDir(filepath.Dir(path))
+		if finished, err = deleteRemovingJournal(removing); err != nil {
+			return err
+		}
+	}
+	if finished {
+		out.notes = append(out.notes, "removed the scope identifier's action journal")
+	}
+	return nil
+}
+
+// scopedJournalRemoving is the name a scope identifier's journal is deleted
+// under. It is no scope journal's name, so journal compaction keeps it.
+func scopedJournalRemoving(scope string) string {
+	return ".removing-" + scopedActionJournalName(scope)
+}
+
+// deleteRemovingJournal deletes a journal renamed for removal, and is whether
+// one was there.
+func deleteRemovingJournal(removing string) (bool, error) {
+	info, err := os.Lstat(removing)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return false, nil
 	}
 	if err != nil || !info.IsDir() {
-		return fmt.Errorf("the scope identifier's action journal is not a directory; it is left as it is, and a second run completes the removal")
+		return false, fmt.Errorf("the scope identifier's action journal, renamed for removal, is not a directory; it is left as it is")
 	}
-	if err := os.RemoveAll(path); err != nil {
-		return fmt.Errorf("the scope identifier's action journal could not be removed: %v; a second run completes the removal", err)
+	if err := os.RemoveAll(removing); err != nil {
+		return false, fmt.Errorf("the scope identifier's action journal could not be removed: %v; a second run completes the removal", err)
 	}
-	syncDir(filepath.Dir(path))
-	out.notes = append(out.notes, "removed the scope identifier's action journal")
-	return nil
+	syncDir(filepath.Dir(removing))
+	return true, nil
 }

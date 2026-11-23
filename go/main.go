@@ -467,6 +467,10 @@ func applyServeOptions(service *gatewayService, opts serveOptions) {
 	service.decisionRecords = opts.decisionRecords
 	service.witnessedBy = opts.witnessedBy
 	service.seedPath = opts.seedPath
+	service.keyHistoryVersion = opts.keyHistoryVersion
+	if service.registry != nil {
+		service.registry.keyHistoryVersion = opts.keyHistoryVersion
+	}
 	if opts.receiptSink != nil {
 		service.forwarder = newReceiptForwarder(opts.receiptSink)
 	}
@@ -1062,6 +1066,9 @@ type serveOptions struct {
 	// labels is whether the session a request names is a label in its
 	// scope (labelsVersion, ADR-0051)
 	labels bool
+	// keyHistoryVersion is the configuration's keyHistoryVersion
+	// (keyHistoryV2Version, ADR-0055)
+	keyHistoryVersion string
 }
 
 // validateEnvKey accepts what an environment variable name can be on the
