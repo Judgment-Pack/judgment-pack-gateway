@@ -3171,7 +3171,8 @@ configuration may carry a top-level `limits` member. Below that version it is re
 From `callReferenceVersion` a platform may set `callReference`, a boolean, `false` when absent:
 the operator's opt-in for that platform's binding alone. With it, every call through the
 platform's live or write operation -- an `/acquire`, an `/act` this request dispatches, and the
-read-back of an action, whose session is the action's -- draws `callRef`, 32 bytes from the
+read-back of an action, in the session its receipt names (the action's for the read-back an
+uncertain action makes at once, the reconciling request's for a later one) -- draws `callRef`, 32 bytes from the
 operating system's random source as 64 lowercase hex characters, once the session the receipt
 names is known and before the binding is called. A failed draw refuses the call before the source
 starts. The gateway hands adapter-mcp the reference and the session identifier in
@@ -3182,7 +3183,7 @@ receipt carries the same `callRef` in its core, signed. A dry run carries none.
 
 Refused: the member below its version, by name; a value that is not a boolean; a platform's
 `environment` that sets either variable; and, at start, an opt-in under version 2 receipts or on
-an operation that is not an MCP server, naming the source and its binding. A platform without the
+an operation that is not an MCP server, naming the platform, the source and its binding. A platform without the
 member is unchanged: its adapter's stdin and environment, its server's request and its receipts
 are what they were, byte for byte. An action attempt another request claimed is dispatched by
 that request; its uncertain receipt carries no `callRef`. connect raises no file to this version.
