@@ -191,7 +191,8 @@ func TestRefusalJournalVectorsAreWritten(t *testing.T) {
 
 	// A verdict by scope is silent on every other scope's refusal journal
 	// (ADR-0059 §8; mutant 6): over v3-cut-two-scopes, scope-a's journal
-	// holds, scope-b's has a forged entry, and scope-c's a torn tail; the
+	// holds, scope-b's has a forged entry, scope-c's a torn tail, and the
+	// journal of the sources of none (the unscoped session s3's) holds; the
 	// verdict by scope-a reports scope-a's journal-from alone, and is ok.
 	chainOf := func(journal string, bodies ...*vObject) [][]byte {
 		var lines [][]byte
@@ -217,7 +218,7 @@ func TestRefusalJournalVectorsAreWritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	const others = "v3-cut-a-refusal-journals-of-others"
-	ofA, ofB, ofC := refusalJournalName("scope-a"), refusalJournalName("scope-b"), refusalJournalName("scope-c")
+	ofA, ofB, ofC, ofNone := refusalJournalName("scope-a"), refusalJournalName("scope-b"), refusalJournalName("scope-c"), refusalJournalName("unscoped")
 	b := chainOf(ofB, refusal(0, "scope-b"), refusal(1, "scope-b"))
 	b[1] = bytes.Clone(b[1])
 	b[1][len(b[1])-3] ^= 1
@@ -225,8 +226,9 @@ func TestRefusalJournalVectorsAreWritten(t *testing.T) {
 	files["journals/"+ofA+".jsonl"] = file(chainOf(ofA, refusal(0, "scope-a"), refusal(1, "scope-a"))...)
 	files["journals/"+ofB+".jsonl"] = file(b...)
 	files["journals/"+ofC+".jsonl"] = file(chainOf(ofC, refusal(0, "scope-c"))...) + `{"ordinal":1`
+	files["journals/"+ofNone+".jsonl"] = file(chainOf(ofNone, refusal(0, "unscoped"))...)
 	vec["name"] = others
-	vec["note"] = "A verdict by scope, --scope scope-a, over v3-cut-two-scopes with three refusal journals: scope-a's of two entries that hold, scope-b's whose second entry's signature does not hold, and scope-c's of one entry and a torn last piece. A refusal journal's finding or observation stands in the verdict of the scope it names alone (ADR-0059 §8): the verdict reports scope-a's journal-from, nothing of scope-b's or scope-c's journal, and is ok."
+	vec["note"] = "A verdict by scope, --scope scope-a, over v3-cut-two-scopes with four refusal journals: scope-a's of two entries that hold, scope-b's whose second entry's signature does not hold, scope-c's of one entry and a torn last piece, and the unscoped sources' (session s3's) of one entry that holds. A refusal journal's finding or observation stands in the verdict of the scope it names alone (ADR-0059 §8): the verdict reports scope-a's journal-from, nothing of scope-b's, scope-c's or the unscoped journal, and is ok."
 	expected := vec["expected"].(map[string]any)
 	expected["observations"] = append(expected["observations"].([]any), map[string]any{"journal": ofA, "observation": "journal-from", "entries": 2})
 	var out bytes.Buffer
