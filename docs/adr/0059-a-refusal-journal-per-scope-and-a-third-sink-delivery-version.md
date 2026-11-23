@@ -824,7 +824,17 @@ posture`, run by the operator, gives the same line.
 ### Build plan: three pull requests
 
 **As built.** R2 comes first, and carries R3's verify-ts and corpus vectors. R1, and R3's
-forwarding, follow it.
+forwarding, follow it. Where R2 departs from the text above:
+
+- **K_scope is drawn at start**, for every journaled scope, not at the journal's first entry. The
+  salt is computed at the hand-off, on the answer's side, so the key must already be held; drawing
+  it there would put a store write on an answer's path.
+- **`journal-from` of a refusal journal** is `{observation, journal, entries}`: the operator
+  journal's `registryFrom` and `removalFrom` have no meaning in it.
+- **`remove-scope` of a scope that holds no records** removes nothing, its refusal journal
+  included, as before.
+- **A refusal no handler codes** (outside section 4's lists, such as `/act`'s `storage`) is
+  answered as before and not journaled.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on

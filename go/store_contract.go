@@ -219,6 +219,8 @@ type storeCut struct {
 	// rows as an export writes them, each line and its 0x0A in ordinal
 	// order (ADR-0056, Amendment A); empty where there is none.
 	journal []byte
+	// refusalJournals are the refusal journals the kind keeps, by name
+	refusalJournals map[string][]byte
 }
 
 // storeKind is one kind of storage: the spaces the gateway keeps its state

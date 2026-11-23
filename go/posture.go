@@ -127,6 +127,8 @@ type postureInput struct {
 	// limits is the configuration's limits (ADR-0057), which adds the
 	// request-limits line and the limits member; nil adds neither.
 	limits *limitsConfig
+	// refusalJournal adds the fixed refusal-journal line; nil adds none
+	refusalJournal *refusalJournalConfig
 	// unauthenticated is the serving instance's count of unauthenticated
 	// refusals, given to every caller; nil, as gateway posture has, leaves
 	// it out.
@@ -338,7 +340,7 @@ func hostPosture(in postureInput) postureReport {
 		seedPosture(in),
 		programConfinementPosture(programs),
 		listenerPosture(in),
-	}, append(append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources, in.reach != nil)...), append(append(readOnlyCredentialsLines(in.sources), signingKeyLines(in.signing)...), requestLimitsLines(in)...)...)...),
+	}, append(append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources, in.reach != nil)...), append(append(readOnlyCredentialsLines(in.sources), signingKeyLines(in.signing)...), append(requestLimitsLines(in), refusalJournalLines(in)...)...)...)...),
 		readOnly: readOnlySourcePostures(in.sources)}
 	if in.limits != nil {
 		report.limits = limitsPosture(in)
@@ -594,6 +596,7 @@ func postureOfConfig(path string, account func(string) (int, string, error)) (po
 	in := postureInput{configured: true, seed: cfg.seed, sources: deriveSources(cfg, bindings),
 		listener: listenerReach{loopback: listenIsLoopback(cfg.listen), authenticated: cfg.identity != nil}}
 	in.limits = cfg.limits
+	in.refusalJournal = cfg.refusalJournal
 	in.callerScopes = "no-identity"
 	if cfg.identity != nil {
 		in.callerScopes = callerScopesMode(&identityConfig{callers: cfg.identity.callers})

@@ -1992,6 +1992,15 @@ operator journal, `operator`, holds one entry for each call of `retain`, `store 
 `remove-scope`, `store remove-scope`, `remove-artifact`, `seal-open` and `store rotate` that changed
 the store, of the kinds of ADR-0056, section 4.
 
+A refusal journal (ADR-0059) is one scope's: its name is `refusal-` and 24 letters, the first 12
+bytes of SHA-256 over `"judgment-pack-gateway/refusal-journal-name/1:"` and the scope's key (its
+identifier, or `unscoped`), each half-byte a letter from `a` (0) to `p` (15). Its entries are of the
+envelope above, of two bodies alone, `refusal` and `tally`, of ADR-0059, section 3; the `scope` of
+each gives the journal's name. A refusal entry commits to the request's body by
+`request`, SHA-256 over a salt the operator's per-scope key gives, the route and the body bytes
+read; no export holds that key. A refusal journal binds nothing else in the store. An operator body
+in a refusal journal, or a refusal body in `operator`, does not load.
+
 | Member | Form | Statement |
 |---|---|---|
 | `journal` | a journal's name | the journal the entry is in; it must be the name of the file or log that holds it |
@@ -2222,7 +2231,11 @@ of every other finding and of whether any action receipt names that record.
    of `journal-entry-forged`, `journal-order`, `journal-entry-mismatch` and `journal-entry-missing`;
    otherwise the observation `journal-from`. A store that holds no journal is reported nothing of one,
    unless `--require-journal <name>` is given and it holds a removal record or a command seal: then
-   `journal-missing`, `{status, journal}`.
+   `journal-missing`, `{status, journal}`. A refusal journal (§3f) is judged alone: at most
+   `journal-entry-forged` or `journal-order`, otherwise `journal-from`, `{observation, journal,
+   entries}`, and `journal-torn-tail`, `{observation, journal, bytes}`, for a torn last piece; a
+   refusal journal's name under `--require-journal` that the store does not hold is
+   `journal-missing` whatever else it holds.
 
 **Observations.** A report carries, beside `ok` and `findings`, a member
 `observations` when there is anything the verifier says of a receipt, or of a
@@ -3205,8 +3218,11 @@ the platform's write tools.
   tool's list does not name is refused `403` with exactly the body
   `{"error":"the requester is not one the configuration's writeRequesters names for this tool","refusedAt":"write-requesters"}`,
   the same sentence for everyone, naming no requester and no list. Nothing is sent to a target,
-  no read-back runs, nothing is journaled and nothing is minted. The refusal is recorded nowhere,
-  as no refusal of the action ladder is.
+  no read-back runs, nothing is journaled and nothing is minted. On the caller's side the refusal
+  is recorded nowhere, as no refusal of the action ladder is: no receipt, no session journal and
+  nothing any caller reads. Where the configuration sets `refusalJournal` (ADR-0059), the refusal of
+  a request charged to a scope is signed into that scope's refusal journal (§3f) for the operator,
+  after it is answered and with its answer unchanged.
 - **What it covers.** Every request on `/act`: a first dispatch, a replay of a key, a
   reconciliation (§1.2b), the read-back of an uncertain key, a delegated actor's request and a
   reservation's. A requester the list no longer names is refused on a key it reserved while it

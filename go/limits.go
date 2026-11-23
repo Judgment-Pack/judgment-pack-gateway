@@ -252,10 +252,13 @@ type limitedCaller struct {
 // scopeLimiter is one scope's state. Nothing in it is shared with another
 // scope.
 type scopeLimiter struct {
-	rate *gcra
-	tat  atomic.Int64
-	most int64
-	held atomic.Int64
+	// journal is the scope's refusal journal (ADR-0059), set before the
+	// gateway serves; nil for none
+	journal *refusalScope
+	rate    *gcra
+	tat     atomic.Int64
+	most    int64
+	held    atomic.Int64
 
 	// callers is nil where the entry has no perCaller
 	callerRate *gcra
@@ -381,6 +384,8 @@ type limitPass struct {
 	charged bool
 
 	holds []scopeHold
+	// who is the caller a charge that took its holds was made as
+	who *caller
 }
 
 // scopeHold is what a charged request holds of one scope: its slot, its
@@ -449,6 +454,9 @@ func (p *limitPass) charge(caller *limitCallerKey, scopes ...string) error {
 		}
 		h, refused := s.take(caller, now)
 		if refused != nil {
+			// counted for the scope's tally, after the answer was chosen
+			// from the refusing state alone (ADR-0059 §4)
+			s.journal.countLimit(refused.limit)
 			for i := len(holds) - 1; i >= 0; i-- {
 				holds[i].giveBack()
 			}

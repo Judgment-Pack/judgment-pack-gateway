@@ -253,6 +253,10 @@ type gatewayService struct {
 	// nothing is counted.
 	limits  *limitsConfig
 	limiter *requestLimiter
+	// refusals is the refusal journals and their writer (ADR-0059,
+	// refusal_journal.go), and refusalConfig their member; nil for none
+	refusals      *refusalJournals
+	refusalConfig *refusalJournalConfig
 	// readHeaderTimeout, where not zero, replaces the listener's
 	// listenerReadHeaderTimeout: a test seam.
 	readHeaderTimeout time.Duration
@@ -1034,7 +1038,14 @@ func limitBody(w http.ResponseWriter, r *http.Request) {
 
 // limitBodyTo caps r.Body in place at limit bytes.
 func limitBodyTo(w http.ResponseWriter, r *http.Request, limit int64) {
-	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	inner := w
+	if a, ok := w.(*refusalAnswer); ok {
+		// the server's own response, so a body past the cap closes the
+		// connection as it does without the journal
+		inner = a.ResponseWriter
+	}
+	r.Body = http.MaxBytesReader(inner, r.Body, limit)
+	teeBody(w, r)
 }
 
 // The members each endpoint reads, and no others. A name absent from the
@@ -2544,6 +2555,7 @@ func (g *gatewayService) routes() http.Handler {
 	// challenge for a credential that does not hold, 403 otherwise; nothing
 	// was dispatched, retained or minted.
 	refused := func(w http.ResponseWriter, r *delegationRefusal, refusedAt string) {
+		noteDelegationRefusal(w, r)
 		body := map[string]any{"error": r.Error(), "refusal": r.name}
 		if r.scopeReason != "" {
 			body["reason"] = r.scopeReason
@@ -2753,6 +2765,7 @@ func (g *gatewayService) routes() http.Handler {
 			}
 		}
 		limitBodyTo(w, r, g.maxRequest)
+		noteRefusal(w, "body")
 		allowed := members(acquireRequestMembers, "delegation")
 		if scoped {
 			allowed = withMember(allowed, "scope")
@@ -2807,6 +2820,7 @@ func (g *gatewayService) routes() http.Handler {
 		}
 		out, err := g.acquireScoped(session, source, trail, scope, arguments, who)
 		if err != nil {
+			noteRefusal(w, acquireRefusalCode(err))
 			fail(w, err)
 			return
 		}
@@ -3028,6 +3042,7 @@ func (g *gatewayService) routes() http.Handler {
 		limitBody(w, r)
 		// /seal reads a scope member where /acquire does: only where the
 		// configuration fixes some source to a scope identifier (ADR-0041)
+		noteRefusal(w, "body")
 		allowed := sealRequestMembers
 		if scoped {
 			allowed = withMember(allowed, "scope")
@@ -3091,6 +3106,7 @@ func (g *gatewayService) routes() http.Handler {
 			out, err = g.sealFor(session, g.reachOf(who).narrowedTo(asked))
 		}
 		if err != nil {
+			noteRefusal(w, sealRefusalCode(err))
 			fail(w, err)
 			return
 		}
@@ -3220,6 +3236,7 @@ func (g *gatewayService) routes() http.Handler {
 		if g.limits != nil {
 			// the count is of no scope, and every caller reads it
 			in.limits = g.limits
+			in.refusalJournal = g.refusalConfig
 			n := g.limiter.unauthenticatedRefusals()
 			in.unauthenticated = &n
 		}
@@ -3435,6 +3452,11 @@ func boundOpenWrites(next http.Handler, within time.Duration) http.Handler {
 // error returned says so.
 func (g *gatewayService) serveOn(listener net.Listener) error {
 	server := g.httpServer(listener.Addr())
+	if g.refusals != nil {
+		// the writer stops once every request is answered, with its drain
+		g.refusals.start()
+		defer g.refusals.stop()
+	}
 	shutdown := make(chan error, 1)
 	go func() {
 		<-g.ctx.Done()

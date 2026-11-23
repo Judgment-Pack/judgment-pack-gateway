@@ -378,8 +378,18 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 		lines = append(lines, line...)
 		out.appended = append(out.appended, record)
 	}
+	// the scope's refusal journal, held from the read of its bytes to its
+	// removal, and named in the entry (ADR-0059 §8)
+	var refusal *refusalRemoval
 	if len(lines) > 0 {
-		if err := journaledAppendRemovals(o.journal, storeRoot, torn, lines, removalBody("remove-scope", o.by, o.scope)); err != nil {
+		var err error
+		if refusal, err = holdRefusalRemoval(storeRoot, o.scope); err != nil {
+			return out, fmt.Errorf("%v, and nothing was removed", err)
+		}
+		defer refusal.release()
+		body := removalBody("remove-scope", o.by, o.scope)
+		describeRefusalRemoval(body, refusal.data)
+		if err := journaledAppendRemovals(o.journal, storeRoot, torn, lines, body); err != nil {
 			appended := out.appended
 			out.appended = nil
 			return out, fmt.Errorf("%v; the %d record(s) may be in the file, and nothing was removed; a second run completes it", err, len(appended))
@@ -391,6 +401,14 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 	}
 	if err := removeScopedActionJournal(storeRoot, o.scope, &out); err != nil {
 		return out, err
+	}
+	if refusal != nil {
+		if err := refusal.remove(); err != nil {
+			return out, err
+		}
+		if len(refusal.data) > 0 {
+			out.notes = append(out.notes, fmt.Sprintf("the scope's refusal journal, %d bytes, its key and its cursor are removed", len(refusal.data)))
+		}
 	}
 	for _, session := range plan.empty {
 		out.notes = append(out.notes, fmt.Sprintf("session %s was recorded as removed already, and its directory held no receipt; the directory is removed now", session))

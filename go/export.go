@@ -574,6 +574,24 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 				return nil, err
 			}
 		}
+		// the refusal journals, whole, with no key and no cursor (ADR-0059
+		// §8); an export by scope takes none
+		refusals := cut.refusalJournals
+		if in.storeRoot != "" {
+			files, err := refusalJournalFilesIn(in.storeRoot)
+			if err != nil {
+				return nil, err
+			}
+			if len(files) > 0 && len(refusals) > 0 {
+				return nil, errors.New("refusal journals: the kind keeps them, and the store directory named beside it holds some; the export takes neither for the other")
+			}
+			if len(files) > 0 {
+				refusals = files
+			}
+		}
+		if err := putRefusalJournals(refusals, w.put); err != nil {
+			return nil, err
+		}
 	}
 	// the decision records, read after the cut, as verification walks them
 	recordsThere := false
