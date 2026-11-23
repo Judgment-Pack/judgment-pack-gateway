@@ -174,9 +174,24 @@ naming the one before it through a foreign key, so the database admits a row onl
 journal's chain, and each row's line of 1 to 4096 bytes with no `0x0A`. The run-time login may read
 and insert rows, and never update, delete or truncate them; the start refuses a login that may.
 
-The operator journal is not written on this kind yet: `gateway store retain`, `gateway store
-remove-scope`, `gateway seal-open` and `gateway store rotate` on this kind write no entry, and an
-export of this kind carries no journal.
+The operator journal on this kind is the rows of `gateway.journal_records` under the name
+`operator`, each entry the filesystem kind's, with the same envelope, signer and chain:
+
+- `gateway store retain` and `gateway store remove-scope` insert their entry, as the owner, in the
+  transaction that inserts their removal records and removes the rows, so the entry and the change
+  commit together or not at all;
+- `gateway seal-open`, and `gateway store rotate` in the database rotated from, insert theirs after
+  the last seal, as the run-time login, in a transaction of its own fenced on the start lease. A stop
+  between the seals and the entry leaves command seals that no entry names, which `gateway verify`
+  reports as `journal-entry-missing` until the next `seal-open` or `store rotate` names them;
+- `gateway store rotate` begins the journal of the database rotated to with its `store-continued`
+  entry, in the migration's transaction that makes the new registry. A rerun holds an entry there to
+  the new registry, and writes it again where it is not there.
+
+An entry's lengths are of the bytes an export writes. `gateway export` writes the rows, in ordinal
+order, each line and its `0x0A`, as `store/journals/operator.jsonl`, the path of the filesystem
+kind's file, and `gateway verify` reads the export as it reads a store of that kind. An export by
+scope carries no journal.
 
 Migration 0010 is one-way. A gateway whose migrations end at version 9 (v0.39.0 and earlier)
 refuses a database at schema version 10, by its start and by its `gateway store migrate` alike: "a
