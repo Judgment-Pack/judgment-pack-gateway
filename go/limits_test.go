@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -40,9 +41,23 @@ func limitCallerOf(name string) *limitCallerKey {
 func limitAdmit(l *requestLimiter, scope string, caller *limitCallerKey) (*limitPass, *limitRefusal) {
 	p, refused := l.enter()
 	if refused == nil {
-		refused = p.charge(scope, caller)
+		refused = chargeOne(p, scope, caller)
 	}
 	return p, refused
+}
+
+// chargeOne is a charge of one scope, its refusal or nil; any other error
+// fails the test's goroutine loudly.
+func chargeOne(p *limitPass, scope string, caller *limitCallerKey) *limitRefusal {
+	err := p.charge(caller, scope)
+	var refused *limitRefusal
+	if errors.As(err, &refused) {
+		return refused
+	}
+	if err != nil {
+		panic(err)
+	}
+	return nil
 }
 
 func wantLimitRefused(t *testing.T, r *limitRefusal, limit string, retryAfter int) {
@@ -220,8 +235,16 @@ func TestLimitCallersTableIsBounded(t *testing.T) {
 		p, r = limitAdmit(l, "east-ledger", limitCallerOf("c0"))
 		wantLimitAdmitted(t, r)
 		p.release()
-		// one caller idle: the sweep drops it, and the newcomer is counted
+		// one caller idle: within the interval the table is not swept
+		// again, and the newcomer is refused still (#594, the sweep)
 		held[0].release()
+		clk.advance(limitSweepInterval - 1)
+		p, r = limitAdmit(l, "east-ledger", newcomer)
+		p.release()
+		wantLimitRefused(t, r, limitCallers, 1)
+		// once the interval has passed, the sweep drops it, and the
+		// newcomer is counted
+		clk.advance(1)
 		p, r = limitAdmit(l, "east-ledger", newcomer)
 		wantLimitAdmitted(t, r)
 		if len(s.callers) != maxLimitedCallers || s.callers[*limitCallerOf("c0")] != nil || s.callers[*newcomer] == nil {
@@ -273,7 +296,7 @@ func TestLimitInFlightIsReleasedOnEveryPath(t *testing.T) {
 		p, r := l.enter()
 		defer p.release()
 		if r == nil {
-			r = p.charge(scope, caller)
+			r = chargeOne(p, scope, caller)
 		}
 		if r == nil && then != nil {
 			then()
@@ -408,13 +431,13 @@ func TestLimitGatewayWideCap(t *testing.T) {
 		t.Fatalf("unauthenticated refusals %d, want 1", l.unauthenticatedRefusals())
 	}
 	// a pass refused at the cap stays refused if a route charges it
-	wantLimitRefused(t, third.charge("east-ledger", nil), limitGatewayInFlight, 1)
+	wantLimitRefused(t, chargeOne(third, "east-ledger", nil), limitGatewayInFlight, 1)
 	third.release()
 	if l.beforeHeld.Load() != 2 {
 		t.Fatalf("gateway-wide cap holds %d, want 2", l.beforeHeld.Load())
 	}
 	// a request charged to a scope gives its gateway-wide slot back
-	wantLimitAdmitted(t, first.charge("east-ledger", nil))
+	wantLimitAdmitted(t, chargeOne(first, "east-ledger", nil))
 	if l.beforeHeld.Load() != 1 || l.scopes["east-ledger"].held.Load() != 1 {
 		t.Fatalf("after the charge: gateway-wide %d, scope %d", l.beforeHeld.Load(), l.scopes["east-ledger"].held.Load())
 	}
@@ -423,7 +446,7 @@ func TestLimitGatewayWideCap(t *testing.T) {
 	_, r = l.enter()
 	wantLimitRefused(t, r, limitGatewayInFlight, 1)
 	// a scope with no entry is charged nothing, and frees the slot too
-	wantLimitAdmitted(t, fourth.charge("west-ledger", nil))
+	wantLimitAdmitted(t, chargeOne(fourth, "west-ledger", nil))
 	verify.release()
 	first.release()
 	fourth.release()
@@ -544,6 +567,20 @@ func TestLimitConcurrentTakeAndRelease(t *testing.T) {
 	})
 	scopes := []string{"east-ledger", "west-ledger", unscopedMarker, "north-ledger", ""}
 	var admitted, refused atomic.Int64
+	// the highest count each cap held, raised by compare-and-swap
+	highest := map[string]*atomic.Int64{"": {}}
+	for key := range l.scopes {
+		highest[key] = &atomic.Int64{}
+	}
+	note := func(key string, n int64) {
+		h := highest[key]
+		for {
+			was := h.Load()
+			if n <= was || h.CompareAndSwap(was, n) {
+				return
+			}
+		}
+	}
 	var wg sync.WaitGroup
 	for g := range 8 {
 		wg.Add(1)
@@ -553,7 +590,11 @@ func TestLimitConcurrentTakeAndRelease(t *testing.T) {
 				scope := scopes[(g+i)%len(scopes)]
 				p, r := l.enter()
 				if r == nil && scope != "" {
-					r = p.charge(scope, limitCallerOf(fmt.Sprint("c", (g*7+i)%11)))
+					r = chargeOne(p, scope, limitCallerOf(fmt.Sprint("c", (g*7+i)%11)))
+				}
+				note("", l.beforeHeld.Load())
+				for key, s := range l.scopes {
+					note(key, s.held.Load())
 				}
 				if r == nil {
 					admitted.Add(1)
@@ -568,7 +609,88 @@ func TestLimitConcurrentTakeAndRelease(t *testing.T) {
 	if admitted.Load() == 0 {
 		t.Fatal("nothing admitted")
 	}
+	if n := highest[""].Load(); n > l.beforeMost {
+		t.Fatalf("the gateway-wide cap of %d held %d", l.beforeMost, n)
+	}
+	for key, s := range l.scopes {
+		if n := highest[key].Load(); s.most > 0 && n > s.most || s.most == 0 && n != 0 {
+			t.Fatalf("scope %s, cap %d, held %d", key, s.most, n)
+		}
+	}
+	if highest["east-ledger"].Load() == 0 || highest["west-ledger"].Load() == 0 {
+		t.Fatal("no scope's cap was ever held")
+	}
 	assertLimitNothingHeld(t, l)
+}
+
+// A charge of several scopes is all or nothing (ADR-0057, the maintainer's
+// ruling on /verify): where one scope refuses, nothing of the others stays
+// taken -- neither a slot nor a bucket's request -- and the refusal is the
+// refusing scope's own.
+func TestLimitChargeOfSeveralScopesIsAllOrNothing(t *testing.T) {
+	clk := &fakeLimitClock{}
+	l := mustLimiter(t, clk.clock(), 4, map[string]limitEntry{
+		"east-ledger":  {scope: limitValues{requestsPerMinute: 60, burst: 1, inFlight: 1}, perCaller: &limitValues{requestsPerMinute: 60, burst: 1, inFlight: 1}},
+		"west-ledger":  {scope: limitValues{inFlight: 1}},
+		unscopedMarker: {scope: limitValues{requestsPerMinute: 60, burst: 1}},
+	})
+	caller := limitCallerOf("all")
+	// west's one slot is held by another request
+	other, r := limitAdmit(l, "west-ledger", limitCallerOf("other"))
+	wantLimitAdmitted(t, r)
+	p, _ := l.enter()
+	err := p.charge(caller, unscopedMarker, "west-ledger", "east-ledger", "north-ledger")
+	var refused *limitRefusal
+	if !errors.As(err, &refused) {
+		t.Fatalf("charge: %v, want west's refusal", err)
+	}
+	wantLimitRefused(t, refused, limitScopeInFlight, 1)
+	p.release()
+	other.release()
+	assertLimitNothingHeld(t, l)
+	// east's and unscoped's buckets of one request each are whole: each
+	// scope, and east's caller, admits one request now, at the same instant
+	for _, scope := range []string{"east-ledger", unscopedMarker} {
+		q, r := limitAdmit(l, scope, caller)
+		wantLimitAdmitted(t, r)
+		q.release()
+	}
+	// with every scope free, the charge takes each of them, once
+	clk.advance(time.Minute)
+	p, _ = l.enter()
+	if err := p.charge(caller, "west-ledger", "east-ledger", "west-ledger", unscopedMarker); err != nil {
+		t.Fatalf("charge: %v", err)
+	}
+	if l.scopes["west-ledger"].held.Load() != 1 || l.scopes["east-ledger"].held.Load() != 1 || l.beforeHeld.Load() != 0 {
+		t.Fatal("the charge did not hold each scope once, or kept the gateway-wide slot")
+	}
+	p.release()
+	assertLimitNothingHeld(t, l)
+}
+
+// A second charge of one request is an error the route answers, never a
+// panic inside a handler, and it changes nothing (#594).
+func TestLimitSecondChargeIsAnError(t *testing.T) {
+	l := mustLimiter(t, (&fakeLimitClock{}).clock(), 2, map[string]limitEntry{"east-ledger": {scope: limitValues{inFlight: 2}}})
+	p, _ := l.enter()
+	if err := p.charge(nil, "east-ledger"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.charge(nil, "east-ledger"); !errors.Is(err, errLimitCharged) {
+		t.Fatalf("second charge: %v", err)
+	}
+	if n := l.scopes["east-ledger"].held.Load(); n != 1 {
+		t.Fatalf("the second charge changed the scope's count to %d", n)
+	}
+	p.release()
+	assertLimitNothingHeld(t, l)
+	// the zero pass, a gateway with no limits, admits and holds nothing
+	var zero limitPass
+	zero.leaveBefore()
+	if err := zero.charge(nil, "east-ledger"); err != nil {
+		t.Fatal(err)
+	}
+	zero.release()
 }
 
 func TestLimitCallerKeyIsDomainSeparated(t *testing.T) {
@@ -616,7 +738,7 @@ func TestLimitNilLimiterLimitsNothing(t *testing.T) {
 	var l *requestLimiter
 	p, r := l.enter()
 	wantLimitAdmitted(t, r)
-	wantLimitAdmitted(t, p.charge("east-ledger", nil))
+	wantLimitAdmitted(t, chargeOne(p, "east-ledger", nil))
 	p.release()
 	l.noteUnauthenticated()
 	if l.unauthenticatedRefusals() != 0 {

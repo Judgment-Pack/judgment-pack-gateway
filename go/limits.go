@@ -29,6 +29,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,10 @@ const (
 	maxLimitedCallers = 4096
 	// maxLimitInFlight is the largest inFlight of a scope or a caller.
 	maxLimitInFlight = 4096
+	// limitSweepInterval is how often, at most, a scope's full callers'
+	// table is swept for idle entries. A newcomer refused in between is
+	// told Retry-After 1, the interval.
+	limitSweepInterval = time.Second
 	// maxBeforeScope is the largest gateway-wide cap.
 	maxBeforeScope = 65536
 	// maxRequestsPerMinute and maxLimitBurst bound a bucket.
@@ -71,7 +76,7 @@ func limitSentence(limit string) string {
 	case limitCallerInFlight:
 		return "limit: this caller has as many requests in flight within this request's scope as it is allowed; send it again after Retry-After"
 	case limitCallers:
-		return "limit: this request's scope holds as many callers as it can count, each with a request in flight; send it again after Retry-After"
+		return "limit: this request's scope holds as many callers as it can count, each with a request in flight or a spent bucket; send it again after Retry-After"
 	case limitGatewayInFlight:
 		return "limit: the gateway has as many requests in flight that are not yet tied to a scope as it is allowed; send it again after Retry-After"
 	}
@@ -255,6 +260,8 @@ type scopeLimiter struct {
 	callerMost int64
 	mu         sync.Mutex
 	callers    map[limitCallerKey]*limitedCaller
+	// nextSweep is when a full table may next be swept, under mu
+	nextSweep int64
 }
 
 func (s *scopeLimiter) lock()   { s.mu.Lock() }
@@ -269,7 +276,10 @@ func (s *scopeLimiter) holdCaller(key limitCallerKey, now int64) (*limitedCaller
 	defer s.unlock()
 	c := s.callers[key]
 	if c == nil {
-		if len(s.callers) >= maxLimitedCallers {
+		if len(s.callers) >= maxLimitedCallers && now >= s.nextSweep {
+			// at most once per limitSweepInterval: a full table of busy
+			// callers costs one walk a second, not one per newcomer
+			s.nextSweep = now + int64(limitSweepInterval)
 			s.sweep(now)
 		}
 		if len(s.callers) >= maxLimitedCallers {
@@ -341,7 +351,7 @@ func newRequestLimiter(clock limitClock, beforeScope int, entries map[string]lim
 	return l, nil
 }
 
-// noteUnauthenticated counts a request refused at authentication, beside
+// noteUnauthenticated counts a request answered 401, beside
 // the gateway-wide cap's own refusals.
 func (l *requestLimiter) noteUnauthenticated() {
 	if l != nil {
@@ -360,17 +370,31 @@ func (l *requestLimiter) unauthenticatedRefusals() int64 {
 }
 
 // limitPass is one request's hold on the limiter. Its owner releases it by
-// a deferred call, whatever the answer.
+// a deferred call, whatever the answer. The zero pass, a request of a
+// gateway with no limits, holds nothing and admits every charge.
 type limitPass struct {
 	l       *requestLimiter
 	refused *limitRefusal
 	before  bool
 	charged bool
 
-	scope     *scopeLimiter
-	scopeHeld bool
-	caller    *limitedCaller
+	holds []scopeHold
 }
+
+// scopeHold is what a charged request holds of one scope: its slot, its
+// caller's slot, and the arrival times its buckets were taken to, so a
+// charge of several scopes that one of them refuses gives back whatever the
+// others took.
+type scopeHold struct {
+	s                       *scopeLimiter
+	caller                  *limitedCaller
+	scopeTaken, callerTaken int64
+	scopeRated, callerRated bool
+}
+
+// errLimitCharged is a second charge of one request: a fault of the route,
+// answered as a refusal and never served uncounted.
+var errLimitCharged = errors.New("limits: a request is charged once")
 
 // enter takes a gateway-wide slot for a request that has just arrived,
 // before its token is read. Over the cap, the request is refused, and the
@@ -387,14 +411,19 @@ func (l *requestLimiter) enter() (*limitPass, *limitRefusal) {
 	return &limitPass{l: l, before: true}, nil
 }
 
-// charge ties the request to scope, as caller (nil with no identity), at
-// the first step that knows the scope. It gives the gateway-wide slot back,
-// whether the scope admits or refuses. The checks run in order -- the
-// callers' table, the caller's cap, the scope's cap, the caller's bucket,
-// the scope's bucket -- and the first that refuses answers, after
-// everything taken before it is given back. A request is charged once; a
-// pass refused at enter stays refused.
-func (p *limitPass) charge(scope string, caller *limitCallerKey) *limitRefusal {
+// charge ties the request to every scope given (one, for a request of one
+// scope), as caller (nil with no identity), at the first step that knows
+// them. It gives the gateway-wide slot back, whether the scopes admit or
+// refuse. It is all or nothing: the scopes are taken in the order of their
+// bytes, and where one refuses, everything the others took is given back
+// and that scope's refusal answers, so a request refused is charged to no
+// scope. Within each scope the checks run in order -- the callers' table,
+// the caller's cap, the scope's cap, the caller's bucket, the scope's
+// bucket -- and the first that refuses answers, after everything taken
+// before it is given back. The error is a *limitRefusal, or errLimitCharged
+// for a request charged a second time; a pass refused at enter stays
+// refused.
+func (p *limitPass) charge(caller *limitCallerKey, scopes ...string) error {
 	if p.refused != nil {
 		return p.refused
 	}
@@ -402,52 +431,90 @@ func (p *limitPass) charge(scope string, caller *limitCallerKey) *limitRefusal {
 		return nil
 	}
 	if p.charged {
-		panic("limits: a request is charged to one scope, once")
+		return errLimitCharged
 	}
 	p.charged = true
 	p.leaveBefore()
-	s := p.l.scopes[scope]
-	if s == nil {
-		return nil
-	}
+	keys := slices.Clone(scopes)
+	slices.Sort(keys)
+	keys = slices.Compact(keys)
 	now := int64(p.l.clock())
-	var c *limitedCaller
+	holds := make([]scopeHold, 0, len(keys))
+	for _, key := range keys {
+		s := p.l.scopes[key]
+		if s == nil {
+			continue
+		}
+		h, refused := s.take(caller, now)
+		if refused != nil {
+			for i := len(holds) - 1; i >= 0; i-- {
+				holds[i].giveBack()
+			}
+			return refused
+		}
+		holds = append(holds, h)
+	}
+	p.holds = holds
+	return nil
+}
+
+// take is one scope's part of a charge.
+func (s *scopeLimiter) take(caller *limitCallerKey, now int64) (scopeHold, *limitRefusal) {
+	h := scopeHold{s: s}
 	if s.callers != nil {
 		if caller == nil {
 			// a scope that counts callers cannot count this request
-			return limitFull(limitCallers)
+			return h, limitFull(limitCallers)
 		}
 		var refused *limitRefusal
-		if c, refused = s.holdCaller(*caller, now); refused != nil {
-			return refused
+		if h.caller, refused = s.holdCaller(*caller, now); refused != nil {
+			return h, refused
 		}
 	}
 	if s.most > 0 && !takeSlot(&s.held, s.most) {
-		dropCaller(c)
-		return limitFull(limitScopeInFlight)
+		dropCaller(h.caller)
+		return h, limitFull(limitScopeInFlight)
 	}
-	var callerTaken int64
-	if c != nil && s.callerRate != nil {
-		taken, wait, ok := s.callerRate.take(&c.tat, now)
+	if h.caller != nil && s.callerRate != nil {
+		taken, wait, ok := s.callerRate.take(&h.caller.tat, now)
 		if !ok {
 			dropScope(s)
-			dropCaller(c)
-			return &limitRefusal{limit: limitCallerRate, retryAfter: retryAfterOf(wait)}
+			dropCaller(h.caller)
+			return h, &limitRefusal{limit: limitCallerRate, retryAfter: retryAfterOf(wait)}
 		}
-		callerTaken = taken
+		h.callerTaken, h.callerRated = taken, true
 	}
 	if s.rate != nil {
-		if _, wait, ok := s.rate.take(&s.tat, now); !ok {
-			if c != nil && s.callerRate != nil {
-				s.callerRate.giveBack(&c.tat, callerTaken)
+		taken, wait, ok := s.rate.take(&s.tat, now)
+		if !ok {
+			if h.callerRated {
+				s.callerRate.giveBack(&h.caller.tat, h.callerTaken)
 			}
 			dropScope(s)
-			dropCaller(c)
-			return &limitRefusal{limit: limitScopeRate, retryAfter: retryAfterOf(wait)}
+			dropCaller(h.caller)
+			return h, &limitRefusal{limit: limitScopeRate, retryAfter: retryAfterOf(wait)}
 		}
+		h.scopeTaken, h.scopeRated = taken, true
 	}
-	p.scope, p.scopeHeld, p.caller = s, s.most > 0, c
-	return nil
+	return h, nil
+}
+
+// giveBack undoes a hold another scope's refusal leaves behind: its
+// buckets' requests and its slots.
+func (h scopeHold) giveBack() {
+	if h.callerRated {
+		h.s.callerRate.giveBack(&h.caller.tat, h.callerTaken)
+	}
+	if h.scopeRated {
+		h.s.rate.giveBack(&h.s.tat, h.scopeTaken)
+	}
+	h.release()
+}
+
+// release gives back the hold's slots, the scope's and the caller's.
+func (h scopeHold) release() {
+	dropScope(h.s)
+	dropCaller(h.caller)
 }
 
 func dropScope(s *scopeLimiter) {
@@ -462,6 +529,10 @@ func dropCaller(c *limitedCaller) {
 	}
 }
 
+// leaveBefore gives the gateway-wide slot back: at the charge, or once the
+// request's token is read on a route that charges no scope, so no request
+// holds the slot across its body or its run (ADR-0057, decision 2). It may
+// be called more than once, and on the zero pass.
 func (p *limitPass) leaveBefore() {
 	if p.before {
 		p.before = false
@@ -470,16 +541,12 @@ func (p *limitPass) leaveBefore() {
 }
 
 // release gives back every slot the pass still holds: the gateway-wide
-// slot of a request never charged, or its scope's and its caller's. It may
-// be called more than once.
+// slot of a request that never left it, or its scopes' and its callers'.
+// It may be called more than once.
 func (p *limitPass) release() {
 	p.leaveBefore()
-	if p.scopeHeld {
-		p.scopeHeld = false
-		p.scope.held.Add(-1)
+	for _, h := range p.holds {
+		h.release()
 	}
-	if p.caller != nil {
-		p.caller.held.Add(-1)
-		p.caller = nil
-	}
+	p.holds = nil
 }
