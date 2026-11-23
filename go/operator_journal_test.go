@@ -546,6 +546,87 @@ func TestOperatorJournalStoreRotateNamesItsSealsInTheOldStore(t *testing.T) {
 	}
 }
 
+// The store rotated to begins its journal with store-continued, written
+// before its registry is renamed into place: ordinal 0, naming the new
+// registry's first line and the old journal, whole. The new store verifies
+// with the journal required and linked to the old registry. A rerun whose
+// mark was lost keeps the entry; one whose entry was lost as well writes it
+// again; and one that finds an entry not of this rotation is refused, the
+// old store left unmarked.
+func TestOperatorJournalStoreRotateBeginsTheNewStoreWithStoreContinued(t *testing.T) {
+	g, config := journalStore(t)
+	run, _ := retainA1(t, g, config)
+	if code, stderr := run(); code != 0 {
+		t.Fatalf("retain: %d %q", code, stderr)
+	}
+	dir := t.TempDir()
+	newStore, newRegistry := filepath.Join(dir, "store"), filepath.Join(dir, "registry.jsonl")
+	rotate := func() (int, string) {
+		var stdout, stderr bytes.Buffer
+		code := cmdStoreRotateAt([]string{"--config", config, "--new-store", newStore, "--new-registry", newRegistry}, &stdout, &stderr, fixedStamp(removalStamp))
+		return code, stderr.String()
+	}
+	if code, stderr := rotate(); code != 0 {
+		t.Fatalf("store rotate: %d %q", code, stderr)
+	}
+	old := readFile(t, journalFile(g))
+	newJournal := filepath.Join(newStore, journalsDir, operatorJournal+".jsonl")
+	continued := readFile(t, newJournal)
+	first, _, _ := strings.Cut(readFile(t, newRegistry), "\n")
+	var e map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSuffix(continued, "\n")), &e); err != nil || strings.Count(continued, "\n") != 1 {
+		t.Fatalf("the new journal: %v %q", err, continued)
+	}
+	body, _ := e["body"].(map[string]any)
+	if e["ordinal"] != float64(0) || e["previous"] != nil || body["kind"] != "store-continued" || body["continuation"] != sha256Hex([]byte(first)) ||
+		body["previousJournalBytes"] != float64(len(old)) || body["previousJournalDigest"] != sha256Hex([]byte(old)) ||
+		body["registryFrom"] != float64(0) || body["removalFrom"] != float64(0) {
+		t.Fatalf("the store-continued entry: %v", e)
+	}
+	verdict := func() {
+		t.Helper()
+		rep, err := verifierBy(false, "", g.regPath)(newStore, newRegistry, "gateway:test", "", "", g.publicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep.requireJournals([]string{operatorJournal})
+		if text := journalJSON(rep.Observations); !rep.OK || !strings.Contains(text, `"journal-from"`) || !strings.Contains(text, `"continues-from"`) {
+			t.Fatalf("the new store's verdict: %v %s", rep.Findings, text)
+		}
+	}
+	verdict()
+
+	mark := rotatedMarkPath(g.regPath)
+	if err := os.Remove(mark); err != nil {
+		t.Fatal(err)
+	}
+	if code, stderr := rotate(); code != 0 || readFile(t, newJournal) != continued {
+		t.Fatalf("the rerun with the mark lost: %d %q", code, stderr)
+	}
+	for _, path := range []string{mark, newJournal} {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code, stderr := rotate(); code != 0 || readFile(t, newJournal) != continued {
+		t.Fatalf("the rerun with the entry lost: %d %q", code, stderr)
+	}
+	verdict()
+	if err := os.Remove(mark); err != nil {
+		t.Fatal(err)
+	}
+	other := strings.Replace(continued, `"previousJournalBytes":`, `"previousJournalBytes":1`, 1)
+	if err := os.WriteFile(newJournal, []byte(other), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, stderr := rotate(); code != 1 || !strings.Contains(stderr, "is not the store-continued entry of this rotation") {
+		t.Fatalf("the rerun with another entry: %d %q", code, stderr)
+	}
+	if _, err := os.Lstat(mark); !os.IsNotExist(err) {
+		t.Fatalf("a refused rerun marked the old store: %v", err)
+	}
+}
+
 // A removal call that finds the removal file ending in an unterminated line
 // that loads as a record refuses, naming the file and how to mend it, and
 // changes nothing; one that finds a piece that loads as none begins its

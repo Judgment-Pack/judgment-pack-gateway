@@ -67,6 +67,11 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 		return nil, nil, fmt.Errorf("the new database: %v; nothing was changed", err)
 	}
 	var line []byte
+	// the old database's operator journal: its store-rotate entry follows
+	// the seals, as the run-time login, and the new database's journal
+	// begins with store-continued in the migration's transaction that makes
+	// its registry (ADR-0056 §5)
+	var journal *pgOperatorJournalCall
 	sealed, _, err := sealOpenPostgresHeld(o, stamp, said, pgLeaseCommand{as: "store rotate", verb: "rotate", alone: true,
 		// the key in force signs the seals and the continuation (ADR-0050):
 		// before anything is sealed, the registry walks to it, and neither
@@ -95,6 +100,9 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 			if err := continuationOrderRefusalOf(data, key.held(), carried, present, stamp()); err != nil {
 				return err
 			}
+			if journal, err = pgBeginSealJournal(kind, o.engineVersion, key, stamp); err != nil {
+				return err
+			}
 			// a seal held for the sink that this rotation does not deliver
 			// refuses it, before anything is sealed
 			return refuseSealsPending(pgSealForwarding{kind.ofNoScope().documents()}, o.forwardsSeals())
@@ -102,6 +110,18 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 		then: func(kind *pgKind, key *signingKey, refused []string, held *kindStart) error {
 			if len(refused) > 0 {
 				return fmt.Errorf(storeRotateNotSealed, refused[0])
+			}
+			// a store-rotate entry already in the old journal is not written
+			// again: a rerun that sealed nothing names nothing
+			if err := journal.sealEntry(kind, "store-rotate", o.receiptSink != nil && !o.noSink); err != nil {
+				return fmt.Errorf("%v; the store is not rotated, and the seals appended stay in the old registry", err)
+			}
+			// the old journal, whole, as the new one names it
+			var oldJournal []byte
+			if journal != nil {
+				if oldJournal, err = pgOperatorJournalOf(kind); err != nil {
+					return err
+				}
 			}
 			// the tail is read after the seals, under the lease, and walked
 			// as the gateway walks it: the continuation names the registry
@@ -132,7 +152,12 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 					if !bytes.Equal(again, prior) {
 						return errors.New("its registry changed after it was read")
 					}
-					return pgCarryKeyHistory(tx, named, func() ([]byte, error) { return pgCarriedHistoryOf(kind, data, key.held()) })
+					if err := pgCarryKeyHistory(tx, named, func() ([]byte, error) { return pgCarriedHistoryOf(kind, data, key.held()) }); err != nil {
+						return err
+					}
+					// the store-continued entry, held to the registry's first
+					// line where it is there and written where it is not
+					return pgContinuedEntryOf(tx, journal, key, prior, oldJournal)
 				}, true)
 				if errors.Is(err, errPgCommitUncertain) {
 					return fmt.Errorf("the new database: %v; its key history may have been written; rerun to check", err)
@@ -177,6 +202,9 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 				if err := pgWriteKeyHistory(tx, history); err != nil {
 					return err
 				}
+				if err := pgContinuedEntryOf(tx, journal, key, made, oldJournal); err != nil {
+					return err
+				}
 				// last before the commit: the lease is held still, with a
 				// write's margin of it to spare, or nothing is committed
 				return held.holding(kind.fenceMargin())
@@ -198,6 +226,28 @@ func storeRotatePostgres(o sealOpenOptions, target pgRotationTarget, stamp func(
 		return sealed, nil, err
 	}
 	return sealed, line, nil
+}
+
+// pgContinuedEntryOf is the store-continued entry of the database rotated
+// to, written or held in the migration's transaction (pgWriteContinuedEntry)
+// where the old store is journaled, j not nil; none otherwise. A journal
+// there while the old store is not journaled is refused.
+func pgContinuedEntryOf(tx pgTx, j *pgOperatorJournalCall, key *signingKey, continuation, oldJournal []byte) error {
+	walk, err := engineWalk(continuation, key.held())
+	if err != nil {
+		return err
+	}
+	if j == nil {
+		there, err := pgJournalFile(tx, operatorJournal)
+		if err != nil {
+			return err
+		}
+		if len(there) > 0 {
+			return errors.New("it holds an operator journal, and the store rotated from writes none")
+		}
+		return nil
+	}
+	return pgWriteContinuedEntry(tx, key, walk.keys, continuation, oldJournal, j.stamp())
 }
 
 // pgRegistryUnderLease reads the registry the kind keeps in a write
@@ -222,7 +272,9 @@ func pgRegistryUnderLease(k *pgKind) ([]byte, error) {
 
 // pgRotationTargetEmpty holds the database a migration runs in, as the
 // owner in the migration's transaction, to hold no store: no registry, no
-// key history carried, no row of the start lease, no secret, and no row of
+// key history carried, no operator journal (which, like the key history,
+// is written only with the registry's first line), no row of the start
+// lease, no secret, and no row of
 // no scope -- the scope identifiers recorded among them. A gateway makes the registry and takes
 // the lease before it writes anything else, and a command of the migration
 // login writes nothing in a store with no registry. Row security is put
@@ -238,7 +290,7 @@ func pgRotationTargetEmpty(tx pgTx) error {
 		OR EXISTS (SELECT 1 FROM gateway.scope_identifiers) OR EXISTS (SELECT 1 FROM gateway.series)
 		OR EXISTS (SELECT 1 FROM gateway.blobs) OR EXISTS (SELECT 1 FROM gateway.documents)
 		OR EXISTS (SELECT 1 FROM gateway.removal_records) OR EXISTS (SELECT 1 FROM gateway.rotated),
-		EXISTS (SELECT 1 FROM gateway.key_history)`)
+		EXISTS (SELECT 1 FROM gateway.key_history) OR EXISTS (SELECT 1 FROM gateway.journal_records)`)
 	if err != nil {
 		return err
 	}
@@ -263,8 +315,8 @@ func pgRotationTargetEmpty(tx pgTx) error {
 }
 
 // pgRotationTargetContinued is pgRotationTargetEmpty, except that a database
-// holding a registry of one record, the key history carried with it or not,
-// and nothing else gives that record back:
+// holding a registry of one record, the key history and the store-continued
+// entry written with it or not, and nothing else gives that record back:
 // the continuation of a rotation rerun to write its mark, which the caller
 // holds to name the old registry.
 func pgRotationTargetContinued(tx pgTx) ([]byte, error) {

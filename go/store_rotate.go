@@ -275,6 +275,11 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 		if err := carryKeyHistory(o.registry, data, key.held(), newRegistry, named); err != nil {
 			return nil, nil, err
 		}
+		// so is the new store's store-continued entry: one there is held to
+		// the new registry's first line, and one lost is written again
+		if err := carryContinuedJournal(o.store, newStore, o.engineVersion, made, key, stamp); err != nil {
+			return nil, nil, err
+		}
 		if err := markRotated(o.registry, made); err != nil {
 			return nil, nil, err
 		}
@@ -342,6 +347,25 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	if err := writeNewRegistry(keyHistoryBeside(newRegistry), history); err != nil {
 		return sealed, nil, fmt.Errorf("the new registry's key history: %w", err)
 	}
+	// the new store's operator journal begins with store-continued, naming
+	// the continuation and the old journal, whole, before the new registry
+	// is renamed into place (ADR-0056 §5); one a run stopped before its
+	// registry left is replaced, as it names a continuation never placed
+	if journal != nil {
+		old, _, err := readJournalPath(o.store, operatorJournal+".jsonl")
+		if err != nil {
+			return sealed, nil, fmt.Errorf("the old store's operator journal: %w; the store is not rotated, and the seals appended stay in the old registry", err)
+		}
+		entry, err := storeContinuedEntry(key, line, old, at)
+		if err != nil {
+			return sealed, nil, fmt.Errorf("%v; the store is not rotated, and the seals appended stay in the old registry", err)
+		}
+		if err := writeNewJournal(newStore, entry); err != nil {
+			return sealed, nil, fmt.Errorf("the new store's operator journal: %w", err)
+		}
+	} else if _, there, err := readJournalPath(newStore, operatorJournal+".jsonl"); there || err != nil {
+		return sealed, nil, fmt.Errorf("the new store holds an operator journal, and the store rotated from writes none; the store is not rotated")
+	}
 	if err := writeNewRegistry(newRegistry, line); err != nil {
 		return sealed, nil, fmt.Errorf("the new registry: %w", err)
 	}
@@ -376,9 +400,84 @@ func newStoreFree(newStore, newRegistry string) error {
 	for _, e := range entries {
 		path := filepath.Join(newStore, e.Name())
 		history := keyHistoryBeside(filepath.Clean(newRegistry))
+		if e.Name() == journalsDir && e.IsDir() && newJournalsFree(path) {
+			continue
+		}
 		if path != filepath.Clean(newRegistry) && path != newRegistryTemp(newRegistry) && path != history && path != newRegistryTemp(history) {
 			return there
 		}
+	}
+	return nil
+}
+
+// newJournalsFree is whether the new store's journals directory holds
+// nothing but what a rotation stopped by a crash leaves in it: the journal,
+// or the file it is written to before it is renamed into place.
+func newJournalsFree(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if name := e.Name(); !e.Type().IsRegular() || name != operatorJournal+".jsonl" && name != "."+operatorJournal+".jsonl.rotating" {
+			return false
+		}
+	}
+	return true
+}
+
+// writeNewJournal makes the operator journal of the store rotated to,
+// holding its store-continued entry alone, durably, as the new registry is
+// made: written whole and synced beside it, renamed into place, and its
+// directory, made 0700, synced.
+func writeNewJournal(storeRoot string, line []byte) error {
+	dir := filepath.Join(storeRoot, journalsDir)
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	if info, err := os.Lstat(dir); err != nil || !info.IsDir() {
+		return errJournalNotRegular
+	}
+	if err := syncRotationDirectory(storeRoot); err != nil {
+		return err
+	}
+	return writeNewRegistry(filepath.Join(dir, operatorJournal+".jsonl"), line)
+}
+
+// carryContinuedJournal is a rerun's store-continued entry, the new
+// registry made already: a journal in the new store is held to be that
+// entry alone, naming the new registry's first line and the old journal,
+// and one not there is written where the old store is journaled
+// (ADR-0056 §5, "A rerun of store rotate"); otherwise the rerun is refused,
+// nothing changed.
+func carryContinuedJournal(oldStore, newStore, version string, made []byte, key *signingKey, stamp func() string) error {
+	old, oldThere, err := readJournalPath(oldStore, operatorJournal+".jsonl")
+	if err != nil {
+		return fmt.Errorf("the old store's operator journal: %w", err)
+	}
+	there, present, err := readJournalPath(newStore, operatorJournal+".jsonl")
+	if err != nil {
+		return fmt.Errorf("the new store's operator journal: %w", err)
+	}
+	if present {
+		walk, err := engineWalk(made, key.held())
+		if err != nil {
+			return err
+		}
+		if !continuedJournalHolds(there, made, old, walk.keys) {
+			return errors.New("the new store's operator journal is not the store-continued entry of this rotation; nothing was changed")
+		}
+		return nil
+	}
+	if !journaledStore(oldThere, version) {
+		return nil
+	}
+	entry, err := storeContinuedEntry(key, made, old, stamp())
+	if err != nil {
+		return err
+	}
+	if err := writeNewJournal(newStore, entry); err != nil {
+		return fmt.Errorf("the new store's operator journal: %w", err)
 	}
 	return nil
 }
