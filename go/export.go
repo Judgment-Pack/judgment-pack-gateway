@@ -933,7 +933,7 @@ func checkExport(dir string) (*vObject, error) {
 		switch {
 		case d.IsDir():
 			switch parts := strings.Split(rel, "/"); {
-			case rel == "store", rel == "store/receipts", rel == "store/artifacts", rel == "descriptors", rel == "observations":
+			case rel == "store", rel == "store/receipts", rel == "store/artifacts", rel == "store/"+journalsDir, rel == "descriptors", rel == "observations":
 			case len(parts) == 3 && parts[0] == "store" && parts[1] == "receipts":
 				sessionDirs[parts[2]] = true
 			case parts[0] == "decision-records" && m.decisionRecords:

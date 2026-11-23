@@ -465,9 +465,9 @@ func TestOperatorJournalExport(t *testing.T) {
 	if got := readFile(t, filepath.Join(out, "store", journalsDir, operatorJournal+".jsonl")); got != readFile(t, journalFile(g)) {
 		t.Fatalf("the exported journal: %q", got)
 	}
-	if _, err := checkExport(out); err != nil {
-		t.Fatalf("the export does not check: %v", err)
-	}
+	// its directory and file check against the manifest, as every other
+	// place an export writes
+	requireExportChecks(t, out)
 	rep, err := verifyWithRegistry(filepath.Join(out, "store"), filepath.Join(out, "registry"), "gateway:test", g.publicKey)
 	if err != nil || !strings.Contains(journalJSON(rep.Observations), `"journal-from"`) {
 		t.Fatalf("the export's verdict: %v %v", err, rep)
