@@ -7,11 +7,13 @@ package main
 // with its own bucket and cap.
 //
 // A request takes a gateway-wide slot when it arrives, before its token is
-// read (enter). It gives that slot back when it is charged to a scope
-// (charge), whether the scope admits it or refuses it, and gives back what it
-// still holds when it is answered (release, by a deferred call, so a
-// recovered panic releases it too). A request never charged, an
-// unauthenticated one among them, holds its gateway-wide slot until then.
+// read (enter). It gives that slot back once its token is read (leaveBefore,
+// whether the token is accepted or refused) or when it is charged to a scope
+// (charge), whichever comes first, and gives back what it still holds when it
+// is answered (release, by a deferred call, so a recovered panic releases it
+// too). A route that reads no token, /registry among them, holds the slot
+// until it is answered; so does a /seal whose scope is not established, which
+// takes it again once its body is read (holdBefore).
 //
 // Nothing here waits: a request over a limit is refused at once. A scope's
 // state is its own, its atomics and its own mutex, and the map of scopes is
