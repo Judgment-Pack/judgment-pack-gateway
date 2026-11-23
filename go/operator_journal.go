@@ -546,13 +546,14 @@ func judgeOperatorJournal(data []byte, pending bool, keys []reachedKey, registry
 // holds is judged, and a journal with no finding observed as journal-from.
 // The operator journal is the one this record names; a journal of another
 // name, a later record's, is passed over, as an older verifier passes over
-// journals/ whole. held and evidence are what --require-journal reads.
-func (r *report) judgeJournals(storeRoot string, registry []byte, walk *registryWalk) error {
+// journals/ whole. held and evidence are what --require-journal reads. A
+// verdict by scope names its scope's refusal journal as only.
+func (r *report) judgeJournals(storeRoot string, registry []byte, walk *registryWalk, only string) error {
 	if err := r.judgeOperatorJournalOf(storeRoot, registry, walk); err != nil {
 		return err
 	}
 	// the refusal journals (ADR-0059 §8), each judged alone
-	return r.judgeRefusalJournals(storeRoot, walk.keys)
+	return r.judgeRefusalJournals(storeRoot, walk.keys, only)
 }
 
 // judgeOperatorJournalOf is judgeJournals on the operator journal.
