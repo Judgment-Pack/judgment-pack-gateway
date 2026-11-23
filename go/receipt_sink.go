@@ -266,9 +266,13 @@ func (q *forwardQueue) heldRefusal(upTo int64) error {
 
 // receiptForwarder delivers to the configured sink.
 type receiptForwarder struct {
-	url            string
-	payload        bool
-	seals          bool
+	url     string
+	payload bool
+	seals   bool
+	// v3 is deliveryVersion "3" (sink_delivery_v3.go): every delivery is a
+	// "3" envelope, and action receipts are delivered too.
+	v3             bool
+	refusalEntries bool
 	client         *http.Client
 	attemptTimeout time.Duration
 	backoff        []time.Duration
@@ -304,6 +308,10 @@ func newReceiptForwarder(spec *receiptSinkSpec) *receiptForwarder {
 		url:     spec.url,
 		payload: spec.payload,
 		seals:   spec.seals,
+		v3:      spec.deliveryV3,
+		// refusal entries, where on, are forwarded through a forwarder
+		// of their own (sink_refusal_entries.go)
+		refusalEntries: spec.refusalEntries,
 		client: &http.Client{
 			Transport: transport,
 			// a redirect is an answer that is not the acknowledgment
@@ -327,6 +335,18 @@ func receiptDigestOf(stored *vObject) string {
 // configuration asks for it and the source keeps its payload: a payload the
 // gateway does not keep (ADR-0028) is not kept at the sink either.
 func (f *receiptForwarder) held(index int64, stored *vObject, payloadDigest string, payload value, notRetained bool) heldReceipt {
+	if f.v3 {
+		// "3" (sink_delivery_v3.go): the same members in the envelope, under
+		// the digest of its own
+		body, digest := sinkDeliveryV3Envelope(sinkKindAcquisitionReceipt, canon(stored), func(r *vObject) {
+			if f.payload && !notRetained {
+				r.set("payload", payload)
+			}
+			r.set("payloadDigest", vString(payloadDigest))
+			r.set("receipt", stored)
+		})
+		return heldReceipt{index: index, body: body, digest: digest}
+	}
 	digest := receiptDigestOf(stored)
 	request := newObject()
 	request.set("deliveryVersion", vString(receiptDeliveryVersion))
@@ -503,8 +523,11 @@ type sealOpenSink struct {
 // A receipt that cannot be read back is no acknowledgment either. The
 // payload goes where the configuration asks for it and the store keeps one.
 // A receipt of another kind, the action receipt /act stores in the same
-// chain, is not delivered: the sink takes acquisition receipts alone
-// (SPEC.md §6a), as the delivery before /acquire answers does.
+// chain, is not delivered under "1" and "2": the sink takes acquisition
+// receipts alone (SPEC.md §6a), as the delivery before /acquire answers does.
+// Under "3" it is delivered in its place in the chain, as /act delivers it
+// (ADR-0059 section 9), so a session is sealed only once its action receipts
+// are acknowledged too.
 func (s *sealOpenSink) deliver(st sealOpenStore, t sealOpenTarget) bool {
 	reading, refusal, err := st.reading(t.sessionID)
 	if err != nil || refusal != "" {
@@ -544,6 +567,9 @@ func (s *sealOpenSink) deliver(st sealOpenStore, t sealOpenTarget) bool {
 				return false
 			}
 			if name != "acquisition" {
+				if name == "action" && s.forwarder.v3 {
+					queue.add(s.forwarder.heldAction(r.index, receipt))
+				}
 				continue
 			}
 		}

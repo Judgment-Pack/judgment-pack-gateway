@@ -2622,6 +2622,14 @@ func (g *gatewayService) routes() http.Handler {
 		// code a caller acts on, and the gateway's sentence.
 		// A receipt the sink did not acknowledge (receipt_sink.go,
 		// ADR-0049): one sentence and its code, whatever went wrong.
+		// An action receipt the sink did not acknowledge under "3"
+		// (sink_delivery_v3.go): the same status and code, and the
+		// action's own sentence, since its write has happened.
+		var actionUnforwarded actionReceiptNotForwarded
+		if errors.As(err, &actionUnforwarded) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": actionUnforwarded.Error(), "code": receiptNotForwardedCode})
+			return
+		}
 		var unforwarded receiptNotForwarded
 		if errors.As(err, &unforwarded) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": unforwarded.Error(), "code": receiptNotForwardedCode})
