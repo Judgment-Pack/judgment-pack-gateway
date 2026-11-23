@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -19,7 +20,9 @@ func foldedStat(t *testing.T) {
 // compares the directories themselves (os.SameFile), so a pair that differs by
 // case alone, on a filesystem that does not tell case apart, is one directory,
 // and so is a directory beneath another under such a name. The load check
-// compares the spellings and passes both.
+// compares the spellings and passes both, where spellings are compared as they
+// are written; on Windows filepath.Rel compares them without regard to case, so
+// the load check refuses them already.
 func TestActScopeDecisionRecordsOneDirectoryUnderTwoNames(t *testing.T) {
 	root := strings.ToLower(t.TempDir())
 	if err := os.MkdirAll(filepath.Join(root, "records", "gateway"), 0o700); err != nil {
@@ -41,7 +44,12 @@ func TestActScopeDecisionRecordsOneDirectoryUnderTwoNames(t *testing.T) {
 		{"above another scope's, by case", "", []platformConfig{a, {name: "tickets-b", scope: callerScopeB, decisionRecords: filepath.Join(root, "Records")}}},
 	}
 	for _, c := range cases {
-		if err := decisionRecordsApart(c.gateway, c.platforms, nestedAsSpelled); err != nil {
+		err := decisionRecordsApart(c.gateway, c.platforms, nestedAsSpelled)
+		if runtime.GOOS == "windows" {
+			if err == nil {
+				t.Errorf("%s: the load check on Windows, where filepath.Rel folds case, passed one directory under two names", c.name)
+			}
+		} else if err != nil {
 			t.Errorf("%s: the load check, which compares spellings: %v", c.name, err)
 		}
 	}
