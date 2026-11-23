@@ -2469,8 +2469,8 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 			if err != nil {
 				t.Fatalf("no run: %v", err)
 			}
-			if count != 319 {
-				t.Fatalf("%d store vectors read, want 319", count)
+			if count != 320 {
+				t.Fatalf("%d store vectors read, want 320", count)
 			}
 			disagreeing := map[string]bool{}
 			for _, failure := range failures {

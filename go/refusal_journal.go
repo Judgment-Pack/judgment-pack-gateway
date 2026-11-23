@@ -405,10 +405,23 @@ func (j *refusalJournals) stop() {
 		close(j.stopping)
 		select {
 		case <-j.done:
+			j.closeFiles()
 		case <-time.After(refusalDrainWithin + time.Second):
 		}
 		j.store.close()
 	})
+}
+
+// closeFiles closes each scope's journal file of the filesystem kind, once
+// the writer has returned (or, in a test, never ran): nothing else holds them.
+func (j *refusalJournals) closeFiles() {
+	for _, s := range j.scopes {
+		if s.file != nil {
+			unlockJournalFile(s.file)
+			s.file.Close()
+			s.file, s.loaded = nil, false
+		}
+	}
 }
 
 func (j *refusalJournals) run() {

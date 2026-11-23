@@ -82,4 +82,3 @@ func TestRemoveScopeCompletesTheRefusalJournalItsEntryNames(t *testing.T) {
 		}
 	}
 }
-

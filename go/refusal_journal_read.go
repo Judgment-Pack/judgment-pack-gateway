@@ -362,6 +362,12 @@ func describeRefusalRemoval(body *vObject, removed []byte) {
 
 // remove takes the journal, its key and its cursor away.
 func (r *refusalRemoval) remove() error {
+	if !journalFilesLock {
+		// No flock here, so the held handle excludes nothing, and the
+		// platform refuses to delete a file a handle holds open: close it
+		// first. remove-scope runs with the gateway stopped here.
+		r.release()
+	}
 	for _, suffix := range []string{".jsonl", ".key", ".forwarded"} {
 		if err := os.Remove(filepath.Join(r.dir, r.name+suffix)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("the refusal journal's %s could not be removed: %v; the records stand, and a second run completes the removal", suffix, err)

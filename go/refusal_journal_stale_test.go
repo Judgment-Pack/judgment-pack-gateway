@@ -16,6 +16,9 @@ import (
 // to a journal made anew without its key; a start after it makes a key and
 // is not refused (ADR-0059 §8).
 func TestRefusalJournalStaleWriterDropsWhatRemoveScopeTook(t *testing.T) {
+	if !journalFilesLock {
+		t.Skip("without flock, remove-scope runs with the gateway stopped, and the platform refuses to remove a file the writer holds")
+	}
 	h, j, s := refusalUnit(t, refusalDefaultCap)
 	j.handOff(s, "/seal", refusalNote{reason: "session"}, 404, unitCaller(), nil, time.Now())
 	j.round()
@@ -43,6 +46,9 @@ func TestRefusalJournalStaleWriterDropsWhatRemoveScopeTook(t *testing.T) {
 	}
 	var stderr bytes.Buffer
 	again, err := newRefusalJournals(&refusalJournalConfig{maxBytes: refusalDefaultCap}, map[string]bool{callerScopeA: true}, refusalFS{root: h.g.storeRoot}, h.g.store.signing.key, h.g.provenanceKeys, &stderr)
+	if err == nil {
+		t.Cleanup(again.closeFiles)
+	}
 	if err != nil || again.scopes[callerScopeA].secret == nil || strings.Contains(stderr.String(), "no key") {
 		t.Fatalf("the next start: %v %q", err, stderr.String())
 	}
