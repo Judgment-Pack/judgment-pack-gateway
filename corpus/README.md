@@ -540,7 +540,7 @@ runs them in process, with no process-contract command, whatever implementation 
 valid P-256 line, a high-S one, a DER one, one with an unknown `alg`, one with `alg` on a key listed
 as Ed25519, and a P-256 signature with no `alg`.
 
-**`key-history/*.json`** — 25 vectors, verify-only, for the key history a consumer of
+**`key-history/*.json`** — 29 vectors, verify-only, for the key history a consumer of
 `GET /publickey/history` checks (`SPEC.md` §3e, both versions; ADR-0055 §9), which no verifier of a store
 reads. Each holds `pin`, the name of a published key (`TEST-PUBLIC-KEY` in every vector), or
 `{"alg": "ES256", "key": <hex>}`; `requireVersion`, optional, `"2"`; `history`, the answer's exact bytes
@@ -556,11 +556,13 @@ that is not the history before. `gateway conform` runs them in process, whatever
 test, and `verify-ts`'s corpus test runs them through its own check. Eight are accepted: one key under
 version `"1"`; `kh-v1-ordinal-given-twice`, two rotations of ordinal 1 that version `"1"` accepts; one
 store; two stores across a continuation, with the same two statements; three stores under one key; a
-`base`; a `base` holding the repeated ordinal; and a continuation a P-256 key signs. Seventeen are refused:
+`base`; a `base` holding the repeated ordinal; and a continuation a P-256 key signs. Twenty-one are refused:
 `kh-v2-ordinal-given-twice`, the same two statements in one store, `ordinal`, which is the pair a reader of
 the history alone could not tell apart before version `"2"`; an ordinal skipped, and ordinals that keep
-counting across a store, `ordinal`; a store without a continuation, a `base` of version `"2"`, and a store
-with an unknown member, `form`; a continuation signed by another key, with one bit of its signature
+counting across a store, `ordinal`; a store without a continuation, a `base` of version `"2"`, a store
+with an unknown member, and four values the canonical form does not hold (a lone surrogate as
+`keyHistoryVersion`, the number `1.0` as `keyHistoryVersion`, a lone surrogate inside a `keyRotation` string
+and one inside a continuation string), `form`; a continuation signed by another key, with one bit of its signature
 changed, and with its `alg` removed, `continuation`; a digest naming the version `"1"` bytes, and a history
 before the continuation changed, `carried`; a store that does not start at the key before it, and a key
 repeated across stores, `key`; a continuation stamped before its key or after the next rotation, `time`;

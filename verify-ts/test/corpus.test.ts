@@ -382,7 +382,7 @@ test("an argument that is not UTF-8 is no verdict, and never another path", { sk
 test("every key-history vector, on its verdict and its class", () => {
   const dir = path.join(corpus, "key-history");
   const names = fs.readdirSync(dir).filter((n) => n.endsWith(".json")).sort();
-  assert.equal(names.length, 25);
+  assert.equal(names.length, 29);
   for (const name of names) {
     const v = readVector(path.join(dir, name)) as {
       name: string;

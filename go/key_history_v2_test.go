@@ -76,7 +76,7 @@ func TestKeyHistoryVectorsHoldInProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 25 || len(failures) != 0 {
+	if n != 29 || len(failures) != 0 {
 		t.Fatalf("%d key-history vectors, disagreements %q", n, failures)
 	}
 }

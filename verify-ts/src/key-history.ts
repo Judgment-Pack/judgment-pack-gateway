@@ -67,6 +67,12 @@ export function checkKeyHistory(bytes: Uint8Array, pin: KeyHistoryPin | null, op
     if (v === null || hasDuplicate(v)) {
       throw new Refused("form", "not one JSON object");
     }
+    // a value the canonical form does not hold -- a float literal, an
+    // integer past ±(2^53 - 1), a lone surrogate, at any depth -- refuses
+    // the answer whole, as Go's reading of it does
+    if (canonical(v) === null) {
+      throw new Refused("form", "a value outside the canonical form: a float, an integer past ±(2^53 - 1), or a lone surrogate");
+    }
     if (v.type !== "object") {
       throw new Refused("form", "not an object of keyHistoryVersion and keys");
     }
