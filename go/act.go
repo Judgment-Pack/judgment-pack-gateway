@@ -51,6 +51,12 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	if g.receiptVersion != receiptVersion3 {
 		return nil, actRefusal{"receipt-version", "an action receipt is a version 3 receipt; this engine mints version " + g.receiptVersion}
 	}
+	// The scope identifier the request names (ADR-0054, step 8), held before
+	// its session is looked up and before anything of its key is read.
+	asked, err := g.actScope(keyMembers.scopeIdentifier, who)
+	if err != nil {
+		return nil, err
+	}
 	// Each member is read at its own step, so a request with several
 	// faults -- a member of the wrong type among them -- is answered by
 	// the earliest step it fell at.
@@ -71,13 +77,13 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	// its grant -- leaves no label, as an acquisition leaves none.
 	label, labelMinted := "", false
 	if g.labels != nil {
-		id, minted, err := g.labelledSession(sessionID, "")
+		id, minted, err := g.labelledSession(sessionID, asked.value)
 		if err != nil {
 			return nil, actRefusal{"session", err.Error()}
 		}
 		label, sessionID, labelMinted = sessionID, id, minted
 	}
-	if reason := g.sessionOpen(sessionID); reason != "" {
+	if reason := g.sessionOpen(sessionID, asked.value); reason != "" {
 		return nil, actRefusal{"session", reason}
 	}
 	platform, err := parseString("platform", platformRaw)
@@ -86,15 +92,8 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	}
 	source := platform + "/write"
 	spec, known := g.sources[source]
-	if !known {
-		return nil, actRefusal{"platform", fmt.Sprintf("platform %s allows no writes: a write source is derived only for a platform whose configuration sets write: true and whose binding states a write operation", requestText(platform))}
-	}
-	if spec.scope != "" {
-		// A platform fixed to a scope identifier allows no write (ADR-0026),
-		// and the configuration refuses one that sets write: true. /act takes
-		// no scope, so a write source that carried one is refused here
-		// rather than run under a receipt that would not name it.
-		return nil, actRefusal{"platform", fmt.Sprintf("platform %s is fixed to a scope identifier, and /act takes none", requestText(platform))}
+	if refusal := g.actPlatformScope(platform, spec, known, asked, who); refusal != nil {
+		return nil, refusal
 	}
 	tool, err := parseString("tool", toolRaw)
 	if err != nil {
@@ -209,11 +208,18 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	// as one this engine does not hold, as /seal answers it.
 	reach := g.reachOf(who)
 	for _, c := range cites {
-		if reason := g.resolveCitationWith(c, keys, removals, reach); reason != "" {
+		if reason := g.resolveCitationWith(c, keys, removals, reach, asked); reason != "" {
 			return nil, actRefusal{"cites", fmt.Sprintf("citation %s/%d does not resolve in this engine's store: %s", c.sessionID, c.callIndex, reason)}
 		}
 	}
-	if g.decisionRecords == "" {
+	// A write fixed to a scope identifier finds its record in its platform's
+	// directory and nowhere else (ADR-0054, step 17); every other write in
+	// the gateway's.
+	records := g.decisionRecords
+	if spec.scope != "" {
+		records = spec.decisionRecords
+	}
+	if records == "" {
 		return nil, actRefusal{"decision", "this engine was started without a decision-record directory, so no record can be found for an action to rely on"}
 	}
 	recordHex := strings.TrimPrefix(decision.recordDigest, "sha256:")
@@ -251,7 +257,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			}
 		}
 	}
-	found, foundExact, present, err := walkDecisionRecords(g.decisionRecords, wanted, hooks)
+	found, foundExact, present, err := walkDecisionRecords(records, wanted, hooks)
 	if err != nil {
 		// What went wrong is the operator's to read in the log; the
 		// requester learns that the directory could not be read, not where
@@ -288,13 +294,13 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		// One request per key at a time in this process; other keys proceed
 		// concurrently. The durable reservation and the dispatch marker hold
 		// one key exclusive across processes and restarts on their own.
-		namespace := g.actionNamespace(who, key)
+		namespace := g.actionNamespaceIn(who, key, spec.scope)
 		defer g.actionLocks.lock(namespace)()
 		fingerprint, err := actionFingerprint(platform, tool, arguments, decisionV, citesV, spec, recovery, g.sources[platform+"/live"])
 		if err != nil {
 			return nil, actRefusal{"action-key", err.Error()}
 		}
-		journal, openErr := openActionJournal(g.storeRoot)
+		journal, openErr := openScopedActionJournal(g.storeRoot, spec.scope)
 		if openErr != nil {
 			return nil, actRefusal{"action-key", openErr.Error()}
 		}
@@ -440,11 +446,11 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 				// the read-back is receipted in the request's session, so a
 				// label minted for it is recorded before the read-back runs
 				if labelMinted {
-					if sessionID, err = g.recordMinted(label, "", sessionID); err != nil {
+					if sessionID, err = g.recordMinted(label, asked.value, sessionID); err != nil {
 						return nil, actRefusal{"session", err.Error()}
 					}
 				}
-				return g.reconcileAction(sessionID, platform, arguments, who, key, recovery, prior.response, true)
+				return g.reconcileAction(sessionID, platform, spec.scope, arguments, who, key, recovery, prior.response, true)
 			}
 			if !errors.Is(readErr, os.ErrNotExist) {
 				return nil, readErr
@@ -512,7 +518,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	if g.beforeAdmit != nil {
 		g.beforeAdmit()
 	}
-	if err := g.admitAction(sessionID); err != nil {
+	if err := g.admitAction(sessionID, asked.value); err != nil {
 		return nil, err
 	}
 	// held is the session the reservation is of, released on every way out
@@ -600,7 +606,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	// instead: the minted session's directory and reservation given up,
 	// and the session the label names judged, reserved and delivered for.
 	if labelMinted {
-		recorded, err := g.recordMinted(label, "", sessionID)
+		recorded, err := g.recordMinted(label, asked.value, sessionID)
 		if err != nil {
 			g.abandonUnminted(sessionID)
 			return nil, actRefusal{"session", err.Error()}
@@ -609,10 +615,10 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			g.abandonUnminted(sessionID)
 			g.release(held)
 			held, sessionID = "", recorded
-			if reason := g.sessionOpen(sessionID); reason != "" {
+			if reason := g.sessionOpen(sessionID, asked.value); reason != "" {
 				return nil, actRefusal{"session", reason}
 			}
-			if err := g.admitAction(sessionID); err != nil {
+			if err := g.admitAction(sessionID, asked.value); err != nil {
 				return nil, err
 			}
 			held = sessionID
@@ -705,6 +711,14 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		if err != nil {
 			return nil, err
 		}
+		// the session's scope salt (ADR-0042), carried beside scope on a
+		// scoped action's receipt as on its session's acquisitions
+		scopeSalt := ""
+		if spec.scope != "" {
+			if scopeSalt, err = scopeSaltOf(state); err != nil {
+				return nil, err
+			}
+		}
 
 		action := newObject()
 		action.set("requester", identityObject(minted))
@@ -778,6 +792,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			source: source, resultDigest: resultDigest, servedAt: servedAt, authority: g.authority,
 			arguments: canon(arguments), argumentsSalt: argsSalt,
 			who: minted, witness: witness, kind: "action", detail: action, delegation: delegationMember,
+			scope: spec.scope, scopeSalt: scopeSalt,
 		})
 
 		stored, signature, err := g.store.stamp(core)
@@ -820,7 +835,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			return nil, err
 		}
 		if uncertain {
-			return g.reconcileAction(sessionID, platform, arguments, who, key, recovery, out, !dispatched)
+			return g.reconcileAction(sessionID, platform, spec.scope, arguments, who, key, recovery, out, !dispatched)
 		}
 	}
 	return out, nil
@@ -841,7 +856,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 // as an action's; an action is held to the disk whatever it holds, since a
 // write that ran and could not be receipted is the one outcome this design
 // exists to refuse.
-func (g *gatewayService) sessionOpen(sessionID string) string {
+func (g *gatewayService) sessionOpen(sessionID, scope string) string {
 	if seals, err := loadEngineSeals(g.regPath, g.ownHeld()); err != nil {
 		return registryRefusal(err)
 	} else if _, sealed := seals[sessionID]; sealed {
@@ -849,7 +864,7 @@ func (g *gatewayService) sessionOpen(sessionID string) string {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.sessionMintedHere(sessionID)
+	return g.sessionMintedHere(sessionID, scope)
 }
 
 // sessionMintedHere is why a session is not one this process may continue,
@@ -864,8 +879,8 @@ func (g *gatewayService) sessionOpen(sessionID string) string {
 // follows it.
 // Called by the session step and again by admission, so a reservation made
 // between the two changes nothing.
-func (g *gatewayService) sessionMintedHere(sessionID string) string {
-	if state, seen := g.sessions[sessionID]; seen && state.scope != "" {
+func (g *gatewayService) sessionMintedHere(sessionID, scope string) string {
+	if state, seen := g.sessions[sessionID]; seen && state.scope != scope {
 		return fmt.Sprintf(refusalActionInScope, sessionID)
 	}
 	if state, seen := g.sessions[sessionID]; seen && state.created {
@@ -895,7 +910,7 @@ func (g *gatewayService) sessionMintedHere(sessionID string) string {
 // write. The session step's earlier judgment (sessionMintedHere) is the
 // same judgment made before the evidence is read, so the answer names the
 // session rather than a later step; this is the one that holds.
-func (g *gatewayService) admitAction(sessionID string) error {
+func (g *gatewayService) admitAction(sessionID, scope string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	// the gate first, before any directory is made: a closed signer admits
@@ -905,15 +920,15 @@ func (g *gatewayService) admitAction(sessionID string) error {
 	}
 	state, seen := g.sessions[sessionID]
 	if !seen {
-		state = &sessionState{}
+		state = &sessionState{scope: scope}
 		g.sessions[sessionID] = state
 	}
 	if state.sealed {
 		return actRefusal{"session", "session is sealed: " + sessionID}
 	}
-	// a session of a scope identifier holds that scope's receipts alone, and
-	// an action receipt carries no scope (ADR-0036)
-	if state.scope != "" {
+	// a session holds the receipts of one scope identifier, or of none, and
+	// an action is of its session's scope (ADR-0036, ADR-0054)
+	if state.scope != scope {
 		return actRefusal{"session", fmt.Sprintf(refusalActionInScope, sessionID)}
 	}
 	if !state.created {
@@ -1056,7 +1071,7 @@ func (g *gatewayService) resolveCitation(c citation, keys []reachedKey) string {
 	if err != nil {
 		return "the store's removal records cannot be read"
 	}
-	return g.resolveCitationWith(c, keys, removals, scopeReach{every: true})
+	return g.resolveCitationWith(c, keys, removals, scopeReach{every: true}, requestedScope{})
 }
 
 // resolveCitationWith is resolveCitation under removal records already
@@ -1069,7 +1084,16 @@ func (g *gatewayService) resolveCitation(c citation, keys []reachedKey) string {
 // session", the answer for a session the store does not hold -- and so is
 // a cited receipt whose own scope the caller does not reach, read before
 // it is checked.
-func (g *gatewayService) resolveCitationWith(c citation, keys []reachedKey, removals map[string][]removalRecord, reach scopeReach) string {
+func (g *gatewayService) resolveCitationWith(c citation, keys []reachedKey, removals map[string][]removalRecord, reach scopeReach, within requestedScope) string {
+	// A scoped action cites receipts of its own scope alone (ADR-0054, step
+	// 15): another scope's, or none's, is a session this engine does not hold
+	// for it, since its ids and signatures would be carried into the action
+	// scope's export, where they cannot resolve.
+	if within.named {
+		if held, scope, known := g.storedScope(c.sessionID); !held || !known || scope != within.value {
+			return "no such session"
+		}
+	}
 	if !reach.every {
 		if held, scope, known := g.storedScope(c.sessionID); !held || !known || !reach.holds(scope) {
 			return "no such session"
@@ -1096,6 +1120,11 @@ func (g *gatewayService) resolveCitationWith(c citation, keys []reachedKey, remo
 	}
 	if !reach.every {
 		if scope, known := receiptScope(data); !known || !reach.holds(scope) {
+			return "no such session"
+		}
+	}
+	if within.named {
+		if scope, known := receiptScope(data); !known || scope != within.value {
 			return "no such session"
 		}
 	}

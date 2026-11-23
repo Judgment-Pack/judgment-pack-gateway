@@ -431,7 +431,7 @@ func TestASessionSealedAfterAnInterruptionIsNeverContinued(t *testing.T) {
 			t.Fatalf("%s: %d %q", tc.path, code, raw)
 		}
 	}
-	if reason := restarted.sessionOpen("left"); reason != "session is sealed in the registry: left" {
+	if reason := restarted.sessionOpen("left", ""); reason != "session is sealed in the registry: left" {
 		t.Fatalf("an action into it: %q", reason)
 	}
 	if readFile(t, g.regPath) != registry || !sameEntries(sessionEntries(t, g.storeRoot, "left"), held) {

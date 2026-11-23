@@ -103,9 +103,12 @@ func scopeSaltOf(state *sessionState) (string, error) {
 // unless declared, because a source that cannot find `/bin/sh` is not a
 // source, and PATH carries no secret.
 type sourceSpec struct {
-	binding        string
-	actionRecovery map[string]*actionRecovery
-	sandbox        *sourceSandbox
+	binding string
+	// decisionRecords is a scoped write source's decision-record directory
+	// (ADR-0054), "" for every other source.
+	decisionRecords string
+	actionRecovery  map[string]*actionRecovery
+	sandbox         *sourceSandbox
 	// Descriptor provenance is selected by the operator's configuration. A
 	// source's own envelope cannot introduce or replace this reference.
 	descriptorProvenance *descriptorProvenance
@@ -2783,8 +2786,8 @@ func (g *gatewayService) handler() http.Handler {
 		// (ADR-0026): a caller that does not reach the sources of none is
 		// refused before the body is read, with one answer whatever session
 		// it names (ADR-0037), on every kind.
-		if !g.reachOf(who).holds("") {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": reachRefusalAct, "refusedAt": "scope-identifier"})
+		if refusal := g.writeReachRefusal(who); refusal != "" {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": refusal, "refusedAt": "scope-identifier"})
 			return
 		}
 		// An action reads its session, its journal and its evidence on
@@ -2801,7 +2804,13 @@ func (g *gatewayService) handler() http.Handler {
 		// What the envelope may name at all is decided here, before the
 		// ladder: an action is a write, and a write taken from a member this
 		// engine does not read is one nobody asked for.
-		body, err := requestMembers(r.Body, members(actRequestMembers, "delegation", "reservation"))
+		allowed := members(actRequestMembers, "delegation", "reservation")
+		if g.scopedWrite() {
+			// read only where some write source is fixed to a scope
+			// identifier (ADR-0054); elsewhere a member /act does not read
+			allowed = withMember(allowed, "scope")
+		}
+		body, err := requestMembers(r.Body, allowed)
 		if err != nil {
 			fail(w, badRequest{err})
 			return
@@ -2837,12 +2846,12 @@ func (g *gatewayService) handler() http.Handler {
 			}
 			// the action is the delegation subject's now, held as a
 			// delegated request is (ADR-0037, decision 5)
-			if !g.reachOf(who).holds("") {
-				writeJSON(w, http.StatusForbidden, map[string]any{"error": reachRefusalAct, "refusedAt": "scope-identifier"})
+			if refusal := g.writeReachRefusal(who); refusal != "" {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": refusal, "refusedAt": "scope-identifier"})
 				return
 			}
 		}
-		out, err := g.actKeyed(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, actionKeyMembers{key: body["actionKey"], keyScope: body["keyScope"], reconcile: body["reconcile"]})
+		out, err := g.actKeyed(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, actionKeyMembers{key: body["actionKey"], keyScope: body["keyScope"], reconcile: body["reconcile"], scopeIdentifier: body["scope"]})
 		if err != nil {
 			var uncertain *actionUncertain
 			if errors.As(err, &uncertain) {

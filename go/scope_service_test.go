@@ -299,8 +299,11 @@ func TestTheScopeIsHeldOffTheRequestPath(t *testing.T) {
 	who := &caller{issuer: "https://login.example", subject: "user-7", tokenDigest: "sha256:" + strings.Repeat("a", 64)}
 	_, err = service.actKeyed(json.RawMessage(`"scope-4"`), json.RawMessage(`"tickets"`), json.RawMessage(`"update_ticket"`), json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`[]`), who, actionKeyMembers{})
 	var refused actRefusal
-	if !errors.As(err, &refused) || refused.step != "platform" || !strings.Contains(refused.reason, "is fixed to a scope identifier, and /act takes none") || strings.Contains(refused.reason, "quipe") {
-		t.Fatalf("an action on a scoped write source: %v", err)
+	// From actScopeVersion a scoped write source is served (ADR-0054): an
+	// action naming no scope is refused at the scope step, with /acquire's
+	// sentence, which quotes no scope identifier
+	if !errors.As(err, &refused) || refused.step != "scope-identifier" || refused.reason != scopeRefusal || strings.Contains(refused.reason, "quipe") {
+		t.Fatalf("an action naming no scope on a scoped write source: %v", err)
 	}
 	if service.started.Load() != started {
 		t.Fatal("a source started")

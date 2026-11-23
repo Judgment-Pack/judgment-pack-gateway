@@ -137,17 +137,21 @@ import (
 // store holds a session open that no label names. connect raises no file to
 // 39 either. Version 40 (p256SignerVersion) adds signingKeyAlgorithm: a key
 // service's ECDSA P-256 key version at the HSM protection level signs, and
-// each record it signs names its alg (ADR-0053; signature_alg.go).
-const engineVersion = p256SignerVersion
+// each record it signs names its alg (ADR-0053; signature_alg.go). The
+// version after it (actScopeVersion) adds a scoped write platform, with its
+// own decisionRecords and checked caller scopes (ADR-0054; act_scope.go).
+const engineVersion = actScopeVersion
 
 // actScopeVersion is the engine configuration version from which a platform
 // may set scope beside write: true, and /act reads scope, dryRun and
 // approvals (docs/adr/0054-act-takes-a-scope-a-dry-run-is-signed-as-no-action-and-an-action-cites-approval-records.md).
-// It is not among engineVersions until /act serves them: a file of this
-// version is refused by its version, as an earlier release refuses it.
+// From it a platform may set scope beside write: true, with its own
+// decisionRecords and checked caller scopes, and /act reads scope there
+// (decision 1; act_scope.go). dryRun and approvals stay members /act does
+// not read until /act serves them.
 const actScopeVersion = "41" // placeholder: the maintainer assigns the number in merge order
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, actScopeVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -278,6 +282,9 @@ type platformConfig struct {
 	endpoint    string
 	environment []string // KEY=VALUE, for the runtime's selection, never a secret
 	write       bool
+	// decisionRecords is the directory a write fixed to a scope identifier
+	// finds its decision record in (ADR-0054), "" for every other platform.
+	decisionRecords string
 	// descriptors pins the snapshot of the live operation's tool
 	// descriptors that connect captured, sha256:<64 hex>; "" when none. The
 	// frontend reads it; a new capture also has descriptorStatements provenance.
@@ -460,7 +467,7 @@ var platformMembers = map[string]bool{
 	"binding": true, "credentials": true, "user": true,
 	"endpoint": false, "environment": false, "write": false, "descriptors": false, "operationDescriptors": false, "descriptorStatements": false,
 	"decisionPolicy": false, "parameters": false, "grant": false, "writeRequesters": false,
-	"scope": false, "artifact": false,
+	"scope": false, "artifact": false, "decisionRecords": false,
 }
 
 // parseEngineConfig holds the file to the shape the design note states.
@@ -897,6 +904,13 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 				return engineConfig{}, err
 			}
 		}
+		var callers *callerScopes
+		if cfg.identity != nil {
+			callers = &cfg.identity.callers
+		}
+		if pc.decisionRecords, err = parsePlatformDecisionRecords(p, name, version, pc.write, pc.scope, callers); err != nil {
+			return engineConfig{}, err
+		}
 		if artifactValue, present := p.get("artifact"); present {
 			if pc.artifactRetained, err = parsePlatformArtifact(artifactValue, name, version, pc.write); err != nil {
 				return engineConfig{}, err
@@ -964,6 +978,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		}
 		return engineConfig{}, errSigningPublicKeyRequired
 	}
+	if err := decisionRecordsApart(cfg.decisionRecords, cfg.platforms, filepath.Clean); err != nil {
+		return engineConfig{}, err
+	}
 	return cfg, nil
 }
 
@@ -1015,9 +1032,11 @@ func parsePlatformScope(v value, name, version string, write bool, mcp *mcpConfi
 	if s == unscopedMarker && versionAtLeast(version, "27") {
 		return "", fmt.Errorf("engine configuration: platform %s: scope is %q, the marker of the sources of no scope identifier from engineVersion 27, which no caller is granted as a scope identifier; fix the platform to another scope identifier, or leave scope out", name, unscopedMarker)
 	}
-	// /act takes no scope: a write the platform allowed would be run
-	// under a receipt that does not name it.
-	if write {
+	// Below actScopeVersion /act takes no scope: a write the platform
+	// allowed would be run under a receipt that does not name it. From it
+	// the write is held to the scope (ADR-0054), and the platform to checked
+	// caller scopes and its own decision records (parsePlatformDecisionRecords).
+	if write && !versionAtLeast(version, actScopeVersion) {
 		return "", fmt.Errorf("engine configuration: platform %s: scope fixes the platform's reads to a scope identifier, /act takes none, and the platform sets write: true; a platform with a scope allows no write", name)
 	}
 	// An MCP server of neither form forwards an acquisition with no scope
@@ -1798,7 +1817,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.write.url != "" {
 				endpoint, transport = b.write.url, "http"
 			}
-			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.write), grant: grant, requesters: p.requesters, scope: p.scope}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.write), grant: grant, requesters: p.requesters, scope: p.scope, decisionRecords: p.decisionRecords}
 		}
 	}
 	if cfg.sandbox != nil {
@@ -2190,6 +2209,19 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 		if err := holdDecisionRecords(cfg.decisionRecords, host); err != nil {
 			return nil, fmt.Errorf("decisionRecords: %v", err)
 		}
+	}
+	// each scoped write's own directory is held as the gateway's is, and
+	// apart from it and from every other scope's by what each resolves to
+	for _, p := range cfg.platforms {
+		if p.decisionRecords == "" {
+			continue
+		}
+		if err := holdDecisionRecords(p.decisionRecords, host); err != nil {
+			return nil, fmt.Errorf("platform %s: decisionRecords: %v", p.name, err)
+		}
+	}
+	if err := decisionRecordsApart(cfg.decisionRecords, cfg.platforms, resolvedOrClean); err != nil {
+		return nil, err
 	}
 	seen := map[int]string{}
 	for i := range cfg.platforms {

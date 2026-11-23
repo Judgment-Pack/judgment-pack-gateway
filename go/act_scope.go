@@ -1,0 +1,418 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+// /act's scope identifier (docs/adr/0054-act-takes-a-scope-a-dry-run-is-signed-as-no-action-and-an-action-cites-approval-records.md,
+// decision 1). From actScopeVersion a platform may set scope beside write:
+// true. /act then takes scope as /acquire takes it, and the action's receipt
+// carries scope and scopeSalt. Where no write source is fixed to a scope
+// identifier, nothing here changes an answer: the member is refused as one
+// /act does not read, and every step answers as it did.
+
+// reachRefusalScopedAct is /act's answer before the body is read where some
+// write source is fixed to a scope identifier and the caller's token reaches
+// none of the write sources. It names no scope identifier.
+const reachRefusalScopedAct = "scope identifier: this caller's token reaches no write source"
+
+// scopedWrite is whether some write source is fixed to a scope identifier.
+func (g *gatewayService) scopedWrite() bool {
+	for name, spec := range g.sources {
+		if strings.HasSuffix(name, "/write") && spec.scope != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// writeReachRefusal is /act's refusal before the body is read (ADR-0054,
+// step 2), or "". Where no write source is fixed to a scope identifier it is
+// the one it was (ADR-0037): a caller that does not reach the sources of
+// none. Otherwise it is a caller that reaches no write source.
+func (g *gatewayService) writeReachRefusal(who *caller) string {
+	reach := g.reachOf(who)
+	if !g.scopedWrite() {
+		if reach.holds("") {
+			return ""
+		}
+		return reachRefusalAct
+	}
+	for name, spec := range g.sources {
+		if strings.HasSuffix(name, "/write") && reach.holds(spec.scope) {
+			return ""
+		}
+	}
+	return reachRefusalScopedAct
+}
+
+// actScope reads the request's scope member at the scope step (ADR-0054,
+// step 8): after the receipt version and before the session is looked up,
+// so a label is never looked up in a namespace the caller does not reach,
+// and before anything of the action key. A scope that is not a string, one
+// named under a delegation or by a reservation's sender (neither reaches a
+// scope identifier, SPEC.md §6), and one the caller's token does not reach
+// are one refusal, /acquire's sentence, which quotes neither identifier.
+func (g *gatewayService) actScope(raw json.RawMessage, who *caller) (requestedScope, error) {
+	if len(raw) == 0 {
+		return requestedScope{}, nil
+	}
+	v, err := parseJSON(raw)
+	s, isString := v.(vString)
+	if err != nil || !isString || who.delegated != nil || !g.scopedWrite() || !g.reachOf(who).holds(string(s)) {
+		return requestedScope{}, actRefusal{"scope-identifier", scopeRefusal}
+	}
+	return requestedScope{value: string(s), named: true}, nil
+}
+
+// actPlatformScope is the platform step (ADR-0054, step 10). Where no write
+// source is fixed to a scope identifier it answers as it did. Otherwise a
+// platform with no write source, asked by a caller that does not reach every
+// source, and a write source whose scope identifier is not the request's,
+// are answered with the scope step's sentence, so the caller learns neither
+// which platforms other scopes use nor which scope a platform is fixed to.
+func (g *gatewayService) actPlatformScope(platform string, spec sourceSpec, known bool, asked requestedScope, who *caller) error {
+	noWrites := actRefusal{"platform", fmt.Sprintf("platform %s allows no writes: a write source is derived only for a platform whose configuration sets write: true and whose binding states a write operation", requestText(platform))}
+	if !g.scopedWrite() {
+		if !known {
+			return noWrites
+		}
+		if spec.scope != "" {
+			return actRefusal{"platform", fmt.Sprintf("platform %s is fixed to a scope identifier, and /act takes none", requestText(platform))}
+		}
+		return nil
+	}
+	reach := g.reachOf(who)
+	if !known {
+		if !g.reachesEverySource(reach) {
+			return actRefusal{"scope-identifier", scopeRefusal}
+		}
+		return noWrites
+	}
+	if !acquisitionHeld(spec, asked, reach) {
+		return actRefusal{"scope-identifier", scopeRefusal}
+	}
+	return nil
+}
+
+// parsePlatformDecisionRecords reads a platform's decisionRecords (ADR-0054,
+// decision 1): from actScopeVersion, the decision-record directory of a write
+// fixed to a scope identifier, which such a platform must name. Such a
+// platform is held to checked caller scopes as well: a scope on a write that
+// every caller may name is a label posing as a boundary. Where the directory
+// lies is held by decisionRecordsApart once every platform is read.
+func parsePlatformDecisionRecords(p *vObject, name, version string, write bool, scope string, callers *callerScopes) (string, error) {
+	v, present := p.get("decisionRecords")
+	if present && !versionAtLeast(version, actScopeVersion) {
+		return "", fmt.Errorf("engine configuration: platform %s: decisionRecords is a platform member from engineVersion %s; engineVersion %s has none", name, actScopeVersion, version)
+	}
+	if !write || scope == "" {
+		if present {
+			return "", fmt.Errorf("engine configuration: platform %s: decisionRecords is the decision-record directory of a write fixed to a scope identifier, and the platform is not one; an unscoped write finds its record in the gateway's decisionRecords", name)
+		}
+		return "", nil
+	}
+	if callers == nil || callers.unchecked || callers.entries == nil {
+		return "", fmt.Errorf("engine configuration: platform %s: a write fixed to a scope identifier needs identity.callerScopes as an object, so that each caller is held to the scope identifiers it reaches; with \"unchecked\", or with no callerScopes, it would be a label any caller names", name)
+	}
+	if !present {
+		return "", fmt.Errorf("engine configuration: platform %s: a write fixed to a scope identifier needs its own decisionRecords, a directory apart from the gateway's and from every other scope's", name)
+	}
+	dir, ok := stringOf(v)
+	if !ok || !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("engine configuration: platform %s: decisionRecords must be an absolute path", name)
+	}
+	if err := requirePlainSpelling(dir, false); err != nil {
+		return "", fmt.Errorf("engine configuration: platform %s: decisionRecords: %w", name, err)
+	}
+	return dir, nil
+}
+
+// decisionRecordsApart holds each scoped write's decision-record directory
+// apart (ADR-0054, decision 1): never the gateway's, never another scope's,
+// and never beneath or above either, so a write in one scope rests on no
+// record made for another, and no /act learns whether a record of another
+// scope is there. Platforms of one scope identifier may share a directory.
+// resolve is filepath.Clean at load, and resolvedOrClean at start.
+func decisionRecordsApart(gateway string, platforms []platformConfig, resolve func(string) string) error {
+	for i, p := range platforms {
+		if p.decisionRecords == "" {
+			continue
+		}
+		if gateway != "" && pathsNested(resolve(p.decisionRecords), resolve(gateway)) {
+			return fmt.Errorf("engine configuration: platform %s: decisionRecords is the gateway's decisionRecords, or beneath or above it; a write fixed to a scope identifier finds its record in a directory of its own", p.name)
+		}
+		for _, q := range platforms[i+1:] {
+			if q.decisionRecords != "" && q.scope != p.scope && pathsNested(resolve(p.decisionRecords), resolve(q.decisionRecords)) {
+				return fmt.Errorf("engine configuration: platforms %s and %s are fixed to different scope identifiers, and one's decisionRecords is the other's, or beneath or above it", p.name, q.name)
+			}
+		}
+	}
+	return nil
+}
+
+// resolvedOrClean is the path with every link followed where it resolves,
+// and cleaned where it does not yet.
+func resolvedOrClean(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
+}
+
+// pathsNested is whether two clean absolute paths are one, or one is beneath
+// the other.
+func pathsNested(a, b string) bool {
+	return recordsDirHolds(a, b) || recordsDirHolds(b, a)
+}
+
+func recordsDirHolds(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// actionNamespaceIn is the key's namespace for an action of a scope
+// identifier, or none's (actionNamespace, byte for byte, for an action of
+// none). A scoped key is derived from the authority, the scope identifier,
+// the issuer, the subject and the key, so a request in one scope never reads
+// a reservation, a first scope or a close of another: there the key is one
+// never seen, and action-key-scope-conflict speaks within one scope alone.
+func (g *gatewayService) actionNamespaceIn(who *caller, key, scope string) string {
+	if scope == "" {
+		return g.actionNamespace(who, key)
+	}
+	v := newObject()
+	v.set("authority", vString(g.authority))
+	v.set("scope", vString(scope))
+	if who.delegated != nil {
+		// never reached: a delegated request names no scope (actScope)
+		v.set("delegation", who.delegated.scope.value())
+	} else {
+		v.set("issuer", vString(who.issuer))
+		v.set("subject", vString(who.subject))
+	}
+	v.set("key", vString(key))
+	return actionHash("scoped-action-key", v)
+}
+
+// scopedActionJournals is the directory of the journal that holds each scope
+// identifier's journal, its entries and its first-scope index, apart from the
+// journal of none: removing a scope removes its journal whole, and the
+// journal of none reads as it did. Its name is no journal entry's, so journal
+// compaction keeps it as it finds it.
+const scopedActionJournals = "scopes"
+
+// scopedActionJournalName is a scope identifier's journal directory.
+func scopedActionJournalName(scope string) string {
+	v := newObject()
+	v.set("scope", vString(scope))
+	return actionHash("action-scope-journal", v)
+}
+
+// openScopedActionJournal is the journal of a scope identifier, made where it
+// is not there yet, or the journal of none for "".
+func openScopedActionJournal(storeRoot, scope string) (*actionJournal, error) {
+	journal, err := openActionJournal(storeRoot)
+	if err != nil || scope == "" {
+		return journal, err
+	}
+	defer journal.close()
+	scopes, err := openActionChild(journal.root, scopedActionJournals)
+	if err != nil {
+		return nil, err
+	}
+	defer scopes.Close()
+	root, err := openActionChild(scopes, scopedActionJournalName(scope))
+	if err != nil {
+		return nil, err
+	}
+	return &actionJournal{root}, nil
+}
+
+func openActionChild(parent *os.Root, name string) (*os.Root, error) {
+	if err := parent.Mkdir(name, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, errors.New("action-journal-unavailable: cannot create a scope identifier's private journal")
+	}
+	if err := syncActionDirectory(parent); err != nil {
+		return nil, err
+	}
+	return openActionDirectory(parent, name)
+}
+
+// scopedActionJournalPath is where a scope identifier's journal is.
+func scopedActionJournalPath(storeRoot, scope string) string {
+	return filepath.Join(storeRoot, "actions", scopedActionJournals, scopedActionJournalName(scope))
+}
+
+// pendingScopedKeys is a refusal for each key of the scope identifier's
+// journal that is pending (ADR-0054, "Removal"): dispatched without an
+// answer, or answered uncertain with no read-back receipt in the store that
+// resolves it. Each names its key where the journal holds it (the first-scope
+// index, or the action's receipt), and its entry otherwise. An entry that
+// does not read is pending: the call fails closed.
+func pendingScopedKeys(storeRoot, scope string, all []*storedReceipt) ([]string, error) {
+	path := scopedActionJournalPath(storeRoot, scope)
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	store, err := os.OpenRoot(storeRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	actions, err := openActionDirectory(store, "actions")
+	if err != nil {
+		return nil, err
+	}
+	defer actions.Close()
+	scopes, err := openActionDirectory(actions, scopedActionJournals)
+	if err != nil {
+		return nil, err
+	}
+	defer scopes.Close()
+	root, err := openActionDirectory(scopes, scopedActionJournalName(scope))
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	keys := map[string]string{} // by reservation, from the first-scope index
+	if index, err := openActionDirectory(root, actionIndexDirectory); err == nil {
+		records, _ := listHeld(index)
+		for _, e := range records {
+			if raw, err := readActionRecord(index, e.Name(), actionIndexLimit); err == nil {
+				if v, err := parseJSON(raw); err == nil {
+					if obj, ok := v.(*vObject); ok {
+						key, _ := memberString(obj, "key")
+						reservation, _ := memberString(obj, "reservation")
+						keys[reservation] = key
+					}
+				}
+			}
+		}
+		index.Close()
+	}
+	entries, err := listHeld(root)
+	if err != nil {
+		return nil, err
+	}
+	var refused []string
+	for _, e := range entries {
+		name := e.Name()
+		if name == actionIndexDirectory || isStaging(e) || !isLowerHexOfLen(name, 64) {
+			continue
+		}
+		named := "entry " + name
+		if key := keys[name]; key != "" {
+			named = "key " + key
+		}
+		pending := func(why string) {
+			refused = append(refused, fmt.Sprintf("action %s is pending in the scope identifier's action journal: %s; settle it before the scope identifier is removed", named, why))
+		}
+		sub, err := openActionDirectory(root, name)
+		if err != nil {
+			pending("its entry does not read")
+			continue
+		}
+		claim := &actionClaim{root: sub}
+		saved, readErr := claim.read("action.json", actionJournalResponseLimit)
+		switch {
+		case readErr == nil:
+			key, uncertain, action := savedActionOf(saved)
+			if key != "" {
+				named = "key " + key
+			}
+			if uncertain && !readBackHeld(action, all) {
+				pending("it is uncertain, and no read-back in the store resolves it")
+			}
+		case errors.Is(readErr, os.ErrNotExist):
+			if _, begun, err := claim.attempt(); err == nil && begun {
+				pending("it was dispatched without an answer")
+			}
+		default:
+			pending("its record does not read")
+		}
+		sub.Close()
+	}
+	return refused, nil
+}
+
+// savedActionOf reads a keyed action's record: its key, whether it was
+// answered uncertain, and its receipt's place, as a read-back names it.
+func savedActionOf(saved []byte) (key string, uncertain bool, at *vObject) {
+	v, err := parseJSON(saved)
+	if err != nil {
+		return "", true, nil
+	}
+	out, _ := v.(*vObject)
+	if out == nil {
+		return "", true, nil
+	}
+	rv, _ := out.get("receipt")
+	receipt, _ := rv.(*vObject)
+	if receipt == nil {
+		return "", true, nil
+	}
+	av, _ := receipt.get("action")
+	action, _ := av.(*vObject)
+	if action == nil {
+		return "", true, nil
+	}
+	dv, _ := action.get("delivery")
+	delivery, _ := dv.(*vObject)
+	if delivery == nil {
+		return "", true, nil
+	}
+	key, _ = memberString(delivery, "key")
+	outcome, _ := memberString(delivery, "outcome")
+	return key, outcome != "response", receipt
+}
+
+// readBackHeld is whether a read-back receipt in the store names the action
+// receipt, by session, index and signature.
+func readBackHeld(receipt *vObject, all []*storedReceipt) bool {
+	if receipt == nil {
+		return false
+	}
+	session, _ := memberString(receipt, "sessionId")
+	signature, _ := memberString(receipt, "signature")
+	index, _ := receipt.get("callIndex")
+	if index == nil {
+		return false
+	}
+	for _, s := range all {
+		if s.r.reconciliation == nil {
+			continue
+		}
+		c := s.r.reconciliation.action
+		if c.sessionID == session && c.signature == signature && strconv.FormatInt(c.callIndex, 10) == string(canon(index)) {
+			return true
+		}
+	}
+	return false
+}
+
+// removeScopedActionJournal removes the scope identifier's action journal,
+// after its sessions (ADR-0054): a scope re-created under the same identifier
+// starts with no keys.
+func removeScopedActionJournal(storeRoot, scope string, out *removalOutcome) error {
+	path := scopedActionJournalPath(storeRoot, scope)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("the scope identifier's action journal is not a directory; it is left as it is, and a second run completes the removal")
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("the scope identifier's action journal could not be removed: %v; a second run completes the removal", err)
+	}
+	syncDir(filepath.Dir(path))
+	out.notes = append(out.notes, "removed the scope identifier's action journal")
+	return nil
+}
