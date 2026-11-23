@@ -229,6 +229,9 @@ const (
 
 type gatewayService struct {
 	requireActionKey bool
+	// dryRunApprovals is whether /act reads dryRun and approvals (ADR-0054,
+	// from actScopeVersion); without it each is a member /act does not read.
+	dryRunApprovals bool
 	// actionLocks holds one keyed action at a time per key (act).
 	actionLocks actionKeyLocks
 	// actionStep, when set, is told each named point of a keyed request (a test's
@@ -245,6 +248,14 @@ type gatewayService struct {
 	// keyHistoryVersion is the configuration's keyHistoryVersion: "2", or
 	// "" for the history the carried one implies (ADR-0055 §4)
 	keyHistoryVersion string
+	// limits and limiter are the configuration's request limits and the
+	// limiter counting them (ADR-0057; limits_serve.go); nil for none, and
+	// nothing is counted.
+	limits  *limitsConfig
+	limiter *requestLimiter
+	// readHeaderTimeout, where not zero, replaces the listener's
+	// listenerReadHeaderTimeout: a test seam.
+	readHeaderTimeout time.Duration
 	// keyWalk walks the registry for provenanceKeys; nil is reachedKeys.
 	// beforeProvenanceRecheck runs just before the post-run provenance check.
 	// Both are test seams.
@@ -2505,10 +2516,21 @@ func (g *gatewayService) publicKeyDocument() map[string]any {
 	}
 }
 
+// handler is the gateway's routes under its request limits (ADR-0057;
+// limits_serve.go): the routes alone where none are configured.
 func (g *gatewayService) handler() http.Handler {
+	return g.limitedHandler(g.routes())
+}
+
+func (g *gatewayService) routes() http.Handler {
 	mux := http.NewServeMux()
 
 	writeJSON := func(w http.ResponseWriter, code int, body any) {
+		if code == http.StatusUnauthorized {
+			// every 401 is a request refused before its token was
+			// accepted, counted for /posture (ADR-0057, decision 5)
+			g.limiter.noteUnauthenticated()
+		}
 		payload, err := json.Marshal(body)
 		if err != nil {
 			http.Error(w, `{"error":"encode"}`, http.StatusInternalServerError)
@@ -2631,6 +2653,9 @@ func (g *gatewayService) handler() http.Handler {
 	// reason, never the token. With no identity configured every request
 	// is admitted and no caller is recorded.
 	authenticate := func(w http.ResponseWriter, r *http.Request) (*caller, bool) {
+		// the gateway-wide slot is held for the token's check alone,
+		// never across the body or the run (ADR-0057, decision 2)
+		defer limitPassOf(r).leaveBefore()
 		if g.identity == nil {
 			return nil, true
 		}
@@ -2656,6 +2681,7 @@ func (g *gatewayService) handler() http.Handler {
 	// endpoints a delegation credential is presented at (SPEC.md §11.4):
 	// step 0, or the token as before.
 	authenticateCall := func(w http.ResponseWriter, r *http.Request) (*caller, bool) {
+		defer limitPassOf(r).leaveBefore()
 		if g.identity != nil && g.delegation != nil {
 			if token, scheme, isCredential := credentialOf(r); isCredential {
 				who, refusal := g.delegation.present(r, token, scheme)
@@ -2717,6 +2743,15 @@ func (g *gatewayService) handler() http.Handler {
 		if !ok {
 			return
 		}
+		// a caller of one scope is charged to it before the body is read
+		// (ADR-0057, decision 2)
+		oneScope, one := g.oneScopeOf(who)
+		if one {
+			if err := chargeRequest(r, who, oneScope); err != nil {
+				writeLimitFailure(w, err, "")
+				return
+			}
+		}
 		limitBodyTo(w, r, g.maxRequest)
 		allowed := members(acquireRequestMembers, "delegation")
 		if scoped {
@@ -2758,6 +2793,17 @@ func (g *gatewayService) handler() http.Handler {
 		if err != nil {
 			fail(w, badRequest{err})
 			return
+		}
+		// a caller of several scopes, once the source's scope check would
+		// hold, and before it and everything after it: a request whose
+		// scope is not established is charged to no scope, and is refused
+		// by that check as before
+		if spec, known := g.sources[source]; !one && known && !strings.HasSuffix(source, "/write") &&
+			requireSession(session) == nil && acquisitionHeld(spec, scope, g.reachOf(who)) {
+			if err := chargeRequest(r, who, limitScopeKey(spec.scope)); err != nil {
+				writeLimitFailure(w, err, "")
+				return
+			}
 		}
 		out, err := g.acquireScoped(session, source, trail, scope, arguments, who)
 		if err != nil {
@@ -2802,6 +2848,19 @@ func (g *gatewayService) handler() http.Handler {
 			writeJSON(w, http.StatusNotImplemented, map[string]any{"error": storageUnsupported("/act, whose session, journal and evidence are on disk,").Error(), "refusedAt": "storage"})
 			return
 		}
+		// step 3a (ADR-0057): a caller of one scope is charged to it here,
+		// before the body is read, and so before any session lookup, key
+		// lock, signing or delivery; a dry-run among them (ADR-0054,
+		// decision 6). A caller of several is charged at step 8a.
+		var limit func(requestedScope, *caller) error
+		if oneScope, one := g.oneScopeOf(who); one {
+			if err := chargeRequest(r, who, oneScope); err != nil {
+				writeLimitFailure(w, err, "limit")
+				return
+			}
+		} else {
+			limit = g.actScopeCharge(r)
+		}
 		limitBody(w, r)
 		// Every member is read at its own step of the ladder (act), the
 		// string-valued ones included: a member of the wrong type is a
@@ -2815,10 +2874,25 @@ func (g *gatewayService) handler() http.Handler {
 			// identifier (ADR-0054); elsewhere a member /act does not read
 			allowed = withMember(allowed, "scope")
 		}
+		if g.dryRunApprovals {
+			// read from actScopeVersion (ADR-0054, decisions 2 and 3); below
+			// it each is a member /act does not read, so a dry-run sent to
+			// such an engine is refused whole and never sent as a write
+			allowed = withMember(allowed, "dryRun", "approvals")
+		}
 		body, err := requestMembers(r.Body, allowed)
 		if err != nil {
 			fail(w, badRequest{err})
 			return
+		}
+		// The dry-run step (ADR-0054, step 5): after the members, before the
+		// credential is presented or a reservation authenticated.
+		_, dryRun := body["dryRun"]
+		if dryRun {
+			if refusal := g.dryRunRefusal(body); refusal != "" {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": refusal, "refusedAt": "dry-run"})
+				return
+			}
 		}
 		if !presented(w, who, body["delegation"]) {
 			return
@@ -2856,8 +2930,13 @@ func (g *gatewayService) handler() http.Handler {
 				return
 			}
 		}
-		out, err := g.actKeyed(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, actionKeyMembers{key: body["actionKey"], keyScope: body["keyScope"], reconcile: body["reconcile"], scopeIdentifier: body["scope"]})
+		out, err := g.actKeyed(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who, actionKeyMembers{key: body["actionKey"], keyScope: body["keyScope"], reconcile: body["reconcile"], scopeIdentifier: body["scope"], approvals: body["approvals"], dryRun: dryRun, limit: limit})
 		if err != nil {
+			var limited *limitRefusal
+			if errors.As(err, &limited) || errors.Is(err, errLimitCharged) {
+				writeLimitFailure(w, err, "limit")
+				return
+			}
 			var uncertain *actionUncertain
 			if errors.As(err, &uncertain) {
 				writeJSON(w, http.StatusConflict, map[string]any{"error": uncertain.reason, "action": uncertain.action})
@@ -2939,6 +3018,13 @@ func (g *gatewayService) handler() http.Handler {
 		if !ok {
 			return
 		}
+		oneScope, one := g.oneScopeOf(who)
+		if one {
+			if err := chargeRequest(r, who, oneScope); err != nil {
+				writeLimitFailure(w, err, "")
+				return
+			}
+		}
 		limitBody(w, r)
 		// /seal reads a scope member where /acquire does: only where the
 		// configuration fixes some source to a scope identifier (ADR-0041)
@@ -2960,6 +3046,41 @@ func (g *gatewayService) handler() http.Handler {
 		if err != nil {
 			fail(w, badRequest{errors.New("scope must be a string, the scope identifier of the session to seal")})
 			return
+		}
+		if !one {
+			// a caller of several scopes: the scope the request names,
+			// held to the reach; with labels, the namespace the label is
+			// looked up in; otherwise the scope of the session this
+			// process holds, before the seal is signed or delivered. A
+			// request whose scope is not established is charged to none.
+			reach := g.reachOf(who).narrowedTo(asked)
+			scope, established := asked.value, true
+			switch {
+			case g.labels != nil:
+				established = !(asked.named && scope == "") && reach.holds(scope)
+			case asked.named:
+				established = reach.holds(scope)
+			default:
+				var held bool
+				scope, held = g.heldSessionScope(session)
+				established = held && reach.holds(scope)
+			}
+			if established {
+				if err := chargeRequest(r, who, limitScopeKey(scope)); err != nil {
+					writeLimitFailure(w, err, "")
+					return
+				}
+			} else if refused := limitPassOf(r).holdBefore(); refused != nil {
+				// charged to no scope, and still not served unbounded: a
+				// session this process does not hold is looked for in the
+				// registry and the store (sealedElsewhere, sealUnderLock),
+				// since one another process or instance sealed or holds is
+				// answered so, never as no such session (ADR-0035,
+				// ADR-0037). That lookup holds a gateway-wide slot until the
+				// answer is written, as /registry does (ADR-0057, decision 2)
+				writeLimitRefusal(w, refused, "")
+				return
+			}
 		}
 		var out map[string]any
 		if g.labels != nil {
@@ -2994,6 +3115,12 @@ func (g *gatewayService) handler() http.Handler {
 		reach := g.reachOf(who)
 		if !reach.every && (scoped || !reach.none) {
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": reachRefusalVerify})
+			return
+		}
+		// charged to every scope the caller reaches, all or nothing, before
+		// the store is read (ADR-0057, the maintainer's ruling)
+		if err := chargeRequest(r, who, g.reachedScopeKeys(reach)...); err != nil {
+			writeLimitFailure(w, err, "")
 			return
 		}
 		rep, err := g.verifyReport()
@@ -3089,6 +3216,12 @@ func (g *gatewayService) handler() http.Handler {
 		}
 		if g.delegation != nil {
 			in.delegation = &delegationPosture{bearerReadOnly: g.delegation.bearerReadOnly}
+		}
+		if g.limits != nil {
+			// the count is of no scope, and every caller reads it
+			in.limits = g.limits
+			n := g.limiter.unauthenticatedRefusals()
+			in.unauthenticated = &n
 		}
 		// The key read at each request: a serving rotation (SIGHUP) may
 		// have moved it to another key or algorithm.
@@ -3237,11 +3370,24 @@ var openRoutes = map[string]bool{"/registry": true, "/publickey": true, keyHisto
 
 // httpServer is serveOn's server for a listener bound at addr, which is
 // what /posture reports of the listener, from either form of serve. A
-// loopback listener is served as it always was; one that is not loopback
+// loopback listener is served as it always was, but that under the request
+// limits its open routes' answers are bounded too; one that is not loopback
 // (boundToLoopback) is served under the limits above.
 func (g *gatewayService) httpServer(addr net.Addr) *http.Server {
 	g.listening = addr
-	return listenerServer(addr, g.handler())
+	server := listenerServer(addr, g.handler())
+	if g.limiter != nil && boundToLoopback(addr) {
+		// Under the request limits an open route holds a gateway-wide slot
+		// until its answer is written (ADR-0057, decision 2), so its answer
+		// is bounded on loopback too: readers that take the registry slowly
+		// would otherwise hold the cap. Without limits, loopback is served
+		// as it always was.
+		server.Handler = boundOpenWrites(server.Handler, openRouteWriteTimeout)
+	}
+	if g.readHeaderTimeout > 0 {
+		server.ReadHeaderTimeout = g.readHeaderTimeout
+	}
+	return server
 }
 
 // listenerServer is a server of handler for a listener bound at addr: the
@@ -3250,8 +3396,8 @@ func (g *gatewayService) httpServer(addr net.Addr) *http.Server {
 func listenerServer(addr net.Addr, handler http.Handler) *http.Server {
 	server := &http.Server{
 		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
+		ReadHeaderTimeout: listenerReadHeaderTimeout,
+		ReadTimeout:       listenerReadTimeout,
 	}
 	if boundToLoopback(addr) {
 		return server

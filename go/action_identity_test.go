@@ -240,7 +240,7 @@ func TestActionKeysRecordedByV0230StillAnswer(t *testing.T) {
 		t.Fatalf("a version 2 fingerprint was read as version 1: %v", err)
 	}
 	// An identity version this release does not read.
-	for i, version := range []string{`"1"`, `"3"`, `""`, `2`, `null`} {
+	for i, version := range []string{`"1"`, `"4"`, `""`, `2`, `null`} {
 		key := strings.Repeat(string("6789c"[i]), 64)
 		writeV0230Intent(t, g, key, `{"journalVersion":"2","identityVersion":`+version+`,"fingerprint":"`+actionKeysIdentity(t, restarted.sources, c, key).fingerprint+`"}`)
 		if _, err = actionKeysAct(restarted, c, "unread-"+key[:1], key); err == nil || !strings.Contains(err.Error(), "action-journal-invalid") {

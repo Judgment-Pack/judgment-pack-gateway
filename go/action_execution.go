@@ -162,13 +162,31 @@ func (a *sourceApproval) value() value {
 // no identityVersion and bound the derived command line.
 const actionIdentityVersion = "2"
 
+// actionIdentityVersion3 is the identity of a request that names approvals
+// (ADR-0054, decision 3): version 2's content plus approvals. A request that
+// names none is of version 2, byte for byte as before; an earlier release
+// refuses a version 3 reservation as action-journal-invalid, which fails
+// closed.
+const actionIdentityVersion3 = "3"
+
 // actionIdentity is one keyed action's identity under each version this
-// release reads: fingerprint is version 2, which a new reservation records;
-// previous is version 1 of the same request, against which a reservation
-// v0.23.0 recorded is held.
+// release reads: fingerprint is version 2, or version 3 where approvals is
+// set, which a new reservation records; previous is version 1 of the same
+// request, against which a reservation v0.23.0 recorded is held. A request
+// that names approvals has no version 1 identity: no reservation that
+// records none is its content.
 type actionIdentity struct {
 	fingerprint string
 	previous    string
+	approvals   bool
+}
+
+// version is the identityVersion a reservation of this identity records.
+func (i actionIdentity) version() string {
+	if i.approvals {
+		return actionIdentityVersion3
+	}
+	return actionIdentityVersion
 }
 
 // actionFingerprint is the approved identity of one keyed action: the
@@ -184,6 +202,14 @@ type actionIdentity struct {
 // beside it, from the command line as v0.23.0 did, only to recognize a
 // reservation v0.23.0 recorded.
 func actionFingerprint(platform, tool string, args, decision, cites value, spec sourceSpec, recovery *actionRecovery, live sourceSpec) (actionIdentity, error) {
+	return actionFingerprintWith(platform, tool, args, decision, cites, nil, spec, recovery, live)
+}
+
+// actionFingerprintWith is actionFingerprint with the request's approvals
+// (ADR-0054, decision 3), nil where it names none. Named, they enter the
+// approved content as its approvals member, and the identity is of version
+// 3; a request that names none is the version 2 identity it was.
+func actionFingerprintWith(platform, tool string, args, decision, cites, approvals value, spec sourceSpec, recovery *actionRecovery, live sourceSpec) (actionIdentity, error) {
 	request := func() *vObject {
 		v := newObject()
 		v.set("platform", vString(platform))
@@ -199,6 +225,9 @@ func actionFingerprint(platform, tool string, args, decision, cites value, spec 
 		return v
 	}
 	current, previous := request(), request()
+	if approvals != nil {
+		current.set("approvals", approvals)
+	}
 	sourceIdentity := func(source sourceSpec, writeMember string) error {
 		sandbox, err := actionSandboxIdentity(source)
 		if err != nil {
@@ -234,6 +263,9 @@ func actionFingerprint(platform, tool string, args, decision, cites value, spec 
 		if err := sourceIdentity(narrowTools(live, recovery.readBack.tool), "readSource"); err != nil {
 			return actionIdentity{}, err
 		}
+	}
+	if approvals != nil {
+		return actionIdentity{fingerprint: actionHash("action-identity", current), approvals: true}, nil
 	}
 	return actionIdentity{fingerprint: actionHash("action-identity", current), previous: actionHash("action-intent", previous)}, nil
 }

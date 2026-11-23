@@ -39,7 +39,7 @@ const (
 // journaled commands begin the operator journal (ADR-0056 §7). A command of
 // an earlier version, or given flags, writes an entry only where the store
 // already holds the journal: a journal once begun is never skipped.
-const operatorJournalVersion = "44"
+const operatorJournalVersion = "45"
 
 // errJournalPending is a staged entry the store does not match (ADR-0056 §5).
 var errJournalPending = errors.New("an interrupted operator command left a journal entry the store does not match (journal-pending); nothing was changed")

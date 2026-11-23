@@ -57,6 +57,13 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	if err != nil {
 		return nil, err
 	}
+	// step 8a (ADR-0057): a caller of several scopes is charged to the one
+	// step 8 held, before step 9 looks up the label or the session
+	if keyMembers.limit != nil {
+		if err := keyMembers.limit(asked, who); err != nil {
+			return nil, err
+		}
+	}
 	// Each member is read at its own step, so a request with several
 	// faults -- a member of the wrong type among them -- is answered by
 	// the earliest step it fell at.
@@ -212,6 +219,14 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			return nil, actRefusal{"cites", fmt.Sprintf("citation %s/%d does not resolve in this engine's store: %s", c.sessionID, c.callIndex, reason)}
 		}
 	}
+	// The approval records the requester cites (ADR-0054, step 16), held to
+	// their form alone: nothing is read, fetched or compared. Named, they are
+	// signed in the receipt and enter the key's approved content; nil where
+	// the request names none, which is the action it was.
+	approvals, err := requestApprovals(keyMembers.approvals)
+	if err != nil {
+		return nil, err
+	}
 	// A write fixed to a scope identifier finds its record in its platform's
 	// directory and nowhere else (ADR-0054, step 17); every other write in
 	// the gateway's.
@@ -287,6 +302,17 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	request.set("tool", vString(tool))
 	request.set("arguments", arguments)
 	canonicalRequest := canon(request)
+	// A dry-run stops here (ADR-0054, decision 2): it has run the ladder
+	// through the decision record and its policy, and goes on to the checks
+	// of the write's last step with no effect. Nothing of the key -- its
+	// lock, first scope, reservation, evidence or close -- is touched.
+	if keyMembers.dryRun {
+		return g.dryRunAct(dryRunInput{
+			sessionID: sessionID, scope: asked.value, platform: platform, source: source, tool: tool,
+			spec: spec, who: who, decision: decision, exact: exact, cites: cites, policy: policy,
+			approvals: approvals, request: request, canonicalRequest: canonicalRequest,
+		})
+	}
 	var claim *actionClaim
 	var closedKey func() error
 	attempt, begun := 0, false
@@ -296,7 +322,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		// one key exclusive across processes and restarts on their own.
 		namespace := g.actionNamespaceIn(who, key, spec.scope)
 		defer g.actionLocks.lock(namespace)()
-		fingerprint, err := actionFingerprint(platform, tool, arguments, decisionV, citesV, spec, recovery, g.sources[platform+"/live"])
+		fingerprint, err := actionFingerprintWith(platform, tool, arguments, decisionV, citesV, approvals, spec, recovery, g.sources[platform+"/live"])
 		if err != nil {
 			return nil, actRefusal{"action-key", err.Error()}
 		}
@@ -720,8 +746,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			}
 		}
 
-		action := newObject()
-		action.set("requester", identityObject(minted))
+		action := actionClaims(minted, decision, exact, cites, policy, approvals, spec, tool)
 		if claim != nil {
 			delivery := newObject()
 			delivery.set("key", vString(key))
@@ -733,30 +758,6 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			delivery.set("outcome", vString(outcome))
 			action.set("delivery", delivery)
 		}
-		decided := newObject()
-		decided.set("recordDigest", vString(decision.recordDigest))
-		decided.set("packDigest", vString(decision.packDigest))
-		// How the record was found, under the signature: by its exact bytes for
-		// a policy that requires a signed record, which the verifier then reads
-		// the same way (SPEC.md §1.2a, §4 step 6); absent otherwise.
-		if exact {
-			decided.set("recordBytes", vString("exact"))
-		}
-		action.set("decision", decided)
-		cited := make(vArray, 0, len(cites))
-		for _, c := range cites {
-			entry := newObject()
-			entry.set("sessionId", vString(c.sessionID))
-			entry.set("callIndex", vInt(c.callIndex))
-			entry.set("signature", vString(c.signature))
-			cited = append(cited, entry)
-		}
-		action.set("cites", cited)
-		// The policy the write was held to, by digest, signed with the rest:
-		// absent for a tool the operator holds to none.
-		if policy != nil {
-			action.set("policy", vString(policy.digest))
-		}
 		// The witness the configuration names for the trail of the record
 		// found, read from the bytes whose digest matched (ADR-0014): absent
 		// when the record is no runtime evaluation record of a trail, or the
@@ -765,23 +766,6 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		if len(g.witnessedBy) > 0 {
 			witness = g.witnessMember(recordTrail(recorded))
 		}
-		called := newObject()
-		called.set("shape", vString("mcp"))
-		if spec.endpoint == "" {
-			called.set("endpoint", vNull{})
-		} else {
-			called.set("endpoint", vString(spec.endpoint))
-		}
-		called.set("name", vString(tool))
-		// The transport, for a write to a remote server alone (SPEC.md §1.2a,
-		// #268): "http", and the endpoint above is then the URL the engine held
-		// to the endpoint form before it started, which a verifier holds it to
-		// as well. A write over stdio names none, and its receipt is the one it
-		// was before the member existed.
-		if spec.transport != "" {
-			called.set("transport", vString(spec.transport))
-		}
-		action.set("tool", called)
 		action.set("request", vString(commitmentOver(requestSalt, "request:", canonicalRequest)))
 		for _, name := range []string{"adapter", "observedAt"} {
 			v, _ := adapterEnvelope.acquisition.get(name)

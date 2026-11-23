@@ -890,8 +890,11 @@ func intentReads(claim *actionClaim) string {
 	if version != actionJournalVersion || !isLowerHexOfLen(fingerprint, 64) {
 		return "intent.json does not read"
 	}
-	if identity, recorded := intent.get("identityVersion"); recorded && identity != vString(actionIdentityVersion) {
-		return "intent.json records an identity version this release does not read: upgrade rather than remove it"
+	// version 2, or version 3, a request's that named approvals (ADR-0054)
+	if identity, recorded := intent.get("identityVersion"); recorded {
+		if text, isString := identity.(vString); !isString || !readsIdentityVersion(string(text)) {
+			return "intent.json records an identity version this release does not read: upgrade rather than remove it"
+		}
 	}
 	return ""
 }

@@ -672,11 +672,19 @@ from those fields is not part of it, and neither are where the programs are
 installed, the platform environment and the operating-system user: a release
 that adds, renames or reorders a derived flag leaves the content of every key
 reserved under identity version 2 as it was. A reservation records the version
-of this identity it was made under (`identityVersion` `"2"`). A reservation that
+of this identity it was made under (`identityVersion` `"2"`). A request that names
+`approvals` (§6, "`/act`: a scope, a dry-run and approvals") is of identity version
+`"3"`: version 2's content plus `approvals`, in the order given. A request that
+names none is of version 2, byte for byte as before. A reservation of another
+identity version than the request's is other approved content, refused as
+`action-key-conflict`, so a key reserved with no approvals and replayed with some,
+or the reverse, conflicts, and the receipt of a dispatch names exactly the
+approvals of the request that dispatched it. A reservation that
 records none was made under version 1 (v0.23.0), which bound the derived command
 line without install paths instead of the named fields; it is held to the
-request's version 1 identity, and an identity version the gateway does not read
-refuses as `action-journal-invalid`. A version 1 reservation stays version 1, as
+request's version 1 identity, a request that names approvals has none, and an
+identity version the gateway does not read refuses as `action-journal-invalid`,
+as an earlier release refuses version 3. A version 1 reservation stays version 1, as
 no journal file is rewritten: under a release whose derived command line
 differs from v0.23.0's, such a key answers `action-key-conflict`, whether it is
 pending or settled, and nothing is sent. Before an action record cites a receipt, the receipt,
@@ -2640,6 +2648,21 @@ HTTP: the gateway terminates no TLS on either form.
 | POST   | `/acquire`  | `{session, source, arguments, trail, scope}`, `trail` and `scope` optional → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, an empty registry and any discarded line establishing no seal — so a seal stays final across a restart; a seal made after an interruption (§3c) is such a seal. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal — and so is a registry that is not there, since the gateway made it when it started (§3); a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. A session this process does not hold and the registry does not seal is then looked up in the store, and is refused `400` before the source runs where the store holds a receipt in it — any entry of its directory whose name ends in `.json`, whatever it holds — where the store holds it as anything but a directory, a link included, and where the store cannot show it, which is never taken for empty: a gateway keeps a session's chain in memory, so one another process left open is not continued from the store, whose last receipts may have been taken away (§2), and stays `unregistered-session` (§4 step 3). A session directory that holds no receipt is taken up. Where gateway instances serve one store beside one another (the reference gateway's PostgreSQL storage kind, by its configuration), a session is held by the instance that admitted its first call, which keeps its chain: a session another instance holds while that instance still serves is refused `409` before the source runs, with a fixed sentence that names no instance, and the caller sends the session's calls to the instance that holds it; once that instance has stopped, the session is judged as one another process left open, and one that holds no receipt is taken up. |
 | POST   | `/seal`     | `{session, scope}`, `scope` optional and read only where some source is fixed to a scope identifier, as `/acquire` reads it ("Caller scope identifiers", below) → seals the session's final count; returns the seal record. A session this process does not hold is refused `400`: one sealed in the registry as sealed, the registry read as for `/acquire` (one that cannot be read refuses), one the store holds receipts in, or holds as anything but a directory, or cannot show, as `/acquire` refuses it — its count is not sealed from the store, for the reason `/acquire` does not continue it; `gateway seal-open`, with the gateway stopped — or, where gateway instances serve one store beside one another, once the instance that held it no longer serves — seals it as a seal made after an interruption (§3c) — and any other as no such session. Where gateway instances serve one store beside one another, a session another instance holds while that instance still serves is refused `409` with the fixed sentence `/acquire` gives, and is not sealed. |
 
+**Request limits (engine configuration version 44, ADR-0057).** Where the configuration carries
+`limits` (`docs/design/engine-config.md`), any route but `/publickey` and `/publickey/history`
+may answer **`429`** with `Retry-After: 1` and
+`{"error":"limit: the gateway has as many requests in flight that are not yet tied to a scope as it is allowed; send it again after Retry-After","code":"limit_reached","limit":"gateway-in-flight"}`
+while the gateway-wide cap is full, before its token is read. `/acquire`, `/act` (a dry-run among
+them), `/seal` and `/verify` may answer **`429`** with `Retry-After` in whole seconds and
+`{"error", "code": "limit_reached", "limit"}`, `limit` one of `scope-rate`, `scope-in-flight`,
+`caller-rate`, `caller-in-flight` and `callers`, each with its fixed sentence (ADR-0057, decision 3),
+which names no scope; `/act` adds `"refusedAt": "limit"`, at step 3a (after `storage`, before the body,
+for a caller of one scope) or step 8a (after the scope step, before the session is looked up). A
+`/verify` is charged to every scope its caller reaches, all or nothing. Nothing is minted, journaled,
+stored or forwarded for such an answer. A throttled source's `429` (below) carries no `code`.
+`/posture` adds the `request-limits` line, the `limits` member and `unauthenticatedRefusals`, the
+first two judged over the caller's own scopes.
+
 **Session labels (engine configuration version 39, ADR-0051).** From that version `/acquire`,
 `/seal` and `/act` read `session` as a label (§3a): `/acquire` in the namespace of the source's
 scope, `/act` in none's, and `/seal` in the namespace of the `scope` it names, or none's where it
@@ -3108,11 +3131,38 @@ journal, so one key in two scopes names two actions. An action of none is answer
 as before. The order of the refusals, the key's namespace by scope, the read-back and
 `gateway remove-scope` are as ADR-0054 decision 1 states them.
 
-The other two, `dryRun` and `approvals`, this engine does not read yet: each is refused as a member
-`/act` does not read, so neither changes an `/act` answer. Where they are read, `"dryRun": true`
-runs the write's checks, signs a dry-run receipt (§1.2c) and answers `200` with exactly `{"dryRun",
-"request", "salts"}`, with no `receipt`, sending, reserving and recording nothing; and `approvals` is
-carried as `action.approvals` (§1.2a), checked for form alone.
+The other two, `dryRun` and `approvals`, this engine reads from the same version, with or without a
+scoped write source; below it each is refused as a member `/act` does not read, so a dry-run sent to
+such an engine is refused whole and never sent as a write.
+
+**The dry-run.** `"dryRun": true` is read at its own step, after the members `/act` reads and before
+the credential is presented or a reservation's sender authenticated. Only the JSON value `true` is
+read. Any other value, `dryRun` beside `keyScope`, `reconcile` or `reservation`, and `dryRun` under an
+engine that mints version 2 receipts are refused `400` with `{"error", "refusedAt": "dry-run"}`. A
+dry-run then runs the write's ladder through the decision record and its policy, with the write's
+refusals and bodies, then the publisher policy and the named-grant check, and in place of session
+admission the same checks with no effect: the signer's gate is open, and the session is not sealed,
+was not made by another instance or an earlier start, is of the request's scope, and holds no
+receipt the receipt sink has not acknowledged. A receipt held is read and not sent, and the dry-run
+is refused as the write is while the sink does not acknowledge it: `503`, the same code and
+sentence. Under
+`engineVersion` 14 and later it requires `actionKey`, which is set as the idempotency argument and
+nothing else. Under a delegation only the run's actor may ask; the grant's state is read, and §11.5
+steps 0 to 12 are made with the admission read at `"count": false`, so the host counts nothing. A
+dry-run does not lock, read, reserve, close or give a first scope to an action key, record a label,
+make a session directory, hold a session, deliver to the receipt sink, make a dispatch marker, use
+the grant or make its owner read, start the executor, run a read-back, or write to the store or the
+registry. It answers `200` with exactly `{"dryRun": <the dry-run receipt, §1.2c>, "request": {"tool",
+"arguments"}, "salts": {"request"}}`: the request the executor would be handed, and the salt that
+opens the receipt's `action.request`. The receipt is signed by the serving key, so under a key
+service each dry-run is one signing call; it is in no session and is not retained. A dry-run can pass
+where the write would then be refused at its key: it establishes nothing about the key. It is one
+`/act` request, and a per-scope limit on `/act` requests counts it.
+
+**Approvals.** `approvals` is §1.2a's form, read after the citations resolve and before the decision
+record is found, and refused `400` at `approvals` when out of form or empty. Nothing is read, fetched
+or compared: each entry is the requester's claim. The receipt carries it as `action.approvals`, in
+the order given, and it enters the key's approved content as identity version `"3"` (§1.2b).
 
 ### Who may ask for a write
 
