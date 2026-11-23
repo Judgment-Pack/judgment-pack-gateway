@@ -291,8 +291,8 @@ func TestDeliveryVersion3ActIsAcknowledgedBeforeItsAnswerAndHoldsTheSeal(t *test
 	if code != http.StatusServiceUnavailable || len(body) != 2 || body["error"] != (actionReceiptNotForwarded{}).Error() || body["code"] != receiptNotForwardedCode {
 		t.Fatalf("/act not acknowledged: %d %v", code, body)
 	}
-	if !strings.Contains(body["error"].(string), "the action was carried out and its receipt is in the store") {
-		t.Fatalf("the sentence: %v", body["error"])
+	if text := body["error"].(string); !strings.Contains(text, "the action was carried out and its receipt is in the store") || strings.Contains(text, "actionKey") {
+		t.Fatalf("the sentence of an action under no key: %v", text)
 	}
 	code, body = call("/seal", `{"session":"act-v3"}`)
 	refusedUnforwarded(t, "the seal past a held action receipt", code, body)
@@ -323,7 +323,9 @@ func TestDeliveryVersion3KeyedActIsAnsweredOnceAcknowledgedWithoutARepeatedWrite
 	sink.setAnswer(ackV3(t, sink, func(kind string) bool { return kind == sinkKindActionReceipt }))
 	key := strings.Repeat("e", 64)
 	for attempt := 0; attempt < 2; attempt++ {
-		if _, err := actionKeysAct(g, c, "act-key", key); !errors.As(err, new(actionReceiptNotForwarded)) {
+		var refused actionReceiptNotForwarded
+		if _, err := actionKeysAct(g, c, "act-key", key); !errors.As(err, &refused) || !refused.keyed ||
+			!strings.HasSuffix(err.Error(), "; the same actionKey answers it once it is acknowledged") {
 			t.Fatalf("attempt %d not acknowledged: %v", attempt, err)
 		}
 		if sent := actionKeysSent(root, key); sent != 1 {
@@ -373,5 +375,114 @@ func TestDeliveryVersion3StartDeliversActionReceiptsBeforeItSeals(t *testing.T) 
 	kinds := v3KindsSince(t, sink, len(before))
 	if strings.Join(kinds, " ") != "acquisition-receipt action-receipt seal" {
 		t.Fatalf("the start delivered %v", kinds)
+	}
+}
+
+// restartedActionKeys is the gateway started again on the store of root,
+// forwarding to url under "3": what the process before held for the sink is
+// gone with it.
+func restartedActionKeys(t *testing.T, root, url string) *gatewayService {
+	t.Helper()
+	again := actionKeysService(t, root, actionKeysSources(t, root, os.Args[0]))
+	again.forwarder = v3Forwarder(t, url, "")
+	return again
+}
+
+// actionDigestsSince is the digest of each action receipt delivery after the
+// first n.
+func actionDigestsSince(t *testing.T, sink *standInSink, n int) (all int, digests []string) {
+	t.Helper()
+	got, _ := sink.snapshot()
+	for _, body := range got[n:] {
+		if d := readV3(t, body); d.Kind == sinkKindActionReceipt {
+			digests = append(digests, d.Digest)
+		}
+	}
+	return len(got) - n, digests
+}
+
+// A retry under the same key after a restart finds nothing held in memory:
+// the receipt the key's evidence keeps is delivered, once, before the
+// answer, and while the sink does not acknowledge it the retry is refused
+// and the write is not sent again.
+func TestDeliveryVersion3KeyedRetryAfterARestartDeliversTheKeptReceiptFirst(t *testing.T) {
+	root, g, c := actionKeysSetup(t)
+	sink, sinkServer := newStandInSink(t)
+	g.forwarder = v3Forwarder(t, sinkServer.URL, "")
+	sink.setAnswer(ackV3(t, sink, func(kind string) bool { return kind == sinkKindActionReceipt }))
+	key := strings.Repeat("d", 64)
+	if _, err := actionKeysAct(g, c, "act-restart", key); !errors.As(err, new(actionReceiptNotForwarded)) {
+		t.Fatalf("not acknowledged: %v", err)
+	}
+	var refused actionReceiptNotForwarded
+	// the session the action was minted in is refused to an action after a
+	// restart; the key's evidence answers under a session of the retry's own
+	if _, err := actionKeysAct(restartedActionKeys(t, root, sinkServer.URL), c, "act-restart-b", key); !errors.As(err, &refused) || !refused.keyed {
+		t.Fatalf("the retry after a restart, the sink still down: %v", err)
+	}
+	sink.setAnswer(ackV3(t, sink, nil))
+	before, _ := sink.snapshot()
+	out, err := actionKeysAct(restartedActionKeys(t, root, sinkServer.URL), c, "act-restart-c", key)
+	if err != nil {
+		t.Fatalf("the retry after a restart, the sink up: %v", err)
+	}
+	all, digests := actionDigestsSince(t, sink, len(before))
+	if all != 1 || len(digests) != 1 || digests[0] != wantV3Digest(sinkKindActionReceipt, lineOf(t, out["receipt"])) {
+		t.Fatalf("%d deliveries before the answer, action receipts %v; want the answered receipt's, once", all, digests)
+	}
+	if sent := actionKeysSent(root, key); sent != 1 {
+		t.Fatalf("the write was sent %d times", sent)
+	}
+}
+
+// An uncertain action's record is not reconciled, nor answered as uncertain,
+// while its receipt is not acknowledged: the retry is refused with the
+// action's sentence, in this process and after a restart, and the receipt is
+// delivered before the read-back.
+func TestDeliveryVersion3UncertainRetryDeliversItsReceiptBeforeTheReadBack(t *testing.T) {
+	root, g, c := actionKeysSetup(t)
+	actionKeysMode(t, root, "write", "drop")
+	sink, sinkServer := newStandInSink(t)
+	g.forwarder = v3Forwarder(t, sinkServer.URL, "")
+	sink.setAnswer(ackV3(t, sink, func(kind string) bool { return kind == sinkKindActionReceipt }))
+	key := strings.Repeat("7", 64)
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := actionKeysAct(g, c, "act-unsure", key); !errors.As(err, new(actionReceiptNotForwarded)) {
+			t.Fatalf("attempt %d of the uncertain action: %v", attempt, err)
+		}
+	}
+	_, kept := actionDigestsSince(t, sink, 0)
+	if len(kept) == 0 {
+		t.Fatal("the uncertain action's receipt was never sent")
+	}
+	sink.setAnswer(ackV3(t, sink, nil))
+	before, _ := sink.snapshot()
+	out, err := actionKeysAct(g, c, "act-unsure", key)
+	if err != nil || out["reconciliation"] == nil {
+		t.Fatalf("the retry once acknowledged: %v %v", out, err)
+	}
+	if kinds := v3KindsSince(t, sink, len(before)); len(kinds) < 2 || kinds[0] != sinkKindActionReceipt || kinds[1] != sinkKindAcquisitionReceipt {
+		t.Fatalf("the retry delivered %v; want the action receipt, then the read-back's", kinds)
+	}
+	if sent := actionKeysSent(root, key); sent != 1 {
+		t.Fatalf("the write was sent %d times", sent)
+	}
+
+	other := strings.Repeat("8", 64)
+	sink.setAnswer(ackV3(t, sink, func(kind string) bool { return kind == sinkKindActionReceipt }))
+	mark, _ := sink.snapshot()
+	if _, err := actionKeysAct(g, c, "act-unsure-2", other); !errors.As(err, new(actionReceiptNotForwarded)) {
+		t.Fatalf("the second uncertain action: %v", err)
+	}
+	_, held := actionDigestsSince(t, sink, len(mark))
+	if _, err := actionKeysAct(restartedActionKeys(t, root, sinkServer.URL), c, "act-unsure-3", other); !errors.As(err, new(actionReceiptNotForwarded)) {
+		t.Fatalf("the uncertain retry after a restart, the sink still down: %v", err)
+	}
+	sink.setAnswer(ackV3(t, sink, nil))
+	before, _ = sink.snapshot()
+	_, _ = actionKeysAct(restartedActionKeys(t, root, sinkServer.URL), c, "act-unsure-4", other)
+	got, _ := sink.snapshot()
+	if len(held) == 0 || len(got) == len(before) || readV3(t, got[len(before)]).Digest != held[0] {
+		t.Fatal("after a restart the uncertain receipt was not delivered before anything else")
 	}
 }

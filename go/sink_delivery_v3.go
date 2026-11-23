@@ -14,6 +14,8 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"math"
 )
 
 // sinkDeliveryV3Version is the engine configuration version that admits
@@ -95,35 +97,81 @@ func (f *receiptForwarder) heldRefusalEntry(journal string, line []byte) (heldRe
 
 // actionReceiptNotForwarded is the refusal of an /act whose receipt the sink
 // did not acknowledge under "3". Unlike an acquisition's, the write has
-// happened: the sentence says so, and that the same actionKey answers it once
-// the receipt is acknowledged (ADR-0059 section 9).
-type actionReceiptNotForwarded struct{}
+// happened: the sentence says so, and, for an action sent under an actionKey,
+// that the same key answers it once the receipt is acknowledged (ADR-0059
+// section 9). An action sent under no key has no evidence to answer a retry
+// from, so its sentence promises none.
+type actionReceiptNotForwarded struct{ keyed bool }
 
-func (actionReceiptNotForwarded) Error() string {
-	return "action receipt not forwarded: the receipt sink did not acknowledge this action's receipt; the action was carried out and its receipt is in the store; nothing was answered, and the receipt is held to be delivered again before the session's next acquisition, action or seal; the same actionKey answers it once it is acknowledged"
+func (r actionReceiptNotForwarded) Error() string {
+	sentence := "action receipt not forwarded: the receipt sink did not acknowledge this action's receipt; the action was carried out and its receipt is in the store; nothing was answered, and the receipt is held to be delivered again before the session's next acquisition, action or seal"
+	if r.keyed {
+		sentence += "; the same actionKey answers it once it is acknowledged"
+	}
+	return sentence
 }
 
 // redeliverAnswered is, under "3", what a retry that an action key's retained
-// evidence answers waits for: the receipt it carries, held for the sink
-// since the /act that minted it was refused, is delivered, with every receipt
-// of its session held, before the evidence is answered, so the write is
-// never repeated and never answered unacknowledged. The session's queue
-// orders the delivery by itself (its send token), and a seal refuses under
-// the gateway's lock while anything of it is held, so the retry need not
-// hold the session's admission. A retained answer that names no session is
-// refused, never answered past the sink. Under "1" and "2" it is nil, as
-// before.
+// evidence answers waits for, whether that evidence is the action's response
+// or its uncertain record: the receipt it carries is acknowledged before the
+// evidence is answered or reconciled, so the write is never repeated and
+// never answered unacknowledged.
+//   - Where this process minted the receipt (its session is held here, at a
+//     later index), the session's queue holds it until the sink acknowledges
+//     it: what the queue holds is delivered, and an empty queue is a receipt
+//     acknowledged.
+//   - Otherwise the process that minted it stopped, or never held it here:
+//     what it held for the sink is gone with it, so the receipt the evidence
+//     keeps is delivered, alone, before anything is answered. The sink keeps
+//     one receipt per digest, so one it acknowledged before is taken as it
+//     was.
+//
+// The session's queue orders a delivery by itself (its send token), and a
+// seal refuses under the gateway's lock while anything of it is held, so the
+// retry need not hold the session's admission. Evidence whose receipt cannot
+// be read is refused, never answered past the sink. Under "1" and "2" it is
+// nil, as before.
 func (g *gatewayService) redeliverAnswered(response map[string]any) error {
 	if g.forwarder == nil || !g.forwarder.v3 {
 		return nil
 	}
+	refused := actionReceiptNotForwarded{keyed: true}
 	receipt, _ := response["receipt"].(map[string]any)
 	sessionID, _ := receipt["sessionId"].(string)
-	if sessionID == "" {
-		return actionReceiptNotForwarded{}
+	index, counted := receipt["callIndex"].(float64)
+	if sessionID == "" || !counted || index < 0 || index != math.Trunc(index) {
+		return refused
 	}
-	if err := g.redeliver(sessionID); err != nil {
-		return actionReceiptNotForwarded{}
+	g.mu.Lock()
+	state, seen := g.sessions[sessionID]
+	var q *forwardQueue
+	mintedHere := seen && state.forward != nil && int64(index) < state.index
+	if mintedHere {
+		q = state.forward
+	}
+	g.mu.Unlock()
+	if mintedHere {
+		if err := g.forwarder.deliver(g.forwardingContext(), q, sealIndex-1); err != nil {
+			return refused
+		}
+		return nil
+	}
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		return refused
+	}
+	parsed, err := parseJSON(raw)
+	if err != nil {
+		return refused
+	}
+	stored, ok := parsed.(*vObject)
+	if !ok {
+		return refused
+	}
+	alone := newForwardQueue()
+	alone.add(g.forwarder.heldAction(int64(index), stored))
+	if err := g.forwarder.deliver(g.forwardingContext(), alone, math.MaxInt64); err != nil {
+		return refused
 	}
 	return nil
 }

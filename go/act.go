@@ -476,6 +476,11 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 					}
 					return prior.response, nil
 				}
+				// an uncertain record's receipt is acknowledged before it is
+				// reconciled, or answered as uncertain (sink_delivery_v3.go)
+				if err := g.redeliverAnswered(prior.response); err != nil {
+					return nil, err
+				}
 				// the read-back is receipted in the request's session, so a
 				// label minted for it is recorded before the read-back runs
 				if labelMinted {
@@ -847,7 +852,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		// that evidence once it is acknowledged, never running the write
 		// again (redeliverAnswered).
 		if err := g.forwarder.deliver(g.forwardingContext(), forwarding, actionIndex); err != nil {
-			return nil, actionReceiptNotForwarded{}
+			return nil, actionReceiptNotForwarded{keyed: key != ""}
 		}
 	}
 	if claim != nil && uncertain {
