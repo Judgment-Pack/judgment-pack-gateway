@@ -315,7 +315,6 @@ func refusalUnit(t *testing.T, maxBytes int64) (*limitsHarness, *refusalJournals
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(j.closeFiles)
 	return h, j, j.scopes[callerScopeA]
 }
 
@@ -402,7 +401,6 @@ func TestRefusalJournalRefusesAMissingKeyAndAKeyGoneBackwards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(j.closeFiles)
 	s := j.scopes[callerScopeA]
 	j.handOff(s, "/seal", refusalNote{reason: "session"}, 404, unitCaller(), nil, time.Now())
 	if s.secret != nil || len(s.queue) != 0 || s.tally[dropWriteFailed].Load() != 1 || !strings.Contains(stderr.String(), "holds entries and no key") {

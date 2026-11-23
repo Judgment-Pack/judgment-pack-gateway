@@ -856,6 +856,18 @@ forwarding, follow it. Where R2 departs from the text above:
   `write-failed`, until the next start. On the PostgreSQL kind each append's transaction reads the
   key row under the lock and drops the entry, counted the same way, where the row is gone or holds
   another key. Neither kind writes into a journal that no key opens.
+- **2026-11-24, the filesystem writer holds a journal for one round.** This replaces the held file
+  of the line above. On the filesystem kind the writer holds no journal file between entries: each
+  entry opens the journal, takes its lock, checks that the path is still the file it opened and that
+  the key file holds the key the entry was made under, appends, syncs, lets the lock go and closes
+  the file. Only a journal the writer has not found, at start or since, is made: under `O_EXCL`, and
+  while the key it holds is at its path. Once found, a missing `.jsonl` is a removal, whole or cut
+  off before the `.key` went, and the scope's entries are dropped, counted as `write-failed`, until
+  the next start; so are they where the key is gone or another. A key that cannot be read for
+  another cause drops that one entry, counted the same way. The writer reads the journal again where
+  the file is another than the one it read, or its length is not the end it holds. A `remove-scope`
+  cut off between the `.jsonl` and the `.key` therefore never has the journal made again under the
+  old key. The PostgreSQL kind is unchanged.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on
