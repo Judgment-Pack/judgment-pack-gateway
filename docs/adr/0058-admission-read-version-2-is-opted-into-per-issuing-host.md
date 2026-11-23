@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-23
 deciders: maintainer
 ---
@@ -7,7 +7,9 @@ deciders: maintainer
 # The admission read version "2" is opted into per issuing host, and names the tool's descriptor digest
 
 0058 is a placeholder, assigned at merge. The engine version this record adds is
-`<engine-version: assigned at merge>`, called *the new engine version* below.
+`<engine-version: assigned at merge>`, called *the new engine version* below: it takes its number
+in merge order, and 47 is expected. The maintainer accepted this record with the rulings at its
+end, which answer its open questions.
 
 ## Context and problem statement
 
@@ -61,7 +63,9 @@ For the version label:
 Chosen options: "A" and "L1". A, because the RFC fixes the version per issuing host ("the version
 its configuration names for that host") and its upgrade order moves each sender only once its host
 says it reads `"2"`, which one gateway-wide switch cannot follow when the gateway serves hosts at
-different stages. L1, because it is the only option the RFC's wire form admits.
+different stages. L1, because it is the only option the RFC's wire form admits. The plan's earlier
+wording, "label in `call.version`", meant this: the label beside the digest in `_meta`. The RFC
+needs no amendment (ruling 1).
 
 ### 1. The configuration member
 
@@ -135,7 +139,8 @@ At `"2"` the gateway takes §11.5's three answer forms and, beside them:
 | `{"refusal": "read-malformed"}` | any read | `403`, `{"error", "refusal": "read-malformed"}` | the same, with `"refusedAt": "delegation"` |
 
 - Each answer is exactly those members; any other member, or one of these at a read it is not taken
-  at (a step-12 refusal answering a binding read), is `admission-unknown`.
+  at (a step-12 refusal answering a binding read, the spec's case `read-v2-binding-step-12`), is
+  `admission-unknown`.
 - At `POST /delegation/credential` the binding read's `read-version-unsupported` or `read-malformed`
   refuses the binding, `403` with that `refusal` (§11.3, step 3).
 - A standing read answered either form is `standing-unknown` (RFC §2a; §11.8), as any other answer
@@ -200,7 +205,7 @@ digest:
 
 The snapshot holds the tool's `descriptorDigest`, which is `call.version`; the binding pinned by
 digest holds the label. The `delegation` member (§11.7) is unchanged and does not record the read
-version (open question 4). No verifier, corpus family or receipt version changes.
+version (ruling 4). No verifier, corpus family or receipt version changes.
 
 ### 10. What is unchanged for "1", byte for byte
 
@@ -209,6 +214,12 @@ counting, the timeouts and the caps are as today; the existing admission tests p
 the conformance case `read-v1-call` is the bytes the gateway sends. At `"1"`, every answer of
 decision 5 is `admission-unknown`, as RFC §2a states (`read-v1-sender-new-answer`). Below the new
 engine version nothing changes at all, the tools/list included.
+
+### 11. Posture names each host's read version
+
+From the new engine version, `/posture` (§11.9) names each issuing host's `readVersion`, `"1"` or
+`"2"`, so a host left at `"1"` or moved to `"2"` is visible to the operator before a call is
+refused (ruling 3). Below it, posture is as before. Receipts do not record it (decision 9).
 
 ### Upgrade order
 
@@ -231,8 +242,9 @@ replaced by one without it, with a recapture.
 ### Tests planned
 
 - The shared conformance set, vendored byte for byte and pinned by its SHA-256 as
-  `go/delegation_es256_test.go:19` pins `es256-statements.json`: every case whose `applies` names
-  the gateway, against an issuing-host test double.
+  `go/delegation_es256_test.go:19` pins `es256-statements.json`: every case whose `applies` holds
+  `sender` and whose `senders` names the gateway, against an issuing-host test double. A case whose
+  sender part is "never emits" is passed as ruling 2 says.
 - `"1"` byte for byte: a host with no `readVersion` and one with `"1"` send identical bytes,
   `read-v1-call`'s; the existing `delegation_admission` tests unchanged.
 - Configuration: `"2"` below the new engine version refused by name; `3`, `"3"`, `""` refused;
@@ -246,6 +258,7 @@ replaced by one without it, with a recapture.
 - No retry: one read per refused call; never a `"1"` read after a `"2"` refusal.
 - The standing read and the binding read at `"2"`, and their refusals.
 - tools/list: the new vector; the old one unchanged below the version.
+- Posture: each host's `readVersion` at the new engine version; nothing new below it.
 
 ### Mutants planned (four, each in a scratch copy)
 
@@ -276,7 +289,7 @@ replaced by one without it, with a recapture.
   approving a gateway tool can record the same digest from `_meta`.
 - Good, because `"1"` is untouched, and each host moves alone.
 - Bad, because a misconfigured `"2"` refuses every delegated call to that host; it fails closed by
-  design, and posture should show it (open question 3).
+  design, and posture shows it (decision 11).
 - Bad, because a label in a binding forces a recapture, and the label is judged by nobody.
 - Revisit when the RFC defines a machine-readable statement of the versions a host reads (open
   question 26 there), or a member for the label.
@@ -291,11 +304,13 @@ replaced by one without it, with a recapture.
   [ADR-0054](0054-act-takes-a-scope-a-dry-run-is-signed-as-no-action-and-an-action-cites-approval-records.md),
   `docs/design/tool-descriptors.md`.
 
-**The shared conformance set (proposal).** One file in the specification repository,
+**The shared conformance set.** One file in the specification repository,
 `conformance/delegation/admission-reads.json`, beside `es256-statements.json`, listed in that
 directory's README with its case count and SHA-256. It holds table 4 and table 5, one case per name
-(a row naming several cases becomes several). Each case holds `name`, `table`, `kind`, `applies`
-(`["gateway", "library"]`, or `["library"]` for the `skills` and skill-load cases), the sender's
+(a row naming several cases becomes several), and the case ruling 5 adds. Each case holds `name`,
+`table`, `kind`, `applies` (the side it holds, `issuing-host`, `sender` or both, each with what that
+side does; ruling 2), `senders` (`["gateway"]`, `["library"]` or both; the `skills` and skill-load
+cases are the library's), the sender's
 configured `readVersion` and the versions the host double reads, `inputs` (the chain by the name of
 a case in `ed25519-statements.json`, `at`, `audience`, the call or the load, the approved `version`,
 the loaded skills, `count`, and the host double's policy where a case needs one), `body` (the exact
@@ -308,23 +323,22 @@ and pins its SHA-256 in the test; the library as its README states. A change is 
 new copy in each repository. That set, passed by both, is the RFC's acceptance evidence for spec
 `v0.6.1`, stated as two separately written implementations, same vendor, not a cross-vendor claim.
 
-## Open questions
+## Rulings on the open questions
 
-1. **A label in `call.version`.** The read's `version` is a digest or `null` (RFC §2a), and a host
-   must answer `read-malformed` to anything else, so this record keeps the label out of the read.
-   Recommendation: keep it so; a host that wants the label reads the binding the receipt pins. If
-   the label must reach the host, that is an RFC amendment (a member of `call`), not this build.
-2. **Table 4's reader-side cases.** `read-version-not-a-string`, `read-v1-with-skills`,
-   `read-v2-skills-unsorted` and their kind are verdicts of an issuing host, and the gateway is not
-   one. Recommendation: the gateway passes them as a sender, proving it never emits such a body and
-   that it maps the answer `read-malformed` as decision 5 says; the acceptance record says so, and
-   the reader verdicts stay an issuing host's evidence.
-3. **Posture.** Recommendation: at the new engine version, §11.9's posture names each host's
-   `readVersion`, so a host left at `"1"` or moved to `"2"` is visible; the form is settled when
-   §11.9 is edited.
-4. **The read version on the receipt.** Recommendation: not recorded. RFC §6 asks for none, and the
-   receipt already commits to the inputs; a signed member saying what the host judged would claim
-   what the gateway cannot show.
-5. **A step-12 refusal answering a binding read.** This record reads it as `admission-unknown`,
-   since §2a defines the two refusals for a call read. Recommendation: the spec's table 4 gains a
-   case for it, so both implementations agree.
+The maintainer's rulings, at acceptance:
+
+1. **A label in `call.version`.** No. The version label goes in the tools/list `_meta` only, beside
+   `descriptorDigest`, never in `call.version`, which is a digest or `null` (RFC §2a). The RFC needs
+   no amendment. The plan's earlier wording "label in `call.version`" meant the label beside the
+   digest in `_meta`.
+2. **Table 4's reader-side cases.** The malformed-body cases (`read-version-not-a-string`,
+   `read-v1-with-skills`, `read-v2-skills-missing`, `read-v2-skills-unsorted`,
+   `read-v2-skills-repeated`, `read-v2-call-and-load`, `read-body-over-cap`) are passed by both
+   implementations as senders: they never emit such a body, and they refuse correctly when answered
+   `read-malformed`. The conformance file's `applies` says so per case
+   (`"sender": "never emits; refuses on read-malformed"`); the reader verdicts stay an issuing
+   host's evidence.
+3. **Posture.** `/posture` shows each issuing host's `readVersion` (decision 11).
+4. **The read version on the receipt.** Not recorded: receipts do not record it.
+5. **A step-12 refusal answering a binding read.** It is `admission-unknown`, and the spec gains a
+   case for it, `read-v2-binding-step-12`, in the same change that adds the conformance file.
