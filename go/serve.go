@@ -2268,16 +2268,18 @@ func (g *gatewayService) admit(sessionID, scope string) error {
 		state = &sessionState{scope: scope}
 		g.sessions[sessionID] = state
 	}
-	if state.sealed {
-		return badRequest{fmt.Errorf("session is sealed: %s", sessionID)}
-	}
 	// The session's receipts are of one scope, on every kind (ADR-0036):
 	// its seal names that scope, and on a kind that keeps each scope's rows
 	// apart the view of another scope could not stamp into it (its series
 	// is the first scope's). The source is not run for a receipt the
-	// session cannot have. The refusal names neither scope.
+	// session cannot have. The refusal names neither scope, and comes before
+	// the seal, so a request of one scope does not learn whether a session
+	// of another, or of none, is sealed (ADR-0054, §6).
 	if state.scope != scope {
 		return badRequest{fmt.Errorf(refusalOtherScope, sessionID)}
+	}
+	if state.sealed {
+		return badRequest{fmt.Errorf("session is sealed: %s", sessionID)}
 	}
 	state.inFlight++
 	g.gate.admitLocked()

@@ -857,6 +857,19 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 // write that ran and could not be receipted is the one outcome this design
 // exists to refuse.
 func (g *gatewayService) sessionOpen(sessionID, scope string) string {
+	// A session this process holds of another scope than the action's is
+	// answered with ADR-0036's sentence before its seal is looked up, so the
+	// answer says nothing of the state of a session of another scope
+	// identifier, or of none (ADR-0054, §6). A seal of a session this process
+	// does not hold is said to be one to every caller, as /seal says it: the
+	// registry serves every seal (ADR-0037, decision 3).
+	g.mu.Lock()
+	state, seen := g.sessions[sessionID]
+	other := seen && state.scope != scope
+	g.mu.Unlock()
+	if other {
+		return fmt.Sprintf(refusalActionInScope, sessionID)
+	}
 	if seals, err := loadEngineSeals(g.regPath, g.ownHeld()); err != nil {
 		return registryRefusal(err)
 	} else if _, sealed := seals[sessionID]; sealed {
