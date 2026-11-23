@@ -394,6 +394,33 @@ func validateAction(v value, r *receipt) error {
 	if err != nil {
 		return err
 	}
+	if err := validateActionClaims(obj, r); err != nil {
+		return err
+	}
+	if v, present := obj.get("delivery"); present {
+		var err error
+		r.delivery, err = parseActionDelivery(v)
+		if err != nil {
+			return err
+		}
+	}
+	adapter, ok := obj.get("adapter")
+	if !ok {
+		return errors.New(`action: missing member "adapter"`)
+	}
+	if err := validateAdapter(adapter, "action.adapter"); err != nil {
+		return err
+	}
+	if _, err := requireString(obj, "observedAt"); err != nil {
+		return fmt.Errorf("action: %w", err)
+	}
+	return nil
+}
+
+// validateActionClaims holds what an action receipt and a dry-run receipt
+// (SPEC.md §1.2c) both carry of an action: the requester, the decision, the
+// citations, the tool, the request, the policy and the approvals.
+func validateActionClaims(obj *vObject, r *receipt) error {
 	requester, ok := obj.get("requester")
 	if !ok {
 		return errors.New(`action: missing member "requester"`)
@@ -403,13 +430,6 @@ func validateAction(v value, r *receipt) error {
 	}
 	if err := validateIdentity(requester, "action.requester"); err != nil {
 		return err
-	}
-	if v, present := obj.get("delivery"); present {
-		var err error
-		r.delivery, err = parseActionDelivery(v)
-		if err != nil {
-			return err
-		}
 	}
 	decisionV, ok := obj.get("decision")
 	if !ok {
@@ -473,15 +493,15 @@ func validateAction(v value, r *receipt) error {
 			return fmt.Errorf("action: %w", err)
 		}
 	}
-	adapter, ok := obj.get("adapter")
-	if !ok {
-		return errors.New(`action: missing member "adapter"`)
-	}
-	if err := validateAdapter(adapter, "action.adapter"); err != nil {
-		return err
-	}
-	if _, err := requireString(obj, "observedAt"); err != nil {
-		return fmt.Errorf("action: %w", err)
+	// The approval records the requester cites (ADR-0054 decision 3):
+	// optional, and of their form when present. What a record says is not
+	// checked: a verifier holds none of them.
+	if v, present := obj.get("approvals"); present {
+		approvals, err := parseApprovals(v)
+		if err != nil {
+			return err
+		}
+		r.approvals = approvals
 	}
 	r.cites = cites
 	r.recordDigest, _ = memberString(decision, "recordDigest")

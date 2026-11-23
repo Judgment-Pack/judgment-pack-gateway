@@ -308,6 +308,7 @@ returns `ok` for it, and reports nothing of its delivery (§4, **Observations**)
 | `decision` | `{ "recordDigest": "sha256:" + hex, "packDigest": "sha256:" + hex, "recordBytes": "exact" }`, `recordBytes` **optional** | the decision record the requester says the action relies on, and the pack it says the decision was made under, by digest; `recordBytes`, how the gateway found the record (below) |
 | `cites` | array of `{ "sessionId": flat token (§3a), "callIndex": non-negative integer, "signature": signature }` | the acquisition receipts the requester says the decision record relied on |
 | `policy` | `"sha256:" + hex` — **optional** | the decision policy the gateway held the action to before it was sent, by digest (below); absent when its operator held the tool to none |
+| `approvals` | array of 1 to 8 `{ "kind": "single" or "standing", "id": string, "digest": "sha256:" + hex }` — **optional** | the approval records the requester cites, in the order given (below); absent when it cites none |
 | `tool` | `{ "shape": string, "endpoint": string or `null`, "name": string, "transport": "http" }`, `transport` **optional** | what was called, named as `acquisition` names its adapter; for a write to a remote MCP server, `endpoint` is the server's URL and `transport` is `"http"` (below) |
 | `request` | `"sha256:" + hex` | a commitment (above) to the request the executor sent |
 | `adapter` | as in `acquisition` | the executor that performed it; for an uncertain delivery (§1.2b), the gateway's uncertainty recorder |
@@ -352,8 +353,26 @@ two (step 8), and reads nothing else of it. A decision record that itself
 carries a `cites` member of this same shape — a record the runtime wrote with
 the citations its caller gave it — has those resolved by §4 step 7 on the
 record's own behalf. An action receipt does not say the action was right, and it
-does not say the identity approved it: it is lineage of a request and a
-response.
+does not say the identity approved it, nor does an approval record it cites
+(`approvals`, below): it is lineage of a request and a response.
+
+**`approvals`** (ADR-0054 decision 3). Present, it is an array of 1 to 8 entries, each exactly
+`{kind, id, digest}`, and no two with the same `id`. `kind` is `"single"`, a record that approves
+this one action, or `"standing"`, a standing promotion record that authorizes an automation to make
+writes of a class over time. `id` is the record's identifier as its own system names it, in the form
+of `scope` (below: 1 to 128 bytes of UTF-8, no code point display policy 1 refuses, no tab or line
+feed), compared byte for byte. `digest` is `"sha256:"` and 64 lowercase hexadecimal characters of the
+record's exact bytes as its issuer keeps them; nothing is canonicalized, since the record's format is
+not this document's. Any other form is `malformed` (§1.4 order 1). The member is signed with every
+other member, and a receipt that cites no record carries none. **A citation is the requester's
+claim.** The gateway checks its form and nothing else: it reads, fetches and compares no record. A
+verifier of a receipt that verifies may conclude that the requester the receipt names claimed, before
+the write was sent, that these records of these kinds and digests authorized it; never that a record
+exists, says what it is claimed to say, was made by anyone in particular, was in force at `servedAt`,
+covered this scope or this write, or was not withdrawn. A party that holds a record re-digests its
+bytes and judges it by its own format. `id` is in the clear, so a system should mint opaque ones;
+`digest` is unsalted, so a record of little entropy can be guessed from it, and a record format should
+carry a random nonce. A verifier written before this member tolerates it and reports nothing of it.
 
 **What `decision` establishes.** Without `policy`, an action receipt
 establishes no more than this: the gateway that minted it found a decision
@@ -520,8 +539,8 @@ is refused before the source runs where it names none or another (§6, `/acquire
 the identifier the receipt carries is the configuration's and the request's alike. A
 receipt of a source the configuration fixes to no scope identifier is the receipt it
 was before the member existed. The format admits the member on either kind; this
-gateway mints it on acquisitions alone, since a platform fixed to a scope identifier
-allows no write. A seal never carries the identifier, and a registry line names none: the
+gateway mints it on an acquisition, and, from the engine configuration version of ADR-0054, on an
+action of a write source fixed to a scope identifier (§6, "`/act`: a scope, a dry-run and approvals"). A seal never carries the identifier, and a registry line names none: the
 seal of a session of a scope identifier, a seal of version 3 (§3, "A seal of version 3"; §3c,
 "Naming the scope"), carries its digest over the session's scope salt (`scopeSalt`, below),
 `scopeDigest`, under the signature — a seal of version 2, which an earlier release wrote, its
@@ -610,8 +629,9 @@ subject, require its delivery key and contract to match, and require that action
 to have an uncertain outcome. The read-back must be the declared live operation of
 the action's platform: the action's `source` is `<platform>/write`, the read-back's
 `source` is `<platform>/live`, and the read-back's acquisition `shape` is `mcp`.
-Missing or mismatched evidence fails verification with
-`action-reconciliation-unresolved`.
+The read-back and its action carry the same `scope`, or neither carries one (ADR-0054); a verifier
+written before this rule does not make the comparison. Missing or mismatched evidence fails
+verification with `action-reconciliation-unresolved`.
 
 A verifier reports each action receipt that passed the ladder and whose delivery
 outcome is `uncertain` as an observation (§4), once: `action-mismatch` when some
@@ -797,6 +817,44 @@ observed key must equal the action key and the observed outcome must equal
 is unknown. Read-back runs with the live source's credentials and sandbox and
 retains its approved descriptor provenance. The binding digest pins this
 owner-supplied contract; a provider name alone establishes no guarantee.
+
+### 1.2c The dry-run receipt
+
+A **dry-run receipt** (ADR-0054 decision 2) is the gateway's signed word that a write would have
+passed the write's own checks, at the time it was asked, with nothing sent. It is not a receipt of a
+session: it is in no session, is not chained, is not retained, and nothing resolves to it. It is a
+canonical JSON object signed over the prefix `"judgment-pack-gateway/dry-run/1:"` followed by `canon`
+of the object without `signature`, Ed25519, or ES256 exactly as a receipt is (`alg`, §1.2a).
+
+| Member | Form |
+|---|---|
+| `dryRunVersion` | the string `"1"`, inside the signing input |
+| `authority`, `keyId`, `servedAt`, `signature`, `alg` (optional) | as in §1.2a |
+| `source` | `<platform>/write` |
+| `scope` | optional, §1.2a's form; present exactly when the write source is fixed to a scope identifier |
+| `delegation` | optional, §11.7's form, the action's `requester` standing for `caller`; present exactly under a delegation, `admittedAt` being the time of the non-counting admission read |
+| `action` | exactly `{requester, decision, cites, tool, request, policy, approvals}`, `policy` and `approvals` optional, each of §1.2a's forms; no `adapter`, `observedAt` or `delivery`, since no target answered |
+
+It has no other member: no `receiptVersion`, `kind`, `sessionId`, `callIndex`, `prevSignature`,
+`resultDigest`, `argumentsCommitment`, `witness`, `scopeSalt` or `artifact`. `action.request` is a
+fresh salted commitment (`"request:"`, §1.2a) to `{tool, arguments}`; nothing links it to a later
+action, whose commitment has another salt.
+
+**As a receipt, anywhere.** A dry-run receipt has no `receiptVersion`, so it is `malformed` at §1.4
+order 1 under every receipt verifier, one written before this section included: a file of a store, a
+receipt handed to a verifier's receipt interface, or a cited action. A verifier of this release says
+why: *a dry-run receipt is not a receipt of a session*. Its signature is under another prefix, so the
+members of a receipt signed under it are `signature-mismatch` as a receipt.
+
+**As itself.** `gateway verify-dry-run --public-key <key> [--public-key-alg ES256] <file>`, `<key>`
+the key's lowercase hexadecimal characters (64 for Ed25519, the 66 of a compressed point for ES256),
+and verify-ts's `verifyDryRun(bytes, key)` answer `{ok, findings, dryRun: true}`, each finding a
+`{status}`: `malformed` for a form error (a member missing or out of its form, or a member the table
+does not name, `adapter`, `observedAt` and `delivery` among them), `key-mismatch` for a `keyId` or an
+`alg` that is not the pinned key's, or `signature-mismatch`. `dryRun` is `true` in every report, so
+no report of a dry-run receipt reads as an action's. Neither reads a store. A dry-run receipt
+establishes nothing about the action key, and nothing about a later write: the session, the key, the
+decision record, the policy and any delegation's budget can all change in between.
 
 ### 1.3 Store layout
 
@@ -1011,7 +1069,7 @@ statuses of the ladder and do not replace it.)
 
 | Order | Status | Condition |
 |---|---|---|
-| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `decision.recordBytes` present and not `"exact"`, `witness` present and not an object whose `origin`, `keyId` and `trail` are each of their stated forms, `delegation` or `reconciler` present and not of its stated form (§11.7), `scope` present and not a string of its stated form, `artifact` present and not the string `"not-retained"` or on a receipt that is not an acquisition — and never a relational one but the comparisons within one receipt that §11.7 states: `caller` `null` or naming another issuer or subject than `delegation.subject`, an action's `requester` likewise, and `reconciler` on a receipt that is not an acquisition carrying `reconciliation` |
+| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `action.approvals` present and not of its stated form, `decision.recordBytes` present and not `"exact"`, `witness` present and not an object whose `origin`, `keyId` and `trail` are each of their stated forms, `delegation` or `reconciler` present and not of its stated form (§11.7), `scope` present and not a string of its stated form, `artifact` present and not the string `"not-retained"` or on a receipt that is not an acquisition — and never a relational one but the comparisons within one receipt that §11.7 states: `caller` `null` or naming another issuer or subject than `delegation.subject`, an action's `requester` likewise, and `reconciler` on a receipt that is not an acquisition carrying `reconciliation` |
 | 2 | `unsupported-version` | `receiptVersion` is neither `"2"` nor `"3"` |
 | 3 | `key-mismatch` | `keyId` is not the key id of a key the verifier reached (§3b): the key it pinned, or a key a rotation it followed rotated to |
 | 4 | `signature-mismatch` | the signature does not verify, under the key `keyId` names, over the input §1.2 or §1.2a defines for the receipt's version |
@@ -2074,13 +2132,19 @@ with the receipt's own session and index, or, for step 4's `session-removed`,
 which is of a session the store no longer holds, `{sessionId, observation}`. The
 observations this document names are step 3's `session-open` and
 `sealed-after-interruption`, step 4's `session-removed`, step 8's
-`decision-record-not-compared`, §1.2b's
+`decision-record-not-compared` and `approval-cited-again` (below), §1.2b's
 `action-uncertain`, `action-committed` and `action-mismatch`, and §1.3a's
 `artifact-not-retained` and `artifact-removed`, each but step 4's on a receipt whose
 ladder status is `ok`. An observation is
 not a finding: it never makes `ok` false, a consumer's verdict (§5a) does not
 read it, and a report with none may leave the member out. The corpus compares
 observations where a store vector states them, and only there (§7).
+
+**`approval-cited-again`** (ADR-0054) is on each action receipt whose ladder status is `ok` and that
+cites a `single` approval (§1.2a, `approvals`) whose `id` and `digest` another action receipt of the
+store, of that status, also cites. It is not a finding: a single approval is reported, not refused,
+when it is cited again, and only the one store is seen. A requester that labels a single approval
+`standing` avoids it, and the receipt records that it said so.
 
 **Witnesses.** A report carries, beside them, a member `witnesses` when a
 receipt whose ladder status is `ok` carries `witness` (§1.2a): an array of the
@@ -2935,6 +2999,20 @@ together or not at all, and a second run finds nothing and appends nothing
 
 What remains in and beside the store after a removal is stated in `README.md`, "What a removal
 of a scope identifier leaves".
+
+### `/act`: a scope, a dry-run and approvals
+
+ADR-0054 adds three request members to `/act`, read from the engine configuration version it
+assigns, which this engine does not yet read: a file of that version is refused by its version, and
+below it each member is refused as one `/act` does not read, so nothing here changes an `/act`
+answer today. From that version a platform may set `scope` beside `write: true` where
+`identity.callerScopes` is an object and the platform names its own `decisionRecords`, disjoint from
+every other; `scope` is then read as `/acquire` reads it, and refused under a delegation or from a
+reservation sender until a delegation can be bound to a scope identifier; `"dryRun": true` runs the
+write's checks, signs a dry-run receipt (§1.2c) and answers `200` with exactly `{"dryRun", "request",
+"salts"}`, with no `receipt`, sending, reserving and recording nothing; and `approvals` is carried as
+`action.approvals` (§1.2a), checked for form alone. The order of the refusals, the key's namespace by
+scope, the read-back and `gateway remove-scope` are as ADR-0054 decision 1 states them.
 
 ### Who may ask for a write
 
@@ -4290,10 +4368,26 @@ canonical form is `canon` (§1.1); a digest is §1.2a's; a time is UTC with exac
 `YYYY-MM-DDTHH:MM:SS.sssZ`, of a date that exists; an opaque identifier is 32 lowercase
 hexadecimal characters; a flat token is §3a's; a principal reference is
 `{"kind": "person" | "service", "issuer", "subject"}` with `issuer` and `subject` non-empty
-strings. Its signature is Ed25519 over `"judgment-pack/delegation/1:"` followed by `canon` of the
-statement with its top-level `signature` removed, under the issuing host's key, held to §8.4's key
-rule and equation; `keyId` is derived from the key as §1.2 derives one. Its digest is
-`"sha256:"` and the hexadecimal SHA-256 of `canon` of the whole statement, `signature` included.
+strings. Its signature is made over `"judgment-pack/delegation/1:"` followed by `canon` of the
+statement with its top-level `signature` removed, under the issuing host's key: Ed25519, held to
+§8.4's key rule and equation, with `keyId` derived from the key as §1.2 derives one; or, where the
+statement holds `alg`, ES256 under a P-256 key, held to §1.5's key rule and its low-S rule, with
+`keyId` derived from the key's compressed point as §1.5 derives one. Its digest is `"sha256:"` and
+the hexadecimal SHA-256 of `canon` of the whole statement, `signature` included.
+
+**ES256 statements** (spec RFC 0030, amendment of 2026-11-22, §2 *Signing with a P-256 key*). A
+statement a P-256 key signs holds the top-level member `alg`, the string `"ES256"`, inside what is
+signed and what is digested. A statement an Ed25519 key signs holds no `alg`, and is byte for byte
+what it was, under the same prefix and the same digest. The gateway verifies each link by the
+algorithm its `alg` names, Ed25519 where it holds none, under the key its `keyId` names among the
+keys pinned for its `host` **with that algorithm** (§11.2), and never chooses the algorithm from a
+key's length. An ES256 signature is `r||s`, each 32 bytes big-endian, as 128 lowercase hexadecimal
+characters, and verifies exactly when 1 ≤ r ≤ n − 1, 1 ≤ s ≤ (n − 1)/2 and ECDSA verification
+holds with SHA-256 over the signing input (§1.5): a high-S signature does not verify, and a
+DER-encoded one is not of the form. A chain may mix the algorithms, link by link: each link is
+verified at steps 4 and 5 by its own `alg` and `keyId`, root first, and the narrowing check compares
+neither. Only a host whose keys pin a P-256 key, from engine configuration version 41, has ES256
+links that verify; under any other configuration every ES256 link is `key-mismatch`.
 
 A **chain** is a JSON array of one to five statements, root first. The gateway verifies a chain
 by the RFC's steps 1 to 7, in order, stopping at the first failure; within a step the links are
@@ -4303,14 +4397,14 @@ taken root first:
 | --- | --- | --- |
 | 1 | `malformed` | the chain is not an array of one to five objects, a value is outside the `canon` domain or a member name repeats anywhere in it, or a link lacks a string `delegationVersion` |
 | 2 | `unsupported-version` | a link's `delegationVersion` is a string other than `"1"` |
-| 3 | `malformed` | a link violates a structural constraint of version 1: a member missing or of another type or form; `scope.sources` empty or over 256 entries, out of order (by `audience.kind`, then `audience.name`, then `source`, each by code point) or repeating an `audience` and `source`; `tools` empty, over 256, out of code-point order or repeating; `effects` empty, outside the five effect classes, out of their strength order or repeating; `limits` over 16 names, a name other than `calls` or `x-` followed by a flat token, or a value that is not a non-negative integer; `expiresAt` not after `issuedAt`, or more than 24 hours after it; `parent` `null` with a `depth` other than `0`, or not `null` with a `depth` of `0`; or `canon` of the link over 65536 bytes |
-| 4 | `key-mismatch` | a link's `keyId` is not the `keyId` of a key the configuration pins for its `host` |
-| 5 | `signature-mismatch` | a link's signature does not verify under that key, by §8.4's equation |
+| 3 | `malformed` | a link violates a structural constraint of version 1: a member missing or of another type or form; `scope.sources` empty or over 256 entries, out of order (by `audience.kind`, then `audience.name`, then `source`, each by code point) or repeating an `audience` and `source`; `tools` empty, over 256, out of code-point order or repeating; `effects` empty, outside the five effect classes, out of their strength order or repeating; `limits` over 16 names, a name other than `calls` or `x-` followed by a flat token, or a value that is not a non-negative integer; `expiresAt` not after `issuedAt`, or more than 24 hours after it; `parent` `null` with a `depth` other than `0`, or not `null` with a `depth` of `0`; `signature` not 128 lowercase hexadecimal characters, a DER-encoded ES256 signature among them; an `alg` that is not the string `"ES256"` (`"EdDSA"`, `"Ed25519"`, `"es256"` and a number among them); or `canon` of the link over 65536 bytes |
+| 4 | `key-mismatch` | a link's `keyId` is not the `keyId` of a key the configuration pins for its `host` with the link's algorithm: ES256 where it holds `alg`, Ed25519 where it holds none. A key of the other algorithm is not that key, so an Ed25519-signed statement given `alg: "ES256"`, and an ES256 statement with its `alg` removed, are refused here |
+| 5 | `signature-mismatch` | a link's signature does not verify under that key: by §8.4's equation for Ed25519; for ES256, by §1.5's rules, the low-S rule included |
 | 6 | `chain-broken` | the RFC's narrowing clauses 0 to 3 fail: the root's `parent` is not `null` or its `depth` not `0`; a child's `parent` does not name its parent's `id` and digest; a child's `depth` is not its parent's plus one, or is over 4; a child's `host` is not its parent's |
 | 7 | `widened` | the RFC's clauses 4 to 8 fail: a child's `sub` is not its parent's, member for member; its `issuedAt` is before its parent's or its `expiresAt` after its parent's; an entry of its scope has no entry of its parent's with the same `audience` and `source` whose `tools` and `effects` contain its own; such an entry lacks a limit name of the parent's entry or exceeds its value; or its parent's `mayDelegate` is not `true` |
 
-A member a link carries at its top level beside those of version 1 is not refused by steps 1 to
-3: it is signed with the rest, as a receipt's unknown member is, so a member appended after
+A member a link carries at its top level beside those of version 1 and `alg` is not refused by
+steps 1 to 3: it is signed with the rest, as a receipt's unknown member is, so a member appended after
 signing fails step 5. Every object within a link — `sub`, `act`, `act.software`, `scope`, an
 entry, its `audience`, `parent` — holds exactly the members version 1 names, or step 3 refuses it.
 Equality of two values is equality of their `canon` bytes.
@@ -4327,7 +4421,10 @@ token from that issuer:
     {
       "host": "desk",
       "requester": "service:desk",
-      "keys": ["<64 lowercase hexadecimal characters: an Ed25519 public key>"],
+      "keys": [
+        "<64 lowercase hexadecimal characters: an Ed25519 public key>",
+        {"alg": "ES256", "key": "<66 lowercase hexadecimal characters: a P-256 compressed point, from engine configuration version 41>"}
+      ],
       "admission": {"url": "https://desk.example/delegation/admission", "credential": "/etc/engine/desk-admission-token"}
     }
   ],
@@ -4339,8 +4436,16 @@ token from that issuer:
 - `hosts`: one entry per issuing host, at least one, `host` a flat token named once. `requester`
   is the subject of the issuing host's own token from the configured issuer: a request to a
   delegation endpoint (§11.3, §11.6) authenticates as that host only with a token the identity
-  verifies whose subject is `requester`. `keys` are the host's pinned signing keys, each held to
-  §8.4's key rule when the configuration is loaded. `admission` is where the gateway reads the
+  verifies whose subject is `requester`. `keys` are the host's pinned signing keys, at least one,
+  each pinned with its algorithm and held to that algorithm's key rule when the configuration is
+  loaded. A string of 64 lowercase hexadecimal characters is an Ed25519 key, held to §8.4's key
+  rule, at every version. From engine configuration version 41, the object
+  `{"alg": "ES256", "key": <66 lowercase hexadecimal characters>}`, with no other member, is a P-256
+  key, its compressed point held to §1.5's key rule, as `retention.acknowledgedBy` lists one; a
+  point that fails the rule is refused as `is not a sound P-256 public key`. A bare string of 66
+  characters is refused, naming both forms, since its length would choose the algorithm; so is
+  every other entry from version 41. Before version 41 the object is refused by name. A host may
+  pin keys of both algorithms while it moves from one to the other, or of one. `admission` is where the gateway reads the
   host's state (§11.5): `url` an `https://` URL, and `credential` an absolute path to a file
   holding the bearer credential the gateway presents there, read once at start.
 - `operators`: optional, the subjects of the configured issuer that the gateway accepts as its

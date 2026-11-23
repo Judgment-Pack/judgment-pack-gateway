@@ -299,7 +299,10 @@ function toolTransportHolds(tool: ObjectValue): boolean {
   );
 }
 
-function isAction(v: Value | undefined): boolean {
+// isActionClaims is what an action receipt and a dry-run receipt (§1.2c) both
+// carry of an action: the requester, the decision, the citations, the tool,
+// the request, the policy and the approvals.
+export function isActionClaims(v: Value | undefined): v is ObjectValue {
   if (v?.type !== "object") {
     return false;
   }
@@ -308,10 +311,9 @@ function isAction(v: Value | undefined): boolean {
   const cites = member(v, "cites");
   const tool = member(v, "tool");
   const policy = member(v, "policy");
- const delivery=member(v,"delivery");
+  const approvals = member(v, "approvals");
   return (
-    (delivery===undefined || isActionDelivery(delivery)) &&
- isIdentity(member(v, "requester")) &&
+    isIdentity(member(v, "requester")) &&
     decision?.type === "object" &&
     isDigest(member(decision, "recordDigest")) &&
     isDigest(member(decision, "packDigest")) &&
@@ -328,9 +330,44 @@ function isAction(v: Value | undefined): boolean {
     isDigest(member(v, "request")) &&
     // the policy the write was held to: optional, and a digest when present
     (policy === undefined || isDigest(policy)) &&
-    isAdapter(member(v, "adapter")) &&
-    isString(member(v, "observedAt"))
+    // the approval records the requester cites (ADR-0054): optional, and of
+    // their form when present
+    (approvals === undefined || isApprovals(approvals))
   );
+}
+
+// isApprovals is action.approvals' form: 1 to 8 entries, each exactly {kind,
+// id, digest}; kind "single" or "standing"; id of the scope identifier's
+// form, and no id twice; digest "sha256:" and 64 lowercase hexadecimal
+// characters.
+export function isApprovals(v: Value): boolean {
+  if (v.type !== "array" || v.items.length === 0 || v.items.length > 8) {
+    return false;
+  }
+  const seen = new Set<string>();
+  for (const e of v.items) {
+    if (e.type !== "object" || e.members.length !== 3) {
+      return false;
+    }
+    const kind = member(e, "kind");
+    const id = member(e, "id");
+    if (!isString(kind) || (kind.value !== "single" && kind.value !== "standing")) {
+      return false;
+    }
+    if (!isString(id) || !isScopeIdentifier(id.value) || seen.has(id.value) || !isDigest(member(e, "digest"))) {
+      return false;
+    }
+    seen.add(id.value);
+  }
+  return true;
+}
+
+function isAction(v: Value | undefined): boolean {
+  if (!isActionClaims(v)) {
+    return false;
+  }
+  const delivery = member(v, "delivery");
+  return (delivery === undefined || isActionDelivery(delivery)) && isAdapter(member(v, "adapter")) && isString(member(v, "observedAt"));
 }
 
 // isWitnessOrigin is the form of a witness's origin (§1.2a, ADR-0014):
@@ -486,7 +523,7 @@ function namesSubject(identity: Value | undefined, subject: ObjectValue): boolea
 // requester -- naming its subject; true when the receipt carries none. A
 // member it does not name is tolerated; subject is exactly a principal
 // reference.
-function delegationHolds(r: ObjectValue, kind: string): boolean {
+export function delegationHolds(r: ObjectValue, kind: string): boolean {
   const d = member(r, "delegation");
   if (d === undefined) {
     return true;

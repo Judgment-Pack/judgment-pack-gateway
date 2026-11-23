@@ -1,0 +1,14 @@
+{
+  "name": "signed-under-the-receipt-prefix",
+  "note": "A dry-run receipt of its form signed under the version 3 receipt prefix: signature-mismatch, since a dry-run receipt is signed under its own prefix alone. As a receipt, malformed.",
+  "receipt": "{\"action\":{\"approvals\":[{\"digest\":\"sha256:63b0a6cd7c8d483f3b8dddf986c89c8c226f4842ff5ab940d70ecfaacaa42626\",\"id\":\"change-1\",\"kind\":\"single\"}],\"cites\":[{\"callIndex\":0,\"sessionId\":\"s2\",\"signature\":\"ea1231645765ed1a0f27972f6cfbbc9d1a057f673101629801f9f30cf7e8fc704a535f17591f3740f4c6f3644fbf167eef93afb886d20a93f33025131083a60b\"}],\"decision\":{\"packDigest\":\"sha256:4e03c5e500d33132d9bda1452f82e2258acfa7ff8e45146796010a89f34cd081\",\"recordDigest\":\"sha256:c9dea9278f1c5eb9f89c3faf802219b4b41e1c1be4b6fbbe44eb4969647c141d\"},\"request\":\"sha256:b461db8d103fcf566d3cf666587eb1eae33ce4c7e471099a8777761378eaeb3a\",\"requester\":{\"issuer\":\"https://login.example.com/\",\"subject\":\"approver@example.com\",\"tokenDigest\":\"sha256:8e8b713e659574d3ae8537642bb19084ab07060d7f2095e737e97af03254386e\"},\"tool\":{\"endpoint\":\"https://mcp.example.com/\",\"name\":\"update_ticket\",\"shape\":\"mcp\"}},\"authority\":\"gateway:corpus\",\"dryRunVersion\":\"1\",\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"servedAt\":\"2026-09-12T00:00:03Z\",\"signature\":\"8ab5430727a9769e3223d919fd40f1d8f677c65be59e2e0669d401616cceab9304f7916beea4573aef0d69016165688aa6cfa134b198d8a2e1948d1dbc48390c\",\"source\":\"tickets/write\"}",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "status": "signature-mismatch"
+      }
+    ]
+  },
+  "asReceipt": "malformed"
+}

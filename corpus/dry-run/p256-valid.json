@@ -1,0 +1,11 @@
+{
+  "name": "p256-valid",
+  "note": "A dry-run receipt signed by the P-256 test key, carrying alg \"ES256\", checked under --public-key-alg ES256: ok. As a receipt, malformed.",
+  "publicKeyAlg": "ES256",
+  "receipt": "{\"action\":{\"approvals\":[{\"digest\":\"sha256:63b0a6cd7c8d483f3b8dddf986c89c8c226f4842ff5ab940d70ecfaacaa42626\",\"id\":\"change-1\",\"kind\":\"single\"}],\"cites\":[{\"callIndex\":0,\"sessionId\":\"s2\",\"signature\":\"ea1231645765ed1a0f27972f6cfbbc9d1a057f673101629801f9f30cf7e8fc704a535f17591f3740f4c6f3644fbf167eef93afb886d20a93f33025131083a60b\"}],\"decision\":{\"packDigest\":\"sha256:4e03c5e500d33132d9bda1452f82e2258acfa7ff8e45146796010a89f34cd081\",\"recordDigest\":\"sha256:c9dea9278f1c5eb9f89c3faf802219b4b41e1c1be4b6fbbe44eb4969647c141d\"},\"request\":\"sha256:b461db8d103fcf566d3cf666587eb1eae33ce4c7e471099a8777761378eaeb3a\",\"requester\":{\"issuer\":\"https://login.example.com/\",\"subject\":\"approver@example.com\",\"tokenDigest\":\"sha256:8e8b713e659574d3ae8537642bb19084ab07060d7f2095e737e97af03254386e\"},\"tool\":{\"endpoint\":\"https://mcp.example.com/\",\"name\":\"update_ticket\",\"shape\":\"mcp\"}},\"alg\":\"ES256\",\"authority\":\"gateway:corpus\",\"dryRunVersion\":\"1\",\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"servedAt\":\"2026-09-12T00:00:03Z\",\"signature\":\"014cb819b160534010987150ec7637c006d62a5d983be6118962e6dbdf8fa6eb476ff727ad928462695e25d46a285b5c031b587a083eaf18fba26b22eae046b6\",\"source\":\"tickets/write\"}",
+  "expected": {
+    "ok": true,
+    "findings": []
+  },
+  "asReceipt": "malformed"
+}

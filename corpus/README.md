@@ -241,7 +241,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 203 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 213 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -570,6 +570,31 @@ version `"1"` where `"2"` is required, and version `"3"`, `version`. The stateme
 signed once, from `TEST-SEED`, the published rotation seeds and `TEST-P256-SCALAR`, by a script
 independent of this repository (its own canonical form, Node's Ed25519 and ECDSA P-256, low-S), and are
 frozen: no test signs them again.
+
+**Approval citations** (ADR-0054 decision 3; `SPEC.md` §1.2a, `action.approvals`). Ten of
+`v3/stores` hold an action receipt that cites approval records. `v3-action-approvals-valid` cites a
+single and a standing record and is `ok`. Seven are `malformed` at §1.4 order 1, one for each rule of
+the form: a `kind` other than `"single"` or `"standing"` (`-kind-other`), a digest in uppercase
+(`-digest-uppercase`), an id holding a tab (`-id-control-character`), an empty array (`-empty`), nine
+entries (`-nine-entries`), one id twice (`-id-twice`), and an entry with a fourth member
+(`-member-extra`). `-appended-after-signing` adds a well-formed citation after the receipt was signed,
+and is `signature-mismatch`. `v3-action-single-approval-cited-again` holds two action receipts that
+cite one single record, by id and digest: both are `ok`, and each carries the observation
+`approval-cited-again`. v0.38.0, which does not read the member, returns `ok` for every one but
+`-appended-after-signing`, and makes no such observation.
+
+**`dry-run/*.json`** — 8 vectors for the dry-run receipt (`SPEC.md` §1.2c), which `gateway
+verify-dry-run` and verify-ts's `verifyDryRun` read and no receipt verifier accepts. Each holds the
+receipt's bytes as `receipt`, `publicKeyAlg` `"ES256"` where it is signed by the P-256 test key,
+`expected`, the report's `ok` and the statuses of its `findings` (`malformed`, `key-mismatch` or
+`signature-mismatch`), and `asReceipt`, the §1.4 status that every receipt verifier gives the same
+bytes held as `receipts/s1/0.json` of a store: this release's, and v0.38.0's, which has no dry-run
+command. `gateway conform` runs them in process, whatever implementation is under test: a valid one
+under each key (`valid`, `p256-valid`), one whose action carries `adapter` (`adapter-present`), one
+with no `request` (`member-missing`), a receipt's members signed under the dry-run prefix
+(`relabelled-as-receipt`, `signature-mismatch` as a receipt), a scoped one as a store holds it
+(`in-a-store`), one naming another key (`key-mismatch`), and one signed under the receipt prefix
+(`signed-under-the-receipt-prefix`).
 
 **The key and the signature vectors.** `TEST-P256-SCALAR` is the synthetic scalar, the 32 bytes `01`
 repeated, published for building vectors alone, as `TEST-SEED` is. `TEST-P256-PUBLIC-KEY` is its

@@ -867,7 +867,7 @@ func vectorPin(corpusDir string, vector storeVector, ed []byte, p256 *heldKey) (
 }
 
 // corpusCounts is how many vectors of each family a run read.
-type corpusCounts struct{ canon, stores, witness, recovery, retentionAck, keyHistory int }
+type corpusCounts struct{ canon, stores, witness, recovery, retentionAck, keyHistory, dryRun int }
 
 func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, error) {
 	var failures []string
@@ -957,7 +957,16 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 		return nil, counts, err
 	}
 	counts.keyHistory = historyCount
-	return append(failures, historyFailures...), counts, nil
+	failures = append(failures, historyFailures...)
+	// The dry-run receipts (SPEC.md §1.2c) are read by gateway verify-dry-run,
+	// which the process contract does not carry, so they are run in process
+	// too, with what a receipt verifier says of the same bytes.
+	dryFailures, dryCount, err := runDryRunVectors(corpusDir)
+	if err != nil {
+		return nil, counts, err
+	}
+	counts.dryRun = dryCount
+	return append(failures, dryFailures...), counts, nil
 }
 
 // runStoreVectors holds an implementation to every store vector, of both
@@ -1125,6 +1134,7 @@ func cmdConform(args []string) int {
 	}
 	fmt.Printf("this implementation's retain vs corpus: %d acknowledgment-line vectors, run in process\n", counts.retentionAck)
 	fmt.Printf("this implementation's key-history check vs corpus: %d key-history vectors, run in process\n", counts.keyHistory)
+	fmt.Printf("this implementation's verify-dry-run vs corpus: %d dry-run vectors, run in process\n", counts.dryRun)
 	for _, failure := range failures {
 		fmt.Printf("  FAIL %s\n", failure)
 	}

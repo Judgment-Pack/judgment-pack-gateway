@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -32,13 +31,13 @@ func readStatementVectors(t testing.TB) (statementVectors, delegationKeys) {
 	}
 	keys := delegationKeys{}
 	for host, list := range doc.Keys {
-		keys[host] = map[string]ed25519.PublicKey{}
+		keys[host] = map[string]heldKey{}
 		for _, k := range list {
 			pub, err := hex.DecodeString(k)
 			if err != nil {
 				t.Fatal(err)
 			}
-			keys[host][keyIDFor(pub)] = ed25519.PublicKey(pub)
+			keys[host][keyIDFor(pub)] = edKey(pub)
 		}
 	}
 	return doc, keys

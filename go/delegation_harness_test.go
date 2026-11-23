@@ -158,7 +158,7 @@ func newDelegationHarness(t *testing.T, bearerReadOnly bool) *delegationHarness 
 	host := newIssuingHost(t)
 	pub := ed25519.NewKeyFromSeed(delegationHostSeed).Public().(ed25519.PublicKey)
 	d := newDelegationService(map[string]*delegationHost{"desk": {
-		delegationHostSpec: delegationHostSpec{host: "desk", requester: hostRequester, keys: map[string]ed25519.PublicKey{keyIDFor(pub): pub}, admission: host.server.URL},
+		delegationHostSpec: delegationHostSpec{host: "desk", requester: hostRequester, keys: map[string]heldKey{keyIDFor(pub): edKey(pub)}, admission: host.server.URL},
 		bearer:             host.bearer,
 	}}, []string{testOperator}, bearerReadOnly)
 	pool := x509.NewCertPool()

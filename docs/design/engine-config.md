@@ -1520,7 +1520,8 @@ a service under a signed delegation from an issuing host, the Desk in the refere
 
 It requires `identity`: the issuing host asks for a credential, and revokes one, with a token
 from that issuer whose subject is the host's `requester`. Each key is held to the key rule of
-SPEC.md §8.4 when the file is loaded. The admission read goes to `admission.url`, which must be
+SPEC.md §8.4 when the file is loaded; from version 41 a key may also be a P-256 issuing host's
+("P-256 issuing-host keys (engine version 41)", below). The admission read goes to `admission.url`, which must be
 `https://`, with the token in `admission.credential`, read once at start; a missing, late or
 unreadable answer refuses the call. `operators` are the subjects that may reach a delegated
 action's retained evidence or read-back as the gateway's operator. `bearerReadOnly` admits a
@@ -2935,6 +2936,52 @@ ring's location is the operator's.
   Ed25519 one is allowed and named on the standard error.
 
 An earlier gateway refuses a version-40 file by its version.
+
+## P-256 issuing-host keys (engine version 41)
+
+Version 41 lets `delegation.hosts[].keys` pin an issuing host's ECDSA P-256 key, so that the host
+may sign delegation statements with it (spec RFC 0030, amendment of 2026-11-22; SPEC.md §11.1,
+§11.2). It adds no member. The key is written as `retention.acknowledgedBy` writes one from version
+40:
+
+```json
+"keys": [
+  "<the host's Ed25519 public key, 64 lowercase hex characters>",
+  {"alg": "ES256", "key": "<the host's P-256 compressed point, 66 lowercase hex characters>"}
+]
+```
+
+- **The Ed25519 form is unchanged.** A string of 64 lowercase hexadecimal characters is an Ed25519
+  key at every version, held to SPEC.md §8.4's key rule as before.
+- **The P-256 form is an object.** `{"alg": "ES256", "key": …}`, exactly those two members, the key
+  a compressed point (`02` or `03` and the 32 bytes of x) that exists on the curve. A point that
+  fails the rule is refused as `is not a sound P-256 public key`.
+- **A bare 66-character string is refused,** naming both forms: taking it would choose the algorithm
+  from the key's length. So is every other entry, the uncompressed point among them.
+- **Before version 41** the object is refused by name, with the version it needs.
+- **What a pinned P-256 key admits.** A delegation statement holding `alg: "ES256"` whose `keyId` is
+  the point's key id verifies under it, by r||s at low S. A key of one algorithm never verifies a
+  link of the other: such a link is `key-mismatch`. A host may pin both while it moves from one
+  algorithm to the other, and a chain may mix them, link by link.
+
+An earlier gateway refuses a version-41 file by its version.
+
+## Scoped writes, dry-runs and approvals (ADR-0054; version to be assigned)
+
+ADR-0054 adds, from the engine configuration version it assigns (`actScopeVersion` in
+`go/engine.go`, which this engine does not yet read, so a file of that version is refused by its
+version):
+
+- **`scope` beside `write: true`.** Such a platform is refused at load unless `identity.callerScopes`
+  is an object (a write takes no `"unchecked"`) and the platform names its own `decisionRecords`
+  directory: not the gateway's, not another scoped platform's, and not beneath or above either, held
+  to the ownership and permission check at start the gateway's directory is held to. An `/act` of that
+  scope finds its decision record there and nowhere else; unscoped writes keep the gateway's
+  directory. `gateway verify --decision-records` takes a directory that holds them all.
+- **The request members `scope`, `dryRun` and `approvals`** on `/act` (SPEC.md §6, "`/act`: a scope,
+  a dry-run and approvals").
+
+Below that version each member is refused by name, as before.
 
 ## A key history that marks each store continuation (engine version 42)
 

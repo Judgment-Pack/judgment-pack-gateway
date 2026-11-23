@@ -1,0 +1,14 @@
+{
+  "name": "member-missing",
+  "note": "A dry-run receipt whose action has no request commitment, signed: malformed. As a receipt, malformed.",
+  "receipt": "{\"action\":{\"approvals\":[{\"digest\":\"sha256:63b0a6cd7c8d483f3b8dddf986c89c8c226f4842ff5ab940d70ecfaacaa42626\",\"id\":\"change-1\",\"kind\":\"single\"}],\"cites\":[{\"callIndex\":0,\"sessionId\":\"s2\",\"signature\":\"ea1231645765ed1a0f27972f6cfbbc9d1a057f673101629801f9f30cf7e8fc704a535f17591f3740f4c6f3644fbf167eef93afb886d20a93f33025131083a60b\"}],\"decision\":{\"packDigest\":\"sha256:4e03c5e500d33132d9bda1452f82e2258acfa7ff8e45146796010a89f34cd081\",\"recordDigest\":\"sha256:c9dea9278f1c5eb9f89c3faf802219b4b41e1c1be4b6fbbe44eb4969647c141d\"},\"requester\":{\"issuer\":\"https://login.example.com/\",\"subject\":\"approver@example.com\",\"tokenDigest\":\"sha256:8e8b713e659574d3ae8537642bb19084ab07060d7f2095e737e97af03254386e\"},\"tool\":{\"endpoint\":\"https://mcp.example.com/\",\"name\":\"update_ticket\",\"shape\":\"mcp\"}},\"authority\":\"gateway:corpus\",\"dryRunVersion\":\"1\",\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"servedAt\":\"2026-09-12T00:00:03Z\",\"signature\":\"51c481b2b84b08b3947eb18fd124507901ef3f8342776b2d69c38da5a28fb4397862e7e9c7cca6c44b16f5413917c16a2c534df17f56e82c1cafc2961955800d\",\"source\":\"tickets/write\"}",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "status": "malformed"
+      }
+    ]
+  },
+  "asReceipt": "malformed"
+}
