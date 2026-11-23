@@ -532,12 +532,20 @@ func judgeOperatorJournal(data []byte, pending bool, keys []reachedKey, registry
 	return j
 }
 
+// knownJournalFiles are the files of journals/ this release reads.
+var knownJournalFiles = map[string]bool{operatorJournal + ".jsonl": true, operatorJournal + ".pending": true}
+
 // judgeJournals is SPEC.md §4 step 9 on a store's root: each journal it
 // holds is judged, and a journal with no finding observed as journal-from.
-// The operator journal is the one this record names; a journal of another
-// name, a later record's, is passed over, as an older verifier passes over
-// journals/ whole. held and evidence are what --require-journal reads.
+// The operator journal is the one this release reads; any other file in
+// journals/, a later release's journal or one put there, is journal-unknown,
+// by its name, and fails the verdict: a journal this release cannot judge is
+// never passed over as though it held. held and evidence are what
+// --require-journal reads.
 func (r *report) judgeJournals(storeRoot string, registry []byte, walk *registryWalk) error {
+	if err := r.judgeUnknownJournals(storeRoot); err != nil {
+		return err
+	}
 	data, there, err := readJournalPath(storeRoot, operatorJournal+".jsonl")
 	if errors.Is(err, errJournalNotRegular) {
 		data, there, err = nil, false, nil
@@ -582,6 +590,54 @@ func (r *report) judgeJournals(storeRoot string, registry []byte, walk *registry
 		})
 	}
 	return nil
+}
+
+// judgeUnknownJournals reports journal-unknown, {status, file}, for each
+// entry of journals/ that is not one of knownJournalFiles, in name order. A
+// journals/ that is not a directory holds no journal (SPEC.md §4.1).
+func (r *report) judgeUnknownJournals(storeRoot string) error {
+	names, err := unknownJournalFiles(storeRoot)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		r.Findings = append(r.Findings, finding{"status": "journal-unknown", "file": name})
+	}
+	return nil
+}
+
+// unknownJournalFiles is each entry of the store's journals/ that is not one
+// of knownJournalFiles, in name order: what verify reports journal-unknown
+// and export refuses.
+func unknownJournalFiles(storeRoot string) ([]string, error) {
+	if storeRoot == "" {
+		return nil, nil
+	}
+	dir := filepath.Join(storeRoot, journalsDir)
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if absent(err) || errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("journal: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("journal: %w", err)
+	}
+	var names []string
+	// a known name that is not a regular file (a link, a directory, a
+	// pipe) is not read either, and is named with the rest rather than
+	// read as no journal
+	for _, e := range entries {
+		if !knownJournalFiles[e.Name()] || !e.Type().IsRegular() {
+			names = append(names, e.Name())
+		}
+	}
+	return names, nil
 }
 
 // requireJournals is --require-journal (ADR-0056 §6): a journal the store

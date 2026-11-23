@@ -98,7 +98,7 @@ func TestEveryCorpusStoreExportsAndARestoreVerifiesByteForByte(t *testing.T) {
 	if len(paths) == 0 {
 		t.Fatal("no store vectors: the test tests nothing")
 	}
-	staged := 0
+	staged, unknown := 0, 0
 	for _, p := range paths {
 		raw, err := os.ReadFile(p)
 		if err != nil {
@@ -117,6 +117,18 @@ func TestEveryCorpusStoreExportsAndARestoreVerifiesByteForByte(t *testing.T) {
 			live := verdictBytes(t, storeRoot, registryPath, vector.Authority, records, publicKey)
 			out := filepath.Join(t.TempDir(), "export")
 			kind := newFsKind(fsLayout{store: storeRoot, registry: registryPath})
+			// a store holding a journal this release does not read is
+			// refused, naming it: its restored copy would lose journal-unknown
+			if names, err := unknownJournalFiles(storeRoot); err != nil {
+				t.Fatal(err)
+			} else if len(names) > 0 {
+				unknown++
+				_, err := writeExport(exportInputs{authority: vector.Authority, keyID: keyIDFor(publicKey), kind: kind, storeRoot: storeRoot, decisionRecords: records}, out)
+				if !errors.Is(err, errUnknownJournal) || !strings.Contains(err.Error(), names[0]) {
+					t.Fatalf("export of a store holding %v: %v, want %v naming it", names, err, errUnknownJournal)
+				}
+				return
+			}
 			// a store holding a staged operator entry is refused (ADR-0056,
 			// Amendment C): its restored copy would lose journal-entry-missing
 			if _, there, err := readJournalPath(storeRoot, operatorJournal+".pending"); err != nil {
@@ -139,6 +151,9 @@ func TestEveryCorpusStoreExportsAndARestoreVerifiesByteForByte(t *testing.T) {
 				t.Fatalf("the restored export's verdict differs from the store's:\nstore:    %s\nrestored: %s", live, got)
 			}
 		})
+	}
+	if unknown == 0 {
+		t.Fatal("no store vector holds a journal this release does not read: the refusal is untested")
 	}
 	if staged == 0 {
 		t.Fatal("no store vector holds a staged operator entry: the refusal is untested")

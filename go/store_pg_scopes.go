@@ -276,6 +276,12 @@ func (k *pgKind) exportCut() (*storeCut, error) {
 			if cut.journal, err = pgJournalFile(tx, operatorJournal); err != nil {
 				return err
 			}
+			// a journal this release does not read is refused by its name,
+			// never left out, as in a store directory: the copy would
+			// verify without it (journal-unknown)
+			if err = pgUnknownJournals(tx); err != nil {
+				return err
+			}
 			docs, err := tx.exec(`SELECT name, revision, data FROM gateway.documents WHERE scope = $1`, row)
 			if err != nil {
 				return err

@@ -241,7 +241,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 234 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 235 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). Ten of them,
