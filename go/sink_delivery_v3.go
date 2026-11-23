@@ -121,10 +121,13 @@ func (r actionReceiptNotForwarded) Error() string {
 //     it: what the queue holds is delivered, and an empty queue is a receipt
 //     acknowledged.
 //   - Otherwise the process that minted it stopped, or never held it here:
-//     what it held for the sink is gone with it, so the receipt the evidence
-//     keeps is delivered, alone, before anything is answered. The sink keeps
-//     one receipt per digest, so one it acknowledged before is taken as it
-//     was.
+//     what it held for the sink is gone with it, so every receipt the store
+//     holds of the session before this one, oldest first, and then the
+//     receipt the evidence keeps, are delivered before anything is answered
+//     (ADR-0049: this receipt and every earlier receipt of the session). An
+//     earlier receipt held when the process stopped is not left behind it
+//     until the session is sealed. The sink keeps one receipt per digest, so
+//     one it acknowledged before is taken as it was.
 //
 // The session's queue orders a delivery by itself (its send token), and a
 // seal refuses under the gateway's lock while anything of it is held, so the
@@ -168,9 +171,14 @@ func (g *gatewayService) redeliverAnswered(response map[string]any) error {
 	if !ok {
 		return refused
 	}
-	alone := newForwardQueue()
-	alone.add(g.forwarder.heldAction(int64(index), stored))
-	if err := g.forwarder.deliver(g.forwardingContext(), alone, math.MaxInt64); err != nil {
+	// /act is of the filesystem kind alone (docs/postgresql-store.md), so the
+	// session is read where /act wrote it
+	queue, ok := g.forwarder.storedQueue(fsSealOpenStore{g.storeRoot}, sessionID, int64(index)-1)
+	if !ok {
+		return refused
+	}
+	queue.add(g.forwarder.heldAction(int64(index), stored))
+	if err := g.forwarder.deliver(g.forwardingContext(), queue, math.MaxInt64); err != nil {
 		return refused
 	}
 	return nil

@@ -435,6 +435,60 @@ func TestDeliveryVersion3KeyedRetryAfterARestartDeliversTheKeptReceiptFirst(t *t
 	}
 }
 
+// A retry after a restart delivers the session's earlier receipts first: an
+// acquisition minted while the action's write was in flight (index i-1, the
+// action's i), neither acknowledged, is delivered, then the action receipt,
+// oldest first, before the answer (ADR-0049: this receipt and every earlier
+// receipt of the session); while the sink is down the retry is refused.
+func TestDeliveryVersion3KeyedRetryAfterARestartDeliversTheEarlierReceiptsInOrder(t *testing.T) {
+	root, g, c := actionKeysSetup(t)
+	sink, sinkServer := newStandInSink(t)
+	g.forwarder = v3Forwarder(t, sinkServer.URL, "")
+	sink.setAnswer(ackV3(t, sink, func(string) bool { return true }))
+	actionKeysMode(t, root, "write", "rendezvous")
+	key := strings.Repeat("e", 64)
+	acted := make(chan error, 1)
+	go func() {
+		_, err := actionKeysAct(g, c, "act-order", key)
+		acted <- err
+	}()
+	waitFor(t, filepath.Join(root, "rendezvous", key))
+	_, acquired := g.acquire("act-order", "screening", newObject(), actionKeysWho)
+	if err := os.WriteFile(filepath.Join(root, "rendezvous", "release"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-acted; !errors.As(err, new(actionReceiptNotForwarded)) {
+		t.Fatalf("the action, the sink down: %v", err)
+	}
+	if !errors.As(acquired, new(receiptNotForwarded)) {
+		t.Fatalf("the acquisition during the action's write, the sink down: %v", acquired)
+	}
+	actionKeysMode(t, root, "write", "respond")
+	if _, err := actionKeysAct(restartedActionKeys(t, root, sinkServer.URL), c, "act-order-b", key); !errors.As(err, new(actionReceiptNotForwarded)) {
+		t.Fatalf("the retry after a restart, the sink still down: %v", err)
+	}
+	sink.setAnswer(ackV3(t, sink, nil))
+	before, _ := sink.snapshot()
+	out, err := actionKeysAct(restartedActionKeys(t, root, sinkServer.URL), c, "act-order-c", key)
+	if err != nil {
+		t.Fatalf("the retry after a restart, the sink up: %v", err)
+	}
+	got, _ := sink.snapshot()
+	if len(got)-len(before) != 2 {
+		t.Fatalf("%d deliveries before the answer; want the acquisition, then the action", len(got)-len(before))
+	}
+	earlier, action := readV3(t, got[len(before)]), readV3(t, got[len(before)+1])
+	if earlier.Kind != sinkKindAcquisitionReceipt || earlier.Receipt["sessionId"] != "act-order" || earlier.Receipt["callIndex"] != float64(0) {
+		t.Fatalf("delivered first %s of %v at %v; want the session's acquisition at 0", earlier.Kind, earlier.Receipt["sessionId"], earlier.Receipt["callIndex"])
+	}
+	if action.Kind != sinkKindActionReceipt || action.Digest != wantV3Digest(sinkKindActionReceipt, lineOf(t, out["receipt"])) || action.ActionReceipt["callIndex"] != float64(1) {
+		t.Fatalf("delivered second %s at %v; want the answered action receipt at 1", action.Kind, action.ActionReceipt["callIndex"])
+	}
+	if sent := actionKeysSent(root, key); sent != 1 {
+		t.Fatalf("the write was sent %d times", sent)
+	}
+}
+
 // An uncertain action's record is not reconciled, nor answered as uncertain,
 // while its receipt is not acknowledged: the retry is refused with the
 // action's sentence, in this process and after a restart, and the receipt is

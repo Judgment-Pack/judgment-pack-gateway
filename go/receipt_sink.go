@@ -529,9 +529,21 @@ type sealOpenSink struct {
 // (ADR-0059 section 9), so a session is sealed only once its action receipts
 // are acknowledged too.
 func (s *sealOpenSink) deliver(st sealOpenStore, t sealOpenTarget) bool {
-	reading, refusal, err := st.reading(t.sessionID)
-	if err != nil || refusal != "" {
+	queue, ok := s.forwarder.storedQueue(st, t.sessionID, math.MaxInt64)
+	if !ok {
 		return false
+	}
+	return s.forwarder.deliver(s.ctx, queue, math.MaxInt64) == nil
+}
+
+// storedQueue is the queue of the receipts the store holds of the session,
+// through index upTo, oldest first, as the forwarder delivers each kind (see
+// sealOpenSink.deliver); false where any of them, or the session, cannot be
+// read, which is no acknowledgment either.
+func (f *receiptForwarder) storedQueue(st sealOpenStore, sessionID string, upTo int64) (*forwardQueue, bool) {
+	reading, refusal, err := st.reading(sessionID)
+	if err != nil || refusal != "" {
+		return nil, false
 	}
 	type stored struct {
 		index int64
@@ -541,11 +553,14 @@ func (s *sealOpenSink) deliver(st sealOpenStore, t sealOpenTarget) bool {
 	for _, name := range reading.names {
 		index, err := strconv.ParseInt(strings.TrimSuffix(name, ".json"), 10, 64)
 		if err != nil {
-			return false
+			return nil, false
+		}
+		if index > upTo {
+			continue
 		}
 		data, err := reading.read(name)
 		if err != nil {
-			return false
+			return nil, false
 		}
 		all = append(all, stored{index, data})
 	}
@@ -554,48 +569,48 @@ func (s *sealOpenSink) deliver(st sealOpenStore, t sealOpenTarget) bool {
 	for _, r := range all {
 		parsed, err := parseJSON(r.bytes)
 		if err != nil {
-			return false
+			return nil, false
 		}
 		receipt, ok := parsed.(*vObject)
 		if !ok {
-			return false
+			return nil, false
 		}
 		// a receipt that names no kind (versions 1 and 2) is an acquisition
 		if kind, present := receipt.get("kind"); present {
 			name, isString := kind.(vString)
 			if !isString {
-				return false
+				return nil, false
 			}
 			if name != "acquisition" {
-				if name == "action" && s.forwarder.v3 {
-					queue.add(s.forwarder.heldAction(r.index, receipt))
+				if name == "action" && f.v3 {
+					queue.add(f.heldAction(r.index, receipt))
 				}
 				continue
 			}
 		}
 		digest, ok := memberString(receipt, "resultDigest")
 		if !ok {
-			return false
+			return nil, false
 		}
 		notRetained := false
 		if artifact, present := memberString(receipt, "artifact"); present && artifact == artifactNotRetained {
 			notRetained = true
 		}
 		var payload value
-		if s.forwarder.payload && !notRetained {
+		if f.payload && !notRetained {
 			if hexSum, ok := strings.CutPrefix(digest, "sha256:"); ok {
-				if data, found, err := st.payload(t.sessionID, hexSum); err != nil {
-					return false
+				if data, found, err := st.payload(sessionID, hexSum); err != nil {
+					return nil, false
 				} else if found {
 					if payload, err = parseJSON(data); err != nil {
-						return false
+						return nil, false
 					}
 				}
 			}
 		}
 		// a payload the store no longer holds (a removal, SPEC.md §1.3a) is
 		// carried as the one a source that keeps none is: not at all
-		queue.add(s.forwarder.held(r.index, receipt, digest, payload, notRetained || payload == nil))
+		queue.add(f.held(r.index, receipt, digest, payload, notRetained || payload == nil))
 	}
-	return s.forwarder.deliver(s.ctx, queue, math.MaxInt64) == nil
+	return queue, true
 }
