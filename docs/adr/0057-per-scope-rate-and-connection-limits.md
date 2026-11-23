@@ -6,8 +6,6 @@ deciders: maintainer
 
 # Each scope, and each caller within it, has a request rate and an in-flight limit, counted by each instance at the first step that knows the scope
 
-> **Number.** 0057 is a placeholder, assigned at merge. An open pull request holds 0056.
-
 > **Summary.**
 >
 > - **Chosen:** a top-level `limits` member (engine configuration version
