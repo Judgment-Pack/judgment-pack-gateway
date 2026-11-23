@@ -73,6 +73,13 @@ func reconciliationMatches(read, action *receipt) bool {
 	if !isWrite || platform == "" || readSource != platform+"/live" {
 		return false
 	}
+	// The read-back is of the action's scope (ADR-0054 decision 1): both
+	// carry the same scope identifier, or neither carries one.
+	actionScope, actionScoped := memberString(action.obj, "scope")
+	readScope, readScoped := memberString(read.obj, "scope")
+	if actionScoped != readScoped || actionScope != readScope {
+		return false
+	}
 	acquisition, _ := read.obj.get("acquisition")
 	if a, ok := acquisition.(*vObject); !ok {
 		return false
