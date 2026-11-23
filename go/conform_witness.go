@@ -122,7 +122,10 @@ func corpusEntries(corpusDir string) error {
 		// run in process (conform_retention_ack.go), outside the process
 		// contract, since no verifier reads them.
 		"retention-ack": "*.json",
-		"witness":       "*.json",
+		// The dry-run receipts (SPEC.md §1.2c): run in process
+		// (dry_run.go), outside the process contract.
+		"dry-run": "*.json",
+		"witness": "*.json",
 		// The witness's own storage: read by this implementation's runner
 		// alone (conform_witness_recovery.go), outside the process
 		// contract, since no reader of a chain reads it.
@@ -260,6 +263,7 @@ var (
 	statedRecovery = regexp.MustCompile("\\*\\*`witness-recovery/\\*\\.json`\\*\\* — (\\d+) vectors")
 	statedP256     = regexp.MustCompile("\\*\\*`p256/stores/\\*\\.json`\\*\\* — (\\d+) vectors")
 	statedAck      = regexp.MustCompile("\\*\\*`retention-ack/\\*\\.json`\\*\\* — (\\d+) vectors")
+	statedDryRun   = regexp.MustCompile("\\*\\*`dry-run/\\*\\.json`\\*\\* — (\\d+) vectors")
 	statedFamilies = regexp.MustCompile("(?m)^\\| `([a-z-]+)` \\| (\\d+) \\|")
 )
 
@@ -309,6 +313,7 @@ func corpusStatedCounts(corpusDir string) error {
 	v3, _ := filepath.Glob(filepath.Join(corpusDir, "v3", "stores", "*.json"))
 	p256, _ := filepath.Glob(filepath.Join(corpusDir, "p256", "stores", "*.json"))
 	acks, _ := filepath.Glob(filepath.Join(corpusDir, "retention-ack", "*.json"))
+	dryRuns, _ := filepath.Glob(filepath.Join(corpusDir, "dry-run", "*.json"))
 	witness, err := witnessVectorPaths(corpusDir)
 	if err != nil {
 		return err
@@ -329,6 +334,7 @@ func corpusStatedCounts(corpusDir string) error {
 		{statedRecovery, "witness-recovery/*.json vectors", len(recovery)},
 		{statedP256, "p256/stores/*.json vectors", len(p256)},
 		{statedAck, "retention-ack/*.json vectors", len(acks)},
+		{statedDryRun, "dry-run/*.json vectors", len(dryRuns)},
 	} {
 		n, err := stated(c.re, c.what)
 		if err != nil {

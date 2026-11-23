@@ -138,10 +138,20 @@ type receipt struct {
 	// that passed it with no bytes re-digested, "" otherwise.
 	notRetained bool
 	observation string
+	// approvals is action.approvals (SPEC.md §1.2a; ADR-0054 decision 3),
+	// nil for a receipt that cites none.
+	approvals []approvalCitation
 }
 
 func receiptFrom(obj *vObject) (*receipt, error) {
 	r := &receipt{obj: obj}
+	// A dry-run receipt (SPEC.md §1.2c) has no receiptVersion, so it is
+	// malformed at order 1 wherever it is met as a receipt; this says why.
+	if _, dryRun := obj.get("dryRunVersion"); dryRun {
+		if _, versioned := obj.get("receiptVersion"); !versioned {
+			return nil, errDryRunNotAReceipt
+		}
+	}
 	str := func(name string) (string, error) {
 		v, ok := obj.get(name)
 		if !ok {
@@ -825,6 +835,8 @@ func verifyAgainstPin(storeRoot, registryPath, authority, decisionRecords, suppl
 	// SPEC.md §1.2b: an uncertain action is a record of uncertainty, not a
 	// target's answer; the report says which, beside ok.
 	rep.Observations = append(rep.Observations, deliveryObservations(actions, reconciling)...)
+	// §4: a single approval another action of the store also cites.
+	rep.Observations = append(rep.Observations, approvalObservations(actions)...)
 	// A verdict by scope attributes every session the store holds, and
 	// every sealed one it does not, before anything is reported: the
 	// witnesses it names are those of the sessions it keeps.

@@ -120,6 +120,8 @@ type Judged = {
   // witnessTrail is the trail an action's witness member names, which
   // the record found is held to (§4 step 8).
   readonly action?: {
+    // approvals: action.approvals, for §4's approval-cited-again
+    readonly approvals?: ReadonlyArray<{ readonly kind: string; readonly id: string; readonly digest: string }>;
     readonly recordDigest: string;
     readonly bytes: string;
     readonly packDigest: string;
@@ -744,6 +746,13 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
       packDigest: own(str(member(decision, "packDigest"))!),
       citesKey: citesKey(citations(member(act, "cites")!)!),
       exact: member(decision, "recordBytes") !== undefined,
+      ...(member(act, "approvals")?.type === "array" && {
+        approvals: (member(act, "approvals") as { readonly items: Value[] }).items.map((e) => ({
+          kind: own(str(member(e as ObjectValue, "kind"))!),
+          id: own(str(member(e as ObjectValue, "id"))!),
+          digest: own(str(member(e as ObjectValue, "digest"))!),
+        })),
+      }),
       ...(witness && { witnessTrail: witness.trail }),
     };
   }
@@ -1286,7 +1295,7 @@ export function verifyStore(
     const d=target?.delivery;
     // The read-back is the action's platform's live operation, over MCP.
     const live = d !== undefined && d.source.endsWith("/write") && d.source.length > "/write".length ? d.source.slice(0,-"/write".length)+"/live" : undefined;
-    const matched = !(!d || target?.chain?.signature !== r.action.signature || d.key !== r.key || d.contract !== r.contract || d.outcome !== "uncertain" || d.identity !== r.identity || r.identity === "" || live === undefined || r.source !== live || r.shape !== "mcp");
+    const matched = !(!d || target?.chain?.signature !== r.action.signature || d.key !== r.key || d.contract !== r.contract || d.outcome !== "uncertain" || d.identity !== r.identity || r.identity === "" || live === undefined || r.source !== live || r.shape !== "mcp" || target?.scope !== j.scope);
     if (!matched) reconciliationUnresolved.add(j);
     if (target !== undefined) raise(target, !matched ? "action-mismatch" : r.outcome === "committed" ? "action-committed" : "action-uncertain");
   }
@@ -1568,6 +1577,15 @@ export function verifyStore(
       for (const j of judged) {
         const delivery = deliveryState.get(j);
         if (delivery !== undefined) yield [["sessionId", session],["callIndex", j.callIndex!],["observation", delivery]];
+      }
+    }
+    // §4's approval-cited-again: an action that passed and cites a single
+    // record whose id and digest another action of the store also cites.
+    const citing = new Map<string, number>();
+    for (const judged of sessions.values()) for (const j of judged) if (j.status === "ok") for (const a of j.action?.approvals ?? []) citing.set(a.id + "\0" + a.digest, (citing.get(a.id + "\0" + a.digest) ?? 0) + 1);
+    for (const [session, judged] of sessions) {
+      for (const j of judged) {
+        if (j.status === "ok" && (j.action?.approvals ?? []).some((a) => a.kind === "single" && (citing.get(a.id + "\0" + a.digest) ?? 0) > 1)) yield [["sessionId", session],["callIndex", j.callIndex!],["observation", "approval-cited-again"]];
       }
     }
     // §4 step 3's observation: a session no seal closes, holding receipts
