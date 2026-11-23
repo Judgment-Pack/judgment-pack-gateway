@@ -4234,10 +4234,26 @@ canonical form is `canon` (§1.1); a digest is §1.2a's; a time is UTC with exac
 `YYYY-MM-DDTHH:MM:SS.sssZ`, of a date that exists; an opaque identifier is 32 lowercase
 hexadecimal characters; a flat token is §3a's; a principal reference is
 `{"kind": "person" | "service", "issuer", "subject"}` with `issuer` and `subject` non-empty
-strings. Its signature is Ed25519 over `"judgment-pack/delegation/1:"` followed by `canon` of the
-statement with its top-level `signature` removed, under the issuing host's key, held to §8.4's key
-rule and equation; `keyId` is derived from the key as §1.2 derives one. Its digest is
-`"sha256:"` and the hexadecimal SHA-256 of `canon` of the whole statement, `signature` included.
+strings. Its signature is made over `"judgment-pack/delegation/1:"` followed by `canon` of the
+statement with its top-level `signature` removed, under the issuing host's key: Ed25519, held to
+§8.4's key rule and equation, with `keyId` derived from the key as §1.2 derives one; or, where the
+statement holds `alg`, ES256 under a P-256 key, held to §1.5's key rule and its low-S rule, with
+`keyId` derived from the key's compressed point as §1.5 derives one. Its digest is `"sha256:"` and
+the hexadecimal SHA-256 of `canon` of the whole statement, `signature` included.
+
+**ES256 statements** (spec RFC 0030, amendment of 2026-11-22, §2 *Signing with a P-256 key*). A
+statement a P-256 key signs holds the top-level member `alg`, the string `"ES256"`, inside what is
+signed and what is digested. A statement an Ed25519 key signs holds no `alg`, and is byte for byte
+what it was, under the same prefix and the same digest. The gateway verifies each link by the
+algorithm its `alg` names, Ed25519 where it holds none, under the key its `keyId` names among the
+keys pinned for its `host` **with that algorithm** (§11.2), and never chooses the algorithm from a
+key's length. An ES256 signature is `r||s`, each 32 bytes big-endian, as 128 lowercase hexadecimal
+characters, and verifies exactly when 1 ≤ r ≤ n − 1, 1 ≤ s ≤ (n − 1)/2 and ECDSA verification
+holds with SHA-256 over the signing input (§1.5): a high-S signature does not verify, and a
+DER-encoded one is not of the form. A chain may mix the algorithms, link by link: each link is
+verified at steps 4 and 5 by its own `alg` and `keyId`, root first, and the narrowing check compares
+neither. Only a host whose keys pin a P-256 key, from engine configuration version 41, has ES256
+links that verify; under any other configuration every ES256 link is `key-mismatch`.
 
 A **chain** is a JSON array of one to five statements, root first. The gateway verifies a chain
 by the RFC's steps 1 to 7, in order, stopping at the first failure; within a step the links are
@@ -4247,14 +4263,14 @@ taken root first:
 | --- | --- | --- |
 | 1 | `malformed` | the chain is not an array of one to five objects, a value is outside the `canon` domain or a member name repeats anywhere in it, or a link lacks a string `delegationVersion` |
 | 2 | `unsupported-version` | a link's `delegationVersion` is a string other than `"1"` |
-| 3 | `malformed` | a link violates a structural constraint of version 1: a member missing or of another type or form; `scope.sources` empty or over 256 entries, out of order (by `audience.kind`, then `audience.name`, then `source`, each by code point) or repeating an `audience` and `source`; `tools` empty, over 256, out of code-point order or repeating; `effects` empty, outside the five effect classes, out of their strength order or repeating; `limits` over 16 names, a name other than `calls` or `x-` followed by a flat token, or a value that is not a non-negative integer; `expiresAt` not after `issuedAt`, or more than 24 hours after it; `parent` `null` with a `depth` other than `0`, or not `null` with a `depth` of `0`; or `canon` of the link over 65536 bytes |
-| 4 | `key-mismatch` | a link's `keyId` is not the `keyId` of a key the configuration pins for its `host` |
-| 5 | `signature-mismatch` | a link's signature does not verify under that key, by §8.4's equation |
+| 3 | `malformed` | a link violates a structural constraint of version 1: a member missing or of another type or form; `scope.sources` empty or over 256 entries, out of order (by `audience.kind`, then `audience.name`, then `source`, each by code point) or repeating an `audience` and `source`; `tools` empty, over 256, out of code-point order or repeating; `effects` empty, outside the five effect classes, out of their strength order or repeating; `limits` over 16 names, a name other than `calls` or `x-` followed by a flat token, or a value that is not a non-negative integer; `expiresAt` not after `issuedAt`, or more than 24 hours after it; `parent` `null` with a `depth` other than `0`, or not `null` with a `depth` of `0`; `signature` not 128 lowercase hexadecimal characters, a DER-encoded ES256 signature among them; an `alg` that is not the string `"ES256"` (`"EdDSA"`, `"Ed25519"`, `"es256"` and a number among them); or `canon` of the link over 65536 bytes |
+| 4 | `key-mismatch` | a link's `keyId` is not the `keyId` of a key the configuration pins for its `host` with the link's algorithm: ES256 where it holds `alg`, Ed25519 where it holds none. A key of the other algorithm is not that key, so an Ed25519-signed statement given `alg: "ES256"`, and an ES256 statement with its `alg` removed, are refused here |
+| 5 | `signature-mismatch` | a link's signature does not verify under that key: by §8.4's equation for Ed25519; for ES256, by §1.5's rules, the low-S rule included |
 | 6 | `chain-broken` | the RFC's narrowing clauses 0 to 3 fail: the root's `parent` is not `null` or its `depth` not `0`; a child's `parent` does not name its parent's `id` and digest; a child's `depth` is not its parent's plus one, or is over 4; a child's `host` is not its parent's |
 | 7 | `widened` | the RFC's clauses 4 to 8 fail: a child's `sub` is not its parent's, member for member; its `issuedAt` is before its parent's or its `expiresAt` after its parent's; an entry of its scope has no entry of its parent's with the same `audience` and `source` whose `tools` and `effects` contain its own; such an entry lacks a limit name of the parent's entry or exceeds its value; or its parent's `mayDelegate` is not `true` |
 
-A member a link carries at its top level beside those of version 1 is not refused by steps 1 to
-3: it is signed with the rest, as a receipt's unknown member is, so a member appended after
+A member a link carries at its top level beside those of version 1 and `alg` is not refused by
+steps 1 to 3: it is signed with the rest, as a receipt's unknown member is, so a member appended after
 signing fails step 5. Every object within a link — `sub`, `act`, `act.software`, `scope`, an
 entry, its `audience`, `parent` — holds exactly the members version 1 names, or step 3 refuses it.
 Equality of two values is equality of their `canon` bytes.
@@ -4271,7 +4287,10 @@ token from that issuer:
     {
       "host": "desk",
       "requester": "service:desk",
-      "keys": ["<64 lowercase hexadecimal characters: an Ed25519 public key>"],
+      "keys": [
+        "<64 lowercase hexadecimal characters: an Ed25519 public key>",
+        {"alg": "ES256", "key": "<66 lowercase hexadecimal characters: a P-256 compressed point, from engine configuration version 41>"}
+      ],
       "admission": {"url": "https://desk.example/delegation/admission", "credential": "/etc/engine/desk-admission-token"}
     }
   ],
@@ -4283,8 +4302,16 @@ token from that issuer:
 - `hosts`: one entry per issuing host, at least one, `host` a flat token named once. `requester`
   is the subject of the issuing host's own token from the configured issuer: a request to a
   delegation endpoint (§11.3, §11.6) authenticates as that host only with a token the identity
-  verifies whose subject is `requester`. `keys` are the host's pinned signing keys, each held to
-  §8.4's key rule when the configuration is loaded. `admission` is where the gateway reads the
+  verifies whose subject is `requester`. `keys` are the host's pinned signing keys, at least one,
+  each pinned with its algorithm and held to that algorithm's key rule when the configuration is
+  loaded. A string of 64 lowercase hexadecimal characters is an Ed25519 key, held to §8.4's key
+  rule, at every version. From engine configuration version 41, the object
+  `{"alg": "ES256", "key": <66 lowercase hexadecimal characters>}`, with no other member, is a P-256
+  key, its compressed point held to §1.5's key rule, as `retention.acknowledgedBy` lists one; a
+  point that fails the rule is refused as `is not a sound P-256 public key`. A bare string of 66
+  characters is refused, naming both forms, since its length would choose the algorithm; so is
+  every other entry from version 41. Before version 41 the object is refused by name. A host may
+  pin keys of both algorithms while it moves from one to the other, or of one. `admission` is where the gateway reads the
   host's state (§11.5): `url` an `https://` URL, and `credential` an absolute path to a file
   holding the bearer credential the gateway presents there, read once at start.
 - `operators`: optional, the subjects of the configured issuer that the gateway accepts as its

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -14,11 +13,19 @@ import (
 // §11.2): the issuing hosts this gateway admits delegated calls for, the
 // keys each signs with, where each is read, and the gateway's operators.
 
+// delegationP256Version is the engine configuration version from which an
+// issuing host's keys may pin a P-256 key, the object {"alg": "ES256", "key":
+// <66 lowercase hexadecimal characters>}, beside Ed25519 keys as strings
+// (spec RFC 0030, amendment of 2026-11-22; SPEC.md §11.2). engine.go lists
+// it in engineVersions.
+// placeholder: the maintainer assigns the number in merge order
+const delegationP256Version = "41"
+
 // delegationHostSpec is one issuing host as configured.
 type delegationHostSpec struct {
 	host       string
 	requester  string // the subject of the host's own token from the configured issuer
-	keys       map[string]ed25519.PublicKey
+	keys       map[string]heldKey // by key identifier, each with the algorithm it is pinned with
 	admission  string // an https URL
 	credential string // an absolute path to the admission credential
 }
@@ -57,7 +64,7 @@ func parseDelegationConfig(v value, version string, identity *identitySpec) (*de
 	seen := map[string]bool{}
 	requesters := map[string]bool{}
 	for i, hv := range hosts {
-		h, err := parseDelegationHost(hv)
+		h, err := parseDelegationHost(hv, version)
 		if err != nil {
 			return nil, fmt.Errorf("delegation.hosts[%d]: %v", i, err)
 		}
@@ -97,7 +104,7 @@ func parseDelegationConfig(v value, version string, identity *identitySpec) (*de
 	return spec, nil
 }
 
-func parseDelegationHost(v value) (delegationHostSpec, error) {
+func parseDelegationHost(v value, version string) (delegationHostSpec, error) {
 	obj, err := requireObject(v, "host")
 	if err != nil {
 		return delegationHostSpec{}, err
@@ -105,7 +112,7 @@ func parseDelegationHost(v value) (delegationHostSpec, error) {
 	if err := exactlyMembers(obj, map[string]bool{"host": true, "requester": true, "keys": true, "admission": true}, "host"); err != nil {
 		return delegationHostSpec{}, err
 	}
-	h := delegationHostSpec{keys: map[string]ed25519.PublicKey{}}
+	h := delegationHostSpec{keys: map[string]heldKey{}}
 	if h.host, _ = memberString(obj, "host"); !isFlatTokenString(h.host) {
 		return delegationHostSpec{}, errors.New("host must be a flat token")
 	}
@@ -115,18 +122,17 @@ func parseDelegationHost(v value) (delegationHostSpec, error) {
 	keysV, _ := obj.get("keys")
 	keys, ok := keysV.(vArray)
 	if !ok || len(keys) == 0 {
+		if versionAtLeast(version, delegationP256Version) {
+			return delegationHostSpec{}, errors.New(`keys must be an array of at least one public key: an Ed25519 key in hex, or {"alg": "ES256", "key": <66 lowercase hexadecimal characters>}`)
+		}
 		return delegationHostSpec{}, errors.New("keys must be an array of at least one Ed25519 public key in hex")
 	}
 	for i, kv := range keys {
-		s, ok := stringOf(kv)
-		raw, err := hex.DecodeString(s)
-		if !ok || err != nil || !isLowerHexOfLen(s, 64) {
-			return delegationHostSpec{}, fmt.Errorf("keys[%d] is not 64 lowercase hexadecimal characters", i)
+		key, err := delegationHostKey(i, kv, version)
+		if err != nil {
+			return delegationHostSpec{}, err
 		}
-		if why := unusableSigningKey(raw); why != "" {
-			return delegationHostSpec{}, fmt.Errorf("keys[%d] %s", i, why)
-		}
-		h.keys[keyIDFor(raw)] = ed25519.PublicKey(raw)
+		h.keys[key.keyID()] = key
 	}
 	admissionV, _ := obj.get("admission")
 	admission, err := requireObject(admissionV, "admission")
@@ -144,6 +150,50 @@ func parseDelegationHost(v value) (delegationHostSpec, error) {
 		return delegationHostSpec{}, fmt.Errorf("admission.%v", err)
 	}
 	return h, nil
+}
+
+// delegationHostKey is the key keys[i] pins, with its algorithm, read as
+// retention.acknowledgedBy reads one (acknowledgingKey; ADR-0053 §9): a
+// string of 64 lowercase hexadecimal characters is an Ed25519 key held to
+// §8.4's key rule, at every version, as before; from delegationP256Version
+// the object {"alg": "ES256", "key": <66 lowercase hexadecimal characters>},
+// nothing else, is a P-256 key held to its key rule (p256PublicKey). Before
+// that version an object is refused by name, and every other entry with the
+// Ed25519 sentence; from it, every other entry is refused with the sentence
+// naming both forms -- a bare string of 66 characters among them, since
+// taking it would choose the algorithm from the key's length.
+func delegationHostKey(i int, each value, version string) (heldKey, error) {
+	if s, ok := each.(vString); ok && isLowerHexOfLen(string(s), 64) {
+		raw, _ := hex.DecodeString(string(s))
+		if why := unusableSigningKey(raw); why != "" {
+			return heldKey{}, fmt.Errorf("keys[%d] %s", i, why)
+		}
+		return edKey(raw), nil
+	}
+	obj, isObject := each.(*vObject)
+	if !versionAtLeast(version, delegationP256Version) {
+		if isObject {
+			return heldKey{}, fmt.Errorf(`keys[%d]: a P-256 key, {"alg": "ES256", "key": ...}, is a version-%s form; engineVersion %s pins Ed25519 keys alone`, i, delegationP256Version, version)
+		}
+		return heldKey{}, fmt.Errorf("keys[%d] is not 64 lowercase hexadecimal characters", i)
+	}
+	bothForms := fmt.Errorf(`keys[%d] is an Ed25519 public key of 64 lowercase hexadecimal characters, or {"alg": "ES256", "key": <66 lowercase hexadecimal characters>}`, i)
+	if !isObject || len(obj.byName) != 2 {
+		return heldKey{}, bothForms
+	}
+	alg, okAlg := memberString(obj, "alg")
+	keyHex, okKey := memberString(obj, "key")
+	if !okAlg || alg != algES256 || !okKey {
+		return heldKey{}, bothForms
+	}
+	key := decodeKeyHex(algES256, keyHex)
+	if key == nil {
+		return heldKey{}, bothForms
+	}
+	if !keySoundFor(algES256, key) {
+		return heldKey{}, fmt.Errorf("keys[%d] is not a sound P-256 public key", i)
+	}
+	return heldKey{alg: algES256, key: key}, nil
 }
 
 // validAdmissionURL holds an admission read's address to HTTPS: the read
