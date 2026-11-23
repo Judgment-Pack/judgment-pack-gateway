@@ -1531,8 +1531,9 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	}
 
 	// The call reference (ADR-0060) is drawn here, once the session is the
-	// one the receipt will name -- a label's, or a read-back's, the action's
-	// own -- and before the binding is called; a failed draw refuses the call
+	// one the receipt will name -- a label's, or for a read-back the session
+	// /act resolved, the action's own when the action reads back at once --
+	// and before the binding is called; a failed draw refuses the call
 	// before the source starts. A source that did not opt in runs as before.
 	runSpec, callRef, err := withCallReference(spec, sessionID)
 	if err != nil {

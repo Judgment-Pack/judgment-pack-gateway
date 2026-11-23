@@ -163,7 +163,7 @@ import (
 // Version 47 (admissionReadV2Version)
 // adds an issuing host's admission.readVersion and the tools/list _meta
 // members descriptorDigest and versionLabel (ADR-0058; delegation_config.go).
-// Version 48 (callReferenceVersion, a placeholder assigned in merge order, 49
+// Version 48 (callReferenceVersion; a placeholder, assigned at merge, 49
 // expected; call_reference.go) adds a platform's callReference: the binding's
 // tools/call requests carry a per-call reference in _meta, and the receipt
 // signs the same reference (ADR-0060). connect raises no file to it.

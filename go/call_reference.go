@@ -5,14 +5,15 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // callReferenceVersion is the engine configuration version from which a
 // platform may set callReference: true, the operator's opt-in for that
 // platform's binding to receive a per-call reference (docs/adr/0060-a-call-
 // reference-passed-to-a-binding-and-signed-into-the-receipt.md). Its number
-// is a placeholder the maintainer assigns in merge order: 49 expected, after
-// the refusal journal's. engine.go lists it in engineVersions.
+// is a placeholder, assigned at merge: 49 expected, after the refusal
+// journal's (48), which merges first. engine.go lists it in engineVersions.
 const callReferenceVersion = "48"
 
 // The names a call reference travels under. The gateway hands adapter-mcp the
@@ -91,11 +92,12 @@ func callReferenceRefusal(sources map[string]sourceSpec, receiptVersion string) 
 		if !spec.callReference {
 			continue
 		}
+		platform, _, _ := strings.Cut(name, "/")
 		if receiptVersion != receiptVersion3 {
-			return fmt.Errorf("source %s (binding %s) sets callReference, which needs --receipt-version 3: only a version 3 receipt carries callRef", name, spec.binding)
+			return fmt.Errorf("platform %s: callReference on source %s (binding %s) needs --receipt-version 3: only a version 3 receipt carries callRef", platform, name, spec.binding)
 		}
 		if spec.shape != "mcp" {
-			return fmt.Errorf("source %s (binding %s) sets callReference, but its operation is not an MCP server: only a tools/call request carries the reference", name, spec.binding)
+			return fmt.Errorf("platform %s: callReference on source %s (binding %s), whose operation is not an MCP server: only a tools/call request carries the reference", platform, name, spec.binding)
 		}
 	}
 	return nil
