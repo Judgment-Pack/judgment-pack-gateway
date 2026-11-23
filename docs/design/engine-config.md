@@ -3182,7 +3182,7 @@ carries exactly `{"judgment-pack/callRef": ..., "judgment-pack/sessionId": ...}`
 receipt carries the same `callRef` in its core, signed. A dry run carries none.
 
 Refused: the member below its version, by name; a value that is not a boolean; a platform's
-`environment` that sets either variable; and, at start, an opt-in under version 2 receipts or on
+`environment` that sets either variable; and, at start, an opt-in on
 an operation that is not an MCP server, naming the platform, the source and its binding. A platform without the
 member is unchanged: its adapter's stdin and environment, its server's request and its receipts
 are what they were, byte for byte. An action attempt another request claimed is dispatched by

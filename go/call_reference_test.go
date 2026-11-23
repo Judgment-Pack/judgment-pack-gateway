@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -32,24 +33,25 @@ func TestCallReferenceIsAMemberOfItsEngineVersionAlone(t *testing.T) {
 	}
 }
 
-// The gate's other half: an opt-in under version 2 receipts, or on a source
-// that is not an MCP server, is refused at start naming the binding; the same
-// at version 3 on an MCP server starts, and a source without it is not held.
-func TestCallReferenceNeedsVersion3ReceiptsAndAnMCPServer(t *testing.T) {
+// The gate's other half: an opt-in on a source that is not an MCP server is
+// refused at start naming the binding; the same on an MCP server starts, and
+// a source without it is not held. An engine's receipts are always version 3,
+// and the engine's own options say so.
+func TestCallReferenceNeedsAnMCPServer(t *testing.T) {
 	on := sourceSpec{shape: "mcp", binding: "tickets@sha256:" + strings.Repeat("a", 64), callReference: true}
 	off := sourceSpec{shape: "http", binding: "other@sha256:" + strings.Repeat("b", 64)}
-	if err := callReferenceRefusal(map[string]sourceSpec{"tickets/live": on, "other/live": off}, receiptVersion); err == nil || !strings.Contains(err.Error(), "platform tickets: callReference on source tickets/live (binding "+on.binding+") needs --receipt-version 3") {
-		t.Fatalf("version 2: %v", err)
+	if got := engineServeOptions(engineConfig{version: callReferenceVersion}, nil, nil).receiptVersion; got != receiptVersion3 {
+		t.Fatalf("an engine's receipts: version %q", got)
 	}
 	http := on
 	http.shape = "http"
-	if err := callReferenceRefusal(map[string]sourceSpec{"tickets/live": http}, receiptVersion3); err == nil || !strings.Contains(err.Error(), "platform tickets: callReference on source tickets/live") || !strings.Contains(err.Error(), "is not an MCP server") {
+	if err := callReferenceRefusal(map[string]sourceSpec{"tickets/live": http}); err == nil || !strings.Contains(err.Error(), "platform tickets: callReference on source tickets/live") || !strings.Contains(err.Error(), "is not an MCP server") {
 		t.Fatalf("http: %v", err)
 	}
-	if err := callReferenceRefusal(map[string]sourceSpec{"tickets/live": on, "other/live": off}, receiptVersion3); err != nil {
+	if err := callReferenceRefusal(map[string]sourceSpec{"tickets/live": on, "other/live": off}); err != nil {
 		t.Fatal(err)
 	}
-	if err := callReferenceRefusal(map[string]sourceSpec{"other/live": off}, receiptVersion); err != nil {
+	if err := callReferenceRefusal(map[string]sourceSpec{"other/live": off}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -346,5 +348,32 @@ func TestAReaderThatDoesNotKnowCallRefStillVerifiesTheSignature(t *testing.T) {
 	}
 	if ed25519.Verify(public, append([]byte(receiptContext3), canon(withoutRef)...), signature) {
 		t.Fatal("callRef is not signed")
+	}
+}
+
+// The sandbox posture probe a launch waits for is handed the source as it was
+// configured: neither call-reference variable reaches it, whatever the call's
+// environment holds, and the rest of that environment is kept in order.
+func TestTheSandboxProbeIsNotHandedTheCallReference(t *testing.T) {
+	saved := sandboxPostureProbe
+	t.Cleanup(func() { sandboxPostureProbe = saved })
+	var probed []string
+	sandboxPostureProbe = func(_ context.Context, s sourceSpec) (sandboxProbeReport, error) {
+		probed = append([]string(nil), s.env...)
+		return sandboxProbeReport{}, errors.New("stop after the probe")
+	}
+	base := sourceSpec{shape: "mcp", callReference: true, env: []string{"KEEP=1"}, sandbox: &sourceSandbox{helper: "/bin/sandbox-helper-that-is-never-run"}}
+	run, ref, err := withCallReference(base, "s1")
+	if err != nil || ref == "" {
+		t.Fatal(ref, err)
+	}
+	if _, err := sandboxSourceCommand(context.Background(), run, "/bin/adapter-that-is-never-run", []string{"adapter"}); err == nil {
+		t.Fatal("the stub probe's failure did not refuse the launch")
+	}
+	if len(probed) != 1 || probed[0] != "KEEP=1" {
+		t.Fatalf("probe environment: %q", probed)
+	}
+	if off := withoutCallReference(sourceSpec{env: []string{callRefVariable + "=x"}}); len(off.env) != 1 {
+		t.Fatalf("a source that did not opt in is returned as it is: %q", off.env)
 	}
 }

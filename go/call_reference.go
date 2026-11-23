@@ -64,6 +64,27 @@ func withCallReference(spec sourceSpec, sessionID string) (sourceSpec, string, e
 	return run, ref, nil
 }
 
+// withoutCallReference is the source as configured, before withCallReference
+// added one call's reference: its environment without the two variables. The
+// sandbox posture probe measures the source with it, so no probe is handed a
+// reference meant for the server alone.
+func withoutCallReference(spec sourceSpec) sourceSpec {
+	if !spec.callReference {
+		return spec
+	}
+	env := make([]string, 0, len(spec.env))
+	for _, kv := range spec.env {
+		name, _, _ := strings.Cut(kv, "=")
+		if name == callRefVariable || name == callSessionIDVariable {
+			continue
+		}
+		env = append(env, kv)
+	}
+	out := spec
+	out.env = env
+	return out
+}
+
 // parsePlatformCallReference reads a platform's callReference: a boolean,
 // from callReferenceVersion, refused by name below it.
 func parsePlatformCallReference(v value, name, version string) (bool, error) {
@@ -78,10 +99,12 @@ func parsePlatformCallReference(v value, name, version string) (bool, error) {
 }
 
 // callReferenceRefusal holds every source that opts in to what the opt-in
-// needs: a version 3 receipt, which alone carries callRef, and an MCP server,
-// whose tools/call request alone has a _meta. The gateway never starts with an
-// opt-in it would not honour.
-func callReferenceRefusal(sources map[string]sourceSpec, receiptVersion string) error {
+// needs: an MCP server, whose tools/call request alone has a _meta. The
+// gateway never starts with an opt-in it would not honour. Only an engine
+// configuration's platform sets callReference, and an engine's receipts are
+// always version 3 (engineServeOptions), so the version 3 receipt that alone
+// carries callRef needs no check here (ADR-0060, amendment of 2026-11-23).
+func callReferenceRefusal(sources map[string]sourceSpec) error {
 	names := make([]string, 0, len(sources))
 	for name := range sources {
 		names = append(names, name)
@@ -93,9 +116,6 @@ func callReferenceRefusal(sources map[string]sourceSpec, receiptVersion string) 
 			continue
 		}
 		platform, _, _ := strings.Cut(name, "/")
-		if receiptVersion != receiptVersion3 {
-			return fmt.Errorf("platform %s: callReference on source %s (binding %s) needs --receipt-version 3: only a version 3 receipt carries callRef", platform, name, spec.binding)
-		}
 		if spec.shape != "mcp" {
 			return fmt.Errorf("platform %s: callReference on source %s (binding %s), whose operation is not an MCP server: only a tools/call request carries the reference", platform, name, spec.binding)
 		}

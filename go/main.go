@@ -479,9 +479,6 @@ func holdServedWitnesses(seed []byte, opts serveOptions) error {
 		if err := holdWitnessedBy(opts.witnessedBy, own, opts.receiptVersion); err != nil {
 			return err
 		}
-		if err := callReferenceRefusal(opts.sources, opts.receiptVersion); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -549,8 +546,7 @@ func engineStart(cfg *engineConfig, bindings map[string]binding, host engineHost
 		return nil, nil, err
 	}
 	sources := deriveSources(*cfg, bindings)
-	// An engine configuration's receipts are version 3 (serveOptionsFor).
-	if err := callReferenceRefusal(sources, receiptVersion3); err != nil {
+	if err := callReferenceRefusal(sources); err != nil {
 		return nil, nil, err
 	}
 	if err := holdToolVersions(*cfg, bindings, sources); err != nil {

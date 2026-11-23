@@ -121,7 +121,12 @@ already binds whatever the receipt carries.
   this one sends nothing, so its uncertain receipt carries no `callRef`, and the binding never
   saw a reference from it, so there is nothing to join.
 - **An opt-in on a source that is not an MCP server** is refused at start, and the refusal names
-  the platform, as one under version 2 receipts does.
+  the platform.
+- **Receipts below version 3 (as built, 2026-11-23).** The Decision's refusal of an opt-in whose
+  receipt version is below 3 is not built: only an engine configuration's platform sets
+  `callReference`, and an engine's receipts are always version 3, so the refusal could never
+  answer. A test holds the engine's receipt version at 3 instead. `gateway serve
+  --receipt-version 2` takes no platform, so no opt-in reaches it.
 - **The transport.** The gateway hands adapter-mcp the reference and the session identifier in
   `ADAPTER_MCP_CALL_REF` and `ADAPTER_MCP_SESSION_ID`, for that call alone; the adapter takes
   both out of its environment before it starts the server, which learns them only from `_meta`.
