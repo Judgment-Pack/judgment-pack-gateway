@@ -214,6 +214,11 @@ type storeCut struct {
 	// is any; an export asks it after the blobs. nil where the records are
 	// a file beside the store (exportInputs.storeRoot).
 	removals func() ([]byte, bool, error)
+	// journal, where the kind keeps the operator journal itself (the
+	// PostgreSQL kind's gateway.journal_records, read at the cut), is its
+	// rows as an export writes them, each line and its 0x0A in ordinal
+	// order (ADR-0056, Amendment A); empty where there is none.
+	journal []byte
 }
 
 // storeKind is one kind of storage: the spaces the gateway keeps its state

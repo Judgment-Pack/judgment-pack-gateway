@@ -474,10 +474,11 @@ var pgPrivileges = map[string][]string{
 	"removal_records":   {"SELECT"},
 	"rotated":           {"SELECT", "INSERT"},
 	"key_history":       {"SELECT"},
+	"journal_records":   {"SELECT", "INSERT"},
 }
 
 // pgTables are the schema's tables, in the order the start reads them.
-var pgTables = []string{"blobs", "documents", "entries", "key_history", "log_records", "logs", "removal_records", "rotated", "schema_migrations", "scope_identifiers", "secrets", "series", "series_holders", "session_labels", "start_lease"}
+var pgTables = []string{"blobs", "documents", "entries", "journal_records", "key_history", "log_records", "logs", "removal_records", "rotated", "schema_migrations", "scope_identifiers", "secrets", "series", "series_holders", "session_labels", "start_lease"}
 
 // pgScopedTables are the tables whose rows carry a scope identifier: row
 // security is enabled and forced on each. The scope identifiers' rows

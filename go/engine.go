@@ -152,7 +152,9 @@ import (
 // in-flight cap for each scope and each caller within it, beside a
 // gateway-wide cap on the requests not yet tied to a scope, counted by each
 // instance alone (ADR-0057; limits_config.go).
-const engineVersion = requestLimitsVersion
+// Version 45 (operatorJournalVersion) adds no member: from it the journaled
+// commands begin the store's operator journal (ADR-0056; operator_journal.go).
+const engineVersion = operatorJournalVersion
 
 // actScopeVersion is the engine configuration version from which a platform
 // may set scope beside write: true, and /act reads scope, dryRun and
@@ -163,7 +165,7 @@ const engineVersion = requestLimitsVersion
 // 2 and 3; act_dry_run.go).
 const actScopeVersion = "43"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true, requestLimitsVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true, requestLimitsVersion: true, operatorJournalVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.

@@ -805,7 +805,7 @@ func TestPostgresInstancesRefuseAnotherModeKeyOrAuthorityAndHoldersOfEveryRow(t 
 func TestAPostgresStoreAtSchemaFiveMigratesToRowsOfEachInstance(t *testing.T) {
 	db := newPgTestDB(t)
 	set := pgShippedMigrations()
-	if len(set.versions) != 9 || set.versions[5].name != "0006_instances.sql" {
+	if len(set.versions) < 6 || set.versions[5].name != "0006_instances.sql" {
 		t.Fatalf("the shipped schema has %d versions: the test names version 6 as the instances'", len(set.versions))
 	}
 	older := pgMigrationSet{versions: set.versions[:5], grants: pgGrantsOfVersion(t, set.grants, 5)}
@@ -824,7 +824,7 @@ func TestAPostgresStoreAtSchemaFiveMigratesToRowsOfEachInstance(t *testing.T) {
 		t.Fatal("a refused migration changed the database")
 	}
 	asOwnerIn(t, db, pgNoScope, `UPDATE gateway.start_lease SET renewed = pg_catalog.clock_timestamp() - interval '1 minute', expires = pg_catalog.clock_timestamp() - interval '1 second'`)
-	if applied, err := migratePostgres(db.migrator, set, db.roles, time.Minute); err != nil || !slices.Equal(applied, []int{6, 7, 8, 9}) {
+	if applied, err := migratePostgres(db.migrator, set, db.roles, time.Minute); err != nil || !slices.Equal(applied, []int{6, 7, 8, 9, 10}) {
 		t.Fatalf("the migration with the instance stopped: %v %v", applied, err)
 	}
 	if rows := asOwnerIn(t, db, pgNoScope, `SELECT holder FROM gateway.series WHERE name = 'before-6'`); len(rows.rows) != 1 || rows.rows[0][0] != nil {

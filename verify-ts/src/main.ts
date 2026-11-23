@@ -5,7 +5,7 @@
 //   main.ts canon      stdin: one JSON document; stdout: its canonical
 //                      bytes; exit 0 inside the domain, 1 refused, 2
 //                      past what this implementation reads
-//   main.ts verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>]
+//   main.ts verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] [--require-journal <name>]... [--previous <registry>] <store-root> <registry-path> <authority> [<decision-records-dir>]
 //                      stdin: the 32-byte Ed25519 public key, or under
 //                      --public-key-alg ES256, first or not at all,
 //                      exactly the 66 lowercase hexadecimal characters of
@@ -207,14 +207,29 @@ function main(args: string[]): number {
   const afterArtifacts = supplied ? afterOption.slice(2) : afterOption;
   // --previous <registry>, after --artifacts and before the store root, or
   // not at all (SPEC.md §3d).
-  const linked = command === "verify" && afterArtifacts[0] === "--previous" && afterArtifacts.length > 1 && afterArtifacts[1] !== "";
-  const positional = linked ? afterArtifacts.slice(2) : afterArtifacts;
-  const misplacedPrevious = command === "verify" && (positional.includes("--previous") || (afterArtifacts[0] === "--previous" && !linked));
+  // --require-journal <name>, after --artifacts and before --previous, at
+  // most once for each name (ADR-0056 §6), or not at all.
+  const requireJournal: string[] = [];
+  let afterRequire = afterArtifacts;
+  let badRequire = false;
+  while (command === "verify" && afterRequire[0] === "--require-journal") {
+    const name = afterRequire[1];
+    if (name === undefined || !/^[a-z-]{1,32}$/.test(name) || requireJournal.includes(name)) {
+      badRequire = true;
+      break;
+    }
+    requireJournal.push(name);
+    afterRequire = afterRequire.slice(2);
+  }
+  const linked = command === "verify" && afterRequire[0] === "--previous" && afterRequire.length > 1 && afterRequire[1] !== "";
+  const positional = linked ? afterRequire.slice(2) : afterRequire;
+  const misplacedPrevious = command === "verify" && (positional.includes("--previous") || (afterRequire[0] === "--previous" && !linked));
+  const misplacedRequire = command === "verify" && (badRequire || positional.includes("--require-journal"));
   // Either option in any later place is a usage error, never taken as an
   // argument and the plain verdict run in its stead.
   const misplaced = command === "verify" && options.slice(1).includes("--ordinary-seals-only");
   const misplacedArtifacts = command === "verify" && (positional.includes("--artifacts") || (afterOption[0] === "--artifacts" && !supplied));
-  if (command === "verify" && !badAlg && !misplacedAlg && !badScope && !misplacedScope && !misplaced && !misplacedArtifacts && !misplacedPrevious && (positional.length === 3 || (positional.length === 4 && !scoped))) {
+  if (command === "verify" && !badAlg && !misplacedAlg && !badScope && !misplacedScope && !misplaced && !misplacedArtifacts && !misplacedPrevious && !misplacedRequire && (positional.length === 3 || (positional.length === 4 && !scoped))) {
     try {
       // The directory comes right before the positional arguments, so the
       // command line's last entries are it and them.
@@ -240,6 +255,7 @@ function main(args: string[]): number {
       const scope = scoped ? exactArguments(unpinned)[1] : undefined;
       const verdict = verifyStore(root, registry, authority, decisionRecords, key, {
         ordinarySealsOnly,
+        ...(requireJournal.length > 0 && { requireJournal }),
         ...(artifacts !== undefined && { artifacts }),
         ...(scope !== undefined && { scope }),
         ...(linked && { previous: afterArtifacts[1]! }),
