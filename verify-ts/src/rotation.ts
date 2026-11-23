@@ -47,12 +47,12 @@ export function reached(raw: Uint8Array, alg: Alg = ""): ReachedKey {
 
 // keySound is the key rule of alg: Ed25519's of SPEC.md §8.4, or a
 // compressed P-256 point that exists.
-function keySound(alg: Alg, raw: Uint8Array): boolean {
+export function keySound(alg: Alg, raw: Uint8Array): boolean {
   return alg === "" ? keyRefusal(raw) === null : p256KeySound(raw);
 }
 
 // A rotation statement that holds its form.
-type Statement = {
+export type Statement = {
   readonly kind: string;
   readonly rotation: bigint;
   readonly rotatedAt: string;
@@ -88,7 +88,7 @@ function str(v: Value | undefined, form: RegExp): string | null {
 // statementOf holds a rotation statement to its form: exactly the members
 // of its kind, each of its form, the key id beside the key it names that
 // key's id.
-function statementOf(kind: string, v: ObjectValue): Statement | null {
+export function statementOf(kind: string, v: ObjectValue): Statement | null {
   const names = members[kind]!;
   const extra = optional[kind]!;
   if (!names.every((name) => member(v, name) !== undefined) || !v.members.every((m) => names.includes(m.name) || extra.includes(m.name))) {
@@ -129,7 +129,7 @@ function statementOf(kind: string, v: ObjectValue): Statement | null {
 // signedBy is whether the statement's signature verifies under the key by
 // the algorithm the statement's alg names, which the key must be of, over
 // the prefix and the canonical form of everything but the signature.
-function signedBy(st: Statement, key: ReachedKey): boolean {
+export function signedBy(st: Statement, key: ReachedKey): boolean {
   const body = canonical({ type: "object", members: st.value.members.filter((m) => m.name !== "signature") });
   if (body === null) {
     return false;

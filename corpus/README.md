@@ -115,7 +115,8 @@ after it reached by nothing, so the sessions under them are `key-mismatch` and
 `unregistered-session` beside the walk's finding, which a verifier that follows
 the broken rotation would grade `ok`. The keys rotated to are made from published
 seeds, as `TEST-SEED` is: the SHA-256 of the ASCII text `judgment-pack-gateway
-corpus rotation key 1`, and of the same text ending in `2`. Like `TEST-SEED` they
+corpus rotation key 1`, and of the same text ending in `2`; the key-history vectors also use rotation
+key 3, the same text ending in `3`. Like `TEST-SEED` they
 sign nothing real and must never be used by a deployment. A vector whose walk
 followed a rotation gives `rotations` in `expected`, `{"count", "keyId"}`, and a
 runner compares it whole with the implementation's; a vector without the member
@@ -538,6 +539,37 @@ engine configuration reads it, one `line`, and `expected`: `{"accepted": true}`,
 runs them in process, with no process-contract command, whatever implementation is under test: a
 valid P-256 line, a high-S one, a DER one, one with an unknown `alg`, one with `alg` on a key listed
 as Ed25519, and a P-256 signature with no `alg`.
+
+**`key-history/*.json`** — 29 vectors, verify-only, for the key history a consumer of
+`GET /publickey/history` checks (`SPEC.md` §3e, both versions; ADR-0055 §9), which no verifier of a store
+reads. Each holds `pin`, the name of a published key (`TEST-PUBLIC-KEY` in every vector), or
+`{"alg": "ES256", "key": <hex>}`; `requireVersion`, optional, `"2"`; `history`, the answer's exact bytes
+as a JSON string; and `expected`: `{"accepted": {"keys": <distinct keys>, "inForce": <keyId of the last
+entry>}}`, or `{"refused": <class>}`. The class is one of eight, and is part of the corpus contract: a
+check that refuses a vector for another class disagrees with it. `version` is a version unknown or not
+the one required; `form`, the members, their forms and their presence; `key`, a key rule, a `keyId`, a key
+repeated, or a first key that is not the key pinned or the key at the boundary; `rotation`, a pair that is
+not a rotation from the entry before; `ordinal`, an ordinal that is not its place in its store; `time`,
+`validFrom`, `validTo`, `rotatedAt` or `continuedAt` out of order; `continuation`, a continuation of the
+wrong form, signed by the wrong key, or of the wrong `keyId` or `alg`; and `carried`, a `keyHistoryDigest`
+that is not the history before. `gateway conform` runs them in process, whatever implementation is under
+test, and `verify-ts`'s corpus test runs them through its own check. Eight are accepted: one key under
+version `"1"`; `kh-v1-ordinal-given-twice`, two rotations of ordinal 1 that version `"1"` accepts; one
+store; two stores across a continuation, with the same two statements; three stores under one key; a
+`base`; a `base` holding the repeated ordinal; and a continuation a P-256 key signs. Twenty-one are refused:
+`kh-v2-ordinal-given-twice`, the same two statements in one store, `ordinal`, which is the pair a reader of
+the history alone could not tell apart before version `"2"`; an ordinal skipped, and ordinals that keep
+counting across a store, `ordinal`; a store without a continuation, a `base` of version `"2"`, a store
+with an unknown member, and four values the canonical form does not hold (a lone surrogate as
+`keyHistoryVersion`, the number `1.0` as `keyHistoryVersion`, a lone surrogate inside a `keyRotation` string
+and one inside a continuation string), `form`; a continuation signed by another key, with one bit of its signature
+changed, and with its `alg` removed, `continuation`; a digest naming the version `"1"` bytes, and a history
+before the continuation changed, `carried`; a store that does not start at the key before it, and a key
+repeated across stores, `key`; a continuation stamped before its key or after the next rotation, `time`;
+version `"1"` where `"2"` is required, and version `"3"`, `version`. The statements and continuations were
+signed once, from `TEST-SEED`, the published rotation seeds and `TEST-P256-SCALAR`, by a script
+independent of this repository (its own canonical form, Node's Ed25519 and ECDSA P-256, low-S), and are
+frozen: no test signs them again.
 
 **Approval citations** (ADR-0054 decision 3; `SPEC.md` §1.2a, `action.approvals`). Ten of
 `v3/stores` hold an action receipt that cites approval records. `v3-action-approvals-valid` cites a
