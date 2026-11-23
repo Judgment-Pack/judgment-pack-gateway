@@ -69,6 +69,9 @@ type storeRemoveScopeOptions struct {
 	config    string
 	scope, by string
 	timeout   time.Duration
+	// engineVersion is the configuration's engineVersion, "" where --seed
+	// is given: it gates the operator journal (ADR-0056 §7)
+	engineVersion string
 }
 
 // storeFlags reads a store command's flags, each given once with a value:
@@ -207,6 +210,7 @@ func storeRemoveScope(spec *storageSpec, o storeRemoveScopeOptions, stamp func()
 			return removalOutcome{}, errors.New("the engine configuration names the filesystem kind; gateway remove-scope removes its files")
 		}
 		seedPath, version, public, alg = cfg.seed, cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm
+		o.engineVersion = cfg.version
 	}
 	seed, err := loadSeed(seedPath)
 	if err != nil {
@@ -325,7 +329,13 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 	if err := heldUnderAnotherKey(data, walk.keys, priv.public, nil); err != nil {
 		return failed(err)
 	}
-	_, next, err := pgRemovalFile(tx)
+	file, next, err := pgRemovalFile(tx)
+	if err != nil {
+		return failed(err)
+	}
+	// the operator journal, read in the transaction that inserts its entry
+	// with the records (ADR-0056 §5)
+	journal, err := beginPgOperatorJournal(tx, o.engineVersion, priv, walk.keys, data, file, stamp)
 	if err != nil {
 		return failed(err)
 	}
@@ -412,6 +422,12 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 		}
 		next++
 	}
+	if len(lines) > 0 {
+		// the entry naming the records, in their transaction (ADR-0056 §5)
+		if err := journal.removalEntry(tx, lines, removalBody("remove-scope", o.by, o.scope)); err != nil {
+			return failed(err)
+		}
+	}
 	gone, err := c.exec(`DELETE FROM gateway.scope_identifiers WHERE scope = $1 AND identifier = $2`, pgNoScope, row)
 	if err != nil {
 		return failed(err)
@@ -422,6 +438,11 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 		notes = append(notes, "the scope identifier was recorded and held no row; its record is removed, and nothing else was")
 	case held.none():
 		notes = append(notes, "no row of the scope identifier is in the store; nothing was removed")
+	}
+	if journalCutOff != nil {
+		if err := journalCutOff(); err != nil {
+			return failed(err)
+		}
 	}
 	done, err := c.exec("COMMIT")
 	if err != nil {

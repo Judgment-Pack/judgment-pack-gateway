@@ -121,7 +121,9 @@ type journalEntry struct {
 	seals      int64
 	sealDigest string
 	// store-continued's
-	continuation string
+	continuation          string
+	previousJournalBytes  int64
+	previousJournalDigest string
 }
 
 // operatorBodies are the operator journal's body kinds, each with exactly
@@ -242,8 +244,10 @@ func (e *journalEntry) bodyLoads(body *vObject) bool {
 		switch name {
 		case "by", "scope":
 			holds = scopeMember(body, name)
-		case "acknowledgments", "previousJournalDigest":
+		case "acknowledgments":
 			_, holds = hexMember(body, name, 64)
+		case "previousJournalDigest":
+			e.previousJournalDigest, holds = hexMember(body, name, 64)
 		case "removalDigest":
 			e.removalDigest, holds = hexMember(body, name, 64)
 		case "sealDigest":
@@ -258,8 +262,10 @@ func (e *journalEntry) bodyLoads(body *vObject) bool {
 				s, isString := id.(vString)
 				holds = holds && isString && isLowerHexOfLen(string(s), 32)
 			}
-		case "sessions", "previousJournalBytes":
+		case "sessions":
 			_, holds = recordCount(body, name)
+		case "previousJournalBytes":
+			e.previousJournalBytes, holds = recordCount(body, name)
 		case "removalBytes":
 			e.removalBytes, holds = recordCount(body, name)
 			e.removal = holds
@@ -914,4 +920,46 @@ func removalBody(kind, by, scope string) *vObject {
 		body.set("scope", vString(scope))
 	}
 	return body
+}
+
+// --- the store rotated to (ADR-0056 §3, §4, §5) --------------------------------
+
+// storeContinuedEntry is the entry the journal of the store rotated to
+// begins with, as ordinal 0: the continuation, the new registry's first line,
+// named by its digest, and the old journal's bytes, whole, by their length
+// and digest (of no bytes where the old store holds none). The new registry
+// is not there when it is signed, so both of its lengths are 0.
+func storeContinuedEntry(key *signingKey, continuation, oldJournal []byte, at string) ([]byte, error) {
+	body := newObject()
+	body.set("kind", vString("store-continued"))
+	body.set("registryFrom", vInt(0))
+	body.set("removalFrom", vInt(0))
+	body.set("continuation", vString(journalDigest(bytes.TrimSuffix(continuation, []byte{'\n'}))))
+	body.set("previousJournalBytes", vInt(len(oldJournal)))
+	body.set("previousJournalDigest", vString(journalDigest(oldJournal)))
+	return signedJournalEntry(key, operatorJournal, 0, "", at, body)
+}
+
+// continuedJournalHolds is whether data, the journal of a store rotated to,
+// is its store-continued entry alone, loading under the keys the new
+// registry's walk reached, naming the continuation and the old journal's
+// bytes: what a rerun of the rotation holds a journal it finds to (ADR-0056
+// §5, "A rerun of store rotate").
+func continuedJournalHolds(data, continuation, oldJournal []byte, keys []reachedKey) bool {
+	lines, torn := journalLines(data)
+	if len(lines) != 1 || torn != 0 {
+		return false
+	}
+	e, ok := loadJournalEntry(lines[0], operatorJournal, keys)
+	return ok && e.kind == "store-continued" && e.ordinal == 0 && !e.hasPrevious &&
+		e.registryFrom == 0 && e.removalFrom == 0 &&
+		e.continuation == journalDigest(bytes.TrimSuffix(continuation, []byte{'\n'})) &&
+		e.previousJournalBytes == int64(len(oldJournal)) && e.previousJournalDigest == journalDigest(oldJournal)
+}
+
+// journaledStore is whether a command on a store writes the operator
+// journal: a journal the store holds already, or a configuration of
+// operatorJournalVersion or later (ADR-0056 §7).
+func journaledStore(holds bool, version string) bool {
+	return holds || version != "" && versionAtLeast(version, operatorJournalVersion)
 }

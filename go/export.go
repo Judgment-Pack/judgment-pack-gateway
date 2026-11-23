@@ -536,13 +536,25 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 	}
 	// the operator journal, whole, in an export of the whole store alone: an
 	// export by scope carries none, since its entries name other scopes
-	// (ADR-0056 §1)
-	if in.scope == "" && in.storeRoot != "" {
-		journal, there, err := readJournalPath(in.storeRoot, operatorJournal+".jsonl")
-		if err != nil {
-			return nil, err
+	// (ADR-0056 §1); a kind that keeps it itself gives its rows
+	// (storeCut.journal), each line and its 0x0A, the path and bytes of the
+	// filesystem kind's file, and one that keeps some beside a store
+	// directory holding a journal is refused, as for the removal records
+	if in.scope == "" {
+		journal := cut.journal
+		if in.storeRoot != "" {
+			file, there, err := readJournalPath(in.storeRoot, operatorJournal+".jsonl")
+			if err != nil {
+				return nil, err
+			}
+			if there && len(file) > 0 && len(journal) > 0 {
+				return nil, errors.New("operator journal: the kind keeps one, and the store directory named beside it holds one; the export takes neither for the other")
+			}
+			if there && len(file) > 0 {
+				journal = file
+			}
 		}
-		if there && len(journal) > 0 {
+		if len(journal) > 0 {
 			if err := w.put("store/"+journalsDir+"/"+operatorJournal+".jsonl", journal); err != nil {
 				return nil, err
 			}
