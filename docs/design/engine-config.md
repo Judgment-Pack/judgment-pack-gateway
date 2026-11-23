@@ -2948,6 +2948,11 @@ newest of `engineVersions`):
   scope finds its decision record there and nowhere else; unscoped writes keep the gateway's
   directory. `/verify` looks for a scoped action's record in its scope's directories alone.
   `gateway verify --decision-records` takes a directory that holds them all.
+  On a filesystem that does not tell case apart, two directories whose names differ only by case
+  are one directory, and neither check folds case: the load check compares the cleaned paths byte
+  for byte, and the start check compares them byte for byte once each part that exists is resolved
+  through its links. Such a pair can load as apart, so spell each scope's directory apart by more
+  than case.
 - **The request member `scope`** on `/act` (SPEC.md §6, "`/act`: a scope, a dry-run and
   approvals"). A scoped key is kept in its scope's own journal, `actions/scopes/<hash>/`, which
   `gateway journal compact` compacts by the rule of the journal of none, and `gateway remove-scope`
