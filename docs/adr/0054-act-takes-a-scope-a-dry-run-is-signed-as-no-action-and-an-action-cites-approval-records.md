@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-22
 deciders: maintainer
 ---
@@ -110,8 +110,12 @@ holds. `keyScope` keeps its meaning: it is the authority-keyed first scope, not 
 
 **Who may name it.** A request under a delegation, and a sender that names a `reservation` (§11.8),
 reach no scope identifier (§6: "never a scope identifier"). Either one that names `scope` is refused
-at the scope step. Delegation and scope identifiers stay disjoint. A scoped write is never delegated
-until a delegation can be held to a scope identifier, which is a later record.
+at the scope step. Delegation and scope identifiers stay disjoint. A scoped write is not delegated until a
+delegation can be held to a scope identifier. That record is the RFC 0030 amendment that binds a
+delegation chain to exactly one scope identifier, built with this one for v0.40.0. From that build a
+delegated `/act` may name a scope only when its chain is bound to that same scope identifier, and is
+refused otherwise with admission step 8's sentence (SPEC.md §11.5). A chain bound to no scope, or to
+another, never names one. Until that build the refusal above holds.
 
 **The configuration** (engine configuration version `<engine-version: assigned at merge>`). From that
 version a platform may set `scope` beside `write: true`. Such a platform is refused at load unless
@@ -392,7 +396,13 @@ gateway's corpus (RFC 0014, "Conformance"). The specification pull request chang
   decision policy admits without making a write. It could learn this today only by being refused or
   by writing. This is bounded to callers that pass `writeRequesters` and the caller-scope check, who
   may write anyway. Each dry-run walks the decision-record directory and signs once, so under a key
-  service it costs one signing call. Neither is rate-limited, as `/act`'s refusals are not.
+  service it costs one signing call. Under a key service that every scope shares, a permitted writer
+  of one scope could spend the signing quota of all of them. The per-scope limits of the rate and
+  connection record (gateway #507) therefore count every `/act` request, dry-runs included, and that
+  record's design states it. Until those limits are built, a dry-run is no more limited than `/act`
+  is.
+- **A citation is no existence oracle.** An unscoped action may cite a scoped receipt, as today,
+  since a citation needs the receipt's 128-hex signature: a caller who can name it already holds it.
 - **Fail closed everywhere.** A lost `dryRun` member is refused by an older gateway, never sent. An
   older verifier refuses a dry-run receipt. An older gateway refuses a reservation with approvals. A
   scoped write without checked caller scopes is refused at load.
@@ -449,8 +459,8 @@ gateway's corpus (RFC 0014, "Conformance"). The specification pull request chang
 - That a dry-run receipt and a later action are the same request, unless an auditor compares the two
   commitments with both salts.
 - Reuse of a single approval across stores, or across gateways.
-- Whether the decision-record walk's cost per dry-run needs a bound. It is not measured, as for
-  `/act` today.
+- Whether the decision-record walk's cost per dry-run needs a bound beyond #507's per-scope limits.
+  It is not measured, as for `/act` today.
 
 ### Build plan
 
@@ -512,3 +522,17 @@ ask for a write", "Removing one scope identifier's records"), §11.5, §11.7, §
 `go/verify_v3.go`, `verify-ts/src/structure.ts`; ADR-0011, ADR-0026, ADR-0036, ADR-0037, ADR-0041,
 ADR-0042, ADR-0049, ADR-0051, ADR-0053; judgment-pack-spec `VERSIONING.md`, `spec/dialect.md` §10,
 RFC 0014, RFC 0018, RFC 0030 §4.
+
+## Acceptance
+
+Accepted by the maintainer's reviewer on 2026-11-22, with these settled:
+
+- The citation's `kind` values are `"single"` and `"standing"`.
+- A single approval cited again is reported by the verifier (`approval-cited-again`) and not refused
+  by the gateway; the issuing host checks reuse.
+- Resolution against an operator-held directory (option K), and a policy that requires an approval
+  (option L), are deferred to a later record.
+- RFC 0018 §10 gains the paragraph as a dated amendment; it is not frozen.
+- An unscoped action may still cite a scoped receipt (decision 6, "A citation is no existence oracle").
+- Two conditions are folded in: a delegated scoped write is lifted by the RFC 0030 scope binding in
+  v0.40.0 (decision 1, "Who may name it"); and #507's per-scope limits count dry-runs (decision 6).
