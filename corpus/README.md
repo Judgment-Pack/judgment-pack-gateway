@@ -241,7 +241,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 234 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 236 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). Ten of them,
@@ -346,6 +346,14 @@ carries no `reconciliation`. A verifier written before the members (v0.23.0, in 
 TypeScript) answers `ok` for every one of them but the tampered member, and reads `caller` as
 naming the subject: that is the compatibility §11.7 states, and these vectors hold the readers
 that know the members to more.
+
+Two, `v3-call-ref-valid` and `v3-call-ref-absent`, are a call reference's (`SPEC.md` §1.2a,
+`callRef`; ADR-0060), made from `v3-scope-valid`'s session without its scope by a signer that, like
+every generator of this corpus, is not kept here, and checked to reproduce that vector's first
+receipt byte for byte: a sealed session of two acquisitions, each carrying its own `callRef`, and
+the same session without it. Both are `ok`. The member is optional and signed: a verifier of its
+release holds it to 64 lowercase hexadecimal characters, one written before it tolerates it, and
+the signature, over every member, verifies either way.
 
 Seventeen are of the `scope` member (§1.2a; `docs/adr/0026-a-scope-identifier-fixed-on-a-platform.md`;
 issue #420), each named `v3-scope-*` and signed with its members by a signer that shares no code
