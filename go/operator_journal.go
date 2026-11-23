@@ -391,6 +391,47 @@ type journalJudgment struct {
 	// unnamed are the command seals at or after the first entry's
 	// registryFrom that no entry takes: what the next seal entry names first
 	unnamed []commandSeal
+	// tornAt and torn are the removal file's torn last piece that is no
+	// finding (ADR-0056, Amendment B): where it starts and its length, torn
+	// 0 for none
+	tornAt, torn int64
+}
+
+// tornRemovalPiece is the removal file's last piece, the bytes after its
+// last 0x0A (the whole file where it holds none), and where it starts.
+func tornRemovalPiece(removal []byte) (start int64, piece []byte) {
+	i := bytes.LastIndexByte(removal, '\n') + 1
+	return int64(i), removal[i:]
+}
+
+// pieceLoads is whether a torn piece, read as a line, loads as a removal
+// record of any kind under keys (SPEC.md §1.3a, "Loading"): ended by the
+// next append's 0x0A, it would be a record no entry names (ADR-0056,
+// Amendment B).
+func pieceLoads(piece []byte, keys []reachedKey) bool {
+	if len(piece) == 0 || len(piece) > removalLineBound {
+		return false
+	}
+	v, err := parseJSON(piece)
+	if err != nil {
+		return false
+	}
+	obj, ok := v.(*vObject)
+	if !ok {
+		return false
+	}
+	kind, _ := memberString(obj, "kind")
+	switch kind {
+	case removalKind:
+		_, ok = artifactRemovalOf(obj, keys)
+	case sessionRemovalKind:
+		_, ok = sessionRemovalOf(obj, keys)
+	case scopeRemovalKind:
+		_, ok = scopeRemovalOf(obj, keys)
+	default:
+		ok = false
+	}
+	return ok
 }
 
 func journalFinding(status, journal string, ordinal int) finding {
@@ -467,7 +508,15 @@ func judgeOperatorJournal(data []byte, pending bool, keys []reachedKey, registry
 				return j
 			}
 		}
-		gap = gap || cursor < int64(len(removal))
+		// the one uncovered piece that is no finding (Amendment B): the
+		// removal file's unterminated last piece, past every range, that
+		// loads as no record, with no entry staged
+		start, piece := tornRemovalPiece(removal)
+		if !gap && !pending && len(piece) > 0 && cursor == start && !pieceLoads(piece, keys) {
+			j.tornAt, j.torn = start, int64(len(piece))
+		} else {
+			gap = gap || cursor < int64(len(removal))
+		}
 		j.unnamed = seals[taken:]
 	}
 	if pending || gap || len(j.unnamed) > 0 {
@@ -520,6 +569,11 @@ func (r *report) judgeJournals(storeRoot string, registry []byte, walk *registry
 	r.Observations = append(r.Observations, finding{
 		"observation": "journal-from", "journal": operatorJournal, "registryFrom": first.registryFrom, "removalFrom": first.removalFrom,
 	})
+	if j.torn > 0 {
+		r.Observations = append(r.Observations, finding{
+			"observation": "journal-torn-tail", "journal": operatorJournal, "removalFrom": j.tornAt, "bytes": j.torn,
+		})
+	}
 	return nil
 }
 
@@ -550,6 +604,12 @@ type operatorJournalCall struct {
 	unnamed             []commandSeal
 	registryFrom        int64
 	removalFrom         int64
+	// tornPiece is the removal file's torn last piece the call found, which
+	// loads as no record: the call's range begins with it (Amendment B).
+	// pieceLoads is that piece loading as a record, which a removal call
+	// refuses.
+	tornPiece  []byte
+	pieceLoads bool
 }
 
 // stagedJournalNotice is what the start says of a staged entry it finds
@@ -609,6 +669,13 @@ func beginOperatorJournal(storeRoot, registryPath, version string, key *signingK
 		}
 	}
 	j.registryFrom, j.removalFrom = int64(len(registry)), int64(len(removal))
+	if start, piece := tornRemovalPiece(removal); len(piece) > 0 {
+		if pieceLoads(piece, keys) {
+			j.pieceLoads = true
+		} else {
+			j.removalFrom, j.tornPiece = start, piece
+		}
+	}
 	return j, nil
 }
 
@@ -766,9 +833,12 @@ func journaledAppendRemovals(j *operatorJournalCall, storeRoot string, torn bool
 	if j == nil {
 		return appendRemovals(storeRoot, torn, lines)
 	}
+	if j.pieceLoads {
+		return fmt.Errorf("removal records: %s ends in an unterminated line that loads as a removal record, and this call would end it, making it a record no journal entry names (ADR-0056, Amendment B); nothing is changed. The line is no record while it is unterminated, so cut the file back to the end of its last complete line and run the command again", filepath.Join(storeRoot, removalsFile))
+	}
 	appended := lines
 	if torn {
-		appended = append([]byte{'\n'}, lines...)
+		appended = append(append(append([]byte{}, j.tornPiece...), '\n'), lines...)
 	}
 	body.set("removalBytes", vInt(len(appended)))
 	body.set("removalDigest", vString(journalDigest(appended)))

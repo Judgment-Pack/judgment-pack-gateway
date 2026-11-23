@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -365,6 +366,9 @@ func TestOperatorJournalVerifyFindings(t *testing.T) {
 	}
 	badSignature := line0[:sig] + string(flip) + line0[sig+1:] + "\n"
 	e1 := removalEntry(key, 1, sha256Hex([]byte(line0)), len(removal0), junk)
+	trimmed := strings.TrimSuffix(removal0, "\n")
+	lastRecord := trimmed[strings.LastIndex(trimmed, "\n")+1:]
+	piece := `{"kind":"artifact-rem`
 	for _, c := range []struct {
 		name, journal, removal, registry, pending string
 		require                                   []string
@@ -386,6 +390,10 @@ func TestOperatorJournalVerifyFindings(t *testing.T) {
 		{name: "seals of their digest", journal: e0 + sealEntry(1, commandSealLine), registry: commandSealLine, want: "journal-from"},
 		{name: "a staged entry", journal: e0, pending: e1, require: []string{"operator"}, want: "journal-entry-missing 1"},
 		{name: "the journal removed whole", require: []string{"operator"}, want: "journal-missing"},
+		{name: "a torn tail that loads as no record", journal: e0, removal: piece, require: []string{"operator"}, want: "journal-from,journal-torn-tail"},
+		{name: "a torn tail that loads as a record", journal: e0, removal: lastRecord, want: "journal-entry-missing 1"},
+		{name: "a torn tail while an entry is staged", journal: e0, pending: e1, removal: piece, want: "journal-entry-missing 1"},
+		{name: "an uncovered line before a torn tail", journal: e0, removal: junk + piece, want: "journal-entry-missing 1"},
 		{name: "the journal removed whole, not required", want: ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -536,4 +544,68 @@ func TestOperatorJournalStoreRotateNamesItsSealsInTheOldStore(t *testing.T) {
 	if _, said := journalVerdict(t, g, "operator"); strings.Join(said, ",") != "journal-from" {
 		t.Fatalf("the old store's verdict: %v", said)
 	}
+}
+
+// A removal call that finds the removal file ending in an unterminated line
+// that loads as a record refuses, naming the file and how to mend it, and
+// changes nothing; one that finds a piece that loads as none begins its
+// range with the piece, and the journal then holds (ADR-0056, Amendment B).
+func TestOperatorJournalTornRemovalPiece(t *testing.T) {
+	g, config := journalStore(t)
+	run, _ := retainA1(t, g, config)
+	if code, stderr := run(); code != 0 {
+		t.Fatalf("retain: %d %q", code, stderr)
+	}
+	key := testSigningKey(t, config)
+	removalPath := filepath.Join(g.storeRoot, removalsFile)
+	removal0 := readFile(t, removalPath)
+	trimmed := strings.TrimSuffix(removal0, "\n")
+	lastRecord := trimmed[strings.LastIndex(trimmed, "\n")+1:]
+	keys := walkRegistry([]byte(readFile(t, g.regPath)), g.publicKey).keys
+	call := func() error {
+		j, err := beginOperatorJournal(g.storeRoot, g.regPath, operatorJournalVersion, key, keys, func() string { return removalStamp })
+		if err != nil {
+			return err
+		}
+		return journaledAppendRemovals(j, g.storeRoot, true, []byte("{}\n"), removalBody("remove-artifact", "operator-3", ""))
+	}
+	t.Run("a piece that loads as a record is refused", func(t *testing.T) {
+		if err := os.WriteFile(removalPath, []byte(removal0+lastRecord), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		journal0 := readFile(t, journalFile(g))
+		err := call()
+		if err == nil || !strings.Contains(err.Error(), removalPath) || !strings.Contains(err.Error(), "cut the file back to the end of its last complete line") {
+			t.Fatalf("the call on a piece that loads: %v", err)
+		}
+		if readFile(t, removalPath) != removal0+lastRecord || readFile(t, journalFile(g)) != journal0 {
+			t.Fatal("a refused call changed the store")
+		}
+		if _, err := os.Lstat(pendingFile(g)); err == nil {
+			t.Fatal("a refused call staged an entry")
+		}
+	})
+	t.Run("a piece that loads as none is covered by the next call", func(t *testing.T) {
+		piece := `{"kind":"artifact-rem`
+		if err := os.WriteFile(removalPath, []byte(removal0+piece), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, said := journalVerdict(t, g); strings.Join(said, ",") != "journal-from,journal-torn-tail" {
+			t.Fatalf("before the call: %v", said)
+		}
+		if err := call(); err != nil {
+			t.Fatal(err)
+		}
+		if got := readFile(t, removalPath); got != removal0+piece+"\n{}\n" {
+			t.Fatalf("the removal file: %q", got)
+		}
+		entries := journalEntries(t, g)
+		body, _ := entries[len(entries)-1]["body"].(map[string]any)
+		if journalJSON(body["removalFrom"]) != fmt.Sprint(len(removal0)) || journalJSON(body["removalBytes"]) != fmt.Sprint(len(piece)+4) {
+			t.Fatalf("the entry's range: %v", body)
+		}
+		if _, said := journalVerdict(t, g); strings.Join(said, ",") != "journal-from" {
+			t.Fatalf("after the call: %v", said)
+		}
+	})
 }
