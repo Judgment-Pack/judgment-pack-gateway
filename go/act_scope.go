@@ -427,24 +427,35 @@ func savedActionOf(saved []byte) (key string, uncertain bool, at *vObject) {
 	return key, outcome != "response", receipt
 }
 
-// readBackHeld is whether a read-back receipt in the store names the action
-// receipt, by session, index and signature.
-func readBackHeld(receipt *vObject, all []*storedReceipt) bool {
-	if receipt == nil {
+// readBackHeld is whether a read-back receipt in the store resolves the
+// action receipt as /verify resolves one (reconciliationMatches): the
+// action's receipt, named by session, index and signature, and a read-back
+// that names it, each verifying ok. A read-back that names the action and
+// does not resolve it -- of another key, contract, platform or scope, or one
+// that does not verify -- settles nothing, and the key stays pending.
+func readBackHeld(at *vObject, all []*storedReceipt) bool {
+	if at == nil {
 		return false
 	}
-	session, _ := memberString(receipt, "sessionId")
-	signature, _ := memberString(receipt, "signature")
-	index, _ := receipt.get("callIndex")
+	session, _ := memberString(at, "sessionId")
+	signature, _ := memberString(at, "signature")
+	index, _ := at.get("callIndex")
 	if index == nil {
 		return false
 	}
+	var action *receipt
 	for _, s := range all {
-		if s.r.reconciliation == nil {
-			continue
+		if s.status == "ok" && s.r != nil && s.r.sessionID == session && s.r.signature == signature && strconv.FormatInt(s.r.callIndex, 10) == string(canon(index)) {
+			action = s.r
+			break
 		}
-		c := s.r.reconciliation.action
-		if c.sessionID == session && c.signature == signature && strconv.FormatInt(c.callIndex, 10) == string(canon(index)) {
+	}
+	if action == nil {
+		return false
+	}
+	named := citation{action.sessionID, action.callIndex, action.signature}
+	for _, s := range all {
+		if s.status == "ok" && s.r != nil && s.r.reconciliation != nil && s.r.reconciliation.action == named && reconciliationMatches(s.r, action) {
 			return true
 		}
 	}
