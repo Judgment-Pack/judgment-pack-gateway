@@ -240,14 +240,17 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 219 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 223 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
-§4 step 6, and an optional `witnesses` in `expected` (below). Six of them,
+§4 step 6, and an optional `witnesses` in `expected` (below). Ten of them,
 `v3-journal-*`, are the operator journal's (`SPEC.md` §3f and §4 step 9; ADR-0056): each is
 `v3-artifact-removed` with `journals/operator.jsonl`, an entry signed under the test seed that
 names the removal file's bytes, and some give `requireJournal`, `["operator"]`. They cover a
-journal that holds (`journal-from`); an entry forged (`journal-entry-forged`); a staged entry
+journal that holds (`journal-from`); an entry forged (`journal-entry-forged`); the first entry
+removed, and a second entry whose `previous` is not the line before it (`journal-order`, at ordinal
+0 and 1); a second entry whose range is not of its digest, and a second entry naming a command seal
+the registry no longer holds (`journal-entry-mismatch`, at ordinal 1); a staged entry
 never committed (`journal-entry-missing`); a torn last piece of the removal file that loads as no
 record, the observation `journal-torn-tail` beside `journal-from` and no finding; the same piece
 when it loads as a record, `journal-entry-missing`; and a store with no journal under the option,
