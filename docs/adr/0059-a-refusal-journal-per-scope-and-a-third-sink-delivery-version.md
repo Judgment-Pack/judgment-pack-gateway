@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted (with conditions)
 date: 2026-11-23
 deciders: maintainer
 ---
@@ -18,7 +18,7 @@ deciders: maintainer
 >   under that name. Its entries use ADR-0056's envelope, prefix, line bound, signer and load rule
 >   unchanged. It has two body kinds: `refusal` and `tally`.
 > - **Journaled:** a refusal of an authenticated request is journaled only when ADR-0057 had already
->   charged the request to a scope, and only in that scope's journal. Refusals before the charge are
+>   charged the request to a scope and taken that scope's hold, and only in that scope's journal. Refusals before the charge are
 >   not journaled. Unauthenticated refusals stay counted (`unauthenticatedRefusals`). A limit
 >   refusal, and an entry that is dropped, are counted in the scope's `tally`, at most one a minute.
 > - **The entry:** time, reason code, caller, the delegation member, scope, and a commitment to the
@@ -41,6 +41,27 @@ deciders: maintainer
 >   never holds an answer. Without the member, a sink receives exactly what it receives today.
 > - **SPEC.md:** "the refusal is recorded nowhere" now holds for the caller's side alone. The
 >   operator's journal records the refusal.
+
+## Acceptance
+
+The maintainer accepted this record with conditions. Open questions 1 to 8 are ruled as each one
+recommends ("Open questions, as ruled", below). The conditions, and where each is folded in:
+
+| Condition | What it rules | Where |
+|---|---|---|
+| Timing | the bounded residual is accepted, with no cover traffic. Under a key service one signing can take up to ADR-0050's 5 seconds, and a quota shared with the journal can make signings fail, not only slow | section 10, "What remains"; the release notes |
+| Compatibility | a release that does not know refusal journals refuses them by name. A separate pull request on `main` makes `gateway verify` and the export reader refuse journal names they do not know | section 12 |
+| C1 | delegation step 0's refusals, made in `present` inside authentication, come before the charge and are not journaled | section 4 |
+| C2 | `receipt-version` comes before step 8a, so it is journaled for a caller of one scope alone, as `dry-run` is | section 4 |
+| C3 | an entry is made only for a scope whose hold the charge actually took, not for every scope it was called with | section 4 |
+| C4 | delivery `"3"`'s acknowledgment digest has a domain prefix of its own, and an action receipt travels under a member of its own | section 9 |
+| C5 | on the PostgreSQL kind with several instances, which instance forwards which entries; the cursor moves by a monotone compare-and-set under the journal's lock | section 9 |
+| C6 | one caller at its own rate can fill a journal, so room is kept for tallies after the refusal entries stop, and what happens at the cap is stated exactly | sections 5 and 11 |
+| C7 | the advisory lock takes PostgreSQL's two-`int4` form with a class constant, apart from the gateway's one-`bigint` locks | section 7 |
+| C8 | the role `gateway journal open` runs as, and `K_scope` kept where the run-time role cannot rewrite it | section 3 |
+| C9 | deleting a key does not make every copy of the entries unopenable | section 8 |
+| C10 | the answer is flushed explicitly before the hand-off | section 5 |
+| C11 | a sink on `"3"` can decline refusal entries by a switch | section 9 |
 
 ## Context and problem statement
 
@@ -135,7 +156,7 @@ Chosen: **P2, J2, S3, W2 and V2.**
   record into a scope the caller does not reach.
 - **S3** gives a commitment that no reader of the journal or the sink can test a guess against, and
   that the operator can open. A key for each scope opens one scope alone, and deleting a scope's key
-  makes its entries unopenable.
+  leaves the store's own entries of that scope unopenable (section 8 says what it does not reach).
 - **W2** is the only form under which no answer waits on, or changes with, the journal.
 - **V2** leaves sinks on `"1"` and `"2"` untouched. Its digest member is named so that an older sink
   cannot acknowledge it by accident.
@@ -269,11 +290,25 @@ request = "sha256:" + hex(SHA-256(salt || "refusal-request:" || route || 0x0A ||
 - **`K_scope`** is the scope's commitment key: 32 random bytes, drawn when the journal's first entry
   is written.
   - **Filesystem kind:** `<root>/journals/<name>.key`, created exclusively, `0600`, and synced before
-    that entry.
-  - **PostgreSQL kind:** a document of no scope in `gateway.documents`, named `refusal-key.` and the
-    lowercase hexadecimal SHA-256 of the journal's name, as the seal-forwarding marker is named
-    (ADR-0049, amendment decision 6). It is inserted in the transaction of the journal's first entry.
-    The run-time role's grants on `gateway.documents` (`go/store_pg/grants.sql:35`) already cover it.
+    that entry, by the store's create-once secret put (`secretSpace.putSecret`,
+    `go/store_contract.go`).
+  - **PostgreSQL kind:** a row of `gateway.secrets`, named `refusal-key.` and the lowercase
+    hexadecimal SHA-256 of the journal's name, made by the same create-once put before the journal's
+    first entry is inserted. Two instances that race make one key: the second put is refused, and
+    that instance reads the key the first one made.
+  - **Who can rewrite it (condition C8).** The run-time role holds SELECT, INSERT, UPDATE and DELETE
+    on `gateway.documents` (`go/store_pg/grants.sql`), so a key kept there, as this record first had
+    it, could be replaced by the serving login. It is kept in `gateway.secrets` instead, on which that
+    role holds SELECT and INSERT alone: it can make the key once and read it, and can neither replace
+    nor remove it. This adds no migration and no grant. The owner role removes it, in
+    `store remove-scope` (section 8). On the filesystem kind the serving gateway's user owns `<root>`
+    and can rewrite the key file as it can rewrite any file of the store, so there the key is trusted
+    as the store's payloads are (SECURITY.md).
+  - **What a rewritten key can do.** A key that was replaced or lost makes `open` answer `no match`
+    for the journal's earlier entries. It cannot make `open` answer `match` for bytes that are not
+    the request's, which would take a second preimage of SHA-256. So `match` proves the bytes, and
+    `no match` from a store whose key could have been rewritten proves only that this key does not
+    open the entry.
   - **Where it is never:** it is never in an entry or an export, never sent to the sink, never
     written on stderr, and never read by a verifier.
 - **No equality between entries.** Each entry has its own nonce, so two refused requests with
@@ -286,6 +321,10 @@ request = "sha256:" + hex(SHA-256(salt || "refusal-request:" || route || 0x0A ||
   - `--reveal-salt` prints that one entry's salt, so an auditor can check that one commitment and no
     other, as with a receipt's salt.
   - The command reads `K_scope` and writes nothing.
+  - **The role it runs as (condition C8).** It opens the store of the configuration it is given
+    (`--config`). On the PostgreSQL kind that is the configuration's login, the run-time role: it
+    reads `gateway.journal_records` and `gateway.secrets`, which that role may SELECT, takes no lock
+    and writes nothing. On the filesystem kind it runs as the user that owns `<root>`.
 
 **`tally`**: at most one each minute for each journal, from each instance, written only when one of
 its counts is not zero. It has exactly these members:
@@ -307,7 +346,10 @@ written.
 **The rule.** A refusal is journaled when all three of these hold:
 
 - the request was authenticated;
-- ADR-0057 had charged it to a scope, at the step its decision 2 table names, before the refusal;
+- ADR-0057 had charged it to a scope, at the step its decision 2 table names, before the refusal,
+  and the charge took a hold of that scope. A charge passes over a scope the limiter holds no state
+  for (`charge`, `go/limits.go`), and no entry is made for a scope it passed over (condition C3):
+  the journal follows the holds the request took, never the scopes it named;
 - the refusal is one this section lists.
 
 It is journaled once, in that scope's journal, and nowhere else. A charge needs `limits` (section 6).
@@ -317,26 +359,35 @@ It is journaled once, in that scope's journal, and nowhere else. A charge needs 
 | Route | `reason` codes |
 |---|---|
 | `/acquire` | `session` (not a flat token, sealed, held by another instance, held by the store, the registry unreadable); `source`; `scope`; `trail`; `body` (malformed, or past the bound, after the charge); `publisher-policy`; `grant`; `delegation` |
-| `/act` | its `refusedAt`, for every step after step 3a or step 8a: `session`, `platform`, `tool`, `write-requesters`, `arguments`, `action-key` (`action-key-closed` among them), `decision`, `cites`, `approvals`, `record`, `consistency`, `policy-bind`, `policy-signed`, `policy-packs`, `policy-reviewed`, `policy-outcome`, `policy-handoff`, `receipt-version`, `dry-run`, `scope-identifier` (step 8, for a caller of one scope), `delegation`, `grant` |
+| `/act` | its `refusedAt`, for every step after step 3a or step 8a: `session`, `platform`, `tool`, `write-requesters`, `arguments`, `action-key` (`action-key-closed` among them), `decision`, `cites`, `approvals`, `record`, `consistency`, `policy-bind`, `policy-signed`, `policy-packs`, `policy-reviewed`, `policy-outcome`, `policy-handoff`, `receipt-version`, `dry-run` and `scope-identifier` (step 8), these three for a caller of one scope, `delegation`, `grant` |
 | `/seal` | `session` (no such session, sealed, held by another instance, held by the store); `scope`; `body` |
 
 - **The build holds the list.** It holds every refusal answered after the charge to exactly one code,
   with a test that walks each route's refusals. If a refusal fits no code, the build stops and this
   record is amended. There is no catch-all code.
-- **Delegation refusals.** SPEC.md §11.5's steps 0 to 12, and the grant's refusals (§10, rule 3), are
+- **Delegation refusals.** SPEC.md §11.5's steps 1 to 12, and the grant's refusals (§10, rule 3), are
   `delegation` or `grant`, with `refusal` and, for `out-of-scope`, `outOfScope`. A delegated request
-  reaches `"unscoped"` alone, so it is charged right after authentication, and every such refusal
-  comes after the charge.
-- **`dry-run` and step 8's `scope-identifier`** are journaled for a caller of one scope, because it
-  was charged at step 3a. They are not journaled for a caller of several, because step 8a has not
-  yet charged it. The rule follows the charge, not the reason, and that is what keeps it inside the
-  limits.
+  reaches `"unscoped"` alone, so it is charged right after authentication, and each of these comes
+  after the charge.
+  - Step 0 does not (condition C1). The credential's presentation is held in `present`
+    (`go/delegation_credential.go`), inside `authenticateCall` (`go/serve.go`), before
+    `chargeRequest` is reached, so its refusals are in the table below.
+  - A chain sent in the body beside a credential it is not bound to (`presented`, `go/serve.go`) is
+    refused after the charge. It is journaled as `delegation` with `refusal` `credential-mismatch`,
+    and, being answered `401`, it is also in `unauthenticatedRefusals`.
+- **`receipt-version`, `dry-run` and step 8's `scope-identifier`** are journaled for a caller of one
+  scope, because it was charged at step 3a. They are not journaled for a caller of several, because
+  step 8a has not yet charged it. `receipt-version` is held in `actKeyed` (`go/act.go`) before the
+  scope identifier is read, and so before step 8a (condition C2). The rule follows the charge, not
+  the reason, and that is what keeps it inside the limits.
 
 **Not journaled, with the reason for each:**
 
 | Refusal | Why not |
 |---|---|
 | `401`, and the `429` `gateway-in-flight` | unauthenticated. These are counted in `unauthenticatedRefusals` (ADR-0057 decision 5), as the maintainer fixed |
+| a delegation credential refused at step 0 in `present` (`credential-mismatch`, `401`: not live, expired, presented under the other scheme, or a proof that does not hold) | it is held inside authentication (`authenticateCall`, `go/serve.go`), before `chargeRequest` (condition C1). It is counted in `unauthenticatedRefusals`, since every `401` is (`writeJSON`, `go/serve.go`) |
+| a refusal after a charge that took no hold of the scope | no hold was taken, so no limit bounds an entry for it (condition C3) |
 | `404` for a method | it comes before the token is read |
 | `/act`'s `requester`, `scope-identifier` before the body, and `storage` | they come before step 3a. `requester` means no identity is configured, and `storage` is the store's kind, not the caller |
 | a refusal before the charge for a caller of several scopes (an unknown source, a source of an unreached scope, a malformed body, no scope where one is needed) | no scope is established, and writing under the named scope would let a caller write into a scope it does not reach (J1) |
@@ -350,8 +401,18 @@ It is journaled once, in that scope's journal, and nowhere else. A charge needs 
 
 ### 5. The hand-off, the writer, and what happens when a bound is reached
 
-- **After the answer.** The handler writes and flushes its answer exactly as today. Then, before it
-  returns and so before its limiter slots are released (ADR-0057 decision 2), it does three things:
+- **After the answer.** The handler writes its answer exactly as today, and the answer is then
+  flushed explicitly (`http.Flusher`) before the hand-off begins (condition C10), so no work of the
+  hand-off stands between the answer's bytes and the caller.
+  - Where the journal is configured, the answer of a request that holds a scope is kept until its
+    handler returns. It is then written with an explicit `Content-Length`, the length the server
+    would have set itself, and flushed. A flush without it would send the answer chunked.
+  - So the status, the header fields and the body are the same bytes as without the journal. Only
+    the order of the header lines on the wire can differ, since an explicit `Content-Length` is
+    written among the handler's fields; HTTP gives that order no meaning (RFC 9110, section 5.3).
+
+  Then, before the request returns and so before its limiter slots are released (ADR-0057
+  decision 2), the gateway does three things:
   - it draws the nonce and computes the commitment from the body bytes it holds;
   - it builds the record, at most 2048 bytes and with no body bytes in it;
   - it offers the record to its scope's queue with a non-blocking send.
@@ -369,11 +430,20 @@ It is journaled once, in that scope's journal, and nowhere else. A charge needs 
   - It signs outside the gateway's lock. It takes no lock that an answer takes: not the gateway's
     lock, not the registry's hold, not a limiter's state and not a session's admission.
   - On the PostgreSQL kind it uses a connection of its own, outside the pool that answers use.
-- **The byte cap.**
-  - `maxBytesPerScope` defaults to 64 MiB (67108864), and its range is 1 MiB to 1 GiB.
-  - When an entry would leave less than 4097 bytes under the cap, the writer writes the closing
-    `tally` with `full: true` in its place, and writes nothing more to that journal.
-  - Every later record of the scope counts as `journal-full`, reported on stderr at stop (below).
+- **The byte cap, and the room kept for tallies (condition C6).** A journal's bytes are the sum of
+  its lines' lengths, each with its `0x0A`. With `C` its `maxBytesPerScope`:
+  - `C` defaults to 64 MiB (67108864), and its range is 1 MiB to 1 GiB.
+  - The last `C / 16` bytes (4 MiB at the default, 64 KiB at the least) are kept for `tally` entries.
+  - A `refusal` entry is written only where the journal's bytes after it are at most `C - C/16`. The
+    first one that is not is not written and counts as `journal-full`, and so does every later
+    refusal record of the scope. From then on the scope's refusals are counted, not journaled.
+  - A `tally` is written where at least 4097 bytes would remain under `C` after it. Where fewer
+    would, the writer writes the closing `tally`, with `full: true`, in its place. It fits, since no
+    line is longer than 4096 bytes. The writer then writes nothing more to that journal.
+  - So, once the refusal entries stop, the tallies still land: at the default at least 1022 of them,
+    each a line of at most 4096 bytes, which is at least 17 hours at one a minute.
+  - Every record after the closing tally counts as `journal-full`, in the stderr line of each minute
+    and at stop (below).
   - The cap is reached again only in a new store (section 8).
 - **A failed write.** A signing error, an I/O error or a refused insert drops the record and
   counts it as `write-failed`. The writer then reads the journal's end again before its next entry.
@@ -425,8 +495,16 @@ It is journaled once, in that scope's journal, and nowhere else. A charge needs 
   table's CHECK. **No migration and no grant are added.** The run-time role's SELECT and INSERT on
   the table are what the serving gateway writes with.
 - **One transaction per entry.** The writer, as the run-time login:
-  1. takes `pg_advisory_xact_lock` on a key derived from the journal's name, under a class of its own
-     that the build checks against the gateway's other advisory locks;
+  1. takes `pg_advisory_xact_lock(int4, int4)`, PostgreSQL's two-key form (condition C7): the class
+     constant `pgRefusalJournalLockClass` is the first key, and the first four bytes of SHA-256 over
+     the journal's name, read as a signed integer, the second.
+     - The gateway's other advisory locks take the one-`bigint` form (`pgLogAppendLock`,
+       `go/store_pg.go`; `pgStartLeaseLock`, `go/store_pg_lease.go`; `pgMigrationLock`).
+       PostgreSQL keeps the two forms' keys apart, so no journal's lock is ever one of those.
+     - The build checks the class against every other two-key lock the gateway takes, of which there
+       are none today.
+     - Two journals whose names give one second key share a lock. That serializes their writers and
+       is otherwise harmless;
   2. reads the journal's last row;
   3. signs;
   4. inserts at the next ordinal;
@@ -491,13 +569,17 @@ It is journaled once, in that scope's journal, and nowhere else. A charge needs 
   - On the filesystem kind this happens in the command's own step 5, beside the removed files.
   - On the PostgreSQL kind it happens in the owner's transaction, under the journal's advisory lock,
     so a serving writer never interleaves with it.
-  - Deleting the key makes every copy of the entries unopenable, the sink's included.
+  - Deleting the key leaves the store's own entries unopenable from then on (condition C9). It does
+    not reach a copy that holds the key. A raw copy of the store, and on the PostgreSQL kind a backup
+    of the database or its write-ahead log, keeps `K_scope`, and with it opens the entries it holds
+    and those an export or the sink holds. The operator removes such copies as it removes the
+    scope's payloads from them.
   - **The trace is an amendment of ADR-0056 section 4.** The operator journal's `remove-scope` body
     gains two members, `refusalJournalBytes` and `refusalJournalDigest`: the length and SHA-256 of
     the bytes removed, which on the PostgreSQL kind are the bytes an export would have written. They
     are present exactly when the call removed a refusal journal. Without them, a removal of one
-    scope's refusal record would leave no trace. This needs the maintainer's acceptance as an
-    amendment of ADR-0056 (open question 3).
+    scope's refusal record would leave no trace. The maintainer accepted this amendment of ADR-0056
+    (open question 3).
 
 ### 9. Delivery version `"3"`
 
@@ -513,12 +595,14 @@ It is journaled once, in that scope's journal, and nowhere else. A charge needs 
   carrying the canonical JSON of exactly:
   - `deliveryVersion`: `"3"`;
   - `kind`: one of `"acquisition-receipt"`, `"action-receipt"`, `"seal"` and `"refusal-entry"`;
-  - `digest`: `sha256:` and the lowercase hexadecimal SHA-256 of the record's line without its
-    `0x0A`. That line is the receipt's under `receipts/`, the seal's in the registry, or the entry's
-    in its journal;
+  - `digest`: `sha256:` and the lowercase hexadecimal SHA-256 over
+    `"judgment-pack-gateway/sink-delivery/3:"`, the `kind`, `0x0A`, and the record's line without its
+    `0x0A` (condition C4). That line is the receipt's under `receipts/`, the seal's in the registry,
+    or the entry's in its journal;
   - for `acquisition-receipt`: `receipt`, `payloadDigest`, and `payload` as ADR-0049 decision 2
     gives it;
-  - for `action-receipt`: `receipt`;
+  - for `action-receipt`: `actionReceipt`, a member of its own, so that no reader of an acquisition's
+    `receipt` takes it for one (condition C4);
   - for `seal`: `seal`;
   - for `refusal-entry`: `journal` and `entry`.
 - **Acknowledged.** The acknowledgment is `{"acknowledged":"<digest>"}`, with ADR-0049 decision 3's
@@ -528,6 +612,11 @@ It is journaled once, in that scope's journal, and nowhere else. A charge needs 
   word. Here it finds no member it knows, its acknowledgment names no digest the gateway sent, and
   every acquisition is refused `503` `receipt_not_forwarded`. A mismatch is a refusal, never a
   silent pass.
+  - The domain prefix makes sure of it (condition C4): no `"3"` digest is ever a `"1"`
+    `receiptDigest` (`receiptDigestOf`, `go/receipt_sink.go`, SHA-256 over the receipt's line
+    alone), so an acknowledgment computed the `"1"` way names no digest the gateway sent.
+  - A test holds it: a sink that acknowledges a `"3"` delivery with the `"1"` digest of its receipt
+    leaves the acquisition refused `503` `receipt_not_forwarded`.
 - **Action receipts** follow ADR-0049's rules for acquisition receipts:
   - The receipt `/act` mints is held for the sink, under the gateway's lock that stamped it. It is
     delivered after that lock is released, while the session's admission is held, and `/act`
@@ -565,6 +654,18 @@ It is journaled once, in that scope's journal, and nowhere else. A charge needs 
     - No verifier reads it, and no export carries it.
     - After a stop or a crash, forwarding resumes from the cursor, and the sink deduplicates what
       it already holds.
+    - **Several instances on the PostgreSQL kind (condition C5).** Every instance's writer forwards
+      every journal from the one cursor, whichever instance appended the entries: it delivers the
+      entries after the cursor, oldest first. The delivery is made outside the journal's lock. The
+      cursor then moves under that lock, by a compare-and-set that is monotone: it is replaced only
+      where it still holds the ordinal the instance read before it delivered, and only by a greater
+      ordinal. Where another instance moved it first, the greater value stays and the instance reads
+      again. So no ordinal is passed over, two instances may each send one entry, and the sink
+      deduplicates them by `digest`.
+  - **A sink that declines refusal entries (condition C11).** `receiptSink.refusalEntries: false`,
+    valid under `"3"` alone, forwards no refusal entry. Receipts and seals are delivered as above,
+    the journals are kept in the store, and no cursor is written. Without `deliveryVersion: "3"` the
+    member is refused by name. Absent, it is `true`.
   - A journal whose entries are not acknowledged grows as it would without a sink, up to its cap.
 - **What the sink receives for each scope.** There is one sink for every scope (ADR-0049,
   consequences). It receives every scope's acquisition and action receipts, seals and refusal
@@ -613,6 +714,13 @@ can observe depends on B's refusals. The table takes each thing it can observe i
   tells A at most that some request of some scope was charged, and was served or refused. It could
   be A's own scope's other callers, an unscoped caller or another scope. That is the signal ADR-0057
   decision 4 already accepts for admitted requests ("bounded, not removed").
+- **Under a key service (the maintainer's timing ruling).** One signing can take up to ADR-0050's
+  5 seconds, so the one journal signing that an answer's signing can wait behind can add up to
+  5 seconds to that answer. A key service's quota shared with the journal can also make signings
+  fail, not only slow: an answer whose signing the quota refuses, because journal signings spent it,
+  is a failed answer, not a late one. The operator sizes the quota for the journal's signings
+  (Consequences). The maintainer accepted this residual, bounded as stated, with no cover traffic
+  (open question 1).
 - **What is not removed.** A caller that knows by other means that no other request is running, and
   that B has no admitted traffic, could take a shift in shared latency as a sign that B is being
   refused. Removing that takes constant-rate cover traffic (W4), which this record does not choose
@@ -642,6 +750,11 @@ posture`, run by the operator, gives the same line.
 - That the closed lists of section 4 match the code. The build's walk of each route's refusals is
   what holds them, and it stops on a refusal that fits none.
 - The MCP front's path through `/acquire`, which is taken from ADR-0057 and not confirmed here.
+- That a journal holds its scope's refusals for the store's whole life (condition C6). One caller at
+  its own rate can fill its scope's refusal room: at `requestsPerMinute` 60 and entries near 1 KiB,
+  60 MiB fills in about 17 hours. From then on that scope's refusals are counted in its tallies and
+  not journaled, until a new store. The effect stays within the scope: no other scope's journal,
+  room or tally moves with it.
 
 ### Consequences
 
@@ -675,6 +788,11 @@ posture`, run by the operator, gives the same line.
     The release notes say so, and say to verify with this release.
 - **Older readers of an export.** They refuse `store/journals/refusal-….jsonl` as a file an export
   does not write (`exportPathWritten`), as ADR-0056 section 7 sets out for the operator journal.
+- **A release that does not know refusal journals refuses them by name** (the maintainer's ruling).
+  A verifier or an export reader that meets a journal name it does not know reports a refusal that
+  names it, never a journal passed over. A separate pull request on `main` makes `gateway verify`
+  and the export reader of the current line refuse journal names they do not know; it is not part
+  of this record's build.
 - **The engine.**
   - A configuration of an earlier version, or without the members, journals nothing and sends
     today's deliveries.
@@ -704,6 +822,9 @@ posture`, run by the operator, gives the same line.
 ## More information
 
 ### Build plan: three pull requests
+
+**As built.** R2 comes first, and carries R3's verify-ts and corpus vectors. R1, and R3's
+forwarding, follow it.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on
@@ -809,10 +930,12 @@ amendment; ADR-0050; ADR-0053; ADR-0054; ADR-0041; ADR-0042; ADR-0035; ADR-0048.
 §1.2b, §1.2c, §3f (planned), §4, §6, §6a, §10 and §11.4 to §11.8. Issue #588 (projection by scope)
 and #593 (shared counting).
 
-This record amends ADR-0056 section 4, by the two `remove-scope` members, only if the maintainer
-accepts open question 3. It supersedes nothing.
+This record amends ADR-0056 section 4 by the two `remove-scope` members (open question 3, ruled as
+recommended). It supersedes nothing.
 
-## Open questions
+## Open questions, as ruled
+
+The maintainer ruled each question as it recommends.
 
 1. **The shared-resource residual: accept it, bounded as section 10 states (recommended), or add
    constant-rate cover (W4).**
@@ -821,20 +944,26 @@ accepts open question 3. It supersedes nothing.
      journal at the tick rate.
    - The recommendation follows ADR-0057's accepted "bounded, not removed". The maintainer should
      say whether the refusal journal must meet a stricter bar than the limits.
+   - **Ruled:** the residual is accepted, bounded as section 10 states, with no cover traffic.
 2. **Refusals before the charge from callers of several scopes: not journaled (recommended), or
    kept in a gateway-level journal of no scope.** The callers concerned reach several scopes, the
    installation's caller among them. Such a journal would be bounded by `beforeScope` alone.
+   **Ruled:** not journaled.
 3. **The trace of a removed refusal journal: amend ADR-0056 section 4 with `refusalJournalBytes`
    and `refusalJournalDigest` on `remove-scope` (recommended), or a new operator body kind.** A new
    kind leaves the accepted `remove-scope` form untouched, at the cost of a second entry per call.
+   **Ruled:** the amendment.
 4. **No trim by age (recommended), or a base marker that lets a journal drop its head.** The byte
-   cap and store rotation bound a journal today.
+   cap and store rotation bound a journal today. **Ruled:** no trim by age.
 5. **`maxBytesPerScope`: configurable with a 64 MiB default (recommended), or fixed.**
+   **Ruled:** configurable, 64 MiB when left out.
 6. **The queue's size: fixed at 256 (recommended), or tied to the scope's `burst`.**
+   **Ruled:** fixed at 256.
 7. **Source outcomes, such as `source_access_refused`: not journaled (recommended), or journaled
    under codes of their own.** They are the source's answers, and an operator may want them for
-   audit.
+   audit. **Ruled:** not journaled.
 8. **`/posture`: the fixed `refusal-journal` line (recommended), or no line at all.**
+   **Ruled:** the fixed line.
 
 ## What the release notes must say
 
@@ -858,7 +987,9 @@ accepts open question 3. It supersedes nothing.
 - **The journal is best effort.** A record dropped at a bound is counted. One lost in an abrupt stop
   is not.
 - **What the member needs:** `identity`, and `limits` with a request rate for every scope. Each
-  journal is capped at `maxBytesPerScope`, 64 MiB when left out.
+  journal is capped at `maxBytesPerScope`, 64 MiB when left out. Its last sixteenth is kept for
+  tallies: once a scope's refusal entries stop at the cap, its counts still land, until a closing
+  tally marks the journal full. One caller at its own rate can fill its scope's room.
 - **No route serves a journal.** `/posture` gains a fixed `refusal-journal` line with no counts.
 - **Removal:** `remove-scope` removes the scope's journal and key, and its operator journal entry
   records what it removed.
@@ -879,4 +1010,6 @@ accepts open question 3. It supersedes nothing.
   a key service's quota for it.
 - **The bound:** one scope's refusals can still shift the latency of shared points, such as the
   signer, the store and the sink, by at most one journal signing and one delivery in flight. The
-  journal bounds that effect; it does not remove it.
+  journal bounds that effect; it does not remove it. Under a key service one signing can take up to
+  5 seconds, and a quota shared with the journal can make an answer's signing fail, not only slow:
+  size the quota for the journal's signings.
