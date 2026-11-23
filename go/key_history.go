@@ -13,7 +13,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -300,16 +299,9 @@ func madeOfVersion2(doc []byte) (keyHistoryMade, error) {
 	return keyHistoryMade{entries: checked.entries, doc: doc, last: checked.latest}, nil
 }
 
-// checkKeyHistory is checkKeyHistoryOf's entries, from a key pinned by its
-// bytes, as before version 2: a 33-byte key is only ever a P-256 point.
-func checkKeyHistory(doc []byte, pinned ed25519.PublicKey) ([]keyHistoryEntry, error) {
-	var pin *heldKey
-	if pinned != nil {
-		pin = &heldKey{alg: algEd25519, key: pinned}
-		if len(pinned) == 33 {
-			pin.alg = algES256
-		}
-	}
+// checkKeyHistory is checkKeyHistoryOf's entries, from the key pinned with
+// its algorithm (nil to take the first entry's), whatever its length.
+func checkKeyHistory(doc []byte, pin *heldKey) ([]keyHistoryEntry, error) {
 	checked, err := checkKeyHistoryOf(doc, pin, "")
 	return checked.entries, err
 }
