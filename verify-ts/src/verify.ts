@@ -1985,6 +1985,134 @@ function isEntryInstant(at: string): boolean {
   return !Number.isNaN(d.getTime()) && d.toISOString() === at.replace("Z", ".000Z");
 }
 
+// --- the refusal journals (ADR-0059 §1, §3, §8) ---------------------------------
+
+const refusalJournalPrefix = "refusal-";
+const refusalNameContext = "judgment-pack-gateway/refusal-journal-name/1:";
+const writeRequestersStep = "write-requesters";
+// the closed lists of ADR-0059 §4, by route
+const refusalReasons: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["/acquire", new Set(["session", "source", "scope", "trail", "body", "publisher-policy", "grant", "delegation"])],
+  ["/act", new Set(["session", "platform", "tool", writeRequestersStep, "arguments", "action-key", "decision", "cites", "approvals",
+    "record", "consistency", "policy-bind", "policy-signed", "policy-packs", "policy-reviewed", "policy-outcome", "policy-handoff",
+    "receipt-version", "dry-run", "scope-identifier", "delegation", "grant"])],
+  ["/seal", new Set(["session", "scope", "body"])],
+]);
+const limitCountNames = ["scope-rate", "scope-in-flight", "caller-rate", "caller-in-flight", "callers"];
+const dropNames = ["queue-full", "write-failed", "journal-full"];
+
+// refusalJournalName is the journal of a scope key: "refusal-" and the first
+// 12 bytes of SHA-256 over the context and the key, each half-byte a letter
+// from a (0) to p (15).
+export function refusalJournalName(scopeKey: string): string {
+  const sum = crypto.createHash("sha256").update(refusalNameContext + scopeKey, "utf8").digest();
+  let out = refusalJournalPrefix;
+  for (const c of sum.subarray(0, 12)) {
+    out += String.fromCharCode(97 + (c >> 4), 97 + (c & 0x0f));
+  }
+  return out;
+}
+
+function isRefusalJournalName(s: string): boolean {
+  return /^refusal-[a-p]{24}$/.test(s);
+}
+
+function onlyMembers(v: ObjectValue, names: readonly string[]): boolean {
+  return v.members.every((m) => names.includes(m.name));
+}
+
+function countsOf(v: Value | undefined, names: readonly string[]): number | null {
+  if (v?.type !== "object" || hasDuplicate(v) || !onlyMembers(v, names)) {
+    return null;
+  }
+  for (const m of v.members) {
+    if (m.value.type !== "number" || m.value.integer === null || m.value.integer < 1n) {
+      return null;
+    }
+  }
+  return v.members.length;
+}
+
+function isRefusalCode(s: string | undefined): boolean {
+  return s !== undefined && /^[a-z0-9-]{1,64}$/.test(s);
+}
+
+// refusalBodyOf is §8's structural check of a refusal journal's body:
+// exactly a refusal or a tally, of its form, whose scope gives the journal's
+// name; null for any other.
+function refusalBodyOf(body: ObjectValue, journal: string): Omit<JournalEntry, "ordinal" | "previous" | "keyPos"> | null {
+  const kind = str(member(body, "kind"));
+  const scope = str(member(body, "scope"));
+  if (hasDuplicate(body) || scope === undefined || !(scope === "unscoped" || isScopeIdentifier(scope)) || refusalJournalName(scope) !== journal) {
+    return null;
+  }
+  const e = { kind: kind ?? "", registryFrom: 0, removalFrom: 0, removal: false, removalBytes: 0, removalDigest: "", sealing: false, seals: 0, sealDigest: "", continuation: "" };
+  if (kind === "refusal") {
+    if (!onlyMembers(body, ["kind", "scope", "route", "reason", "refusal", "outOfScope", "status", "answeredAt", "caller", "delegation", "nonce", "request"])) {
+      return null;
+    }
+    const route = str(member(body, "route"));
+    const reason = str(member(body, "reason"));
+    if (route === undefined || reason === undefined || refusalReasons.get(route)?.has(reason) !== true) {
+      return null;
+    }
+    const refusal = member(body, "refusal");
+    if ((refusal !== undefined) !== (reason === "delegation" || reason === "grant") || (refusal !== undefined && !isRefusalCode(str(refusal)))) {
+      return null;
+    }
+    const outOfScope = member(body, "outOfScope");
+    if ((outOfScope !== undefined) !== (str(refusal) === "out-of-scope") || (outOfScope !== undefined && (str(outOfScope) ?? "") === "")) {
+      return null;
+    }
+    const status = member(body, "status");
+    if (status?.type !== "number" || status.integer === null || status.integer < 400n || status.integer > 499n) {
+      return null;
+    }
+    const at = str(member(body, "answeredAt"));
+    if (at === undefined || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(at) || Number.isNaN(new Date(at).getTime()) || new Date(at).toISOString() !== at) {
+      return null;
+    }
+    const caller = member(body, "caller");
+    if (caller?.type !== "object" || hasDuplicate(caller) || caller.members.length !== 3 || !onlyMembers(caller, ["issuer", "subject", "tokenDigest"])) {
+      return null;
+    }
+    const digest = str(member(caller, "tokenDigest"));
+    if (!str(member(caller, "issuer")) || !str(member(caller, "subject")) || digest === undefined || !/^sha256:[0-9a-f]{64}$/.test(digest)) {
+      return null;
+    }
+    const delegation = member(body, "delegation");
+    if (delegation !== undefined && (delegation.type !== "object" || hasDuplicate(delegation) || delegation.members.length !== 5 ||
+      !onlyMembers(delegation, ["id", "host", "actor", "subject", "chain"]) || member(delegation, "chain")?.type !== "array")) {
+      return null;
+    }
+    if (hexOf(member(body, "nonce"), 64) === undefined || !/^sha256:[0-9a-f]{64}$/.test(str(member(body, "request")) ?? "")) {
+      return null;
+    }
+    return e;
+  }
+  if (kind === "tally") {
+    if (!onlyMembers(body, ["kind", "scope", "from", "to", "limit", "dropped", "full"])) {
+      return null;
+    }
+    const from = str(member(body, "from"));
+    const to = str(member(body, "to"));
+    if (from === undefined || to === undefined || !isEntryInstant(from) || !isEntryInstant(to) || to < from) {
+      return null;
+    }
+    const limits = countsOf(member(body, "limit"), limitCountNames);
+    const dropped = countsOf(member(body, "dropped"), dropNames);
+    if (limits === null || dropped === null || limits + dropped === 0) {
+      return null;
+    }
+    const full = member(body, "full");
+    if (full !== undefined && !(full.type === "boolean" && full.value)) {
+      return null;
+    }
+    return e;
+  }
+  return null;
+}
+
 function journalBodyOf(body: ObjectValue): Omit<JournalEntry, "ordinal" | "previous" | "keyPos"> | null {
   const kind = str(member(body, "kind"));
   const members = kind === undefined ? undefined : operatorBodies.get(kind);
@@ -2092,7 +2220,9 @@ function journalEntryOf(line: Buffer, journal: string, keys: readonly ReachedKey
   if (ordinal === null || (hasPrevious && previous === undefined) || at === undefined || !isEntryInstant(at) || keyId === undefined || signature === undefined || body?.type !== "object") {
     return null;
   }
-  const e = journalBodyOf(body);
+  // a body of the journal's own kinds alone: an operator body in a refusal
+  // journal, or a refusal body in operator, does not load (ADR-0059 §8)
+  const e = isRefusalJournalName(journal) ? refusalBodyOf(body, journal) : journalBodyOf(body);
   if (e === null) {
     return null;
   }
@@ -2321,12 +2451,59 @@ function judgeJournals(root: string, registryPath: string, keys: readonly Reache
       }
     }
   }
+  // each refusal journal, judged alone: it binds nothing in the store
+  // (ADR-0059 §8)
+  let listed: string[] = [];
+  try {
+    listed = fs.readdirSync(path.join(root, "journals"));
+  } catch {
+    listed = [];
+  }
+  const refusalNames = listed.filter((f) => f.endsWith(".jsonl") && isRefusalJournalName(f.slice(0, -6))).map((f) => f.slice(0, -6)).sort();
+  for (const name of refusalNames) {
+    const got = readUnder(root, "journals", name + ".jsonl");
+    if (typeof got === "string" || got.length === 0) {
+      continue;
+    }
+    held.add(name);
+    const { lines, torn } = splitLines(got);
+    const j = judgeRefusalJournal(lines, name, keys);
+    if (j !== undefined) {
+      findings.push(j);
+      continue;
+    }
+    if (lines.length > 0) {
+      observations.push([["observation", "journal-from"], ["journal", name], ["entries", BigInt(lines.length)]]);
+    }
+    if (torn > 0) {
+      observations.push([["observation", "journal-torn-tail"], ["journal", name], ["bytes", BigInt(torn)]]);
+    }
+  }
   for (const name of required) {
-    if (!held.has(name) && evidence) {
+    if (!held.has(name) && (evidence || isRefusalJournalName(name))) {
       findings.push([["status", "journal-missing"], ["journal", name]]);
     }
   }
   return { findings, observations };
+}
+
+// judgeRefusalJournal is §4 step 9 on one refusal journal: at most one
+// finding, journal-entry-forged or journal-order.
+function judgeRefusalJournal(lines: readonly Buffer[], name: string, keys: readonly ReachedKey[]): Finding | undefined {
+  const entries: JournalEntry[] = [];
+  for (const [i, line] of lines.entries()) {
+    const e = journalEntryOf(line, name, keys);
+    if (e === null) {
+      return journalFinding("journal-entry-forged", name, i);
+    }
+    entries.push(e);
+  }
+  for (const [i, e] of entries.entries()) {
+    if (e.ordinal !== i || (i === 0 && e.previous !== undefined) || (i > 0 && (e.previous === undefined || e.previous !== sha256Hex(lines[i - 1]!) || e.keyPos < entries[i - 1]!.keyPos))) {
+      return journalFinding("journal-order", name, i);
+    }
+  }
+  return undefined;
 }
 
 // The key history's consumer check (SPEC.md §3e, both versions; ADR-0055),

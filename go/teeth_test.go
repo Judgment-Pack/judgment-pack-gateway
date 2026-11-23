@@ -2378,6 +2378,11 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 		"v3-journal-command-seal-missing", "v3-journal-entry-forged", "v3-journal-holds", "v3-journal-missing",
 		"v3-journal-order-head", "v3-journal-order-middle", "v3-journal-range-mismatch",
 		"v3-journal-staged-entry", "v3-journal-torn-tail", "v3-journal-torn-tail-loads",
+		// the refusal journal vectors (ADR-0059 §8), each beside the
+		// operator journal of v3-journal-holds
+		"v3-journal-refusal-forged", "v3-journal-refusal-holds", "v3-journal-refusal-kind-crossed",
+		"v3-journal-refusal-missing", "v3-journal-refusal-order-middle", "v3-journal-refusal-scope-mismatch",
+		"v3-journal-refusal-tally-full", "v3-journal-refusal-torn-tail",
 	}
 	retentionStating = append(retentionStating, journal...)
 	retentionObserving = append(retentionObserving, journal...)
@@ -2463,8 +2468,8 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 			if err != nil {
 				t.Fatalf("no run: %v", err)
 			}
-			if count != 309 {
-				t.Fatalf("%d store vectors read, want 309", count)
+			if count != 317 {
+				t.Fatalf("%d store vectors read, want 317", count)
 			}
 			disagreeing := map[string]bool{}
 			for _, failure := range failures {
@@ -2647,7 +2652,7 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 	// observes in.
 	if got, want := []int{len(stores), len(okTrue), len(withFindings), len(withWitnesses), len(withRotations), len(stating),
 		len(witnesses), len(refusals), len(readings), len(okReadings), len(withHead)},
-		[]int{309, 75, 306, 3, 23, 52, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
+		[]int{317, 78, 314, 3, 23, 60, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
 		t.Fatalf("the corpus's vectors, by what their answers give: %v, want %v", got, want)
 	}
 	for name := range stating {
