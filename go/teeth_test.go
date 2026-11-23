@@ -2040,6 +2040,13 @@ func conformStub(mode string, args []string) int {
 	if len(args) > 1 && args[0] == "--artifacts" {
 		supplied, args = args[1], args[2:]
 	}
+	// --require-journal after it, once for each name, as gateway verify
+	// takes it (ADR-0056 §6): every stub requires the journal as the
+	// faithful one does.
+	var requireJournal []string
+	for len(args) > 1 && args[0] == "--require-journal" {
+		requireJournal, args = append(requireJournal, args[1]), args[2:]
+	}
 	previous := ""
 	if len(args) > 1 && args[0] == "--previous" {
 		previous, args = args[1], args[2:]
@@ -2067,6 +2074,7 @@ func conformStub(mode string, args []string) int {
 		fmt.Fprintln(os.Stderr, "verify:", err)
 		return 1
 	}
+	rep.requireJournals(requireJournal)
 	switch mode {
 	case "ignore-option", "edit":
 	case "no-observations", "older":
@@ -2362,6 +2370,16 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 	// the approval observation (ADR-0054), stated beside decision-record-not-compared
 	retentionStating = append(retentionStating, "v3-action-single-approval-cited-again")
 	retentionObserving = append(retentionObserving, "v3-action-single-approval-cited-again")
+	// The operator journal vectors (ADR-0056 §6): each states its
+	// observations, and each observes the artifact its removal record
+	// removes, beside journal-from and journal-torn-tail where the journal
+	// holds.
+	journal := []string{
+		"v3-journal-entry-forged", "v3-journal-holds", "v3-journal-missing",
+		"v3-journal-staged-entry", "v3-journal-torn-tail", "v3-journal-torn-tail-loads",
+	}
+	retentionStating = append(retentionStating, journal...)
+	retentionObserving = append(retentionObserving, journal...)
 	supplying := []string{
 		"v3-artifact-missing-no-record", "v3-artifact-not-retained-supplied-elsewhere",
 		"v3-artifact-not-retained-supplied-mismatch", "v3-artifact-not-retained-supplied",
