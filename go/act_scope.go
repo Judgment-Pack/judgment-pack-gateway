@@ -56,28 +56,53 @@ func (g *gatewayService) writeReachRefusal(who *caller) string {
 // actScope reads the request's scope member at the scope step (ADR-0054,
 // step 8): after the receipt version and before the session is looked up,
 // so a label is never looked up in a namespace the caller does not reach,
-// and before anything of the action key. A scope that is not a string, one
-// named under a delegation or by a reservation's sender (neither reaches a
-// scope identifier, SPEC.md §6), and one the caller's token does not reach
-// are one refusal, /acquire's sentence, which quotes neither identifier.
-// So is a request that names no scope from a caller whose token does not
-// reach none, where some write source is fixed to a scope identifier: its
-// label would be looked up in the namespace of none, which the caller does
-// not reach (steps 8 and 9), and the session step's answer would tell it the
-// state of a session of none.
+// and before anything of the action key. A scope that is not a string, and
+// one the caller's token does not reach, are one refusal, /acquire's
+// sentence, which quotes neither identifier. So is a request that names no
+// scope from a caller whose token does not reach none, where some write
+// source is fixed to a scope identifier: its label would be looked up in the
+// namespace of none, which the caller does not reach (steps 8 and 9), and
+// the session step's answer would tell it the state of a session of none.
+//
+// A request under a delegation is held at this step to its chain's scope
+// binding as well (spec RFC 0030 §2, the request check, scope-id-mismatch;
+// actScopeHeld), with the same sentence: so a delegated /act names a scope
+// exactly where its chain is bound to that scope identifier.
 func (g *gatewayService) actScope(raw json.RawMessage, who *caller) (requestedScope, error) {
+	refused := actRefusal{"scope-identifier", scopeRefusal}
+	asked := requestedScope{}
 	if len(raw) == 0 {
 		if g.scopedWrite() && !g.reachOf(who).holds("") {
-			return requestedScope{}, actRefusal{"scope-identifier", scopeRefusal}
+			return requestedScope{}, refused
 		}
-		return requestedScope{}, nil
+	} else {
+		v, err := parseJSON(raw)
+		s, isString := v.(vString)
+		if err != nil || !isString || !g.scopedWrite() {
+			return requestedScope{}, refused
+		}
+		asked = requestedScope{value: string(s), named: true}
 	}
-	v, err := parseJSON(raw)
-	s, isString := v.(vString)
-	if err != nil || !isString || who.delegated != nil || !g.scopedWrite() || !g.reachOf(who).holds(string(s)) {
-		return requestedScope{}, actRefusal{"scope-identifier", scopeRefusal}
+	if !g.actScopeHeld(who, asked) {
+		return requestedScope{}, refused
 	}
-	return requestedScope{value: string(s), named: true}, nil
+	return asked, nil
+}
+
+// actScopeHeld is whether who may name asked at the scope step, or name none
+// where asked is not named. Under a delegation the chain's binding governs
+// (delegatedScopeRefused): a chain bound to a scope identifier names that
+// one, which the issuing host's scopeIds lists, and an unbound chain names
+// none. A reservation's sender has no chain and reaches no scope identifier
+// (SPEC.md §6), so one that names any is refused there. Then, for every
+// caller, the caller's reach holds the scope named (reachOf): a bound chain
+// reaches its own identifier alone, and only where its subject's own entry
+// grants it. Neither check reads an issuing host or counts anything.
+func (g *gatewayService) actScopeHeld(who *caller, asked requestedScope) bool {
+	if g.delegatedScopeRefused(who, asked) {
+		return false
+	}
+	return !asked.named || g.reachOf(who).holds(asked.value)
 }
 
 // actPlatformScope is the platform step (ADR-0054, step 10). Where no write
@@ -229,7 +254,8 @@ func (g *gatewayService) actionNamespaceIn(who *caller, key, scope string) strin
 	v.set("authority", vString(g.authority))
 	v.set("scope", vString(scope))
 	if who.delegated != nil {
-		// never reached: a delegated request names no scope (actScope)
+		// a delegated request names a scope only under a chain bound to it
+		// (actScopeHeld): the key is the delegation's within that scope
 		v.set("delegation", who.delegated.scope.value())
 	} else {
 		v.set("issuer", vString(who.issuer))

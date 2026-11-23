@@ -20,14 +20,20 @@ import (
 // it in engineVersions.
 const delegationP256Version = "41"
 
+// delegationScopeBindingVersion is the engine configuration version from which
+// an issuing host's entry may name scopeIds: the scope identifiers the
+// gateway lets that host's delegations be bound to (spec RFC 0030 §2, Binding
+// a chain to one scope identifier; open question 27; SPEC.md §11.2). None by
+// default, so a binding is opted into per host and never implied.
+// Its number is 46, after request limits (44) and the operator journal (45).
+const delegationScopeBindingVersion = "46"
+
 // admissionReadV2Version is the engine configuration version from which an
 // issuing host's admission may carry readVersion, "1" or "2" (ADR-0058; spec
 // RFC 0030 §2a), and from which the MCP server's tools/list names each
-// platform tool's descriptorDigest and versionLabel in _meta. The number is
-// a placeholder: it reads "46", the next on main, and takes its number in
-// merge order (47 expected, after the scope binding's 46). engine.go lists it
-// in engineVersions.
-const admissionReadV2Version = "46"
+// platform tool's descriptorDigest and versionLabel in _meta. Its number is
+// 47, after the scope binding (46). engine.go lists it in engineVersions.
+const admissionReadV2Version = "47"
 
 // delegationHostSpec is one issuing host as configured.
 type delegationHostSpec struct {
@@ -37,6 +43,9 @@ type delegationHostSpec struct {
 	keys       map[string]heldKey
 	admission  string // an https URL
 	credential string // an absolute path to the admission credential
+	// scopeIDs are the scope identifiers the host's delegations may be bound
+	// to (delegationScopeBindingVersion); empty for none.
+	scopeIDs map[string]bool
 	// readVersion is the version of every read sent to the host, "1" or
 	// "2", from admissionReadV2Version; "" below it, which is "1".
 	readVersion string
@@ -130,10 +139,29 @@ func parseDelegationHost(v value, version string) (delegationHostSpec, error) {
 	if err != nil {
 		return delegationHostSpec{}, err
 	}
-	if err := exactlyMembers(obj, map[string]bool{"host": true, "requester": true, "keys": true, "admission": true}, "host"); err != nil {
+	if _, present := obj.get("scopeIds"); present && !versionAtLeast(version, delegationScopeBindingVersion) {
+		return delegationHostSpec{}, fmt.Errorf("scopeIds is a version-%s member; engineVersion %s has no scopeIds", delegationScopeBindingVersion, version)
+	}
+	if err := exactlyMembers(obj, map[string]bool{"host": true, "requester": true, "keys": true, "admission": true, "scopeIds": false}, "host"); err != nil {
 		return delegationHostSpec{}, err
 	}
-	h := delegationHostSpec{keys: map[string]heldKey{}}
+	h := delegationHostSpec{keys: map[string]heldKey{}, scopeIDs: map[string]bool{}}
+	if idsV, present := obj.get("scopeIds"); present {
+		ids, ok := idsV.(vArray)
+		if !ok || len(ids) == 0 {
+			return delegationHostSpec{}, errors.New("scopeIds must be an array of at least one scope identifier")
+		}
+		for i, iv := range ids {
+			id, ok := stringOf(iv)
+			if !ok || !isScopeIdentifier(id) || id == unscopedMarker {
+				return delegationHostSpec{}, fmt.Errorf("scopeIds[%d] is not a scope identifier; a delegation is bound to a scope identifier, never to %q", i, unscopedMarker)
+			}
+			if h.scopeIDs[id] {
+				return delegationHostSpec{}, fmt.Errorf("scopeIds[%d] repeats a scope identifier", i)
+			}
+			h.scopeIDs[id] = true
+		}
+	}
 	if h.host, _ = memberString(obj, "host"); !isFlatTokenString(h.host) {
 		return delegationHostSpec{}, errors.New("host must be a flat token")
 	}

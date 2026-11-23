@@ -16,7 +16,7 @@ import (
 // byte-for-byte copy: the statement cases of spec RFC 0030's amendment of
 // 2026-11-22, tables 1 and 2, made once by a signer independent of this
 // repository and frozen, since ES256 signatures are not reproducible.
-const es256StatementsSHA256 = "5a687a254c35989951345cea7b7f7b5cdf3a2edc2cc1f02918ed2e3f7d900f8b"
+const es256StatementsSHA256 = "534e256df9babccc5d8bd9c4f17440b3036f5e85829a25e397cd5774a49887d6"
 
 const es256StatementsPath = "../testdata/delegation/es256-statements.json"
 
@@ -108,6 +108,14 @@ func TestDelegationES256Cases(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				// A pin case is refused at every version that pins keys: 15,
+				// where delegation.hosts[].keys first exists and holds Ed25519
+				// keys alone; p256SignerVersion, the last version before the
+				// P-256 form; and delegationP256Version, which reads it. Below
+				// that version the form is refused by name, and from it as a
+				// point that is not a sound P-256 key, so neither reading pins
+				// what the case holds, and the chain is then verified under the
+				// file's keys alone.
 				for _, version := range []string{"15", p256SignerVersion, delegationP256Version} {
 					if key, err := delegationHostKey(0, pin, version); err == nil {
 						t.Fatalf("version %s pins %x", version, key.key)
