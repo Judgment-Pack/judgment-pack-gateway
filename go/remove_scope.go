@@ -69,6 +69,11 @@ type removeScopeOptions struct {
 	seedNames                  []string
 	scope                      string
 	by                         string
+	// engineVersion is the configuration's engineVersion, "" where flags
+	// name the store, and journal the call's hold on the operator journal,
+	// set once the registry is held (ADR-0056)
+	engineVersion string
+	journal       *operatorJournalCall
 }
 
 func parseRemoveScope(args []string) (removeScopeOptions, string) {
@@ -116,6 +121,7 @@ func parseRemoveScope(args []string) (removeScopeOptions, string) {
 			return removeScopeOptions{}, fmt.Errorf("%w: gateway remove-scope removes the files of a store on disk; on the PostgreSQL kind, gateway store remove-scope removes a scope identifier's rows", errStorageKindUnsupported).Error()
 		}
 		o.keyVersion, o.keyPublic, o.keyAlg = cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm
+		o.engineVersion = cfg.version
 		o.store, o.registry, o.authority, o.seedNames = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}
 		if resolved, err := filepath.EvalSymlinks(cfg.seed); err == nil && resolved != cfg.seed {
 			o.seedNames = append(o.seedNames, resolved)
@@ -210,6 +216,9 @@ func removeScope(o removeScopeOptions, stamp func() string) (out removalOutcome,
 		return out, unlocked, err
 	}
 	if err := heldUnderAnotherKey(data, walk.keys, key.public, newFsKind(fsLayout{store: o.store}).receipts()); err != nil {
+		return out, unlocked, err
+	}
+	if o.journal, err = beginOperatorJournal(o.store, o.registry, o.engineVersion, key, walk.keys, stamp); err != nil {
 		return out, unlocked, err
 	}
 	out, err = removeScopeFrom(o.store, o.authority, key, walk, o, stamp)
@@ -370,7 +379,7 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 		out.appended = append(out.appended, record)
 	}
 	if len(lines) > 0 {
-		if err := appendRemovals(storeRoot, torn, lines); err != nil {
+		if err := journaledAppendRemovals(o.journal, storeRoot, torn, lines, removalBody("remove-scope", o.by, o.scope)); err != nil {
 			appended := out.appended
 			out.appended = nil
 			return out, fmt.Errorf("%v; the %d record(s) may be in the file, and nothing was removed; a second run completes it", err, len(appended))

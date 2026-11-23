@@ -109,6 +109,9 @@ func storeRetain(spec *storageSpec, roles pgRoles, o retainOptions, timeout time
 	if err != nil {
 		return removalOutcome{}, err
 	}
+	// the operator journal's entry names the acknowledgments and the
+	// configuration's version gates it (ADR-0056 §4, §7)
+	o.engineVersion, o.ackDigest = cfg.version, strings.TrimPrefix(sum, "sha256:")
 	out, err := retainRows(dsn, roles, o, cfg.retention, acks, newSigningKey(sig), timeout, stamp, now)
 	if err == nil && len(out.refused) == 0 {
 		out.notes = append(out.notes, retentionSummary(out.removed, sum, cfg.retention.keyIDs))
@@ -243,6 +246,12 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 		return failed(err)
 	}
 	file, next, err := pgRemovalFile(tx)
+	if err != nil {
+		return failed(err)
+	}
+	// the operator journal, read in the transaction that inserts its entry
+	// with the records (ADR-0056 §5)
+	journal, err := beginPgOperatorJournal(tx, o.engineVersion, priv, walk.keys, data, file, stamp)
 	if err != nil {
 		return failed(err)
 	}
@@ -453,6 +462,26 @@ func retainRows(dsn pgDSN, roles pgRoles, o retainOptions, cfg *retentionConfig,
 			return failed(err)
 		}
 		next++
+	}
+	if len(lines) > 0 {
+		// the entry naming the records, the acknowledgments and their keys,
+		// in the records' transaction (ADR-0056 §4, §5)
+		body := removalBody("retain", o.by, o.scope)
+		body.set("acknowledgments", vString(o.ackDigest))
+		ids := vArray{}
+		for _, id := range cfg.keyIDs {
+			ids = append(ids, vString(id))
+		}
+		body.set("acknowledgedBy", ids)
+		body.set("sessions", vInt(len(sessions)))
+		if err := journal.removalEntry(tx, lines, body); err != nil {
+			return failed(err)
+		}
+	}
+	if journalCutOff != nil {
+		if err := journalCutOff(); err != nil {
+			return failed(err)
+		}
 	}
 	done, err := c.exec("COMMIT")
 	if err != nil {

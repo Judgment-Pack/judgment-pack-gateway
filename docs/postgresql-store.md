@@ -168,6 +168,37 @@ place:
 `gateway verify` takes a store directory and a registry file: it reads an export of this kind
 (`gateway export --config`), never the database.
 
+Schema version 10 (migration 0010) makes the journals' table of ADR-0056, `gateway.journal_records`:
+a row per entry, keyed by the journal's name and the entry's ordinal, each row after the first
+naming the one before it through a foreign key, so the database admits a row only at the end of its
+journal's chain, and each row's line of 1 to 4096 bytes with no `0x0A`. The run-time login may read
+and insert rows, and never update, delete or truncate them; the start refuses a login that may.
+
+The operator journal on this kind is the rows of `gateway.journal_records` under the name
+`operator`, each entry the filesystem kind's, with the same envelope, signer and chain:
+
+- `gateway store retain` and `gateway store remove-scope` insert their entry, as the owner, in the
+  transaction that inserts their removal records and removes the rows, so the entry and the change
+  commit together or not at all;
+- `gateway seal-open`, and `gateway store rotate` in the database rotated from, insert theirs after
+  the last seal, as the run-time login, in a transaction of its own fenced on the start lease. A stop
+  between the seals and the entry leaves command seals that no entry names, which `gateway verify`
+  reports as `journal-entry-missing` until the next `seal-open` or `store rotate` names them;
+- `gateway store rotate` begins the journal of the database rotated to with its `store-continued`
+  entry, in the migration's transaction that makes the new registry. A rerun holds an entry there to
+  the new registry, and writes it again where it is not there.
+
+An entry's lengths are of the bytes an export writes. `gateway export` writes the rows, in ordinal
+order, each line and its `0x0A`, as `store/journals/operator.jsonl`, the path of the filesystem
+kind's file, and `gateway verify` reads the export as it reads a store of that kind. An export by
+scope carries no journal.
+
+Migration 0010 is one-way. A gateway whose migrations end at version 9 (v0.39.0 and earlier)
+refuses a database at schema version 10, by its start and by its `gateway store migrate` alike: "a
+gateway older than its schema does not run on it". Stop every instance and back the database up
+before `gateway store migrate` applies it; going back to v0.39.0 or earlier means restoring that
+backup.
+
 ## One instance per database
 
 One gateway instance serves a database at a time, unless the configuration says otherwise
@@ -567,6 +598,7 @@ start refuses a table it was not restored on.
 | `gateway.rotated` (schema version 7: the mark of a store rotated away from) | SELECT, INSERT | every one: it carries no scope, and holds one row at most |
 | `gateway.key_history` (schema version 8: the key history a store rotation carried into the database) | SELECT | every one: it carries no scope, and holds one row at most |
 | `gateway.session_labels` (schema version 9: each session label and the session id minted for it) | SELECT, INSERT | its namespace's: the scope it is of, or none |
+| `gateway.journal_records` (schema version 10: the journals' entries, a row each) | SELECT, INSERT | every one: it carries no scope, and a row is admitted only at the end of its journal's chain |
 
 Append-only by privilege: nothing but a document and the start lease's rows are changed once written,
 and nothing but a document is removed; a scope identifier, once recorded, stays, and a removal

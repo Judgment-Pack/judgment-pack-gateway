@@ -387,6 +387,9 @@ type sealOpenOptions struct {
 	// receiptSink is the configuration's receipt sink (ADR-0049), nil where
 	// there is none or no configuration is given.
 	receiptSink *receiptSinkSpec
+	// engineVersion is the configuration's engineVersion, "" where flags
+	// name the store (ADR-0056 §7)
+	engineVersion string
 	// byFlags is a store given by its flags, not --config; noSink is
 	// --no-sink, which a store by its flags is sealed under alone (#541).
 	byFlags, noSink bool
@@ -463,6 +466,7 @@ func parseSealOpen(args []string) (sealOpenOptions, string) {
 		// with the PostgreSQL kind, store and registry are "" and storage
 		// names the kind (seal_open_pg.go)
 		o.keyVersion, o.keyPublic, o.keyAlg = cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm
+		o.engineVersion = cfg.version
 		// the key history store rotate carries (ADR-0055 §4)
 		o.keyHistoryVersion = cfg.keyHistoryVersion
 		o.store, o.registry, o.authority, o.seedNames, o.storage, o.receiptSink = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}, cfg.storage, cfg.receiptSink
@@ -589,6 +593,17 @@ func sealOpen(o sealOpenOptions, stamp func() string) (sealed []*vObject, refuse
 	if err != nil {
 		return nil, nil, unlocked, err
 	}
+	// the operator journal, its staged entry settled before anything is
+	// sealed; the call's entry follows its last seal (ADR-0056 §5)
+	journal, err := beginOperatorJournal(o.store, o.registry, o.engineVersion, newSigningKey(sig), walk.keys, stamp)
+	if err != nil {
+		return nil, nil, unlocked, err
+	}
 	sealed, refused, err = sealOpenUnderSink(fsSealOpenStore{o.store}, o.authority, writer, data, o.session, sealedViaCommand, stamp, o.sink())
+	if err == nil {
+		if err = journal.commitSeals("seal-open", o.receiptSink != nil && !o.noSink); err != nil {
+			err = fmt.Errorf("%v; the seals are in the registry, and the next seal-open names them", err)
+		}
+	}
 	return sealed, refused, unlocked, err
 }

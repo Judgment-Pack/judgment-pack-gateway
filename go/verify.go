@@ -76,6 +76,11 @@ type report struct {
 	// serves a verdict that covers one only to a caller that reaches every
 	// source (ADR-0037).
 	scoped bool
+	// journals are the journals the store holds (SPEC.md §4 step 9), and
+	// journalEvidence whether it holds a removal record or a command seal:
+	// what --require-journal reads (ADR-0056 §6).
+	journals        map[string]bool
+	journalEvidence bool
 }
 
 // rotationsFollowed is a report's rotations: how many the walk followed, and
@@ -889,6 +894,12 @@ func verifyAgainstPinIn(storeRoot, registryPath, authority, decisionRecords stri
 		rep.Observations = append(rep.Observations, finding{
 			"observation": observationContinuesFrom, "previousLines": c.previousLines, "previousDigest": c.previousDigest,
 		})
+	}
+
+	// SPEC.md §4 step 9 (ADR-0056 §6): each journal the store holds, at
+	// most one finding, naming no session, as the walk's finding names none.
+	if err := rep.judgeJournals(storeRoot, registryData, walk); err != nil {
+		return nil, err
 	}
 
 	// SPEC.md §4 step 3: every session in the store must be anchored.

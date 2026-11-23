@@ -25,11 +25,8 @@ const delegationP256Version = "41"
 // gateway lets that host's delegations be bound to (spec RFC 0030 §2, Binding
 // a chain to one scope identifier; open question 27; SPEC.md §11.2). None by
 // default, so a binding is opted into per host and never implied.
-// Its number is 46 in merge order, after request limits (44) and the
-// operator journal (45); it reads "45", the next on main today, because
-// engineVersions runs unbroken to the newest, and takes 46 at the merge of
-// main that brings the operator journal.
-const delegationScopeBindingVersion = "45"
+// Its number is 46, after request limits (44) and the operator journal (45).
+const delegationScopeBindingVersion = "46"
 
 // delegationHostSpec is one issuing host as configured.
 type delegationHostSpec struct {

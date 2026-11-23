@@ -331,7 +331,21 @@ func namedPayload(data []byte) (string, bool) {
 // the start lease taken -- refused at once while an instance serves -- and
 // held until the command ends, and what may be sealed sealed under it.
 func sealOpenPostgres(o sealOpenOptions, stamp func() string, said io.Writer) ([]*vObject, []string, error) {
-	return sealOpenPostgresHeld(o, stamp, said, pgLeaseCommand{as: "seal-open", verb: "seal"})
+	// the operator journal, read under the lease before anything is
+	// sealed; the call's entry follows its last seal, in a transaction of
+	// its own fenced on the lease (ADR-0056 §5)
+	var journal *pgOperatorJournalCall
+	return sealOpenPostgresHeld(o, stamp, said, pgLeaseCommand{as: "seal-open", verb: "seal",
+		before: func(kind *pgKind, key *signingKey) (err error) {
+			journal, err = pgBeginSealJournal(kind, o.engineVersion, key, stamp)
+			return err
+		},
+		then: func(kind *pgKind, _ *signingKey, _ []string, _ *kindStart) error {
+			if err := journal.sealEntry(kind, "seal-open", o.receiptSink != nil && !o.noSink); err != nil {
+				return fmt.Errorf("%v; the seals are in the registry, and the next seal-open names them", err)
+			}
+			return nil
+		}})
 }
 
 // pgLeaseCommand is a command that seals under the start lease, as
