@@ -1,0 +1,9 @@
+{
+  "name": "kh-v1-version-float",
+  "note": "kh-v1-one-key with keyHistoryVersion the number 1.0, a float literal the canonical form does not hold.",
+  "pin": "TEST-PUBLIC-KEY",
+  "history": "{\"keyHistoryVersion\":1.0,\"keys\":[{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"publicKey\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\"}]}",
+  "expected": {
+    "refused": "form"
+  }
+}

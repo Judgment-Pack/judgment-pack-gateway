@@ -18,6 +18,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -389,8 +390,21 @@ func TestRotationsAcrossAlgorithmsWalkAndAreKeptInTheKeyHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := keyHistoryDocument(entries)
-	if got, err := checkKeyHistory(doc, seed.public); err != nil || len(got) != 4 || got[1].alg != algES256 || strings.Count(string(doc), `"alg":"ES256"`) < 2 {
+	got, err := checkKeyHistory(doc, edPin(seed.public))
+	if err != nil || len(got) != 4 || got[1].alg != algES256 || strings.Count(string(doc), `"alg":"ES256"`) < 2 {
 		t.Fatalf("the key history: %v\n%s", err, doc)
+	}
+	// the stretch from the P-256 key on holds from that key pinned as
+	// ES256, and not from its 33 bytes pinned as Ed25519: the pin carries
+	// its algorithm, which the key's length never stands in for
+	stretch := slices.Clone(got[1:])
+	stretch[0].validFrom, stretch[0].forward, stretch[0].reverse = "", "", ""
+	cut := keyHistoryDocument(stretch)
+	if _, err := checkKeyHistory(cut, &heldKey{alg: algES256, key: got[1].key}); err != nil {
+		t.Fatalf("the stretch from the P-256 key: %v\n%s", err, cut)
+	}
+	if _, err := checkKeyHistory(cut, &heldKey{alg: algEd25519, key: got[1].key}); err == nil {
+		t.Fatal("a P-256 point pinned as Ed25519 was taken as the key pinned")
 	}
 	for name, c := range map[string]struct {
 		line int

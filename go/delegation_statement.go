@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -99,6 +98,7 @@ type delegationLink struct {
 	obj         *vObject
 	id, host    string
 	keyID       string
+	alg         string // algES256 where the link holds alg; algEd25519 where it holds none
 	sub         principalRef
 	agent       string
 	software    value
@@ -349,7 +349,9 @@ func entryLess(a, b scopeEntry) bool {
 }
 
 // v1Members are the members of a version 1 statement. A link carries each;
-// one beside them is left to the signature (SPEC.md §11.1).
+// one beside them is left to the signature (SPEC.md §11.1), except alg,
+// which a link signed by a P-256 key holds, the string "ES256", and which is
+// refused here at any other value (RFC 0030, amendment of 2026-11-22).
 var v1Members = []string{"delegationVersion", "id", "host", "keyId", "sub", "act", "scope", "mayDelegate", "issuedAt", "expiresAt", "parent", "depth", "signature"}
 
 // parseLink holds one link to version 1's structure (step 3).
@@ -369,6 +371,9 @@ func parseLink(obj *vObject) (*delegationLink, string) {
 	}
 	if l.keyID, ok = memberString(obj, "keyId"); !ok || !isLowerHexOfLen(l.keyID, 32) {
 		return nil, "keyId is not a key identifier"
+	}
+	if l.alg, ok = recordAlg(obj, "alg"); !ok {
+		return nil, `alg is not the string "ES256"`
 	}
 	subV, _ := obj.get("sub")
 	if l.sub, ok = parsePrincipalRef(subV); !ok {
@@ -476,8 +481,11 @@ func (l *delegationLink) signingInput() []byte {
 	return append([]byte(delegationContext), canon(covered)...)
 }
 
-// delegationKeys are the keys pinned per issuing host, by key identifier.
-type delegationKeys map[string]map[string]ed25519.PublicKey
+// delegationKeys are the keys pinned per issuing host, by key identifier,
+// each held with the algorithm it was pinned with (heldKey): a link is
+// verified only under a key of the algorithm its alg names, Ed25519 where it
+// holds none, and never by a key's length.
+type delegationKeys map[string]map[string]heldKey
 
 // verifyDelegationChain applies steps 1 to 7 to a chain, in order, stopping at
 // the first failure.
@@ -514,16 +522,22 @@ func verifyDelegationChain(chainV value, keys delegationKeys) (*delegationChain,
 		}
 		chain.links = append(chain.links, l)
 	}
-	// Step 4.
+	// Step 4: the key the link's keyId names among those pinned for its host
+	// with the link's algorithm. A key of the other algorithm is not it.
 	for i, l := range chain.links {
-		if _, pinned := keys[l.host][l.keyID]; !pinned {
+		key, pinned := keys[l.host][l.keyID]
+		if !pinned {
 			return nil, refuse(refusalKeyMismatch, "link %d is signed by a key not pinned for its host", i)
 		}
+		if key.alg != l.alg {
+			return nil, refuse(refusalKeyMismatch, "link %d names a key pinned for its host with the other algorithm", i)
+		}
 	}
-	// Step 5.
+	// Step 5: by the link's algorithm, ES256's low-S rule included
+	// (verifyByAlgorithm).
 	for i, l := range chain.links {
 		signature, err := hex.DecodeString(l.signature)
-		if err != nil || !verifyByAlgorithm(algEd25519, edKey(keys[l.host][l.keyID]), l.signingInput(), signature) {
+		if err != nil || !verifyByAlgorithm(l.alg, keys[l.host][l.keyID], l.signingInput(), signature) {
 			return nil, refuse(refusalSignatureMismatch, "link %d's signature does not verify", i)
 		}
 	}

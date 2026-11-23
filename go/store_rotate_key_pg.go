@@ -175,7 +175,7 @@ func storeRotateKey(spec *storageSpec, roles pgRoles, cfg engineConfig, fromVers
 	if err != nil {
 		return keyRotationOutcome{}, fmt.Errorf("the next key: %w; nothing was changed", err)
 	}
-	return rotateKeyRows(dsn, roles, newSigningKey(from), newSigningKey(next), timeout, at)
+	return rotateKeyRows(dsn, roles, newSigningKey(from), newSigningKey(next), timeout, at, cfg.keyHistoryVersion)
 }
 
 // rotateKeyRows rotates the registry the database keeps from from to to,
@@ -184,7 +184,7 @@ func storeRotateKey(spec *storageSpec, roles pgRoles, cfg engineConfig, fromVers
 // registry's walk must end at from, or, where an earlier run committed the
 // rotation, at to by a rotation from from, which is answered as made with
 // nothing changed. Anything refused rolls the transaction back.
-func rotateKeyRows(dsn pgDSN, roles pgRoles, from, to *signingKey, timeout time.Duration, at string) (keyRotationOutcome, error) {
+func rotateKeyRows(dsn pgDSN, roles pgRoles, from, to *signingKey, timeout time.Duration, at, configured string) (keyRotationOutcome, error) {
 	out := keyRotationOutcome{from: from, to: to}
 	if !pgRoleName(roles.owner) || !pgRoleName(roles.runtime) {
 		return out, errors.New("store: a role's name is 1 to 63 bytes with no NUL and no double quote")
@@ -337,7 +337,7 @@ func rotateKeyRows(dsn pgDSN, roles pgRoles, from, to *signingKey, timeout time.
 	if carriedPresent {
 		carried = carriedRows.rows[0][0]
 	}
-	before, err := registryKeyHistory(data, from.held(), carried, carriedPresent)
+	before, err := registryKeyHistoryOf(data, from.held(), carried, carriedPresent, configured)
 	if err != nil {
 		return failed(fmt.Errorf("the key history before the rotation does not hold: %w", err))
 	}
@@ -368,8 +368,8 @@ func rotateKeyRows(dsn pgDSN, roles pgRoles, from, to *signingKey, timeout time.
 	if _, err := engineWalk(again, to.held()); err != nil {
 		return failed(fmt.Errorf("the rotation's record would not walk to the next key: %w", err))
 	}
-	if err := keyHistoryWriteRefusal(before, at, storeRotateKeyBefore, keyHistoryRotationFault, func() error {
-		_, err := walkKeyHistory(again, to.held(), carried, carriedPresent)
+	if err := keyHistoryWriteRefusalAt(before.last, at, storeRotateKeyBefore, keyHistoryRotationFault, func() error {
+		_, err := walkKeyHistory(again, to.held(), carried, carriedPresent, configured)
 		return err
 	}); err != nil {
 		return failed(err)
