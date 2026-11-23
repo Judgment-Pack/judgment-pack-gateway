@@ -290,7 +290,7 @@ caller reaches.
 | Route | Caller reaches one scope | Caller reaches several, or every source |
 |---|---|---|
 | `/acquire` | after authentication, before the body is read | after the source's scope check (§6: "before the trail, the publisher policy, the grant, the admission, a delegation's count or the source"), and before them |
-| `/act` | step 3a: after `storage`, before step 4 reads the members | step 8a: after step 8 holds `scope` to the caller's reach, before step 9 looks up the label. A request naming no scope is charged to `"unscoped"` only where the caller reaches none |
+| `/act` | step 3a: after `storage`, before step 4 reads the members | step 8a: after step 8 holds `scope` to the caller's reach, before step 9 looks up the label. A request naming no scope is charged to `"unscoped"` only where the caller reaches none: any other is refused at step 2 or step 8, before step 8a, which refuses nothing but by the limit, so the limits never change who may write |
 | `/seal` | after authentication, before the body is read | after the members are read, where the request names `scope` (held to the reach by `narrowedTo`). Otherwise after the session is found and held to the reach, before the seal is signed or delivered. A request whose scope is not established takes a gateway-wide slot at that step instead, held until it is answered |
 | `/verify` | after authentication and the reach check, before the store is read | the same step, charged to every scope the caller reaches, all or nothing |
 

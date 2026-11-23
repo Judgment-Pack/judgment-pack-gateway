@@ -152,6 +152,20 @@ func chargeRequest(r *http.Request, who *caller, keys ...string) error {
 	return limitPassOf(r).charge(limitCallerOfRequest(who), keys...)
 }
 
+// actScopeCharge is /act's step 8a for a caller of several scopes: the
+// request is charged to the scope its write touches, the one step 8 held,
+// or "unscoped" for a request that names none. It refuses nothing but by
+// the limit itself, so turning the limits on never changes who may write:
+// the caller's reach is held by the ladder's own steps -- step 2
+// (writeReachRefusal) before the body, step 8 (actScope) for the scope
+// named, and step 10 (actPlatformScope) for the platform -- whether limits
+// are configured or not.
+func (g *gatewayService) actScopeCharge(r *http.Request) func(requestedScope, *caller) error {
+	return func(asked requestedScope, who *caller) error {
+		return chargeRequest(r, who, limitScopeKey(asked.value))
+	}
+}
+
 // heldSessionScope is the scope of a session this process holds, read
 // under the gateway's lock and nothing else.
 func (g *gatewayService) heldSessionScope(id string) (string, bool) {

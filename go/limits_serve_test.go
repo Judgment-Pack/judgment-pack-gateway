@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -579,6 +580,98 @@ func TestLimitsSealNotEstablishedHoldsAGatewayWideSlot(t *testing.T) {
 			sealDeliveredHook = saved
 			if code != http.StatusBadRequest || !strings.Contains(body, "no such session") || during != 1 {
 				t.Fatalf("with a slot free: %d %s, slots held during the lookup %d, want 400, no such session, 1", code, body, during)
+			}
+			assertLimitNothingHeld(t, h.g.limiter)
+		})
+	}
+}
+
+// limitsActBody is an /act request of the actScopeSetup harness; scope is
+// raw JSON or "", extra raw members each led by a comma.
+func limitsActBody(h *actScopeHarness, session, platform, scope, key, decision, cites, extra string) string {
+	b := `{"session":"` + session + `","platform":"` + platform + `","tool":"query","arguments":{"ticket":"T-1"},"decision":` + decision + `,"cites":` + cites + `,"actionKey":"` + key + `"`
+	if scope != "" {
+		b += `,"scope":` + scope
+	}
+	return b + extra + "}"
+}
+
+// limitsOn gives the harness's gateway the limits and a limiter whose clock
+// does not move, and a server of its handler under them.
+func limitsOn(t *testing.T, g *gatewayService, cfg *limitsConfig) *httptest.Server {
+	t.Helper()
+	g.limits = cfg
+	var err error
+	if g.limiter, err = newRequestLimiter((&fakeLimitClock{}).clock(), cfg.beforeScope, cfg.entries(limitScopeKeys(g.sources))); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(g.handler())
+	t.Cleanup(server.Close)
+	return server
+}
+
+// Turning the limits on never changes who may write (#595): step 8a charges
+// the scope the write touches -- "unscoped" for a request naming none -- and
+// refuses nothing the ladder would admit.
+func TestLimitsActChargeRefusesNothingTheLadderAdmits(t *testing.T) {
+	h := limitsSetup(t, &limitsConfig{beforeScope: 64, scopes: map[string]limitEntry{unscopedMarker: rateOf(60, 1)}})
+	who, err := engineCaller(h.g.identity, nil, "Bearer "+h.tokens["ab"], time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := func() error {
+		pass, refused := h.g.limiter.enter()
+		if refused != nil {
+			t.Fatal(refused)
+		}
+		defer pass.release()
+		r := httptest.NewRequest(http.MethodPost, "/act", nil)
+		r = r.WithContext(context.WithValue(r.Context(), limitPassKey{}, pass))
+		return h.g.actScopeCharge(r)(requestedScope{}, who)
+	}
+	if err := step(); err != nil {
+		t.Fatalf("step 8a of a write naming no scope: %v, want it charged to unscoped", err)
+	}
+	var refused *limitRefusal
+	if err := step(); !errors.As(err, &refused) || refused.limit != limitScopeRate {
+		t.Fatalf("the second: %v, want unscoped's rate refusal", err)
+	}
+	assertLimitNothingHeld(t, h.g.limiter)
+}
+
+// The same /act, limits on or off, is admitted or refused alike: a caller
+// of A and B that does not reach none, writing to the platform of none
+// with no scope named, with and without a write fixed to a scope
+// identifier; and a caller of B and none, whose dry-run there is admitted.
+func TestLimitsOnOrOffActAnswersAlike(t *testing.T) {
+	for _, scopedWrite := range []bool{false, true} {
+		t.Run(fmt.Sprintf("scoped write %v", scopedWrite), func(t *testing.T) {
+			h := actScopeSetup(t)
+			h.g.dryRunApprovals = true
+			if !scopedWrite {
+				delete(h.g.sources, "tickets-b/write")
+				delete(h.g.sources, "tickets-b/live")
+			}
+			h.g.identity.callers.entries[subjectOfAB] = callerEntry{grants: map[string]bool{callerScopeA: true, callerScopeB: true}}
+			ab := tokenFor(t, h.issuer, subjectOfAB, []any{callerScopeA, callerScopeB})
+			off := httptest.NewServer(h.g.handler())
+			t.Cleanup(off.Close)
+			on := limitsOn(t, h.g, &limitsConfig{beforeScope: 64, scopes: map[string]limitEntry{
+				unscopedMarker: rateOf(60, 10), callerScopeA: rateOf(60, 10), callerScopeB: rateOf(60, 10),
+			}})
+			for _, c := range []struct{ name, body, token string }{
+				{"A and B, a write", limitsActBody(h, "w-ab", "tickets", "", strings.Repeat("c", 64), h.decisionU, h.cite("u-read", h.unscopedSig), ""), ab},
+				{"A and B, a dry-run", limitsActBody(h, "d-ab", "tickets", "", strings.Repeat("d", 64), h.decisionU, h.cite("u-read", h.unscopedSig), `,"dryRun":true`), ab},
+				{"B and none, a dry-run", limitsActBody(h, "d-both", "tickets", "", strings.Repeat("d", 64), h.decisionU, h.cite("u-read", h.unscopedSig), `,"dryRun":true`), h.tokenBoth},
+			} {
+				codeOff, outOff := authed(t, off, "/act", c.body, c.token)
+				codeOn, outOn := authed(t, on, "/act", c.body, c.token)
+				if codeOff != codeOn || outOff["refusedAt"] != outOn["refusedAt"] || outOff["error"] != outOn["error"] {
+					t.Fatalf("%s: off %d %v, on %d %v", c.name, codeOff, outOff, codeOn, outOn)
+				}
+				if strings.HasPrefix(c.name, "A and B") == (codeOn == http.StatusOK) {
+					t.Fatalf("%s: %d %v", c.name, codeOn, outOn)
+				}
 			}
 			assertLimitNothingHeld(t, h.g.limiter)
 		})

@@ -2859,13 +2859,7 @@ func (g *gatewayService) routes() http.Handler {
 				return
 			}
 		} else {
-			limit = func(asked requestedScope, who *caller) error {
-				if !g.reachOf(who).holds(asked.value) {
-					// never charged to a scope the caller does not reach
-					return actRefusal{"scope-identifier", scopeRefusal}
-				}
-				return chargeRequest(r, who, limitScopeKey(asked.value))
-			}
+			limit = g.actScopeCharge(r)
 		}
 		limitBody(w, r)
 		// Every member is read at its own step of the ladder (act), the
