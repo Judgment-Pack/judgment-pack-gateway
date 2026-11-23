@@ -385,8 +385,9 @@ func pendingScopedKeys(storeRoot, scope string, all []*storedReceipt) ([]string,
 				pending("it is uncertain, and no read-back in the store resolves it")
 			}
 		case errors.Is(readErr, os.ErrNotExist):
+			// attempt counts a dispatch record that does not read as begun
 			if _, begun, err := claim.attempt(); err == nil && begun {
-				pending("it was dispatched without an answer")
+				pending("it was dispatched without an answer, or its dispatch record does not read")
 			}
 		default:
 			pending("its record does not read")
@@ -464,20 +465,57 @@ func readBackHeld(at *vObject, all []*storedReceipt) bool {
 
 // removeScopedActionJournal removes the scope identifier's action journal,
 // after its sessions (ADR-0054): a scope re-created under the same identifier
-// starts with no keys.
+// starts with no keys. The journal is first renamed, in one step, to a name
+// no scope identifier's journal has (scopedJournalRemoving), and deleted
+// there: a delete that fails part way leaves no half-deleted journal under
+// the live name, whose entries a second run would read as pending with the
+// sessions that resolved them gone, and the second run finishes the delete.
 func removeScopedActionJournal(storeRoot, scope string, out *removalOutcome) error {
 	path := scopedActionJournalPath(storeRoot, scope)
+	removing := filepath.Join(filepath.Dir(path), scopedJournalRemoving(scope))
+	finished, err := deleteRemovingJournal(removing)
+	if err != nil {
+		return err
+	}
 	info, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil || !info.IsDir():
+		return fmt.Errorf("the scope identifier's action journal is not a directory; it is left as it is, and a second run completes the removal")
+	default:
+		if err := os.Rename(path, removing); err != nil {
+			return fmt.Errorf("the scope identifier's action journal could not be removed: %v; a second run completes the removal", err)
+		}
+		syncDir(filepath.Dir(path))
+		if finished, err = deleteRemovingJournal(removing); err != nil {
+			return err
+		}
+	}
+	if finished {
+		out.notes = append(out.notes, "removed the scope identifier's action journal")
+	}
+	return nil
+}
+
+// scopedJournalRemoving is the name a scope identifier's journal is deleted
+// under. It is no scope journal's name, so journal compaction keeps it.
+func scopedJournalRemoving(scope string) string {
+	return ".removing-" + scopedActionJournalName(scope)
+}
+
+// deleteRemovingJournal deletes a journal renamed for removal, and is whether
+// one was there.
+func deleteRemovingJournal(removing string) (bool, error) {
+	info, err := os.Lstat(removing)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return false, nil
 	}
 	if err != nil || !info.IsDir() {
-		return fmt.Errorf("the scope identifier's action journal is not a directory; it is left as it is, and a second run completes the removal")
+		return false, fmt.Errorf("the scope identifier's action journal, renamed for removal, is not a directory; it is left as it is")
 	}
-	if err := os.RemoveAll(path); err != nil {
-		return fmt.Errorf("the scope identifier's action journal could not be removed: %v; a second run completes the removal", err)
+	if err := os.RemoveAll(removing); err != nil {
+		return false, fmt.Errorf("the scope identifier's action journal could not be removed: %v; a second run completes the removal", err)
 	}
-	syncDir(filepath.Dir(path))
-	out.notes = append(out.notes, "removed the scope identifier's action journal")
-	return nil
+	syncDir(filepath.Dir(removing))
+	return true, nil
 }
