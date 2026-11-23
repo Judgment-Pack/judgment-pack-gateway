@@ -41,6 +41,13 @@ type actionKeyMembers struct {
 	// scopeIdentifier is the request's scope member (ADR-0054), read at the
 	// scope step and never at the action-key step: it is no key scope.
 	scopeIdentifier json.RawMessage
+	// approvals is the request's approvals member (ADR-0054, decision 3),
+	// read at the approvals step; it enters the key's approved content.
+	approvals json.RawMessage
+	// dryRun is a request the dry-run step admitted as "dryRun": true
+	// (ADR-0054, decision 2): it runs the ladder to the dry-run point and
+	// does nothing of the key.
+	dryRun bool
 	// limit charges the request at step 8a (ADR-0057), where its route
 	// did not charge it at step 3a; nil charges nothing
 	limit func(requestedScope, *caller) error

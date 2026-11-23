@@ -471,6 +471,7 @@ func applyServeOptions(service *gatewayService, opts serveOptions) error {
 	}
 	service.receiptVersion = opts.receiptVersion
 	service.requireActionKey = opts.requireActionKey
+	service.dryRunApprovals = opts.dryRunApprovals
 	service.identity = opts.identity
 	service.decisionRecords = opts.decisionRecords
 	service.witnessedBy = opts.witnessedBy
@@ -1042,6 +1043,7 @@ type serveOptions struct {
 	// signer signs in place of the seed's key where it is not nil (ADR-0050)
 	signer           signer
 	requireActionKey bool
+	dryRunApprovals  bool // /act reads dryRun and approvals (actScopeVersion and later)
 	sources          map[string]sourceSpec
 	port             string
 	// listen is the address --listen names (serve_listen.go); the zero
