@@ -309,3 +309,34 @@ func TestAPostgresRefusalEntryCursorMovesByAMonotoneCompareAndSet(t *testing.T) 
 		}
 	}
 }
+
+// A journal recreated, or cut back, under its cursor is not forwarded from
+// it: the entry at the cursor is not the one the sink acknowledged there.
+func TestARefusalJournalRecreatedUnderItsCursorIsNotForwarded(t *testing.T) {
+	source := standInJournalOf(3)
+	cursors := fsForwardingCursors{root: t.TempDir(), mu: &sync.Mutex{}}
+	sink, url, _, _ := entrySink(t)
+	owner := ownerFor(t, url, source, lockChecked{cursors, source})
+	if err := owner.forwardJournal(context.Background(), standInJournal); err != nil {
+		t.Fatal(err)
+	}
+	at, _ := cursors.read(standInJournal)
+	for name, lines := range map[string]int{"recreated": 5, "cut back": 2} {
+		source.mu.Lock()
+		source.lines[standInJournal] = nil
+		for i := 0; i < lines; i++ {
+			source.lines[standInJournal] = append(source.lines[standInJournal], []byte(fmt.Sprintf(`{"body":{"kind":"refusal","n":%d},"ordinal":%d}`, 10+i, i)))
+		}
+		source.mu.Unlock()
+		before, _ := sink.snapshot()
+		if err := owner.forwardJournal(context.Background(), standInJournal); !errors.Is(err, errCursorDiverged) {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got, _ := sink.snapshot(); len(got) != len(before) {
+			t.Fatalf("%s: %d entries forwarded", name, len(got)-len(before))
+		}
+		if now, _ := cursors.read(standInJournal); now != at {
+			t.Fatalf("%s: the cursor moved to %+v", name, now)
+		}
+	}
+}

@@ -88,6 +88,12 @@ type forwardingCursor struct {
 // the one it was read at.
 var errCursorBackwards = errors.New("a forwarding cursor moves only to a greater ordinal")
 
+// errCursorDiverged stops the forwarding of a journal whose entry at the
+// cursor's ordinal is not the one the sink acknowledged there: a journal
+// recreated or rotated under the same name. Nothing more of it is forwarded,
+// rather than entries the sink would take for the old journal's.
+var errCursorDiverged = errors.New("the refusal journal's entry at its forwarding cursor is not the one the sink acknowledged; nothing more of it is forwarded")
+
 // forwardingCursors keeps each journal's cursor. No verifier reads it and no
 // export carries it.
 type forwardingCursors interface {
@@ -286,6 +292,19 @@ func (r *refusalEntryForwarding) forwardJournal(ctx context.Context, journal str
 	from, err := r.cursors.read(journal)
 	if err != nil {
 		return err
+	}
+	if from.ordinal >= 0 {
+		// the entry at the cursor is the one acknowledged there
+		at, err := r.source.entriesAfter(journal, from.ordinal-1, 1)
+		if err != nil {
+			return err
+		}
+		if len(at) != 1 || at[0].ordinal != from.ordinal {
+			return errCursorDiverged
+		}
+		if held, err := r.forwarder.heldRefusalEntry(journal, at[0].line); err != nil || held.digest != from.digest {
+			return errCursorDiverged
+		}
 	}
 	entries, err := r.source.entriesAfter(journal, from.ordinal, refusalForwardBatch)
 	if err != nil {
