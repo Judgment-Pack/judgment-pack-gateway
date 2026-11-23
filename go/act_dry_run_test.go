@@ -257,6 +257,21 @@ func TestActApprovalsOnTheKey(t *testing.T) {
 			t.Fatalf("approvals out of form %s: %d %v", extra, code, out)
 		}
 	}
+	// the refusal's sentence: past the bound it is the form's, and a member
+	// out of place names approvals with no "action." before it
+	// 17 entries are past the value bound requestApprovals parses within
+	pastBound := `,"approvals":[` + strings.TrimSuffix(strings.Repeat(`{"kind":"single","id":"x","digest":"sha256:`+strings.Repeat("4", 64)+`"},`, 17), ",") + `]`
+	extraMember := `,"approvals":[{"kind":"single","id":"x","digest":"sha256:` + strings.Repeat("4", 64) + `","more":1}]`
+	for _, c := range []struct{ extra, want string }{
+		{pastBound, fmt.Sprintf("approvals is an array of 1 to %d entries", maxApprovals)},
+		{extraMember, "approvals[0]"},
+	} {
+		code, out := authed(t, h.server, "/act", h.dryRunBody("act-u", "tickets", "", strings.Repeat("1", 64), noRecord, h.cite("u-read", h.unscopedSig), c.extra), h.tokenA)
+		msg, _ := out["error"].(string)
+		if code != http.StatusBadRequest || out["refusedAt"] != "approvals" || !strings.HasPrefix(msg, c.want) {
+			t.Fatalf("approvals sentence for %s: %d %v", c.extra[:40], code, out)
+		}
+	}
 	journalAbsent(t, h.g, h.g.actionNamespaceIn(who, strings.Repeat("1", 64), ""))
 
 	// a version 2 reservation, as before, replayed with approvals

@@ -57,11 +57,13 @@ func requestApprovals(raw json.RawMessage) (value, error) {
 	// 8 entries of 4 values and the array: a request past this is out of form
 	v, err := parseJSONWithin(raw, 64)
 	if err != nil {
-		return nil, actRefusal{"approvals", "approvals: " + err.Error()}
+		// past the bound the entries cannot be of their form, so the answer
+		// is the form's sentence, as parseApprovals words it
+		return nil, actRefusal{"approvals", fmt.Sprintf("approvals is an array of 1 to %d entries", maxApprovals)}
 	}
 	list, err := parseApprovals(v)
 	if err != nil {
-		return nil, actRefusal{"approvals", strings.TrimPrefix(err.Error(), "action: ")}
+		return nil, actRefusal{"approvals", strings.TrimPrefix(strings.TrimPrefix(err.Error(), "action: "), "action.")}
 	}
 	member := make(vArray, 0, len(list))
 	for _, a := range list {

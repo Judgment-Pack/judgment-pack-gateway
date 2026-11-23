@@ -249,6 +249,11 @@ func TestEngineKeyHistoryVersionIsOneValueFromItsVersion(t *testing.T) {
 	if err != nil || cfg.keyHistoryVersion != keyHistoryVersion2 {
 		t.Fatalf("the member at its version: %v, %q", err, cfg.keyHistoryVersion)
 	}
+	// serve takes its options from engineServeOptions alone (main.go), so the
+	// member reaches /publickey/history and a SIGHUP rotation only through it
+	if opts := engineServeOptions(cfg, nil, nil); opts.keyHistoryVersion != keyHistoryVersion2 {
+		t.Fatalf("the serve options of a configuration that names it: %q", opts.keyHistoryVersion)
+	}
 	if cfg, err := parseEngineConfig([]byte(at(keyHistoryV2Version, ``))); err != nil || cfg.keyHistoryVersion != "" {
 		t.Fatalf("absent: %v, %q", err, cfg.keyHistoryVersion)
 	}
