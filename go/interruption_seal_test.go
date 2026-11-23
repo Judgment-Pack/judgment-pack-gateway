@@ -329,7 +329,7 @@ func TestVerifyOrdinarySealsOnlyOnTheCommandLine(t *testing.T) {
 		t.Fatalf("plain: %d %s", code, out)
 	}
 	const notFirst = "gateway verify: --ordinary-seals-only goes first, before the store root; a directory so named is given as ./--ordinary-seals-only\n" +
-		"usage: gateway verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] [--previous <registry>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]\n"
+		"usage: gateway verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] [--require-journal <name>]... [--previous <registry>] <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]\n"
 	for name, args := range map[string][]string{
 		"a fourth argument":               {g.storeRoot, g.regPath, "gateway:test", "--ordinary-seals-only"},
 		"the value of --decision-records": {g.storeRoot, g.regPath, "gateway:test", "--decision-records", "--ordinary-seals-only"},

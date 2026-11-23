@@ -137,8 +137,10 @@ import (
 // store holds a session open that no label names. connect raises no file to
 // 39 either. Version 40 (p256SignerVersion) adds signingKeyAlgorithm: a key
 // service's ECDSA P-256 key version at the HSM protection level signs, and
-// each record it signs names its alg (ADR-0053; signature_alg.go).
-const engineVersion = p256SignerVersion
+// each record it signs names its alg (ADR-0053; signature_alg.go). Version
+// operatorJournalVersion adds no member: from it the journaled commands
+// begin the store's operator journal (ADR-0056; operator_journal.go).
+const engineVersion = operatorJournalVersion
 
 // actScopeVersion is the engine configuration version from which a platform
 // may set scope beside write: true, and /act reads scope, dryRun and
@@ -147,7 +149,7 @@ const engineVersion = p256SignerVersion
 // version is refused by its version, as an earlier release refuses it.
 const actScopeVersion = "41" // placeholder: the maintainer assigns the number in merge order
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, operatorJournalVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.

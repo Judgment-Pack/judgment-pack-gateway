@@ -534,6 +534,20 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 			return nil, err
 		}
 	}
+	// the operator journal, whole, in an export of the whole store alone: an
+	// export by scope carries none, since its entries name other scopes
+	// (ADR-0056 §1)
+	if in.scope == "" && in.storeRoot != "" {
+		journal, there, err := readJournalPath(in.storeRoot, operatorJournal+".jsonl")
+		if err != nil {
+			return nil, err
+		}
+		if there && len(journal) > 0 {
+			if err := w.put("store/"+journalsDir+"/"+operatorJournal+".jsonl", journal); err != nil {
+				return nil, err
+			}
+		}
+	}
 	// the decision records, read after the cut, as verification walks them
 	recordsThere := false
 	if in.decisionRecords != "" {
@@ -869,6 +883,9 @@ func exportPathWritten(p string) bool {
 		return isLowerHexOfLen(parts[2], 64)
 	case len(parts) == 2 && parts[0] == "store" && parts[1] == removalsFile:
 		return true
+	case len(parts) == 3 && parts[0] == "store" && parts[1] == journalsDir:
+		name, ok := strings.CutSuffix(parts[2], ".jsonl")
+		return ok && isJournalName(name)
 	case len(parts) >= 2 && parts[0] == "decision-records":
 		return true
 	case len(parts) == 2 && parts[0] == "descriptors":

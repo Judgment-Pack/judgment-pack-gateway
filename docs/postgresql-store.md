@@ -168,6 +168,11 @@ place:
 `gateway verify` takes a store directory and a registry file: it reads an export of this kind
 (`gateway export --config`), never the database.
 
+The operator journal (ADR-0056) is not written on this kind yet: `gateway store retain`,
+`gateway store remove-scope`, `gateway seal-open` and `gateway store rotate` on this kind write no
+entry, and an export of this kind carries no journal. The log the record names, `journal/operator`,
+is not one the schema's `gateway.logs` admits, which holds the log `registry` alone.
+
 ## One instance per database
 
 One gateway instance serves a database at a time, unless the configuration says otherwise

@@ -2936,6 +2936,18 @@ ring's location is the operator's.
 
 An earlier gateway refuses a version-40 file by its version.
 
+## The operator journal (engine version `operatorJournalVersion`)
+
+The version `operatorJournalVersion` (ADR-0056) adds no member. From it, `gateway retain`,
+`gateway remove-scope`, `gateway remove-artifact`, `gateway seal-open` and `gateway store rotate`
+given the configuration begin the store's operator journal, `journals/operator.jsonl`, and write one
+signed entry for each call that changes the store. A store that holds the journal is written to by
+every one of them, whatever the configuration's version and whether it is given flags instead. A
+configuration of an earlier version, on a store with no journal, writes none, as before. Roll the
+commands back to an earlier release only with the version lowered on a store that holds no journal:
+an earlier command makes its change with no entry, which `gateway verify` reports as
+`journal-entry-missing`. The number is assigned in merge order.
+
 ## Scoped writes, dry-runs and approvals (ADR-0054; version to be assigned)
 
 ADR-0054 adds, from the engine configuration version it assigns (`actScopeVersion` in

@@ -295,12 +295,22 @@ func storeRotate(o sealOpenOptions, newStore, newRegistry string, stamp func() s
 	if err != nil {
 		return nil, nil, err
 	}
+	// the old store's operator journal, its staged entry settled before
+	// anything is sealed; its store-rotate entry follows the seals and comes
+	// before the new store is made (ADR-0056 §5)
+	journal, err := beginOperatorJournal(o.store, o.registry, o.engineVersion, key, walk.keys, stamp)
+	if err != nil {
+		return nil, nil, err
+	}
 	sealed, refused, err := sealOpenUnderSink(fsSealOpenStore{o.store}, o.authority, writer, data, "", sealedViaCommand, stamp, o.sink())
 	if err != nil {
 		return sealed, nil, fmt.Errorf("%v; the store is not rotated", err)
 	}
 	if len(refused) > 0 {
 		return sealed, nil, fmt.Errorf(storeRotateNotSealed, refused[0])
+	}
+	if err := journal.commitSeals("store-rotate", o.receiptSink != nil && !o.noSink); err != nil {
+		return sealed, nil, fmt.Errorf("%v; the store is not rotated, and the seals appended stay in the old registry", err)
 	}
 	// the bytes are read after the seals, under the hold, and walked again
 	// as the gateway walks them: the continuation names the registry as it
