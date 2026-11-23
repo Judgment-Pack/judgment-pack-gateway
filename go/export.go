@@ -311,6 +311,10 @@ func readPinnedSnapshots(configPath string, cfg engineConfig) ([]exportPin, erro
 	return out, nil
 }
 
+// errStagedJournalEntry is export's refusal of a store holding a staged
+// operator journal entry (ADR-0056, Amendment C).
+var errStagedJournalEntry = errors.New("a staged operator journal entry is not yet committed: rerun the command that staged it, then export")
+
 // readObservationJournal reads a journal the custody exported: a regular
 // file, bounded, holding one JSON object. Its members are the custody's;
 // the export names it by its digest and reads nothing else of it.
@@ -540,6 +544,17 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 	// (storeCut.journal), each line and its 0x0A, the path and bytes of the
 	// filesystem kind's file, and one that keeps some beside a store
 	// directory holding a journal is refused, as for the removal records
+	// a staged operator entry (ADR-0056, Amendment C): the export carries
+	// the journal's committed lines alone, so a restored copy would lose the
+	// finding the store gives (journal-entry-missing); refused, whatever the
+	// scope, until the command that staged it is rerun
+	if in.storeRoot != "" {
+		if _, there, err := readJournalPath(in.storeRoot, operatorJournal+".pending"); err != nil {
+			return nil, err
+		} else if there {
+			return nil, errStagedJournalEntry
+		}
+	}
 	if in.scope == "" {
 		journal := cut.journal
 		if in.storeRoot != "" {

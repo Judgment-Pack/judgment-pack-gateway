@@ -181,6 +181,16 @@ removed as before.
 **On the PostgreSQL kind**, removal records are rows, and an export writes each with its `0x0A`, so the
 observation never arises there.
 
+### C. An export of a store holding a staged entry (2026-11-23)
+
+`gateway export` refuses a store whose `journals/operator.pending` is there, whatever its scope,
+with `a staged operator journal entry is not yet committed: rerun the command that staged it, then
+export`. The export carries `operator.jsonl` alone, so a restored copy of such a store would verify
+`ok` where the store verifies `journal-entry-missing`; refusing keeps the finding, and needs no new
+export path. The PostgreSQL kind stages no entry, and its export refuses only where the store
+directory named beside it holds one. Corpus vector `v3-journal-staged-entry` is refused this way by
+both kinds' export tests.
+
 ### What this amendment replaces
 
 - **Summary:** "the log named `journal/operator` in `gateway.logs` and `gateway.log_records` … No schema
