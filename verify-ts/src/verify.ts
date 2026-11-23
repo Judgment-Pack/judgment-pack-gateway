@@ -1059,7 +1059,7 @@ export function verifyStore(
   authority: string,
   decisionRecordsPath: string | undefined,
   publicKey: Uint8Array | Pin,
-  options: { readonly ordinarySealsOnly?: boolean; readonly artifacts?: string; readonly scope?: string; readonly previous?: string } = {},
+  options: { readonly ordinarySealsOnly?: boolean; readonly artifacts?: string; readonly scope?: string; readonly previous?: string; readonly requireJournal?: readonly string[] } = {},
 ): Verdict {
   const ordinarySealsOnly = options.ordinarySealsOnly === true;
   // A verdict by scope names a scope identifier of its form, and reads no
@@ -1199,6 +1199,8 @@ export function verifyStore(
   const keys = walk.keys;
   // §1.3a: the removal records, under the keys the walk reached.
   const loaded = loadRemovals(root, keys, budget);
+  // §4 step 9: the store's journals (ADR-0056 §6), and --require-journal.
+  const journals = judgeJournals(root, registryPath, keys, continuation !== null, options.requireJournal ?? []);
   const retention: Retention = { removals: loaded.removals, supplied: options.artifacts };
   // §4 step 4: a sealed session a session-removal record names, by its id,
   // its seal's signature and count, under the seal's key or one the walk
@@ -1401,6 +1403,7 @@ export function verifyStore(
 
   // The findings, made from what was kept, each time they are read.
   function* everyFinding(): Generator<Finding> {
+    yield* journals.findings;
     for (const [session, judged] of sessions) {
       for (const j of judged) {
         if (j.status === "malformed") {
@@ -1561,6 +1564,7 @@ export function verifyStore(
   // 8's of each action whose record was found and is not a runtime
   // evaluation record, which is not compared.
   function* everyObservation(): Generator<Finding> {
+    yield* journals.observations;
     // §3d's, of a registry whose first line is a store continuation that
     // loads.
     const c = continuation as { readonly keyId: string; readonly lines: bigint; readonly digest: string } | null;
@@ -1978,4 +1982,400 @@ function lastKeyOf(previous: string, pinned: { readonly raw: Uint8Array; readonl
     return null;
   }
   return walk.current().keyId;
+}
+
+// --- §3f and §4 step 9: the journals (ADR-0056) -----------------------------
+
+const journalPrefix = "judgment-pack-gateway/journal-entry/1:";
+const journalLineBound = 4096;
+const removalLineBound = 4096;
+const journalEnvelope = ["journal", "journalVersion", "ordinal", "previous", "at", "keyId", "alg", "body", "signature"];
+// The operator journal's body kinds, each with exactly its members beside
+// kind, registryFrom and removalFrom: true where the member is required.
+const operatorBodies: ReadonlyMap<string, ReadonlyMap<string, boolean>> = new Map([
+  ["retain", new Map([["by", true], ["scope", false], ["acknowledgments", true], ["acknowledgedBy", true], ["sessions", true], ["removalBytes", true], ["removalDigest", true]])],
+  ["remove-scope", new Map([["by", true], ["scope", true], ["removalBytes", true], ["removalDigest", true]])],
+  ["remove-artifact", new Map([["by", true], ["removalBytes", true], ["removalDigest", true]])],
+  ["seal-open", new Map([["seals", true], ["sealDigest", true], ["delivered", true]])],
+  ["store-rotate", new Map([["seals", true], ["sealDigest", true], ["delivered", true]])],
+  ["store-continued", new Map([["continuation", true], ["previousJournalBytes", true], ["previousJournalDigest", true]])],
+]);
+
+interface JournalEntry {
+  readonly ordinal: number;
+  readonly previous: string | undefined;
+  readonly keyPos: number;
+  readonly kind: string;
+  readonly registryFrom: number;
+  readonly removalFrom: number;
+  readonly removal: boolean;
+  readonly removalBytes: number;
+  readonly removalDigest: string;
+  readonly sealing: boolean;
+  readonly seals: number;
+  readonly sealDigest: string;
+  readonly continuation: string;
+}
+
+function countOf(v: Value | undefined): number | null {
+  if (v === undefined || v.type !== "number" || v.integer === null || v.integer < 0n || v.integer > 2n ** 53n - 1n) {
+    return null;
+  }
+  return Number(v.integer);
+}
+
+function hexOf(v: Value | undefined, n: number): string | undefined {
+  return v?.type === "string" && v.value.length === n && /^[0-9a-f]*$/.test(v.value) ? v.value : undefined;
+}
+
+function isEntryInstant(at: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(at)) {
+    return false;
+  }
+  const d = new Date(at);
+  return !Number.isNaN(d.getTime()) && d.toISOString() === at.replace("Z", ".000Z");
+}
+
+function journalBodyOf(body: ObjectValue): Omit<JournalEntry, "ordinal" | "previous" | "keyPos"> | null {
+  const kind = str(member(body, "kind"));
+  const members = kind === undefined ? undefined : operatorBodies.get(kind);
+  if (kind === undefined || members === undefined) {
+    return null;
+  }
+  const allowed = new Set(["kind", "registryFrom", "removalFrom", ...members.keys()]);
+  for (const [name, required] of members) {
+    if (required && member(body, name) === undefined) {
+      return null;
+    }
+  }
+  if (!body.members.every((m) => allowed.has(m.name))) {
+    return null;
+  }
+  const registryFrom = countOf(member(body, "registryFrom"));
+  const removalFrom = countOf(member(body, "removalFrom"));
+  if (registryFrom === null || removalFrom === null) {
+    return null;
+  }
+  const e = { kind, registryFrom, removalFrom, removal: false, removalBytes: 0, removalDigest: "", sealing: false, seals: 0, sealDigest: "", continuation: "" };
+  for (const name of members.keys()) {
+    const m = member(body, name);
+    if (m === undefined) {
+      continue;
+    }
+    let holds = false;
+    switch (name) {
+      case "by":
+      case "scope":
+        holds = m.type === "string" && isScopeIdentifier(m.value);
+        break;
+      case "acknowledgments":
+      case "previousJournalDigest":
+        holds = hexOf(m, 64) !== undefined;
+        break;
+      case "removalDigest":
+        e.removalDigest = hexOf(m, 64) ?? "";
+        holds = e.removalDigest !== "";
+        break;
+      case "sealDigest":
+        e.sealDigest = hexOf(m, 64) ?? "";
+        holds = e.sealDigest !== "";
+        break;
+      case "continuation":
+        e.continuation = hexOf(m, 64) ?? "";
+        holds = e.continuation !== "";
+        break;
+      case "acknowledgedBy":
+        holds = m.type === "array" && m.items.length >= 1 && m.items.length <= 4 && m.items.every((id) => hexOf(id, 32) !== undefined);
+        break;
+      case "sessions":
+      case "previousJournalBytes":
+        holds = countOf(m) !== null;
+        break;
+      case "removalBytes": {
+        const n = countOf(m);
+        holds = n !== null;
+        e.removalBytes = n ?? 0;
+        e.removal = holds;
+        break;
+      }
+      case "seals": {
+        const n = countOf(m);
+        holds = n !== null;
+        e.seals = n ?? 0;
+        e.sealing = holds;
+        break;
+      }
+      case "delivered":
+        holds = m.type === "boolean";
+        break;
+    }
+    if (!holds) {
+      return null;
+    }
+  }
+  return e;
+}
+
+// journalEntryOf is a complete line of a journal as an entry that loads
+// (ADR-0056 §6, journal-entry-forged); null for one that does not.
+function journalEntryOf(line: Buffer, journal: string, keys: readonly ReachedKey[]): JournalEntry | null {
+  if (line.length > journalLineBound) {
+    return null;
+  }
+  const v = parseOr(line, () => null);
+  if (v === null || v.type !== "object" || hasDuplicate(v)) {
+    return null;
+  }
+  const canon = canonical(v);
+  if (canon === null || !Buffer.from(canon).equals(line) || !v.members.every((m) => journalEnvelope.includes(m.name))) {
+    return null;
+  }
+  if (str(member(v, "journal")) !== journal || str(member(v, "journalVersion")) !== "1") {
+    return null;
+  }
+  const ordinal = countOf(member(v, "ordinal"));
+  const hasPrevious = member(v, "previous") !== undefined;
+  const previous = hexOf(member(v, "previous"), 64);
+  const at = str(member(v, "at"));
+  const keyId = hexOf(member(v, "keyId"), 32);
+  const signature = hexOf(member(v, "signature"), 128);
+  const body = member(v, "body");
+  if (ordinal === null || (hasPrevious && previous === undefined) || at === undefined || !isEntryInstant(at) || keyId === undefined || signature === undefined || body?.type !== "object") {
+    return null;
+  }
+  const e = journalBodyOf(body);
+  if (e === null) {
+    return null;
+  }
+  const keyPos = keys.findIndex((k) => k.keyId === keyId);
+  const alg = recordAlg(v, "alg");
+  if (keyPos < 0 || alg === null || keys[keyPos]!.alg !== alg) {
+    return null;
+  }
+  const payload: ObjectValue = { type: "object", members: v.members.filter((m) => m.name !== "signature") };
+  if (!signed(keys[keyPos]!, alg, journalPrefix, payload, signature)) {
+    return null;
+  }
+  return { ...e, ordinal, previous, keyPos };
+}
+
+const scopeRemovalPrefix = "judgment-pack-gateway/scope-removal/1:";
+const scopeRemovalMembers = ["keyId", "kind", "openSessions", "payloads", "receipts", "removedAt", "removedBy", "scope", "sealedSessions", "signature"];
+
+// scopeRemovalLoads is whether a line of the removal file is a scope-removal
+// record that loads (§1.3a): read by no step of §4 but this one's torn tail.
+function scopeRemovalLoads(v: Value | null, keys: readonly ReachedKey[]): boolean {
+  if (v === null || v.type !== "object" || hasDuplicate(v)) {
+    return false;
+  }
+  const names = member(v, "alg") !== undefined ? [...scopeRemovalMembers, "alg"] : scopeRemovalMembers;
+  const alg = recordAlg(v, "alg");
+  if (alg === null || !v.members.every((m) => names.includes(m.name))) {
+    return false;
+  }
+  const scope = str(member(v, "scope"));
+  const removedAt = str(member(v, "removedAt"));
+  const removedBy = str(member(v, "removedBy"));
+  const keyId = hexOf(member(v, "keyId"), 32);
+  const signature = hexOf(member(v, "signature"), 128);
+  if (
+    str(member(v, "kind")) !== "scope-removal" ||
+    scope === undefined || !isScopeIdentifier(scope) ||
+    ["sealedSessions", "openSessions", "receipts", "payloads"].some((n) => countOf(member(v, n)) === null) ||
+    removedAt === undefined || !isRemovalTime(removedAt) ||
+    removedBy === undefined || !isScopeIdentifier(removedBy) ||
+    keyId === undefined || signature === undefined
+  ) {
+    return false;
+  }
+  const keyPos = keys.findIndex((k) => k.keyId === keyId);
+  if (keyPos < 0 || keys[keyPos]!.alg !== alg) {
+    return false;
+  }
+  const payload: ObjectValue = { type: "object", members: v.members.filter((m) => m.name !== "signature") };
+  return signed(keys[keyPos]!, alg, scopeRemovalPrefix, payload, signature);
+}
+
+// pieceLoads is whether a torn piece of the removal file, read as a line,
+// loads as a removal record of any kind (ADR-0056, Amendment B).
+function pieceLoads(piece: Buffer, keys: readonly ReachedKey[]): boolean {
+  if (piece.length === 0 || piece.length > removalLineBound) {
+    return false;
+  }
+  const v = parseOr(piece, () => null);
+  if (v === null || v.type !== "object") {
+    return false;
+  }
+  switch (str(member(v, "kind"))) {
+    case "artifact-removal":
+      return removalOf(v, keys) !== null;
+    case "session-removal":
+      return sessionRemovalOf(v, keys) !== null;
+    case "scope-removal":
+      return scopeRemovalLoads(v, keys);
+  }
+  return false;
+}
+
+function splitLines(data: Buffer): { lines: Buffer[]; torn: number } {
+  const lines: Buffer[] = [];
+  let at = 0;
+  for (let i = data.indexOf(0x0a, at); i >= 0; i = data.indexOf(0x0a, at)) {
+    lines.push(data.subarray(at, i));
+    at = i + 1;
+  }
+  return { lines, torn: data.length - at };
+}
+
+// commandSealsOf is each registry line §1.1's parser reads as one JSON
+// object of kind seal-after-interruption and sealedVia command, whether or
+// not it loads: where it starts, and its bytes with its 0x0A.
+function commandSealsOf(registry: Buffer): { readonly at: number; readonly line: Buffer }[] {
+  const out: { at: number; line: Buffer }[] = [];
+  let at = 0;
+  for (let i = registry.indexOf(0x0a, at); i >= 0; i = registry.indexOf(0x0a, at)) {
+    const v = parseOr(registry.subarray(at, i), () => null);
+    if (v !== null && v.type === "object" && !hasDuplicate(v) && str(member(v, "kind")) === "seal-after-interruption" && str(member(v, "sealedVia")) === "command") {
+      out.push({ at, line: registry.subarray(at, i + 1) });
+    }
+    at = i + 1;
+  }
+  return out;
+}
+
+function journalFinding(status: string, journal: string, ordinal: number): Finding {
+  return [["status", status], ["journal", journal], ["ordinal", BigInt(ordinal)]];
+}
+
+// judgeOperatorJournal is §4 step 9 for the operator journal: at most one
+// finding, the first of journal-entry-forged, journal-order,
+// journal-entry-mismatch and journal-entry-missing.
+function judgeOperatorJournal(data: Buffer, pending: boolean, keys: readonly ReachedKey[], registry: Buffer, removal: Buffer, continued: boolean) {
+  const name = "operator";
+  const entries: JournalEntry[] = [];
+  const { lines } = splitLines(data);
+  for (const [i, line] of lines.entries()) {
+    const e = journalEntryOf(line, name, keys);
+    if (e === null) {
+      return { entries, finding: journalFinding("journal-entry-forged", name, i), tornAt: 0, torn: 0 };
+    }
+    entries.push(e);
+  }
+  for (const [i, e] of entries.entries()) {
+    if (e.ordinal !== i || (i === 0 && e.previous !== undefined) || (i > 0 && (e.previous === undefined || e.previous !== sha256Hex(lines[i - 1]!))) || (i > 0 && e.keyPos < entries[i - 1]!.keyPos)) {
+      return { entries, finding: journalFinding("journal-order", name, i), tornAt: 0, torn: 0 };
+    }
+  }
+  const seals = commandSealsOf(registry);
+  let gap = false;
+  let tornAt = 0;
+  let torn = 0;
+  let unnamed = 0;
+  if (entries.length > 0) {
+    const first = entries[0]!;
+    let cursor = first.removalFrom;
+    let taken = 0;
+    let registryAt = 0;
+    while (taken < seals.length && seals[taken]!.at < first.registryFrom) {
+      taken++;
+    }
+    for (const [i, e] of entries.entries()) {
+      let mismatch = e.removalFrom < cursor || e.removalFrom > removal.length || e.registryFrom > registry.length || e.registryFrom < registryAt;
+      registryAt = e.registryFrom;
+      if (!mismatch && e.removal) {
+        const end = e.removalFrom + e.removalBytes;
+        if (end > removal.length || sha256Hex(removal.subarray(e.removalFrom, end)) !== e.removalDigest) {
+          mismatch = true;
+        } else {
+          gap ||= e.removalFrom > cursor;
+          cursor = end;
+        }
+      } else if (!mismatch && e.sealing) {
+        if (seals.length - taken < e.seals || sha256Hex(Buffer.concat(seals.slice(taken, taken + e.seals).map((s) => s.line))) !== e.sealDigest) {
+          mismatch = true;
+        } else {
+          taken += e.seals;
+        }
+      } else if (!mismatch && e.kind === "store-continued") {
+        const nl = registry.indexOf(0x0a);
+        const firstLine = nl < 0 ? registry : registry.subarray(0, nl);
+        mismatch = i !== 0 || !continued || sha256Hex(firstLine) !== e.continuation;
+      }
+      if (mismatch) {
+        return { entries, finding: journalFinding("journal-entry-mismatch", name, i), tornAt: 0, torn: 0 };
+      }
+    }
+    // the one uncovered piece that is no finding (Amendment B)
+    const start = removal.lastIndexOf(0x0a) + 1;
+    const piece = removal.subarray(start);
+    if (!gap && !pending && piece.length > 0 && cursor === start && !pieceLoads(piece, keys)) {
+      tornAt = start;
+      torn = piece.length;
+    } else {
+      gap ||= cursor < removal.length;
+    }
+    unnamed = seals.length - taken;
+  }
+  if (pending || gap || unnamed > 0) {
+    return { entries, finding: journalFinding("journal-entry-missing", name, entries.length), tornAt: 0, torn: 0 };
+  }
+  return { entries, finding: undefined, tornAt, torn };
+}
+
+// readUnder is the bytes of a regular file under root, following no link,
+// and whether one is there: "other" for something there that is not one.
+function readUnder(root: string, ...names: string[]): Buffer | "absent" | "other" {
+  let at = root;
+  for (const [i, name] of names.entries()) {
+    at = path.join(at, name);
+    let info: fs.Stats;
+    try {
+      info = fs.lstatSync(at);
+    } catch {
+      return "absent";
+    }
+    if (i < names.length - 1 ? !info.isDirectory() : !info.isFile()) {
+      return i < names.length - 1 ? "absent" : "other";
+    }
+  }
+  return fs.readFileSync(at);
+}
+
+// judgeJournals is §4 step 9 on a store's root, and --require-journal: the
+// findings and observations it adds to the verdict.
+function judgeJournals(root: string, registryPath: string, keys: readonly ReachedKey[], continued: boolean, required: readonly string[]): { findings: Finding[]; observations: Finding[] } {
+  const findings: Finding[] = [];
+  const observations: Finding[] = [];
+  const read = readUnder(root, "journals", "operator.jsonl");
+  const data = typeof read === "string" ? Buffer.alloc(0) : read;
+  const pending = readUnder(root, "journals", "operator.pending") !== "absent";
+  const removalRead = readUnder(root, "artifact-removals.jsonl");
+  const removal = typeof removalRead === "string" ? Buffer.alloc(0) : removalRead;
+  let registry: Buffer;
+  try {
+    registry = fs.readFileSync(registryPath);
+  } catch {
+    registry = Buffer.alloc(0);
+  }
+  const evidence = removal.includes(0x0a) || commandSealsOf(registry).length > 0;
+  const held = new Set<string>();
+  if (splitLines(data).lines.length > 0 || pending) {
+    held.add("operator");
+    const j = judgeOperatorJournal(data, pending, keys, registry, removal, continued);
+    if (j.finding !== undefined) {
+      findings.push(j.finding);
+    } else {
+      const first = j.entries[0]!;
+      observations.push([["observation", "journal-from"], ["journal", "operator"], ["registryFrom", BigInt(first.registryFrom)], ["removalFrom", BigInt(first.removalFrom)]]);
+      if (j.torn > 0) {
+        observations.push([["observation", "journal-torn-tail"], ["journal", "operator"], ["removalFrom", BigInt(j.tornAt)], ["bytes", BigInt(j.torn)]]);
+      }
+    }
+  }
+  for (const name of required) {
+    if (!held.has(name) && evidence) {
+      findings.push([["status", "journal-missing"], ["journal", name]]);
+    }
+  }
+  return { findings, observations };
 }

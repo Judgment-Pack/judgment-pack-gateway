@@ -358,6 +358,11 @@ type storeVector struct {
 	// contract then passes --previous <file>, after --artifacts and before
 	// the store root. Absent means the option is not passed.
 	PreviousRegistry *string `json:"previousRegistry"`
+	// RequireJournal names the journals the vector requires (ADR-0056 §6):
+	// the process contract passes --require-journal <name> for each, in
+	// order, after --artifacts and before --previous. Absent means the
+	// option is not passed.
+	RequireJournal []string `json:"requireJournal"`
 	// PublicKeyAlg pins the P-256 test key (ADR-0053 §11): "ES256" runs
 	// the vector under --public-key-alg ES256, given first, standard input
 	// the 66 lowercase hexadecimal characters of TEST-P256-PUBLIC-KEY.
@@ -431,7 +436,7 @@ type implementation interface {
 	// under --ordinary-seals-only when ordinarySealsOnly is set, with
 	// --artifacts supplied when supplied is not "", and cut by --scope scope
 	// when scope is not "", under the key pin pins with its algorithm.
-	verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, pin heldKey) (contractVerdict, error)
+	verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, requireJournal []string, previous string, pin heldKey) (contractVerdict, error)
 	// witness reads one chain of witness statements (SPEC.md §8.6) from
 	// files, and answers with the verdict the process contract gives.
 	witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error)
@@ -450,11 +455,12 @@ func (inProcess) canon(source string) ([]byte, bool) {
 	return out, true
 }
 
-func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, pin heldKey) (contractVerdict, error) {
+func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, requireJournal []string, previous string, pin heldKey) (contractVerdict, error) {
 	rep, err := verifierByPin(ordinarySealsOnly, scope, previous)(storeRoot, registryPath, authority, decisionRecords, supplied, pin)
 	if err != nil {
 		return contractVerdict{}, err
 	}
+	rep.requireJournals(requireJournal)
 	raw, err := rep.marshal()
 	if err != nil {
 		return contractVerdict{}, err
@@ -555,7 +561,7 @@ func (s subprocess) canon(source string) ([]byte, bool) {
 	return stdout.Bytes(), true
 }
 
-func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, pin heldKey) (contractVerdict, error) {
+func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, requireJournal []string, previous string, pin heldKey) (contractVerdict, error) {
 	args := append(append([]string{}, s.argv[1:]...), "verify")
 	stdin := pin.key
 	if pin.alg == algES256 {
@@ -579,6 +585,11 @@ func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords, 
 		// After it, before the store root (corpus/README.md): passed exactly
 		// when the vector supplies bytes.
 		args = append(args, "--artifacts", supplied)
+	}
+	for _, name := range requireJournal {
+		// After it, before --previous (corpus/README.md): passed exactly
+		// when the vector requires the journal (ADR-0056 §6).
+		args = append(args, "--require-journal", name)
 	}
 	if previous != "" {
 		// After it, before the store root (corpus/README.md): passed exactly
@@ -999,10 +1010,10 @@ func runStoreVectors(corpusDir string, impl implementation) ([]string, int, erro
 		if err != nil {
 			return nil, 0, err
 		}
-		verdict, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, suppliedOf(vector, root), vector.Scope, vector.OrdinarySealsOnly, previousOf(vector, root), pin)
+		verdict, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, suppliedOf(vector, root), vector.Scope, vector.OrdinarySealsOnly, vector.RequireJournal, previousOf(vector, root), pin)
 		os.RemoveAll(root)
 		var refused noVerdict
-		if err != nil && (vector.OrdinarySealsOnly || vector.SuppliedArtifacts != nil || vector.Scope != "" || vector.PreviousRegistry != nil || vector.PublicKeyAlg != "") && errors.As(err, &refused) {
+		if err != nil && (vector.OrdinarySealsOnly || vector.SuppliedArtifacts != nil || vector.Scope != "" || vector.PreviousRegistry != nil || vector.PublicKeyAlg != "" || vector.RequireJournal != nil) && errors.As(err, &refused) {
 			// A verifier written before the option refuses one it does not
 			// know: that is its answer to this vector, a disagreement, and
 			// the run goes on (SPEC.md §7). No verdict for a vector run
@@ -1015,6 +1026,8 @@ func runStoreVectors(corpusDir string, impl implementation) ([]string, int, erro
 				option = "--scope"
 			case vector.PreviousRegistry != nil:
 				option = "--previous"
+			case vector.RequireJournal != nil:
+				option = "--require-journal"
 			case !vector.OrdinarySealsOnly:
 				option = "--artifacts"
 			}

@@ -240,10 +240,18 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 213 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 219 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
-§4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
+§4 step 6, and an optional `witnesses` in `expected` (below). Six of them,
+`v3-journal-*`, are the operator journal's (`SPEC.md` §3f and §4 step 9; ADR-0056): each is
+`v3-artifact-removed` with `journals/operator.jsonl`, an entry signed under the test seed that
+names the removal file's bytes, and some give `requireJournal`, `["operator"]`. They cover a
+journal that holds (`journal-from`); an entry forged (`journal-entry-forged`); a staged entry
+never committed (`journal-entry-missing`); a torn last piece of the removal file that loads as no
+record, the observation `journal-torn-tail` beside `journal-from` and no finding; the same piece
+when it loads as a record, `journal-entry-missing`; and a store with no journal under the option,
+`journal-missing`. They cover: a valid sealed version 3 session; an action receipt whose
 citation and decision record both resolve; `citation-unresolved` for a wrong
 signature; `malformed` for the right signature cited in another case, since a
 cited signature has the form §1.2a gives it; `decision-record-mismatch`,
@@ -761,7 +769,7 @@ this one:
 - `CMD canon` — stdin: one JSON document (the *text*). stdout: the canonical
   bytes, exactly, no trailing newline. Exit 0 if inside the domain, non-zero if
   refused.
-- `CMD verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>]`
+- `CMD verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] [--require-journal <name>]... [--previous <registry>] <store-root> <registry-path> <authority> [<decision-records-dir>]`
   — stdin: the 32-byte Ed25519 **public** key, raw bytes, never a secret; under
   `--public-key-alg ES256`, exactly the 66 lowercase hexadecimal characters of a P-256 compressed
   point, nothing around them.
@@ -791,6 +799,12 @@ this one:
   that file's bytes, and nothing in its place otherwise. No verdict for a vector run
   with it disagrees with that vector, `store <name>: no verdict under --artifacts:`, and
   the run goes on, as under `--ordinary-seals-only`.
+  `--require-journal <name>` is the option of `SPEC.md` §4 step 9 (ADR-0056 §6), given after
+  `--artifacts` where both are and before `--previous` and the store root, once for each name;
+  the runner passes it exactly when the vector gives `requireJournal`, a list of journal
+  names, once for each in order, and nothing in its place otherwise. No verdict for a vector
+  run with it disagrees with that vector, `store <name>: no verdict under --require-journal:`,
+  and the run goes on.
   `--scope <identifier>` is the verdict by scope of `SPEC.md` §4, given first, before every
   other option, and never with a decision-record directory; the runner passes it exactly when
   the vector gives `scope`, and nothing in its place otherwise. Its verdict gives the `cut`

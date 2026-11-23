@@ -129,11 +129,11 @@ func linkFindings(registryPath, previous string, publicKey []byte) ([]finding, e
 	return rep.Findings, nil
 }
 
-func (d defective) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, pin heldKey) (contractVerdict, error) {
+func (d defective) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, requireJournal []string, previous string, pin heldKey) (contractVerdict, error) {
 	if pin.alg != algEd25519 {
 		// each defect is of a verifier reading Ed25519 stores; a P-256 pin
 		// is read as the reference reads it
-		return inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope, ordinarySealsOnly, previous, pin)
+		return inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope, ordinarySealsOnly, requireJournal, previous, pin)
 	}
 	if d.followNoRotation {
 		// Read so, the registry is the registry without its rotation
@@ -149,12 +149,12 @@ func (d defective) verify(storeRoot, registryPath, authority, decisionRecords, s
 				return contractVerdict{}, err
 			}
 		}
-		return inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope, ordinarySealsOnly, previous, pin)
+		return inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope, ordinarySealsOnly, requireJournal, previous, pin)
 	}
 	// The faults are of ok and the findings; the observations, the
 	// witnesses and the rotations are the reference's, but for the witness
 	// fault, which names no witness.
-	reference, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope, ordinarySealsOnly, previous, pin)
+	reference, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope, ordinarySealsOnly, requireJournal, previous, pin)
 	if err != nil {
 		return contractVerdict{}, err
 	}
@@ -305,7 +305,7 @@ func (d defective) verifyFindings(storeRoot, registryPath, authority, decisionRe
 		// Every ladder and registry check intact; SPEC.md §4 steps 5 and 6
 		// never run -- a verifier that treats an action receipt's citations
 		// and decision record as decoration.
-		verdict, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope, ordinarySealsOnly, "", edKey(publicKey))
+		verdict, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope, ordinarySealsOnly, nil, "", edKey(publicKey))
 		if err != nil {
 			return false, nil, err
 		}
@@ -325,7 +325,7 @@ func (d defective) verifyFindings(storeRoot, registryPath, authority, decisionRe
 		return ok, kept, nil
 	}
 	if !d.ignoreAnchor {
-		verdict, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope, ordinarySealsOnly, "", edKey(publicKey))
+		verdict, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope, ordinarySealsOnly, nil, "", edKey(publicKey))
 		return verdict.OK, verdict.Findings, err
 	}
 	// Every receipt checked, the registry anchor ignored -- the exact gap this
@@ -2495,13 +2495,13 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 func TestNoVerdictIsAnImplementationThatRanAndExitedNonZero(t *testing.T) {
 	store := t.TempDir()
 	t.Setenv(envConformStub, "rejects-option")
-	_, err := subprocess{argv: []string{os.Args[0]}}.verify(store, filepath.Join(store, "registry"), "a", "", "", "", true, "", edKey(make([]byte, 32)))
+	_, err := subprocess{argv: []string{os.Args[0]}}.verify(store, filepath.Join(store, "registry"), "a", "", "", "", true, nil, "", edKey(make([]byte, 32)))
 	var refused noVerdict
 	if !errors.As(err, &refused) || refused.stderr != conformStubUsage+"\n" {
 		t.Fatalf("an implementation refusing the option: %v, want no verdict with its usage", err)
 	}
 	absent := filepath.Join(t.TempDir(), "no-such-implementation")
-	_, err = subprocess{argv: []string{absent}}.verify(store, filepath.Join(store, "registry"), "a", "", "", "", true, "", edKey(make([]byte, 32)))
+	_, err = subprocess{argv: []string{absent}}.verify(store, filepath.Join(store, "registry"), "a", "", "", "", true, nil, "", edKey(make([]byte, 32)))
 	if err == nil || errors.As(err, &refused) {
 		t.Fatalf("an implementation that could not be started: %v, want an error that is not no verdict", err)
 	}
@@ -2591,7 +2591,7 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		verdict, err := inProcess{}.verify(storeRoot, registryPath, vector.Authority, decisionRecords, suppliedOf(vector, root), vector.Scope, vector.OrdinarySealsOnly, previousOf(vector, root), pin)
+		verdict, err := inProcess{}.verify(storeRoot, registryPath, vector.Authority, decisionRecords, suppliedOf(vector, root), vector.Scope, vector.OrdinarySealsOnly, vector.RequireJournal, previousOf(vector, root), pin)
 		os.RemoveAll(root)
 		if err != nil {
 			t.Fatal(err)
@@ -2886,7 +2886,7 @@ type editing struct {
 	edit string
 }
 
-func (e editing) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, previous string, pin heldKey) (contractVerdict, error) {
+func (e editing) verify(storeRoot, registryPath, authority, decisionRecords, supplied, scope string, ordinarySealsOnly bool, requireJournal []string, previous string, pin heldKey) (contractVerdict, error) {
 	rep, err := verifierByPin(ordinarySealsOnly, scope, previous)(storeRoot, registryPath, authority, decisionRecords, supplied, pin)
 	if err != nil {
 		return contractVerdict{}, err
@@ -2929,7 +2929,7 @@ type answering struct {
 	verdict, answer string
 }
 
-func (a answering) verify(string, string, string, string, string, string, bool, string, heldKey) (contractVerdict, error) {
+func (a answering) verify(string, string, string, string, string, string, bool, []string, string, heldKey) (contractVerdict, error) {
 	return decodeVerdict([]byte(a.verdict))
 }
 

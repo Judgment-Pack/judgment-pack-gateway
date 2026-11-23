@@ -109,6 +109,7 @@ func TestStoreVectors(t *testing.T) {
 			t.Errorf("%s: no verdict: %v", vec.Name, err)
 			continue
 		}
+		rep.requireJournals(vec.RequireJournal)
 		ok := true
 		if rep.OK != vec.Expected.OK {
 			t.Errorf("%s: ok=%v, want %v", vec.Name, rep.OK, vec.Expected.OK)
