@@ -296,6 +296,88 @@ func TestOperatorJournalRefusesAStagedEntryTheStoreDoesNotMatch(t *testing.T) {
 	}
 }
 
+// A crash after the staged entry is appended to the journal, before the
+// pending file is removed, leaves the entry committed: the next journaled
+// command removes the pending file alone, writes its own entry after it, and
+// the journal holds the first entry once (ADR-0056, Amendment D). Each
+// command that stages an entry is cut off there, and another runs next.
+func TestOperatorJournalSettlesAStagedEntryAlreadyCommitted(t *testing.T) {
+	removeScope := func(config string) (int, string) {
+		var stdout, stderr bytes.Buffer
+		code := cmdRemoveScopeAt([]string{"--config", config, "--scope", otherScope, "--by", "operator-2"}, &stdout, &stderr, fixedStamp(removalStamp))
+		return code, stderr.String()
+	}
+	removeArtifact := func(config string) (int, string) {
+		var stdout, stderr bytes.Buffer
+		code := cmdRemoveArtifactAt([]string{"--config", config, "--receipt", "p1/0", "--by", "operator-3"}, &stdout, &stderr, fixedStamp(removalStamp))
+		return code, stderr.String()
+	}
+	for _, tc := range []struct {
+		name, cutKind, nextKind string
+		cut, next               func(t *testing.T, g *gatewayService, config string) (int, string)
+	}{
+		{"retain", "retain", "remove-scope",
+			func(t *testing.T, g *gatewayService, config string) (int, string) {
+				run, _ := retainA1(t, g, config)
+				return run()
+			},
+			func(t *testing.T, g *gatewayService, config string) (int, string) { return removeScope(config) }},
+		{"remove-scope", "remove-scope", "retain",
+			func(t *testing.T, g *gatewayService, config string) (int, string) { return removeScope(config) },
+			func(t *testing.T, g *gatewayService, config string) (int, string) {
+				run, _ := retainA1(t, g, config)
+				return run()
+			}},
+		{"remove-artifact", "remove-artifact", "retain",
+			func(t *testing.T, g *gatewayService, config string) (int, string) { return removeArtifact(config) },
+			func(t *testing.T, g *gatewayService, config string) (int, string) {
+				run, _ := retainA1(t, g, config)
+				return run()
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, config := journalStore(t)
+			journalStepCut = func(step string) error {
+				if step == "committed" {
+					return errors.New("cut off")
+				}
+				return nil
+			}
+			code, _ := tc.cut(t, g, config)
+			journalStepCut = nil
+			if code == 0 {
+				t.Fatal("the cut run succeeded")
+			}
+			staged := readFile(t, pendingFile(g))
+			if got := readFile(t, journalFile(g)); got != staged {
+				t.Fatalf("the journal is not the staged entry: %q %q", got, staged)
+			}
+			if code, stderr := tc.next(t, g, config); code != 0 || strings.Contains(stderr, "journal-pending") {
+				t.Fatalf("the next command: %d %q", code, stderr)
+			}
+			if _, err := os.Lstat(pendingFile(g)); !os.IsNotExist(err) {
+				t.Fatalf("the staged entry is still there: %v", err)
+			}
+			journal := readFile(t, journalFile(g))
+			if !strings.HasPrefix(journal, staged) || strings.Count(journal, staged) != 1 {
+				t.Fatalf("the journal does not hold the entry once: %q", journal)
+			}
+			entries := journalEntries(t, g)
+			if len(entries) != 2 {
+				t.Fatalf("the journal: %v", entries)
+			}
+			for i, kind := range []string{tc.cutKind, tc.nextKind} {
+				if body, _ := entries[i]["body"].(map[string]any); body["kind"] != kind {
+					t.Fatalf("entry %d: %v", i, entries[i])
+				}
+			}
+			if _, said := journalVerdict(t, g, "operator"); strings.Join(said, ",") != "journal-from" {
+				t.Fatalf("the verdict: %v", said)
+			}
+		})
+	}
+}
+
 func appendLine(t *testing.T, path, text string) {
 	t.Helper()
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)

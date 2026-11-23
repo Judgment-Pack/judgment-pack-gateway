@@ -50,7 +50,8 @@ var errJournalNotRegular = errors.New("a journal's path holds something that is 
 
 // journalStepCut, where it is set, runs at a step of a journaled removal
 // ("staged", after the entry is staged; "records", after the records are
-// appended): a test's way of cutting a run off there.
+// appended; "committed", after the entry is appended to the journal): a
+// test's way of cutting a run off there.
 var journalStepCut func(step string) error
 
 // isJournalName is a journal's name: 1 to 32 characters, each a lowercase
@@ -695,15 +696,23 @@ func (j *operatorJournalCall) follow(data []byte, keys []reachedKey, registry, r
 	j.unnamed = judgeOperatorJournal(data, false, keys, registry, removal, true).unnamed
 }
 
-// settle is a staged entry settled (ADR-0056 §5): committed where the
-// removal file's bytes past its removalFrom are exactly the range it names
-// and it follows the journal's last entry; removed where the call appended
-// no line; and otherwise refused, nothing changed.
+// settle is a staged entry settled (ADR-0056 §5): left as it is, its
+// pending file removed, where it is already the journal's last line;
+// committed where the removal file's bytes past its removalFrom are exactly
+// the range it names and it follows the journal's last entry; removed where
+// the call appended no line; and otherwise refused, nothing changed.
 func (j *operatorJournalCall) settle(staged, data []byte, keys []reachedKey, removal []byte) (bool, error) {
 	line := bytes.TrimSuffix(staged, []byte{'\n'})
 	e, ok := loadJournalEntry(line, operatorJournal, keys)
 	if !ok || !e.removal || len(staged) != len(line)+1 || e.removalFrom > int64(len(removal)) {
 		return false, errJournalPending
+	}
+	// the journal's last line is the staged entry, byte for byte: the run
+	// was cut off after the append and before the pending file's removal,
+	// so the entry is committed and the pending file alone is left
+	// (ADR-0056, Amendment D)
+	if lines, _ := journalLines(data); len(lines) > 0 && bytes.Equal(lines[len(lines)-1], line) {
+		return false, j.removePending()
 	}
 	past := removal[e.removalFrom:]
 	follows := e.ordinal == j.ordinal && (e.ordinal == 0 && !e.hasPrevious || e.ordinal > 0 && e.hasPrevious && e.previous == j.previous)
@@ -870,6 +879,11 @@ func journaledAppendRemovals(j *operatorJournalCall, storeRoot string, torn bool
 	}
 	if err := j.appendEntry(line); err != nil {
 		return err
+	}
+	if journalStepCut != nil {
+		if err := journalStepCut("committed"); err != nil {
+			return err
+		}
 	}
 	return j.removePending()
 }

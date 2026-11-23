@@ -191,6 +191,13 @@ export path. The PostgreSQL kind stages no entry, and its export refuses only wh
 directory named beside it holds one. Corpus vector `v3-journal-staged-entry` is refused this way by
 both kinds' export tests.
 
+### D. A staged entry the journal already holds (2026-11-23)
+
+Settling a staged entry (section 5) has a case before the three: where the journal's last line is
+byte-equal to the staged entry, the run was cut off after step 4's append and before the pending file's
+removal, so the entry is committed, and the command removes the pending file alone, writing nothing. The
+journal then holds the entry once, and the command goes on to its own work.
+
 ### What this amendment replaces
 
 - **Summary:** "the log named `journal/operator` in `gateway.logs` and `gateway.log_records` … No schema
@@ -201,6 +208,7 @@ both kinds' export tests.
   migration and one grant".
 - **Section 4:** `removalFrom` excludes a torn last piece that does not parse.
 - **Section 5:** "appended to `journal/operator`" now reads "inserted into `gateway.journal_records`".
+  Settling a staged entry gains D's case before its three.
 - **Section 6:** item 4 excepts the torn tail of B.
 - **Section 7:** a bullet for an older binary on the PostgreSQL kind.
 - **Section 8:** the log `journal/<name>` and its append lock now read: the table's rows and its key.
