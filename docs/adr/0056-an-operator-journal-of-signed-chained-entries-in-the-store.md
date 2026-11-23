@@ -9,9 +9,11 @@ deciders: maintainer
 > **Summary.**
 >
 > - **Chosen: J1**, a new append-only journal in the store. On the filesystem kind it is
->   `<root>/journals/operator.jsonl`. On the PostgreSQL kind it is the log named `journal/operator` in
->   `gateway.logs` and `gateway.log_records`, which an export writes as `store/journals/operator.jsonl`.
->   No schema version is needed.
+>   `<root>/journals/operator.jsonl`. On the PostgreSQL kind it is the rows of `gateway.journal_records`
+>   under the journal `operator`, a table of its own that migration 0010 makes, on which the run-time
+>   role holds SELECT and INSERT alone. An export writes them as `store/journals/operator.jsonl`. As
+>   amended: the record first named a log in `gateway.logs` and no schema version (see "Amendment
+>   (2026-11-22)").
 > - **The envelope**, the same for every journal: `journal`, `journalVersion: "1"`, `ordinal`,
 >   `previous`, `at`, `keyId`, `alg` (optional), `body` and `signature`. It is signed through the
 >   configured signer over `"judgment-pack-gateway/journal-entry/1:"`.
@@ -44,6 +46,158 @@ The maintainer accepted this record with these answers, each folded into the bod
 
 The open item, what an older reader does with an export that holds the journal, is answered in
 section 7: a reader of v0.38.0 refuses it.
+
+## Amendment (2026-11-22): the PostgreSQL journal table and a torn tail
+
+The maintainer amended this record with the two rulings below. Each is folded into the body, and the
+sentences it replaces are listed at the end of this section. Ruling A changes the PostgreSQL kind
+alone, and its build follows the maintainer's acceptance of the schema change. Ruling B changes one
+case of `gateway verify` and the call that next appends to the removal file.
+
+### A. A table of its own on the PostgreSQL kind: `gateway.journal_records`
+
+**Why not the log.** `gateway.logs` admits one name: `name text COLLATE "C" PRIMARY KEY CHECK (name IN
+('registry'))` (`go/store_pg/migrations/0001_contract_spaces.sql:62-64`). The log `journal/operator`
+this record first named could not be inserted there, so its "no migration and no grant" did not hold.
+That CHECK stays exactly as it is, and the registry stays the one log.
+
+**Migration 0010**, `go/store_pg/migrations/0010_journal_records.sql`, makes one table and changes no
+other:
+
+```sql
+CREATE TABLE gateway.journal_records (
+    journal text COLLATE "C" NOT NULL CHECK (journal ~ '^[a-z-]{1,32}$'),
+    ordinal bigint NOT NULL CHECK (ordinal >= 0),
+    line    bytea NOT NULL
+            CHECK (octet_length(line) BETWEEN 1 AND 4096 AND position('\x0a'::bytea IN line) = 0),
+    follows bigint GENERATED ALWAYS AS (NULLIF(ordinal, 0) - 1) STORED,
+    PRIMARY KEY (journal, ordinal),
+    FOREIGN KEY (journal, follows) REFERENCES gateway.journal_records (journal, ordinal)
+);
+```
+
+- **The chain rule is the log's** (`go/store_pg/migrations/0004_log_chain.sql:12-18` and `:26-29`),
+  keyed by (journal, ordinal) where the log is keyed by (log, start). The primary key admits one row at
+  an ordinal. Every row but the one at ordinal 0 follows, through the foreign key, the row at the
+  ordinal before it; the row at 0 follows none, since a foreign key is not checked on a NULL column. So
+  each journal is one chain from ordinal 0, with no gap and no second row at an ordinal, whoever inserts
+  it, and a row is admitted only at the journal's end.
+- **The name is checked by the envelope's rule** (`isJournalName`, `go/operator_journal.go:58-68`): 1 to
+  32 characters, each a lowercase letter or `-`. That the line's own `journal` is the row's is
+  `gateway verify`'s check, as for a file (section 6).
+- **A row is one entry**: its line, without the `0x0A`, within the envelope's bound. The `previous`
+  digest and the signature are not the schema's to hold. Verify holds them, as on the filesystem kind.
+- **No row security applies**: like the log, the table carries no scope.
+- **Beside the file**, the build adds its digest to `go/store_pg/SHA256SUMS`, and the table to
+  `pgTables` and `pgPrivileges` (`go/store_pg_migrate.go:461-480`) and to `pgDefinitions`
+  (`go/store_pg_definitions.go:36`), so the start holds the table to its definition and privileges.
+
+**Every grant and revoke**, all in `go/store_pg/grants.sql`, which the migration runs after the
+schema's migrations, as the owner, on every run:
+
+- `REVOKE ALL ON ALL TABLES IN SCHEMA gateway FROM <runtime>` (`grants.sql:30`, unchanged) first takes
+  back every privilege on the new table, UPDATE, DELETE, TRUNCATE, REFERENCES and TRIGGER among them.
+- `REVOKE ALL ON SCHEMA gateway FROM <runtime>` and `GRANT USAGE ON SCHEMA gateway TO <runtime>`
+  (`:31-32`) are unchanged.
+- `GRANT SELECT, INSERT ON gateway.journal_records TO <runtime>` is the one grant added: the table joins
+  the list at `:34`.
+- Nothing else is granted on the table. The run-time role holds no UPDATE, DELETE or TRUNCATE on it,
+  and the start refuses a database where it holds any privilege beyond SELECT and INSERT there, by
+  table or by column (`pgPrivilegesHold`, `go/store_pg_migrate.go:621`). PUBLIC holds no USAGE on the
+  schema (`0001_contract_spaces.sql:21`), and the migration grants it nothing.
+
+**Who writes it**, as section 5 sets out. The owner inserts rows in the transaction of `store retain`,
+`store remove-scope` and `store rotate`'s new database. The run-time login inserts them for `seal-open`
+and for `store rotate`'s old database, fenced on the start lease as their seals are. Each insert reads
+the journal's last row for `ordinal` and `previous` in the transaction that inserts. Two writers racing
+for one ordinal cannot fork the chain: the primary key refuses the second, and its transaction rolls
+back with the change it carries.
+
+**Export and verify are unchanged.** `gateway export` writes the rows of the journal `operator`, in
+ordinal order, each line and its `0x0A`, as `store/journals/operator.jsonl`, the path of the filesystem
+kind's file. Step 9, its findings and its vectors are the same on both kinds. The lengths in a body are,
+as before, of the bytes an export writes.
+
+**An older binary refuses to start on a database at schema 0010, and changes nothing.** Tag v0.38.0
+ships migrations 0001 to 0009. So, as this record is amended, does the release before the one that
+carries the journal: `go/store_pg_migrate.go` is the same at tag v0.38.0 and at this record's base, so
+the lines below hold for both.
+
+- The start, `(*pgKind).holdsItsConditions` (`go/store_pg_migrate.go:518`), calls `pgRecordedMatch`
+  (`:555`). That refuses a database recording more migrations than the binary ships (`:354-355`): "the
+  database's schema is at version 10 and this gateway's migrations reach version 9; a gateway older
+  than its schema does not run on it".
+- `store migrate` refuses the same way (`:242`), as do `store retain`, `store remove-scope` and
+  `store rotate-key` on this kind (`go/store_retain.go:213`, `go/store_remove_scope.go:295`,
+  `go/store_rotate_key_pg.go:236`).
+- `TestAPostgresSchemaAheadRefusesTheMigrateCommandAndTheStart` (`go/store_migrate_cmd_test.go:148`)
+  already holds the rule with a placeholder row. The build adds
+  `TestJournalRecordsMigrationRefusesAnOlderGateway`. It applies the shipped set through 0010, then
+  runs the migration and the start's check with the set cut at 0009. Each is refused "older than its
+  schema", and the database's fingerprint is unchanged.
+
+Rolling the binary back across 0010 is therefore a refusal, never a run on a schema it does not know,
+and the upgrade notes say so.
+
+**The engine version is unchanged.** Rows are written from `operatorJournalVersion`, or once the
+store holds the journal (section 7). Its number is a placeholder, set at merge.
+
+### B. A torn tail of the removal file
+
+A call that stops while appending its records can leave the removal file ending in a piece with no
+`0x0A` after it. The next journaled call settles the staged entry, and removes it where the bytes past
+the covered end hold no `0x0A` (section 5). Until a call appends again, the piece is bytes no entry
+covers. Before this amendment, that was `journal-entry-missing`.
+
+**The rule.** `gateway verify` reports the observation `journal-torn-tail`,
+`{observation, journal, removalFrom, bytes}`, and not `journal-entry-missing`, when all of these hold:
+
+1. No entry is staged: `<journal>.pending` is not there.
+2. The removal file's last piece, the bytes after its last `0x0A` (the whole file where it holds none),
+   is not empty and lies past the first entry's `removalFrom`.
+3. The piece does not parse: read as a line, it does not load as a removal record of any kind
+   (SPEC.md §1.3a, "Loading") under the keys the walk reached.
+4. The bytes past the first entry's `removalFrom` that no range covers are exactly that piece, and no
+   command seal is left untaken.
+
+`removalFrom` is the piece's first byte, and `bytes` is its length. The journal then has no finding, so
+`journal-from` is reported beside it, and the verdict holds, with `--require-journal` too.
+
+**Anything else uncovered stays a finding**, `journal-entry-missing`:
+
+- a terminated line that no range covers;
+- uncovered bytes before the last piece;
+- a last piece that parses, which a call's `0x0A` would turn into a record no entry names;
+- any last piece while an entry is staged.
+
+**The call that next appends.** It ends the piece with a `0x0A` before its records, as today
+(`appendRemovals`, `go/remove_artifact.go:536-563`). Where the piece does not parse, the call's
+`removalFrom` is the piece's first byte, and its range is the piece, that `0x0A` and its records, so
+nothing is left uncovered once the call commits. Where the piece parses, the range begins after the
+piece, as before, and the piece stays `journal-entry-missing`. Settling reads a staged entry against the
+same `removalFrom`, so a stop before the records leaves the piece alone past it, and the staged entry is
+removed as before.
+
+**On the PostgreSQL kind**, removal records are rows, and an export writes each with its `0x0A`, so the
+observation never arises there.
+
+### What this amendment replaces
+
+- **Summary:** "the log named `journal/operator` in `gateway.logs` and `gateway.log_records` … No schema
+  version is needed" now reads: the rows of `gateway.journal_records`, made by migration 0010.
+- **Decision drivers:** the run-time login gains SELECT and INSERT on the one new table.
+- **J1:** "a named log" now reads "a table of its own".
+- **Section 1:** the PostgreSQL row of the table, and "needs no migration and no grant", now read "one
+  migration and one grant".
+- **Section 4:** `removalFrom` excludes a torn last piece that does not parse.
+- **Section 5:** "appended to `journal/operator`" now reads "inserted into `gateway.journal_records`".
+- **Section 6:** item 4 excepts the torn tail of B.
+- **Section 7:** a bullet for an older binary on the PostgreSQL kind.
+- **Section 8:** the log `journal/<name>` and its append lock now read: the table's rows and its key.
+- **Consequences:** "no schema version and no grant is needed" now reads: one table, with SELECT and
+  INSERT alone. A bullet is added for the older binary's refusal.
+- **Build plan and SPEC sentences:** the log becomes the table, and the plan gains B and the remaining
+  steps.
 
 ## Context and problem statement
 
@@ -92,14 +246,15 @@ rule that holds them to the store.
   its own journal. It is verified with its own registry, and it is deleted whole with its store.
 - **The design is reusable.** A later journal reuses the placement, the envelope, the signing and the
   envelope's findings, and adds only its own body.
-- **The run-time login gains no DELETE or UPDATE** (ADR-0031, decision 6).
+- **The run-time login gains no DELETE or UPDATE** (ADR-0031, decision 6). On the PostgreSQL kind it
+  gains SELECT and INSERT on one new table, `gateway.journal_records`, and nothing else (Amendment A).
 
 ## Considered options
 
 ### Where the entries live
 
-- **J1. A new append-only journal in the store:** a file of lines on the filesystem kind, and a named
-  log on the PostgreSQL kind.
+- **J1. A new append-only journal in the store:** a file of lines on the filesystem kind, and a table of
+  its own on the PostgreSQL kind (first written as a named log; Amendment A).
 - **J2. Entries in the removal file**, as a new record kind in `artifact-removals.jsonl` and
   `gateway.removal_records`.
 - **J3. Entries in the registry**, as a new registry line kind.
@@ -166,17 +321,18 @@ compacted (see the context). It is keyed by action key, not by call.
 |---|---|---|
 | Filesystem | `<root>/journals/<journal>.jsonl`, one entry per line, each followed by `0x0A`; created `0600` in a directory `0700`, synced before its directory | an append, then a sync, under the registry's hold |
 | Filesystem, staged | `<root>/journals/<journal>.pending`, at most one entry, created exclusively and synced | the removal commands alone (§4 below) |
-| PostgreSQL | the log named `journal/<journal>` in `gateway.logs` and `gateway.log_records`, each record one entry and its `0x0A` | `pgLogAppendAtEnd` (`go/store_pg.go:692-696`) under the log's append lock, in the caller's transaction |
-| Export | `store/journals/<journal>.jsonl`, the log's bytes or the file's, whole | `gateway export`; `gateway export --scope` writes none (below) |
+| PostgreSQL | `gateway.journal_records` (migration 0010, Amendment A): one row for each entry, its journal's name, its ordinal and its line without the `0x0A` | an insert at the journal's end, in the caller's transaction; the primary key and the chain's foreign key admit a row nowhere else |
+| Export | `store/journals/<journal>.jsonl`: the rows' lines in ordinal order, each with its `0x0A`, or the file's bytes, whole | `gateway export`; `gateway export --scope` writes none (below) |
 
-The PostgreSQL kind needs **no migration and no grant**:
-- the run-time role already holds SELECT and INSERT on `logs` and `log_records`, and nothing else
-  (`go/store_pg_migrate.go:468-469`);
-- from schema version 4, each log is one chain with no gap and no overlap, whoever writes it
-  (`go/store_pg/migrations/0004_log_chain.sql`).
+The PostgreSQL kind needs **one migration and one grant** (Amendment A). This replaces the record's
+first "no migration and no grant", since `gateway.logs` admits the name `registry` alone:
+- migration 0010 makes `gateway.journal_records`, each journal in it one chain from ordinal 0, with no
+  gap and no second row at an ordinal, whoever writes it, by the rule of the log chain
+  (`go/store_pg/migrations/0004_log_chain.sql`);
+- the run-time role is granted SELECT and INSERT on it, and nothing else (`go/store_pg/grants.sql`).
 
 So a journal there is append-only against the run-time login, as the registry is. The owner writes
-`journal/operator` in the transaction of `store retain`, `store remove-scope` and `store rotate`'s new
+the journal `operator` in the transaction of `store retain`, `store remove-scope` and `store rotate`'s new
 database. The run-time login writes it for `seal-open` and for `store rotate`'s old database, fenced on
 the start lease as their seals are.
 
@@ -235,7 +391,8 @@ across scopes. A projection of the journal by scope is issue #588.
 Every operator body holds:
 - `kind`;
 - `registryFrom`, the registry's length in bytes when the call began, before its own appends;
-- `removalFrom`, the removal file's length in bytes when the call began.
+- `removalFrom`, the removal file's length in bytes when the call began, less a torn last piece that
+  does not parse (Amendment B).
 
 On the PostgreSQL kind, both lengths are of the bytes an export writes: each record and its `0x0A`, in
 order. The kinds and their other members:
@@ -271,7 +428,7 @@ order. The kinds and their other members:
 
 | Command | Filesystem kind | PostgreSQL kind |
 |---|---|---|
-| `retain`, `remove-scope`, `remove-artifact` | 1. Sign the records and the entry naming their bytes. 2. Stage the entry in `operator.pending`. 3. Append the records and sync (today's step). 4. Append the entry to the journal, sync, and remove the pending file. 5. Remove the files (today's step). | The entry is appended to `journal/operator` in the transaction that inserts the records and removes the rows (`go/store_retain.go:199-457`), so the two commit together or not at all. |
+| `retain`, `remove-scope`, `remove-artifact` | 1. Sign the records and the entry naming their bytes. 2. Stage the entry in `operator.pending`. 3. Append the records and sync (today's step). 4. Append the entry to the journal, sync, and remove the pending file. 5. Remove the files (today's step). | The entry is inserted into `gateway.journal_records`, under the journal `operator`, in the transaction that inserts the records and removes the rows (`go/store_retain.go:199-457`), so the two commit together or not at all. |
 | `seal-open` | After the last seal, appended and synced. | After the last seal, in its own transaction, fenced on the start lease. |
 | `store rotate` | In the old store, a `store-rotate` entry after its seals and before the new store is made. In the new store, the `store-continued` entry, written before the new registry is renamed into place. | In the old database, a `store-rotate` entry after its seals, as the run-time login. In the new database, `store-continued` is written in the migration's transaction that makes the registry and the key-history row (`go/store_rotate_pg.go:340-399`). |
 
@@ -336,17 +493,20 @@ then fails.
      registry's first line.
 4. **`journal-entry-missing`.** The store holds a change that no entry names:
    - bytes of the removal file, past the first entry's `removalFrom`, that no range covers;
-   - a command seal at or after the first entry's `registryFrom` that no entry takes.
-
+   - a command seal at or after the first entry's `registryFrom` that no entry takes;
    - a staged entry, `<journal>.pending` on the filesystem kind, that has not been committed, whether or
      not the journal's file is there.
+
+   One uncovered piece is no finding (Amendment B): after a settled call, the removal file's
+   unterminated last piece that does not parse is the observation `journal-torn-tail`.
 
    This finding is what makes removing the last entries show. The ordinal reported is the one the next
    entry would take. A command seal is a registry line that §1.1's parser reads as one JSON object of
    `kind` `"seal-after-interruption"` and `sealedVia` `"command"`, whether or not it loads.
 
 A journal with no finding is reported as the observation `journal-from`,
-`{observation, journal, registryFrom, removalFrom}`, which gives the first entry's values.
+`{observation, journal, registryFrom, removalFrom}`, which gives the first entry's values. Beside it, a
+torn tail of the removal file under Amendment B is the observation `journal-torn-tail`.
 
 **Made before the journal, or an entry removed.** The verifier tells the two apart as follows:
 
@@ -386,6 +546,9 @@ registry's walk does.
 - **Rolling back after the journal has begun.** A command of v0.38.0 or earlier makes its change with no
   entry, which this version reports as `journal-entry-missing`. The upgrade notes say so: roll back
   commands only with the version lowered on a store that holds no journal.
+- **An older binary on the PostgreSQL kind.** A gateway of v0.38.0, or of the release before the one
+  that carries the journal, refuses to start on a database at schema 0010, and changes nothing
+  (Amendment A).
 - **Older verifiers.** A verifier of v0.38.0, in Go and TypeScript, reads only `receipts/` and the removal
   file (`go/verify.go:1134-1146`), so it passes `journals/` over, as it passes `labels/` over. It reports
   nothing of a journal, so a journaled store is `ok` to it where it is `ok` here, and a forged or missing
@@ -402,10 +565,14 @@ registry's walk does.
 ### 8. Reuse by later journals
 
 This section is the contract. A later journal reuses sections 1, 2 and 3 unchanged. The first expected
-reuse is the refusal journal: its entries are this envelope with `journal: "refusal"`, in
-`journals/refusal.jsonl` and the log `journal/refusal`.
+reuse is the refusal journal: its entries are this envelope with `journal: "refusal"`. They sit in
+`journals/refusal.jsonl` on the filesystem kind and, on the PostgreSQL kind, as rows of the same table,
+`gateway.journal_records`, under the journal `refusal` (Amendment A). The table's name rule admits it, so
+it needs no migration of its own, and the run-time role's INSERT on the table is the grant the serving
+gateway writes it with. An export writes it as `store/journals/refusal.jsonl`.
 
-- **Placement.** `journals/<name>.jsonl`, the log `journal/<name>`, and the export path.
+- **Placement.** `journals/<name>.jsonl`, the rows of `gateway.journal_records` under `<name>`, and the
+  export path `store/journals/<name>.jsonl`.
 - **The envelope.** The envelope, its prefix and its line bound.
 - **Signing.** The configured signer, and the load rule against the walk.
 - **The findings and observation.** `journal-entry-forged`, `journal-order` and `journal-from`, the
@@ -420,10 +587,11 @@ The later journal adds only these:
 4. **The engine version from which it is written.**
 5. **Who writes it, and in which transaction.**
 
-A journal the serving gateway writes, with several instances on one database (ADR-0035), takes the log's
-append lock and reads its last entry for `previous` in the same transaction. One chain therefore holds
-however many instances write it. That later record decides whether its rate allows one key-service
-signature for each entry.
+A journal the serving gateway writes, with several instances on one database (ADR-0035), reads its last
+row for `ordinal` and `previous` and inserts its entry in one transaction. The primary key admits one
+row at an ordinal, so one chain holds however many instances write it: an instance that loses the race
+for an ordinal has its insert refused, and the chain never forks. That later record decides how such an
+instance writes again, and whether its rate allows one key-service signature for each entry.
 
 ### Consequences
 
@@ -431,16 +599,21 @@ signature for each entry.
   On the filesystem kind they are in the file. On the PostgreSQL kind they are in `gateway export`.
 - **Good:** every byte a journaled command appends is tied to one signed entry. Altering, reordering,
   dropping or omitting an entry is a finding.
-- **Good:** no record changes form, no schema version and no grant is needed, and no current vector
-  moves.
+- **Good:** no record changes form and no current vector moves. On the PostgreSQL kind one table is
+  added, in migration 0010, with SELECT and INSERT alone for the run-time role (Amendment A, which
+  replaces this record's first "no schema version and no grant").
 - **Good:** a later journal adds a name and a body, not a format.
 - **Bad:** the filesystem kind's removal commands gain a staged file and a settle step.
-- **Bad:** between a crash and its rerun, the store verifies `journal-entry-missing`.
+- **Bad:** between a crash and its rerun, the store verifies `journal-entry-missing`. Where the crash
+  left only a torn piece of the removal file that does not parse, it is the observation
+  `journal-torn-tail` instead (Amendment B).
 - **Bad:** a journal removed whole is caught only under `--require-journal`.
 - **Bad:** the journal is the key holder's statement, as a seal is. The holder of the key can write any
   entry. The journal shows what the key holder said each call did, not that the operator meant it.
-- **Bad:** on the PostgreSQL kind, as with the registry, the run-time login can append to the journal,
-  though not change it.
+- **Bad:** on the PostgreSQL kind, as with the registry, the run-time login can insert rows into
+  `gateway.journal_records`, though not change or remove them.
+- **Bad:** on the PostgreSQL kind, a gateway older than migration 0010 refuses to start on a database
+  that holds it, so rolling the binary back across 0010 is refused (Amendment A).
 - **Revisit when** an operator command is added that changes the store, or a reader needs an entry from
   a store rotated away from that was deleted.
 
@@ -451,16 +624,35 @@ signature for each entry.
 **Files:**
 - `go/operator_journal.go`: the envelope, signing, loading and the chain; the filesystem log and
   pending file; settling.
-- `go/operator_journal_pg.go`: the log `journal/operator` appended in a caller's transaction.
+- `go/operator_journal_pg.go`: rows of `gateway.journal_records` inserted in a caller's transaction,
+  and read in ordinal order for an export.
+- `go/store_pg/migrations/0010_journal_records.sql` and its line in `go/store_pg/SHA256SUMS`; the grant
+  in `go/store_pg/grants.sql`; the table in `pgTables` and `pgPrivileges` (`go/store_pg_migrate.go`)
+  and in `pgDefinitions` (`go/store_pg_definitions.go`) (Amendment A).
 - Edits to:
   - `go/retain.go`, `go/store_retain.go`, `go/remove_scope.go`, `go/store_remove_scope.go` and
     `go/remove_artifact.go`;
   - `go/seal_open.go` and `go/seal_open_pg.go`;
   - `go/store_rotate.go` and `go/store_rotate_pg.go`;
-  - `go/verify.go` (step 9, `--require-journal`), `go/export.go` (path, manifest and reader), and
-    `go/engine.go` (`operatorJournalVersion`);
-  - `verify-ts/src/verify.ts`, for the same reading;
+  - `go/verify.go` (step 9, `--require-journal`, `journal-torn-tail`), `go/export.go` (path, manifest
+    and reader), and `go/engine.go` (`operatorJournalVersion`, its number a placeholder set at merge);
+  - `go/operator_journal.go` for Amendment B: the uncovered-bytes judgment, and a call's `removalFrom`
+    at a torn last piece that does not parse;
+  - `gateway conform`'s process contract, which accepts `--require-journal` as `verify` does;
+  - `verify-ts/src/verify.ts`, for the same reading: step 9, `--require-journal` and
+    `journal-torn-tail`;
   - SPEC.md, `docs/postgresql-store.md`, `docs/design/engine-config.md` and `corpus/README.md`.
+
+**Order of the build, as amended.** The filesystem kind's commands and verify step 9 in Go come first.
+The rest follows the maintainer's acceptance of migration 0010:
+- the PostgreSQL kind: the migration, the grant, `go/operator_journal_pg.go` and the PostgreSQL column
+  below;
+- `store-continued` in the store rotated to, on both kinds: before the new registry is renamed into
+  place on the filesystem kind, and in the migration's transaction on the PostgreSQL kind;
+- verify-ts step 9, `--require-journal` and `journal-torn-tail`, read as the Go verifier reads them;
+- the corpus vectors below, the staged entry and both sides of the torn tail among them;
+- `gateway conform` with `--require-journal`;
+- Amendment B, in verify and in the call that next appends.
 
 **Tests, one or more for each entry kind on each storage kind that has the command:**
 
@@ -476,16 +668,31 @@ signature for each entry.
 - each of the five findings, and `journal-from`;
 - a torn last line, which is no finding;
 - a store without a journal, whose report is byte-identical to today's;
-- the engine-version gate, including a store that already holds a journal under an earlier version.
+- the engine-version gate, including a store that already holds a journal under an earlier version;
+- the removal file's torn tail (Amendment B): each side of the rule, a piece that does not parse while
+  an entry is staged, and the call that next appends covering the piece, after which the journal holds.
 
-**Corpus vectors, in `corpus/stores`**, run by both verifiers:
+**Tests of migration 0010 (Amendment A):**
+- as the run-time login, a second row at an ordinal, a row past the journal's end, and a name the
+  envelope's rule refuses, each refused by the schema; UPDATE, DELETE and TRUNCATE each refused;
+- the start refusing a database where the run-time role holds any privilege on the table beyond SELECT
+  and INSERT;
+- `TestJournalRecordsMigrationRefusesAnOlderGateway`: the migration and the start's check with the set
+  cut at 0009, each refused, the database unchanged.
+
+**Corpus vectors, in `corpus/stores`**, run by both verifiers and by `gateway conform` with
+`--require-journal operator`:
 - a journal that holds;
 - a journal entry forged;
 - the order broken at the head and in the middle;
 - a missing tail, and a missing command seal;
 - a range mismatch, and a continuation mismatch;
 - a journal missing under `--require-journal`;
-- a staged, uncommitted entry under `--require-journal`, reported `journal-entry-missing`.
+- a staged, uncommitted entry under `--require-journal`, reported `journal-entry-missing`;
+- a torn tail after a settled call, a last piece of the removal file that does not parse, with nothing
+  staged: the observation `journal-torn-tail`, no finding, under `--require-journal` too (Amendment B);
+- the other side: the same store with the last piece a whole removal record lacking only its `0x0A`,
+  reported `journal-entry-missing`.
 
 **Mutation checks**, each in a scratch copy, each to fail a named test:
 1. Skip the entry's signature check.
@@ -498,6 +705,9 @@ signature for each entry.
 8. Commit a staged entry whose range the file does not hold.
 9. Write no entry under an earlier version where the store holds a journal.
 10. Leave `acknowledgments` out of `retain`'s signed body.
+11. Report `journal-torn-tail` for a last piece that parses, or while an entry is staged (Amendment B).
+12. Leave UPDATE in the run-time role's grant on `gateway.journal_records`; the start must refuse it
+    (Amendment A).
 
 ### SPEC.md sentences to add
 
@@ -510,8 +720,8 @@ signature for each entry.
 **§3f, a new section titled "The journals".** It opens with:
 
 > A store may hold journals: append-only files of entries, each signed by the key in force, one chain
-> per journal, in `<root>/journals/<journal>.jsonl` (on the PostgreSQL kind the log
-> `journal/<journal>`, written by `gateway export` as that path). An entry is one canonical JSON object
+> per journal, in `<root>/journals/<journal>.jsonl` (on the PostgreSQL kind the rows of
+> `gateway.journal_records` under that name, written by `gateway export` as that path). An entry is one canonical JSON object
 > of exactly the members of the table of ADR-0056, section 2, on one line of at most 4096 bytes, its
 > `0x0A` not counted, signed over `"judgment-pack-gateway/journal-entry/1:"` and `canon` of the entry
 > without `signature`. It loads when its `keyId` names a key the walk of §3b reached, its signature
@@ -528,7 +738,9 @@ The two tables of sections 2 and 4, and the four checks of section 6, follow it 
 >    of `journal-entry-forged`, `journal-order`, `journal-entry-mismatch` and `journal-entry-missing`;
 >    otherwise the observation `journal-from`. A store that holds no journal is reported nothing of one,
 >    unless `--require-journal <name>` is given and it holds a removal record or a command seal: then
->    `journal-missing`, `{status, journal}`.
+>    `journal-missing`, `{status, journal}`. After a settled call, a removal file whose only uncovered
+>    bytes are its unterminated last piece, which does not load as a record, with no entry staged, is
+>    the observation `journal-torn-tail`, `{observation, journal, removalFrom, bytes}`, and no finding.
 
 **§4.1, in the table:** "`journals/<journal>.jsonl` absent: no journal; anything there that is not a
 regular file: not read, no journal".
