@@ -88,10 +88,10 @@ func TestAnActionIsRefusedInASessionOfAScope(t *testing.T) {
 	// the acquisition's sentence, which does not tell a scoped session from
 	// one of none
 	want := fmt.Sprintf(refusalOtherScope, "bound")
-	if got := service.sessionOpen("bound"); got != want {
+	if got := service.sessionOpen("bound", ""); got != want {
 		t.Fatalf("the session step: %q", got)
 	}
-	err := service.admitAction("bound")
+	err := service.admitAction("bound", "")
 	if refusal, ok := err.(actRefusal); !ok || refusal.reason != want || strings.Contains(refusal.reason, "quipe") {
 		t.Fatalf("the admission: %#v", err)
 	}

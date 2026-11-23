@@ -3002,17 +3002,24 @@ of a scope identifier leaves".
 
 ### `/act`: a scope, a dry-run and approvals
 
-ADR-0054 adds three request members to `/act`, read from the engine configuration version it
-assigns, which this engine does not yet read: a file of that version is refused by its version, and
-below it each member is refused as one `/act` does not read, so nothing here changes an `/act`
-answer today. From that version a platform may set `scope` beside `write: true` where
-`identity.callerScopes` is an object and the platform names its own `decisionRecords`, disjoint from
-every other; `scope` is then read as `/acquire` reads it, and refused under a delegation or from a
-reservation sender until a delegation can be bound to a scope identifier; `"dryRun": true` runs the
-write's checks, signs a dry-run receipt (§1.2c) and answers `200` with exactly `{"dryRun", "request",
-"salts"}`, with no `receipt`, sending, reserving and recording nothing; and `approvals` is carried as
-`action.approvals` (§1.2a), checked for form alone. The order of the refusals, the key's namespace by
-scope, the read-back and `gateway remove-scope` are as ADR-0054 decision 1 states them.
+ADR-0054 adds three request members to `/act`. This engine reads the first, `scope`, from the
+engine configuration version 43 (`actScopeVersion`); below it `scope` is refused as a
+member `/act` does not read, as before. From that version a platform may set `scope` beside
+`write: true` where `identity.callerScopes` is an object and the platform names its own
+`decisionRecords`, disjoint from the gateway's and from every other scope's. `scope` is then read as
+`/acquire` reads it, and refused under a delegation or from a reservation sender until a delegation
+can be bound to a scope identifier. A scoped action's receipt carries `scope` and `scopeSalt`; it
+cites only receipts of its own scope; its decision record is found in its platform's directory alone,
+and `/verify` looks for it in its scope's directories alone; and its key is kept in its scope's own
+journal, so one key in two scopes names two actions. An action of none is answered, minted and kept
+as before. The order of the refusals, the key's namespace by scope, the read-back and
+`gateway remove-scope` are as ADR-0054 decision 1 states them.
+
+The other two, `dryRun` and `approvals`, this engine does not read yet: each is refused as a member
+`/act` does not read, so neither changes an `/act` answer. Where they are read, `"dryRun": true`
+runs the write's checks, signs a dry-run receipt (§1.2c) and answers `200` with exactly `{"dryRun",
+"request", "salts"}`, with no `receipt`, sending, reserving and recording nothing; and `approvals` is
+carried as `action.approvals` (§1.2a), checked for form alone.
 
 ### Who may ask for a write
 

@@ -1399,7 +1399,7 @@ func TestASealCountingBelowZeroClosesItsSession(t *testing.T) {
 		why  func(string) string
 	}{
 		{"an acquisition's registry check", service.sealedElsewhere},
-		{"an action's session step", service.sessionOpen},
+		{"an action's session step", func(s string) string { return service.sessionOpen(s, "") }},
 	} {
 		if got := check.why("below-zero"); !strings.Contains(got, "sealed in the registry") {
 			t.Fatalf("%s took a session sealed at -1 for open: %q", check.name, got)

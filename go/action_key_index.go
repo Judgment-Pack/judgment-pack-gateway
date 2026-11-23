@@ -38,6 +38,9 @@ const (
 // key. A request that sends neither keyScope nor reconcile behaves as it did.
 type actionKeyMembers struct {
 	key, keyScope, reconcile json.RawMessage
+	// scopeIdentifier is the request's scope member (ADR-0054), read at the
+	// scope step and never at the action-key step: it is no key scope.
+	scopeIdentifier json.RawMessage
 }
 
 // parseActionKeyScope reads keyScope and reconcile at the action-key step.

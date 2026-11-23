@@ -181,9 +181,10 @@ func TestUndelegatedReceiptsAreByteIdentical(t *testing.T) {
 	// v3-seal-salted-receipt-salt-changed-after-signing, whose second no
 	// longer verifies. A salt out of form is refused before it is rebuilt.
 	// And forty-three of the v3-cut-* vectors (a verdict by scope, ADR-0042
-	// decisions 6 to 9).
-	if scoped != 133 {
-		t.Fatalf("%d receipts holding a scope rebuilt, want 133", scoped)
+	// decisions 6 to 9). And seven of the scoped action and read-back
+	// vectors (ADR-0054 decision 1).
+	if scoped != 140 {
+		t.Fatalf("%d receipts holding a scope rebuilt, want 140", scoped)
 	}
 }
 
