@@ -1277,6 +1277,12 @@ export function verifyStore(
     if (cut === undefined) {
       return true;
     }
+    // A refusal journal holds one scope's entries: its finding or
+    // observation stands in that scope's verdict alone (ADR-0059 §8).
+    const journal = f.find(([name]) => name === "journal");
+    if (journal !== undefined && typeof journal[1] === "string" && isRefusalJournalName(journal[1])) {
+      return journal[1] === refusalJournalName(cut.scope);
+    }
     const named = f.find(([name]) => name === "sessionId");
     return named === undefined || kept.has(named[1] as string);
   };

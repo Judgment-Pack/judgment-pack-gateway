@@ -188,4 +188,55 @@ func TestRefusalJournalVectorsAreWritten(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+
+	// A verdict by scope is silent on every other scope's refusal journal
+	// (ADR-0059 §8; mutant 6): over v3-cut-two-scopes, scope-a's journal
+	// holds, scope-b's has a forged entry, and scope-c's a torn tail; the
+	// verdict by scope-a reports scope-a's journal-from alone, and is ok.
+	chainOf := func(journal string, bodies ...*vObject) [][]byte {
+		var lines [][]byte
+		previous := ""
+		for i, b := range bodies {
+			line, err := signedJournalEntry(key, journal, int64(i), previous, at, b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines = append(lines, line)
+			previous = journalDigest(line[:len(line)-1])
+		}
+		return lines
+	}
+	var vec map[string]any
+	raw, err := os.ReadFile(corpusPath("v3", "stores", "v3-cut-two-scopes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&vec); err != nil {
+		t.Fatal(err)
+	}
+	const others = "v3-cut-a-refusal-journals-of-others"
+	ofA, ofB, ofC := refusalJournalName("scope-a"), refusalJournalName("scope-b"), refusalJournalName("scope-c")
+	b := chainOf(ofB, refusal(0, "scope-b"), refusal(1, "scope-b"))
+	b[1] = bytes.Clone(b[1])
+	b[1][len(b[1])-3] ^= 1
+	files := vec["files"].(map[string]any)
+	files["journals/"+ofA+".jsonl"] = file(chainOf(ofA, refusal(0, "scope-a"), refusal(1, "scope-a"))...)
+	files["journals/"+ofB+".jsonl"] = file(b...)
+	files["journals/"+ofC+".jsonl"] = file(chainOf(ofC, refusal(0, "scope-c"))...) + `{"ordinal":1`
+	vec["name"] = others
+	vec["note"] = "A verdict by scope, --scope scope-a, over v3-cut-two-scopes with three refusal journals: scope-a's of two entries that hold, scope-b's whose second entry's signature does not hold, and scope-c's of one entry and a torn last piece. A refusal journal's finding or observation stands in the verdict of the scope it names alone (ADR-0059 §8): the verdict reports scope-a's journal-from, nothing of scope-b's or scope-c's journal, and is ok."
+	expected := vec["expected"].(map[string]any)
+	expected["observations"] = append(expected["observations"].([]any), map[string]any{"journal": ofA, "observation": "journal-from", "entries": 2})
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(vec); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(corpusPath("v3", "stores", others+".json"), out.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }

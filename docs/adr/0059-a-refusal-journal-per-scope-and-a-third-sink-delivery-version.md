@@ -845,6 +845,10 @@ forwarding, follow it. Where R2 departs from the text above:
   included, as before.
 - **A refusal no handler codes** (outside section 4's lists, such as `/act`'s `storage`) is
   answered as before and not journaled.
+- **2026-11-23, the verdict by scope.** Both readers keep a refusal journal's finding or observation
+  only in the verdict of the scope whose journal it is, by section 1's name of `--scope`'s
+  identifier (`keeps` in `go/scope_cut.go` and in `verify-ts/src/verify.ts`); a finding of any
+  other journal is kept as before. `v3-cut-a-refusal-journals-of-others` is mutant 6.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on
