@@ -69,8 +69,13 @@ func limitsSetup(t *testing.T, cfg *limitsConfig) *limitsHarness {
 	id.callers = limitsTestCallers
 	g.identity = &id
 	g.limits = cfg
-	if g.limiter, err = limiterFor(cfg, g.sources); err != nil {
-		t.Fatal(err)
+	if cfg != nil {
+		// a clock that does not move, so no bucket refills while a test
+		// runs, however slowly: every Retry-After is the refusing state's
+		// whole wait
+		if g.limiter, err = newRequestLimiter((&fakeLimitClock{}).clock(), cfg.beforeScope, cfg.entries(limitScopeKeys(g.sources))); err != nil {
+			t.Fatal(err)
+		}
 	}
 	server := httptest.NewServer(g.handler())
 	t.Cleanup(server.Close)
