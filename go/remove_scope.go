@@ -320,11 +320,17 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 		return out, fmt.Errorf("the store's session labels could not be read, and nothing was removed: %v", err)
 	}
 	if len(plan.sessions) == 0 && len(plan.empty) == 0 {
+		noted := len(out.notes)
 		if err := removeScopedActionJournal(storeRoot, o.scope, &out); err != nil {
 			return out, err
 		}
 		if len(plan.labels) == 0 {
-			out.notes = append(out.notes, "no session of the scope identifier is in the store; nothing was removed")
+			nothing := "nothing was removed"
+			if len(out.notes) > noted {
+				// the journal was, and its line is printed above
+				nothing = "nothing else was removed"
+			}
+			out.notes = append(out.notes, "no session of the scope identifier is in the store; "+nothing)
 			return out, nil
 		}
 		if err := removeLabelFiles(storeRoot, plan.labels); err != nil {

@@ -19,7 +19,7 @@ deciders: maintainer
 >   `continuation` is a string: the store's registry's first line, without its `0x0A`. Every store after the
 >   first holds a `continuation`, and so does the first where `base` is present.
 > - **New engine configuration member:** `keyHistoryVersion`, whose one value is `"2"`, from engine
->   configuration version `<engine-version: assigned at merge>`. Absent, the gateway answers `"1"`, as today.
+>   configuration version `42`. Absent, the gateway answers `"1"`, as today.
 >   A store that carries a version `"2"` history answers `"2"` whatever the configuration says.
 > - **New consumer option, not a wire member:** `requireVersion: "2"` in the Go and TypeScript checks. When it
 >   is given, an answer of version `"1"` is refused.
@@ -209,7 +209,7 @@ before it and the key itself both signed.
 ### 4. Which version a gateway answers, and how a consumer learns it
 
 - **Opt-in, not "the store is new".** Version `"1"`, unless the engine configuration, of version
-  `<engine-version: assigned at merge>` or later, holds `"keyHistoryVersion": "2"`.
+  `42` or later, holds `"keyHistoryVersion": "2"`.
   - A configuration of an earlier version holding the member is refused at load, by its version.
   - Any other value is refused with the sentence `engine configuration: keyHistoryVersion is "2", or
     absent`.
@@ -368,7 +368,7 @@ Nothing else in §3d changes.
 5. A new paragraph after that:
 
    > **Which version is answered.** Version `"1"`, unless the gateway's engine configuration, of version
-   > `<engine-version: assigned at merge>` or later, holds `keyHistoryVersion: "2"`, or the history carried
+   > `42` or later, holds `keyHistoryVersion: "2"`, or the history carried
    > into its store is of version `"2"`; then version `"2"`. A history a store rotation has carried as
    > version `"2"` is so answered by every store after it. `gateway store rotate` carries the history the old
    > store's gateway answers under the configuration it is given, and, given by its flags, under none. A
@@ -378,7 +378,7 @@ Nothing else in §3d changes.
 ### 8. The engine configuration
 
 - **The member.** `keyHistoryVersion`, a string whose one value is `"2"`, from version
-  `<engine-version: assigned at merge>`. When it is absent, the gateway behaves as today.
+  `42`. When it is absent, the gateway behaves as today.
 - **Who reads it.** `serve` reads it, and so do its SIGHUP rotation and the commands given `--config`
   (`store rotate`, `store rotate-key`). Each of them builds the history the route answers.
 - **Commands given by their flags.** `rotate-key`, and `store rotate` given by its flags, build the history
@@ -466,8 +466,7 @@ The pair that #578 asks for is `kh-v1-ordinal-given-twice` (accepted) and `kh-v2
 ### 10. What the release notes must say
 
 - **Default unchanged.** `/publickey/history` answers version `"1"`, byte for byte as before, unless
-  `keyHistoryVersion: "2"` is set in an engine configuration of version `<engine-version: assigned at
-  merge>`. Every version `"1"` history, carried file, `gateway.key_history` row and `keyHistoryDigest`
+  `keyHistoryVersion: "2"` is set in an engine configuration of version `42`. Every version `"1"` history, carried file, `gateway.key_history` row and `keyHistoryDigest`
   verifies as before.
 - **Upgrade consumers first.** Upgrade every consumer of `/publickey/history` before opting in. v0.38.0
   refuses version `"2"` in two places: a consumer of v0.38.0 or earlier refuses a version `"2"` answer whole,

@@ -551,9 +551,8 @@ registry's walk does.
 
   ```go
   // operatorJournalVersion is the first engine configuration version whose
-  // journaled commands begin the operator journal (ADR-0056). The maintainer
-  // assigns the number in merge order.
-  const operatorJournalVersion = /* assigned at merge */
+  // journaled commands begin the operator journal (ADR-0056).
+  const operatorJournalVersion = "45"
   ```
 
 - **When a command writes an entry.** It writes one when its configuration is of that version or later,

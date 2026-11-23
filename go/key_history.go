@@ -33,7 +33,6 @@ const keyHistoryVersion2 = "2"
 
 // keyHistoryV2Version is the engine version whose configuration may hold
 // keyHistoryVersion: "2" (ADR-0055 §8).
-// placeholder: the maintainer assigns the number in merge order
 const keyHistoryV2Version = "42"
 
 var (

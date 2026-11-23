@@ -56,6 +56,19 @@ func TestActScopeRemoveScopeCommand(t *testing.T) {
 		if _, err := os.Lstat(scopedActionJournalPath(h.g.storeRoot, callerScopeB)); !os.IsNotExist(err) {
 			t.Fatalf("the scope's journal is still there: %v", err)
 		}
+		// a journal left with no session, as a run stopped after the sessions
+		// leaves it: the second run removes it and says nothing else was
+		if err := os.MkdirAll(scopedActionJournalPath(h.g.storeRoot, callerScopeB), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		code, _, stderr = removeScopeOn(t, h.g, seed, "--scope", callerScopeB, "--by", "operator")
+		if code != 0 || !strings.Contains(stderr, "removed the scope identifier's action journal\n") ||
+			!strings.Contains(stderr, "no session of the scope identifier is in the store; nothing else was removed\n") || strings.Contains(stderr, "; nothing was removed") {
+			t.Fatalf("the second run: %d %q", code, stderr)
+		}
+		if _, err := os.Lstat(scopedActionJournalPath(h.g.storeRoot, callerScopeB)); !os.IsNotExist(err) {
+			t.Fatalf("the left journal is still there: %v", err)
+		}
 	})
 }
 
