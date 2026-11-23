@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -199,6 +200,22 @@ func (g *gatewayService) actionNamespaceIn(who *caller, key, scope string) strin
 	}
 	v.set("key", vString(key))
 	return actionHash("scoped-action-key", v)
+}
+
+// scopeDecisionRecords is each scope identifier's decision-record
+// directories, those of its write platforms, once each and in order: where
+// /verify looks for a scoped action's record (ADR-0054), and nowhere else.
+func (g *gatewayService) scopeDecisionRecords() map[string][]string {
+	dirs := map[string][]string{}
+	for _, spec := range g.sources {
+		if spec.scope != "" && spec.decisionRecords != "" && !contains(dirs[spec.scope], spec.decisionRecords) {
+			dirs[spec.scope] = append(dirs[spec.scope], spec.decisionRecords)
+		}
+	}
+	for scope := range dirs {
+		sort.Strings(dirs[scope])
+	}
+	return dirs
 }
 
 // scopedActionJournals is the directory of the journal that holds each scope

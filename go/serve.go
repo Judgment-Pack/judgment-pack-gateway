@@ -2469,7 +2469,7 @@ func (g *gatewayService) verifyReport() (*report, error) {
 	if g.kind != nil {
 		return nil, storageUnsupported("/verify, which verifies the store on disk; export the store and verify the export,")
 	}
-	return verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.ownHeld())
+	return verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.scopeDecisionRecords(), g.ownHeld())
 }
 
 // verdictMap is a verdict as the JSON object /verify answers.
