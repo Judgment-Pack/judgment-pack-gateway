@@ -4771,6 +4771,13 @@ the journal as it was. The **standing read** (spec #284 NC5) is a `POST` to the 
 exactly `{"standing": "current"}` or `{"standing": "removed"}`; `removed` refuses as
 `action-key-unauthenticated`, and anything else as `standing-unknown`.
 
+**A scoped delegated action.** A sender other than the actor reaches no scope identifier (§6), so it
+cannot look up or reconcile, by its key, an action a delegated request made in a scope: a request
+naming that scope, or naming none on a platform whose write source is fixed to one, is refused at
+the scope identifier's step with its one sentence, before any key is read. It is never answered
+about the scoped key as if it were of no scope. The delegated caller reconciles such a key under
+its bound chain (§11.1).
+
 **The read-back.** A key the lookup finds uncertain is answered by its declared read-back, which
 runs `<platform>/live` with the declared read tool, not the write's source (spec #291 L1). Once the
 key is found uncertain, and before anything else of the read-back is asked -- the platform's grant,

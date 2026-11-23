@@ -242,3 +242,43 @@ func TestADelegatedScopedActionReadsBackInItsScope(t *testing.T) {
 		t.Fatalf("sent %d", b.sent(key))
 	}
 }
+
+// A sender other than the actor reaches no scope identifier, so it cannot
+// reconcile a scoped delegated action by its key (SPEC.md §11.8): naming the
+// scope, or naming none on the scoped platform, is refused at the scope step
+// with its one sentence. Either way the answer is a refusal, never an
+// unscoped answer about the scoped key, and nothing is sent again. The
+// delegated caller reconciles it under its bound chain.
+func TestAReservationSenderCannotReconcileAScopedDelegatedKey(t *testing.T) {
+	b := newBoundActHarness(t)
+	cred := b.credential(t, boundChain(t, testScope, strings.Repeat("31", 16)))
+	key := delegationKey(1)
+	if status, out := b.present(t, "/act", b.body("s-act-a", "tickets-a", jsonText(t, testScope), key, ""), cred); status != http.StatusOK {
+		t.Fatalf("the scoped delegated action: %d %v", status, out)
+	}
+	reservation := b.reservationOf(testSub(), rootAgent)
+	for _, c := range []struct{ subject, kind string }{{testSubjectSub, "subject"}, {hostRequester, "host"}, {testOperator, "operator"}} {
+		auth := map[string]string{"Authorization": "Bearer " + b.token(t, c.subject)}
+		for _, named := range []bool{true, false} {
+			scope := ""
+			if named {
+				scope = jsonText(t, testScope)
+			}
+			status, out := b.post(t, "/act", b.body("s-"+c.kind, "tickets-a", scope, key, `,"reconcile":true`+reservation), auth)
+			if status == http.StatusOK || out["receipt"] != nil || out["result"] != nil {
+				t.Fatalf("%s, scope named %v: answered about the scoped key: %d %v", c.kind, named, status, out)
+			}
+			if status != http.StatusBadRequest || out["refusedAt"] != "scope-identifier" || out["error"] != scopeRefusal {
+				t.Fatalf("%s, scope named %v: %d %v, want the scope step's sentence", c.kind, named, status, out)
+			}
+		}
+	}
+	if b.sent(key) != 1 {
+		t.Fatalf("sent %d, want 1", b.sent(key))
+	}
+	// the delegated caller reconciles it under its bound chain
+	status, out := b.present(t, "/act", b.body("s-act-a", "tickets-a", jsonText(t, testScope), key, `,"reconcile":true`), cred)
+	if status != http.StatusOK || out["receipt"] == nil {
+		t.Fatalf("the actor's reconciliation: %d %v", status, out)
+	}
+}
