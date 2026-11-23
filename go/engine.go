@@ -138,9 +138,11 @@ import (
 // 39 either. Version 40 (p256SignerVersion) adds signingKeyAlgorithm: a key
 // service's ECDSA P-256 key version at the HSM protection level signs, and
 // each record it signs names its alg (ADR-0053; signature_alg.go).
-const engineVersion = p256SignerVersion
+// Version 41 (keyHistoryV2Version) adds keyHistoryVersion: "2" answers the
+// key history that marks each store continuation (ADR-0055).
+const engineVersion = keyHistoryV2Version
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, keyHistoryV2Version: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -180,19 +182,23 @@ type engineConfig struct {
 	// algES256 for a P-256 key version at the key service's HSM protection
 	// level, from p256SignerVersion; algEd25519, absent, otherwise.
 	signingKeyAlgorithm string
-	store               string
-	registry            string
-	decisionRecords     string
-	listen              string
-	catalog             string
-	runtime             string
-	adapters            string
-	rootSigner          bool
-	hostRuntime         bool
-	identity            *identitySpec    // who may call; nil records caller null
-	platforms           []platformConfig // in name order
-	version             string
-	mcp                 *mcpConfig // the MCP server's own settings; nil when the configuration has none
+	// keyHistoryVersion is "2" where the configuration asks for the key
+	// history that marks each store continuation (ADR-0055 §8), and "" for
+	// the history the carried one implies
+	keyHistoryVersion string
+	store             string
+	registry          string
+	decisionRecords   string
+	listen            string
+	catalog           string
+	runtime           string
+	adapters          string
+	rootSigner        bool
+	hostRuntime       bool
+	identity          *identitySpec    // who may call; nil records caller null
+	platforms         []platformConfig // in name order
+	version           string
+	mcp               *mcpConfig // the MCP server's own settings; nil when the configuration has none
 	// witness makes the signer a checkpoint witness (ADR-0013); nil when the
 	// configuration has none.
 	witness *witnessSpec
@@ -446,7 +452,7 @@ var engineMembers = map[string]bool{
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
 	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
 	"sealOpenAtStart": false, "signingKeyVersion": false, "signingPublicKey": false, "signingKeyAlgorithm": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
-	"receiptSink": false, "retention": false,
+	"receiptSink": false, "retention": false, "keyHistoryVersion": false,
 }
 
 var platformMembers = map[string]bool{
@@ -916,6 +922,18 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			return engineConfig{}, errors.New("engine configuration: signingKeyVersion is not yet taken beside witness, whose checkpoints the seed's key signs (ADR-0050)")
 		}
 		cfg.signingKeyVersion = string(named)
+	}
+	// keyHistoryVersion (ADR-0055 §8): "2", from keyHistoryV2Version;
+	// absent, the history of version "1", as before, unless the store
+	// carries one of version "2"
+	if kh, present := obj.get("keyHistoryVersion"); present {
+		if !versionAtLeast(version, keyHistoryV2Version) {
+			return engineConfig{}, fmt.Errorf("engine configuration: keyHistoryVersion is a version-%s member; engineVersion %s has no keyHistoryVersion", keyHistoryV2Version, version)
+		}
+		if named, ok := kh.(vString); !ok || string(named) != keyHistoryVersion2 {
+			return engineConfig{}, errors.New(`engine configuration: keyHistoryVersion is "2", or absent`)
+		}
+		cfg.keyHistoryVersion = keyHistoryVersion2
 	}
 	// signingKeyAlgorithm (ADR-0053 §6): "ES256", from p256SignerVersion and
 	// only beside signingKeyVersion, since the seed stays Ed25519; absent,
@@ -2799,7 +2817,7 @@ func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, e
 // engineServeOptions is what `serve` runs for a configuration: the derived
 // sources, the receipt version the design assumes, and the defaults.
 func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec, identity *identityConfig) serveOptions {
-	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed, receiptSink: cfg.receiptSink, labels: versionAtLeast(cfg.version, labelsVersion)}
+	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed, receiptSink: cfg.receiptSink, labels: versionAtLeast(cfg.version, labelsVersion), keyHistoryVersion: cfg.keyHistoryVersion}
 }
 
 // maxKeySetBytes bounds the issuer's key file.

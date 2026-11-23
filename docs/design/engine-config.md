@@ -2936,6 +2936,37 @@ ring's location is the operator's.
 
 An earlier gateway refuses a version-40 file by its version.
 
+## A key history that marks each store continuation (engine version 41)
+
+Version 41 adds one member, `keyHistoryVersion` (ADR-0055). Its one value is `"2"`: `/publickey/history`
+answers the key history of version `"2"` (SPEC.md §3e), which lists the history one store at a time, each
+store after the first after its registry's store continuation, so that a consumer refuses a rotation given
+twice or passed over from the history alone. Absent, the gateway answers version `"1"`, byte for byte as
+before.
+
+```json
+"keyHistoryVersion": "2"
+```
+
+- **One value.** Any other value is refused with `engine configuration: keyHistoryVersion is "2", or
+  absent`, and the member in a file of an earlier version is refused by that version.
+- **Who reads it.** `serve` and its SIGHUP rotation, and `gateway store rotate --config` and
+  `gateway store rotate-key --config`, which carry or hold the history the route answers. `rotate-key`,
+  and `store rotate` given by its flags, take the version the carried history implies.
+- **Forward only.** A store whose carried history is of version `"2"` answers `"2"` whatever the
+  configuration says: with the member removed, it keeps answering `"2"`. A store that never carried
+  version `"2"` goes back to `"1"` when the member is removed.
+- **A version 1 history carried before.** It is answered as `base`, where its bytes are `canon` of its
+  value; inside it the ordinal is still held to its form alone.
+- **Several instances on one database.** Set the member on every instance before the first continued
+  rotation. Until then an instance without it answers `"1"`, which is still valid for that store; nothing
+  refuses the mixed state.
+- **Upgrade every reader first.** A consumer of an earlier release refuses version `"2"` whole, and a
+  gateway of an earlier release on a store that carries it answers `500` at `/publickey/history` and
+  refuses the rotate commands.
+
+An earlier gateway refuses a version-41 file by its version.
+
 ## Keyed actions (engine version 14 and later)
 
 Version 14 and every later version require a caller-chosen `actionKey` on `/act`: 64 lowercase hex

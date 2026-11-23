@@ -230,8 +230,11 @@ type registryWriter struct {
 	startKeys []reachedKey
 	// path names the registry in messages
 	path string
-	log  appendLog
-	seed []byte
+	// keyHistoryVersion is the configuration's keyHistoryVersion, under
+	// which a SIGHUP rotation holds its record (ADR-0055 §8)
+	keyHistoryVersion string
+	log               appendLog
+	seed              []byte
 	// signing is what signs the seals, shared with the store beside it;
 	// keyID is its key's at start
 	signing *signerHolder

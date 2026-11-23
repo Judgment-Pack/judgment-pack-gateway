@@ -239,6 +239,9 @@ type gatewayService struct {
 	// keyHistoryKept is the last answer to /publickey/history, and what it
 	// was made of (key_history.go).
 	keyHistoryKept keyHistoryKept
+	// keyHistoryVersion is the configuration's keyHistoryVersion: "2", or
+	// "" for the history the carried one implies (ADR-0055 §4)
+	keyHistoryVersion string
 	// keyWalk walks the registry for provenanceKeys; nil is reachedKeys.
 	// beforeProvenanceRecheck runs just before the post-run provenance check.
 	// Both are test seams.

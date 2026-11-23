@@ -28,10 +28,56 @@ const keyHistoryRoute = "/publickey/history"
 
 const keyHistoryVersion = "1"
 
+// keyHistoryVersion2 is the key history that marks each store
+// continuation it crosses (SPEC.md §3e, version 2; ADR-0055).
+const keyHistoryVersion2 = "2"
+
+// keyHistoryV2Version is the engine version whose configuration may hold
+// keyHistoryVersion: "2" (ADR-0055 §8).
+// placeholder: the maintainer assigns the number in merge order
+const keyHistoryV2Version = "41"
+
 var (
 	keyHistoryMembers      = map[string]bool{"keyHistoryVersion": true, "keys": true}
 	keyHistoryEntryMembers = map[string]bool{"alg": true, "keyId": true, "publicKey": true, "validFrom": true, "validTo": true, "keyRotation": true, "keyContinuation": true}
+	keyHistoryV2Members    = map[string]bool{"keyHistoryVersion": true, "stores": true, "base": true}
+	keyHistoryStoreMembers = map[string]bool{"keys": true, "continuation": true}
 )
+
+// The classes of a consumer's refusal of a key history (ADR-0055 §9), which
+// the corpus compares, not only the verdict.
+const (
+	refusedVersion      = "version"
+	refusedForm         = "form"
+	refusedKey          = "key"
+	refusedRotation     = "rotation"
+	refusedOrdinal      = "ordinal"
+	refusedTime         = "time"
+	refusedContinuation = "continuation"
+	refusedCarried      = "carried"
+)
+
+// keyHistoryRefusal is a check's refusal of a key history, with its class;
+// its sentence is the refusal's own.
+type keyHistoryRefusal struct {
+	class string
+	err   error
+}
+
+func (r *keyHistoryRefusal) Error() string { return r.err.Error() }
+func (r *keyHistoryRefusal) Unwrap() error { return r.err }
+
+func refuseHistory(class string, err error) error { return &keyHistoryRefusal{class: class, err: err} }
+
+// keyHistoryRefusalClass is the class of a check's refusal, "" for an error
+// that is none.
+func keyHistoryRefusalClass(err error) string {
+	var r *keyHistoryRefusal
+	if errors.As(err, &r) {
+		return r.class
+	}
+	return ""
+}
 
 // keyHistoryEntry is one key of a key history: validFrom and the two
 // statements "" for the first key, validTo "" for the last, the key in force.
@@ -60,8 +106,9 @@ func historyOfWalk(keys []reachedKey) []keyHistoryEntry {
 	return entries
 }
 
-// keyHistoryDocument is the answer's bytes: canon of {keyHistoryVersion, keys}.
-func keyHistoryDocument(entries []keyHistoryEntry) []byte {
+// keyHistoryKeys is the keys member of a history: each entry an object of
+// the members it has.
+func keyHistoryKeys(entries []keyHistoryEntry) vArray {
 	keys := vArray{}
 	for _, e := range entries {
 		obj := newObject()
@@ -75,13 +122,76 @@ func keyHistoryDocument(entries []keyHistoryEntry) []byte {
 		}
 		keys = append(keys, obj)
 	}
+	return keys
+}
+
+// keyHistoryDocument is the answer's bytes: canon of {keyHistoryVersion, keys}.
+func keyHistoryDocument(entries []keyHistoryEntry) []byte {
 	doc := newObject()
 	doc.set("keyHistoryVersion", vString(keyHistoryVersion))
-	doc.set("keys", keys)
+	doc.set("keys", keyHistoryKeys(entries))
 	return canon(doc)
 }
 
-// registryKeyHistory is the key history of a registry's bytes (SPEC.md
+// keyHistoryDocumentV2 is the answer's bytes under version 2 (ADR-0055 §1):
+// canon of {base, keyHistoryVersion, stores}, the stores carried and base,
+// where one is carried (nil for none), as they were carried, and this
+// registry's store after them: its keys, and its first line, the store
+// continuation, where it continues one ("" for none).
+func keyHistoryDocumentV2(base value, carried vArray, line string, entries []keyHistoryEntry) []byte {
+	store := newObject()
+	if line != "" {
+		store.set("continuation", vString(line))
+	}
+	store.set("keys", keyHistoryKeys(entries))
+	doc := newObject()
+	if base != nil {
+		doc.set("base", base)
+	}
+	doc.set("keyHistoryVersion", vString(keyHistoryVersion2))
+	doc.set("stores", append(append(vArray{}, carried...), store))
+	return canon(doc)
+}
+
+// keyHistoryMade is the key history a gateway makes of its registry: every
+// key once, in order, the key at a store rotation one entry; the answer's
+// bytes; and the history's last time, the later of its last validFrom and,
+// under version 2, its last continuedAt, "" for none.
+type keyHistoryMade struct {
+	entries []keyHistoryEntry
+	doc     []byte
+	last    string
+}
+
+// registryKeyHistory is registryKeyHistoryOf's entries, under the version
+// the carried history implies, as a command given by its flags makes it.
+func registryKeyHistory(data []byte, own heldKey, carried []byte, present bool) ([]keyHistoryEntry, error) {
+	made, err := registryKeyHistoryOf(data, own, carried, present, "")
+	return made.entries, err
+}
+
+// carriedHistoryVersion is the version of a carried history: "2" where it
+// says so, and otherwise "1", whose check refuses whatever it is not.
+func carriedHistoryVersion(carried []byte) string {
+	if v, err := parseJSON(carried); err == nil {
+		if obj, ok := v.(*vObject); ok {
+			if version, _ := memberString(obj, "keyHistoryVersion"); version == keyHistoryVersion2 {
+				return keyHistoryVersion2
+			}
+		}
+	}
+	return keyHistoryVersion
+}
+
+// registryFirstLine is a registry's first line, without its 0x0A.
+func registryFirstLine(data []byte) string {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return string(data[:i])
+	}
+	return string(data)
+}
+
+// registryKeyHistoryOf is the key history of a registry's bytes (SPEC.md
 // §3e): the registry walked as the gateway walks its own (§3b), from its
 // first key-continuation's previous key or from own, seals passed over; a
 // walk with a finding, of its rotations or of its store continuation, is no
@@ -94,16 +204,23 @@ func keyHistoryDocument(entries []keyHistoryEntry) []byte {
 // validTo, the registry's first rotation, if any; a continued registry with none
 // carried is refused, as is one carried beside a registry that continues
 // none: a history cut short, or lost, is never answered as the whole.
-func registryKeyHistory(data []byte, own heldKey, carried []byte, present bool) ([]keyHistoryEntry, error) {
+//
+// The version (ADR-0055 §4) is "2" where configured is "2" or the carried
+// history is of version "2", which no configuration takes back, and
+// otherwise "1", byte for byte as before. Under "2" a carried history of
+// version "1" is base, and one of version "2" gives its base and stores;
+// either is answered as it was carried, so its bytes must be canon of its
+// value; and the answer is held to the consumer's check before it is made.
+func registryKeyHistoryOf(data []byte, own heldKey, carried []byte, present bool, configured string) (keyHistoryMade, error) {
 	w := &registryWalk{seals: map[string]seal{}, conflicted: map[string]bool{}, keysOnly: true}
 	first := registryFirstKey(data, own)
 	w.keys = []reachedKey{{key: first.key, alg: first.alg, keyID: first.keyID()}}
 	w.walkLines(data)
 	if w.finding != nil {
-		return nil, fmt.Errorf("the registry's rotations do not hold: %s at rotation %d", w.finding["status"], w.finding["rotation"])
+		return keyHistoryMade{}, fmt.Errorf("the registry's rotations do not hold: %s at rotation %d", w.finding["status"], w.finding["rotation"])
 	}
 	if w.continuationFinding != nil {
-		return nil, fmt.Errorf("the registry's store continuation does not hold: %s", w.continuationFinding["status"])
+		return keyHistoryMade{}, fmt.Errorf("the registry's store continuation does not hold: %s", w.continuationFinding["status"])
 	}
 	// the walk starts at the key the registry's first key-continuation
 	// names, which anyone who can append to the registry can name; it is
@@ -111,27 +228,34 @@ func registryKeyHistory(data []byte, own heldKey, carried []byte, present bool) 
 	// the gateway's own reading requires (ownReading), each key before then
 	// named by the signature of the key after it
 	if !w.current().held().is(own) {
-		return nil, fmt.Errorf("the registry's rotations end at key %s, not this gateway's key %s", w.current().keyID, own.keyID())
+		return keyHistoryMade{}, fmt.Errorf("the registry's rotations end at key %s, not this gateway's key %s", w.current().keyID, own.keyID())
 	}
 	entries := historyOfWalk(w.keys)
+	version := keyHistoryVersion
+	if configured == keyHistoryVersion2 || present && carriedHistoryVersion(carried) == keyHistoryVersion2 {
+		version = keyHistoryVersion2
+	}
 	switch {
 	case w.continuation == nil && !present:
-		return entries, nil
+		if version == keyHistoryVersion2 {
+			return madeOfVersion2(keyHistoryDocumentV2(nil, nil, "", entries))
+		}
+		return keyHistoryMade{entries: entries, doc: keyHistoryDocument(entries), last: entries[len(entries)-1].validFrom}, nil
 	case w.continuation == nil:
-		return nil, errors.New("a key history is carried beside a registry that continues no store")
+		return keyHistoryMade{}, errors.New("a key history is carried beside a registry that continues no store")
 	case !present:
-		return nil, fmt.Errorf("the store continuation names the key history %s, and none is carried into the store", w.continuation.keyHistoryDigest)
+		return keyHistoryMade{}, fmt.Errorf("the store continuation names the key history %s, and none is carried into the store", w.continuation.keyHistoryDigest)
 	}
 	if got := keyHistoryDigestOf(carried); got != w.continuation.keyHistoryDigest {
-		return nil, fmt.Errorf("the key history carried into the store is %s, not the history %s the store continuation names", got, w.continuation.keyHistoryDigest)
+		return keyHistoryMade{}, fmt.Errorf("the key history carried into the store is %s, not the history %s the store continuation names", got, w.continuation.keyHistoryDigest)
 	}
-	before, err := checkKeyHistory(carried, nil)
+	before, err := checkKeyHistoryOf(carried, nil, "")
 	if err != nil {
-		return nil, fmt.Errorf("the key history carried into the store: %w", err)
+		return keyHistoryMade{}, fmt.Errorf("the key history carried into the store: %w", err)
 	}
-	last := before[len(before)-1]
+	last := before.entries[len(before.entries)-1]
 	if !last.held().is(first) {
-		return nil, fmt.Errorf("the key history carried into the store ends at key %s, not key %s, which signed the store continuation", last.keyID, first.keyID())
+		return keyHistoryMade{}, fmt.Errorf("the key history carried into the store ends at key %s, not key %s, which signed the store continuation", last.keyID, first.keyID())
 	}
 	// the key in force at the store rotation is one key, its entry the
 	// carried one's, and its end the registry's first rotation, if any; the
@@ -140,82 +264,314 @@ func registryKeyHistory(data []byte, own heldKey, carried []byte, present bool) 
 	// told apart, since the writers hold the clock's form alone
 	at := w.continuation.continuedAt
 	if last.validFrom != "" && at < last.validFrom {
-		return nil, errors.New("the store continuation's continuedAt is before the validFrom of the key in force at the store rotation")
+		return keyHistoryMade{}, errors.New("the store continuation's continuedAt is before the validFrom of the key in force at the store rotation")
 	}
 	if entries[0].validTo != "" && at > entries[0].validTo {
-		return nil, errors.New("the store continuation's continuedAt is after the validTo of the key in force at the store rotation")
+		return keyHistoryMade{}, errors.New("the store continuation's continuedAt is after the validTo of the key in force at the store rotation")
 	}
-	last.validTo = entries[0].validTo
-	return append(append(before[:len(before)-1], last), entries[1:]...), nil
+	if version == keyHistoryVersion {
+		last.validTo = entries[0].validTo
+		spliced := append(append(before.entries[:len(before.entries)-1], last), entries[1:]...)
+		return keyHistoryMade{entries: spliced, doc: keyHistoryDocument(spliced), last: spliced[len(spliced)-1].validFrom}, nil
+	}
+	// version 2 answers what was carried as it was carried, which canon of
+	// its value is only where the bytes are canon: a gateway's own writing
+	// always is, and any other is answered 500, never rewritten
+	if !bytes.Equal(canon(before.value), carried) {
+		return keyHistoryMade{}, errors.New(`the key history carried into the store is not in canon form (SPEC.md §1.1), so it is not answered within a history of version "2"`)
+	}
+	var base value = before.value
+	var stores vArray
+	if before.version == keyHistoryVersion2 {
+		base, _ = before.value.get("base")
+		storesV, _ := before.value.get("stores")
+		stores, _ = storesV.(vArray)
+	}
+	return madeOfVersion2(keyHistoryDocumentV2(base, stores, registryFirstLine(data), entries))
 }
 
-// checkKeyHistory is a consumer's check of a key history (SPEC.md §3e),
-// from the key it pinned -- nil to take the first entry's, as the gateway
-// does of a history carried into its store: one JSON object read by §1.1's
-// parser, of exactly its members; the first entry the key pinned, with no
-// validFrom and no statements; each later entry a key of §8.4's rule,
-// reached by no earlier entry, and its two statements a rotation of §3b's
-// form from the entry before it to it -- the key-rotation signed by the key
-// before and naming this one, the key-continuation signed by this key and
-// naming the one before, the two of one ordinal and one rotatedAt -- that
-// rotatedAt its validFrom and the validTo of the entry before, and after
-// the rotatedAt of the rotation before it, if any; and only the last entry
-// without a validTo. The rotation's ordinal is held to its form
-// alone: it is a count within one registry, and starts again at 1 after a
-// store continuation (§3d).
+// madeOfVersion2 is a version 2 answer held to the consumer's check from its
+// own first key, with what the check reads of it.
+func madeOfVersion2(doc []byte) (keyHistoryMade, error) {
+	checked, err := checkKeyHistoryOf(doc, nil, "")
+	if err != nil {
+		return keyHistoryMade{}, fmt.Errorf("the key history does not hold: %w", err)
+	}
+	return keyHistoryMade{entries: checked.entries, doc: doc, last: checked.latest}, nil
+}
+
+// checkKeyHistory is checkKeyHistoryOf's entries, from a key pinned by its
+// bytes, as before version 2: a 33-byte key is only ever a P-256 point.
 func checkKeyHistory(doc []byte, pinned ed25519.PublicKey) ([]keyHistoryEntry, error) {
+	var pin *heldKey
+	if pinned != nil {
+		pin = &heldKey{alg: algEd25519, key: pinned}
+		if len(pinned) == 33 {
+			pin.alg = algES256
+		}
+	}
+	checked, err := checkKeyHistoryOf(doc, pin, "")
+	return checked.entries, err
+}
+
+// checkedKeyHistory is what a consumer's check reads of a history that
+// holds: its version; every key once, in order, the key at a store rotation
+// one entry whose validTo is its last; the latest of its rotatedAt and
+// continuedAt values; and the history's value.
+type checkedKeyHistory struct {
+	version string
+	entries []keyHistoryEntry
+	latest  string
+	value   *vObject
+}
+
+// checkKeyHistoryOf is a consumer's check of a key history (SPEC.md §3e),
+// from the key it pinned, with its algorithm -- nil to take the first
+// entry's, as the gateway does of a history carried into its store: one
+// JSON object read by §1.1's parser, its keyHistoryVersion read first, "1"
+// or "2", and "2" where requireVersion is "2". Version 1: exactly its
+// members; the first entry the key pinned, with no validFrom and no
+// statements; each later entry a key of §8.4's rule, reached by no earlier
+// entry, and its two statements a rotation of §3b's form from the entry
+// before it to it -- the key-rotation signed by the key before and naming
+// this one, the key-continuation signed by this key and naming the one
+// before, the two of one ordinal and one rotatedAt -- that rotatedAt its
+// validFrom and the validTo of the entry before, and after the rotatedAt of
+// the rotation before it, if any; and only the last entry without a
+// validTo. The rotation's ordinal is held to its form alone: it is a count
+// within one registry, and starts again at 1 after a store continuation
+// (§3d), which version 1 does not mark. Version 2 (ADR-0055 §2) is
+// checkKeyHistoryV2's. A refusal names its class (keyHistoryRefusalClass).
+func checkKeyHistoryOf(doc []byte, pinned *heldKey, requireVersion string) (checkedKeyHistory, error) {
+	if requireVersion != "" && requireVersion != keyHistoryVersion2 {
+		return checkedKeyHistory{}, refuseHistory(refusedVersion, errors.New(`requireVersion is "2", or absent`))
+	}
 	v, err := parseJSON(doc)
 	if err != nil {
-		return nil, fmt.Errorf("not one JSON object: %w", err)
+		return checkedKeyHistory{}, refuseHistory(refusedForm, fmt.Errorf("not one JSON object: %w", err))
 	}
 	obj, ok := v.(*vObject)
-	if !ok || !onlyMembers(obj, keyHistoryMembers) {
-		return nil, errors.New("not an object of keyHistoryVersion and keys")
+	if !ok {
+		return checkedKeyHistory{}, refuseHistory(refusedForm, errors.New("not an object of keyHistoryVersion and keys"))
 	}
-	if version, _ := memberString(obj, "keyHistoryVersion"); version != keyHistoryVersion {
-		return nil, errors.New("keyHistoryVersion is not \"1\"")
+	s := &keyHistoryState{seen: map[string]bool{}}
+	var entries []keyHistoryEntry
+	switch version, _ := memberString(obj, "keyHistoryVersion"); {
+	case version == keyHistoryVersion2:
+		entries, err = s.checkKeyHistoryV2(obj, pinned)
+	case version != keyHistoryVersion:
+		return checkedKeyHistory{}, refuseHistory(refusedVersion, errors.New(`keyHistoryVersion is not "1" or "2"`))
+	case requireVersion == keyHistoryVersion2:
+		return checkedKeyHistory{}, refuseHistory(refusedVersion, errors.New(`keyHistoryVersion is "1", and version "2" is required`))
+	default:
+		entries, err = s.checkKeyHistoryV1(obj, pinned)
+	}
+	if err != nil {
+		return checkedKeyHistory{}, err
+	}
+	version, _ := memberString(obj, "keyHistoryVersion")
+	return checkedKeyHistory{version: version, entries: entries, latest: s.latest, value: obj}, nil
+}
+
+// keyHistoryState is what a check carries from entry to entry, and across
+// base and the stores: the keyId of every entry before, the rotatedAt of
+// the last rotation, and the latest of every rotatedAt and continuedAt.
+type keyHistoryState struct {
+	seen          map[string]bool
+	lastRotatedAt string
+	latest        string
+}
+
+// checkKeyHistoryV1 holds a history of version 1, or base, to its check.
+func (s *keyHistoryState) checkKeyHistoryV1(obj *vObject, pinned *heldKey) ([]keyHistoryEntry, error) {
+	if !onlyMembers(obj, keyHistoryMembers) {
+		return nil, refuseHistory(refusedForm, errors.New("not an object of keyHistoryVersion and keys"))
 	}
 	keysV, _ := obj.get("keys")
 	keys, ok := keysV.(vArray)
 	if !ok || len(keys) == 0 {
-		return nil, errors.New("keys is not an array of at least one entry")
+		return nil, refuseHistory(refusedForm, errors.New("keys is not an array of at least one entry"))
+	}
+	return s.keysHold(keys, func(e keyHistoryEntry) error { return pinnedFirst(e, pinned) }, false, false)
+}
+
+// pinnedFirst holds a first entry to the key pinned, nil for none.
+func pinnedFirst(e keyHistoryEntry, pinned *heldKey) error {
+	if pinned != nil && !e.held().is(*pinned) {
+		return refuseHistory(refusedKey, fmt.Errorf("entry 0: key %s is not the key pinned", e.keyID))
+	}
+	return nil
+}
+
+// checkKeyHistoryV2 holds a history of version 2 to its check (SPEC.md §3e,
+// "Checking version 2"; ADR-0055 §2): exactly keyHistoryVersion, stores and,
+// optionally, base, a history of version 1 held to its check from the key
+// pinned; each store exactly keys and, in every store but the first and in
+// the first where base is present, continuation; each store's keys held to
+// version 1's check, its first entry the key pinned (the first store, no
+// base) or the key of the last entry before it, no other entry the key of
+// an earlier one, and the entry at place i with rotation i; and each
+// continuation of §3d's form, of the store's first key's keyId and alg and
+// signed by it, naming by keyHistoryDigest the history before it, and
+// stamped at or after every rotatedAt and continuedAt before it and not
+// after the validTo of the store's first entry.
+func (s *keyHistoryState) checkKeyHistoryV2(obj *vObject, pinned *heldKey) ([]keyHistoryEntry, error) {
+	if !onlyMembers(obj, keyHistoryV2Members) {
+		return nil, refuseHistory(refusedForm, errors.New("not an object of keyHistoryVersion, stores and base"))
+	}
+	storesV, _ := obj.get("stores")
+	stores, ok := storesV.(vArray)
+	if !ok || len(stores) == 0 {
+		return nil, refuseHistory(refusedForm, errors.New("stores is not an array of at least one store"))
 	}
 	var entries []keyHistoryEntry
-	seen := map[string]bool{}
+	base, hasBase := obj.get("base")
+	if hasBase {
+		baseObj, ok := base.(*vObject)
+		if !ok {
+			return nil, refuseHistory(refusedForm, errors.New(`base is not a history of version "1"`))
+		}
+		if version, _ := memberString(baseObj, "keyHistoryVersion"); version != keyHistoryVersion {
+			return nil, refuseHistory(refusedForm, errors.New(`base is not a history of version "1"`))
+		}
+		held, err := s.checkKeyHistoryV1(baseObj, pinned)
+		if err != nil {
+			return nil, fmt.Errorf("base: %w", err)
+		}
+		entries = held
+	}
+	for j, sv := range stores {
+		store, ok := sv.(*vObject)
+		if !ok || !onlyMembers(store, keyHistoryStoreMembers) {
+			return nil, refuseHistory(refusedForm, fmt.Errorf("store %d: not an object of keys and continuation", j))
+		}
+		joined := j > 0 || hasBase
+		lineV, hasLine := store.get("continuation")
+		line, isString := lineV.(vString)
+		if hasLine != joined || hasLine && !isString {
+			return nil, refuseHistory(refusedForm, fmt.Errorf("store %d: a continuation, a string, is held by every store but the first, and by the first where base is present, and by no other", j))
+		}
+		keysV, _ := store.get("keys")
+		keys, ok := keysV.(vArray)
+		if !ok || len(keys) == 0 {
+			return nil, refuseHistory(refusedForm, fmt.Errorf("store %d: keys is not an array of at least one entry", j))
+		}
+		first := func(e keyHistoryEntry) error {
+			if !joined {
+				return pinnedFirst(e, pinned)
+			}
+			prev := entries[len(entries)-1]
+			if e.keyID != prev.keyID || !e.held().is(prev.held()) {
+				return refuseHistory(refusedKey, fmt.Errorf("entry 0: key %s is not key %s, the last before it", e.keyID, prev.keyID))
+			}
+			return s.continuationHolds(string(line), e, historyBefore(base, hasBase, stores[:j]))
+		}
+		held, err := s.keysHold(keys, first, joined, true)
+		if err != nil {
+			return nil, fmt.Errorf("store %d: %w", j, err)
+		}
+		if joined {
+			entries[len(entries)-1].validTo = held[0].validTo
+			held = held[1:]
+		}
+		entries = append(entries, held...)
+	}
+	return entries, nil
+}
+
+// historyBefore is the bytes of the history before a store: base, for the
+// first store, and otherwise canon of {base, keyHistoryVersion, stores}, the
+// stores before it and base where present.
+func historyBefore(base value, hasBase bool, stores vArray) []byte {
+	if len(stores) == 0 {
+		return canon(base)
+	}
+	doc := newObject()
+	if hasBase {
+		doc.set("base", base)
+	}
+	doc.set("keyHistoryVersion", vString(keyHistoryVersion2))
+	doc.set("stores", stores)
+	return canon(doc)
+}
+
+// continuationHolds holds a store's continuation line to §3d's form, signed
+// by the store's first key e, to the history before it, and to the time
+// before it and e's validTo.
+func (s *keyHistoryState) continuationHolds(line string, e keyHistoryEntry, before []byte) error {
+	obj := continuationLine(line)
+	if obj == nil {
+		return refuseHistory(refusedContinuation, errors.New("continuation is not a store continuation"))
+	}
+	c, ok := continuationOf(obj, reachedKey{key: e.key, keyID: e.keyID, alg: e.alg})
+	if !ok {
+		return refuseHistory(refusedContinuation, errors.New("continuation does not hold §3d's form, or is not of and signed by the store's first key"))
+	}
+	if got := keyHistoryDigestOf(before); got != c.keyHistoryDigest {
+		return refuseHistory(refusedCarried, fmt.Errorf("continuation names the key history %s, not %s, the history before it", c.keyHistoryDigest, got))
+	}
+	if c.continuedAt < s.latest {
+		return refuseHistory(refusedTime, fmt.Errorf("continuation's continuedAt %s is before %s, a rotatedAt or continuedAt before it", c.continuedAt, s.latest))
+	}
+	if e.validTo != "" && c.continuedAt > e.validTo {
+		return refuseHistory(refusedTime, fmt.Errorf("continuation's continuedAt %s is after %s, the validTo of the store's first key", c.continuedAt, e.validTo))
+	}
+	s.latest = c.continuedAt
+	return nil
+}
+
+// keysHold holds one list of entries to version 1's check, entry by entry:
+// the first to first, and, where joined, the key at a store rotation, an
+// earlier entry's key, which no other entry is; and where ordinals, each
+// later entry's rotation its place in the list.
+func (s *keyHistoryState) keysHold(keys vArray, first func(keyHistoryEntry) error, joined, ordinals bool) ([]keyHistoryEntry, error) {
+	var entries []keyHistoryEntry
 	for i, kv := range keys {
 		e, err := historyEntryOf(kv)
 		if err != nil {
 			return nil, fmt.Errorf("entry %d: %w", i, err)
 		}
-		if seen[e.keyID] {
-			return nil, fmt.Errorf("entry %d: key %s is an earlier entry's", i, e.keyID)
+		if i > 0 || !joined {
+			if s.seen[e.keyID] {
+				return nil, refuseHistory(refusedKey, fmt.Errorf("entry %d: key %s is an earlier entry's", i, e.keyID))
+			}
+			s.seen[e.keyID] = true
 		}
-		seen[e.keyID] = true
 		if i == 0 {
-			if pinned != nil && !bytes.Equal(e.key, pinned) {
-				return nil, fmt.Errorf("entry 0: key %s is not the key pinned", e.keyID)
+			if err := first(e); err != nil {
+				return nil, err
 			}
 			if e.validFrom != "" || e.forward != "" || e.reverse != "" {
-				return nil, errors.New("entry 0: the key pinned carries no validFrom and no rotation")
+				if joined {
+					return nil, refuseHistory(refusedForm, errors.New("entry 0: a store's first key carries no validFrom and no rotation"))
+				}
+				return nil, refuseHistory(refusedForm, errors.New("entry 0: the key pinned carries no validFrom and no rotation"))
 			}
 		} else {
 			before := entries[i-1]
-			at, err := rotationPairHolds(before, e)
+			ordinal, at, err := rotationPairOf(before, e)
 			if err != nil {
-				return nil, fmt.Errorf("entry %d: %w", i, err)
+				return nil, refuseHistory(refusedRotation, fmt.Errorf("entry %d: %w", i, err))
+			}
+			if ordinals && ordinal != int64(i) {
+				return nil, refuseHistory(refusedOrdinal, fmt.Errorf("entry %d: the rotation's ordinal is %d, not %d, its place in its store", i, ordinal, i))
 			}
 			if e.validFrom != at || before.validTo != at {
-				return nil, fmt.Errorf("entry %d: validFrom, and the validTo before it, are not the rotation's rotatedAt %s", i, at)
+				return nil, refuseHistory(refusedTime, fmt.Errorf("entry %d: validFrom, and the validTo before it, are not the rotation's rotatedAt %s", i, at))
 			}
 			// rotatedAt's form is fixed-width, so its order is its bytes';
 			// two rotations of one second, which the writers make (two
 			// SIGHUPs, or a clock stepped back to the same second), hold
-			if before.validFrom != "" && at < before.validFrom {
-				return nil, fmt.Errorf("entry %d: the rotation's rotatedAt is before the rotatedAt of the rotation before it", i)
+			if s.lastRotatedAt != "" && at < s.lastRotatedAt {
+				return nil, refuseHistory(refusedTime, fmt.Errorf("entry %d: the rotation's rotatedAt is before the rotatedAt of the rotation before it", i))
+			}
+			s.lastRotatedAt = at
+			if at > s.latest {
+				s.latest = at
 			}
 		}
 		if (e.validTo == "") != (i == len(keys)-1) {
-			return nil, fmt.Errorf("entry %d: only the last entry, the key in force, has no validTo", i)
+			return nil, refuseHistory(refusedForm, fmt.Errorf("entry %d: only the last entry, the key in force, has no validTo", i))
 		}
 		entries = append(entries, e)
 	}
@@ -239,7 +595,7 @@ func onlyMembers(obj *vObject, allowed map[string]bool) bool {
 func historyEntryOf(v value) (keyHistoryEntry, error) {
 	obj, ok := v.(*vObject)
 	if !ok || !onlyMembers(obj, keyHistoryEntryMembers) {
-		return keyHistoryEntry{}, errors.New("not an object of the entry's members")
+		return keyHistoryEntry{}, refuseHistory(refusedForm, errors.New("not an object of the entry's members"))
 	}
 	var e keyHistoryEntry
 	keyHex, okKey := memberString(obj, "publicKey")
@@ -248,20 +604,20 @@ func historyEntryOf(v value) (keyHistoryEntry, error) {
 	// is its compressed point
 	alg, okAlg := recordAlg(obj, "alg")
 	if !okAlg {
-		return e, errors.New(`alg is not "ES256"`)
+		return e, refuseHistory(refusedForm, errors.New(`alg is not "ES256"`))
 	}
 	if e.alg = alg; alg == algES256 && (!okKey || !isLowerHexOfLen(keyHex, publicKeyHexLen(algES256)) || !okID) {
-		return e, errors.New("publicKey is not 66 lowercase hexadecimal characters under alg ES256, or keyId is missing")
+		return e, refuseHistory(refusedForm, errors.New("publicKey is not 66 lowercase hexadecimal characters under alg ES256, or keyId is missing"))
 	}
 	if alg == algEd25519 && (!okKey || !isLowerHexOfLen(keyHex, 64) || !okID) {
-		return e, errors.New("publicKey is not 64 lowercase hexadecimal characters, or keyId is missing")
+		return e, refuseHistory(refusedForm, errors.New("publicKey is not 64 lowercase hexadecimal characters, or keyId is missing"))
 	}
 	e.key, _ = hex.DecodeString(keyHex)
 	if e.keyID = keyID; keyIDFor(e.key) != keyID {
-		return e, errors.New("keyId is not the key id of publicKey")
+		return e, refuseHistory(refusedKey, errors.New("keyId is not the key id of publicKey"))
 	}
 	if !keySoundFor(e.alg, e.key) {
-		return e, errors.New("publicKey is a key §8.4's rule refuses")
+		return e, refuseHistory(refusedKey, errors.New("publicKey is a key §8.4's rule refuses"))
 	}
 	for name, into := range map[string]*string{"validFrom": &e.validFrom, "validTo": &e.validTo, "keyRotation": &e.forward, "keyContinuation": &e.reverse} {
 		if _, given := obj.get(name); !given {
@@ -269,45 +625,45 @@ func historyEntryOf(v value) (keyHistoryEntry, error) {
 		}
 		s, ok := memberString(obj, name)
 		if !ok || s == "" || (name == "validFrom" || name == "validTo") && !witnessTimeForm.MatchString(s) {
-			return e, fmt.Errorf("%s is not of its form", name)
+			return e, refuseHistory(refusedForm, fmt.Errorf("%s is not of its form", name))
 		}
 		*into = s
 	}
 	if (e.forward == "") != (e.reverse == "") {
-		return e, errors.New("keyRotation and keyContinuation are given together")
+		return e, refuseHistory(refusedForm, errors.New("keyRotation and keyContinuation are given together"))
 	}
 	return e, nil
 }
 
-// rotationPairHolds is whether an entry's two statements are a rotation
-// from the entry before it to it (SPEC.md §3b's checks, the ordinal's
-// against its place aside), answering the rotation's rotatedAt.
-func rotationPairHolds(before, e keyHistoryEntry) (string, error) {
+// rotationPairOf is whether an entry's two statements are a rotation from
+// the entry before it to it (SPEC.md §3b's checks, the ordinal's against its
+// place aside), answering the rotation's ordinal and rotatedAt.
+func rotationPairOf(before, e keyHistoryEntry) (int64, string, error) {
 	kind, obj := rotationKindOf(e.forward)
 	if kind != rotationKindForward {
-		return "", errors.New("keyRotation is not a key-rotation statement")
+		return 0, "", errors.New("keyRotation is not a key-rotation statement")
 	}
 	st, ok := rotationStatementOf(kind, obj)
 	if !ok {
-		return "", errors.New("keyRotation does not hold its form")
+		return 0, "", errors.New("keyRotation does not hold its form")
 	}
 	if st.keyID != before.keyID || st.alg != before.alg || !st.signedBy(before.held()) {
-		return "", errors.New("keyRotation is not signed by the key before it")
+		return 0, "", errors.New("keyRotation is not signed by the key before it")
 	}
 	if st.namedAlg != e.alg || !bytes.Equal(st.named, e.key) {
-		return "", errors.New("keyRotation does not name this entry's key")
+		return 0, "", errors.New("keyRotation does not name this entry's key")
 	}
 	kind, obj = rotationKindOf(e.reverse)
 	if kind != rotationKindReverse {
-		return "", errors.New("keyContinuation is not a key-continuation statement")
+		return 0, "", errors.New("keyContinuation is not a key-continuation statement")
 	}
 	reverse, ok := rotationStatementOf(kind, obj)
 	if !ok || reverse.rotation != st.rotation || reverse.rotatedAt != st.rotatedAt ||
 		reverse.alg != e.alg || reverse.namedAlg != before.alg ||
 		!bytes.Equal(reverse.named, before.key) || reverse.keyID != e.keyID || !reverse.signedBy(e.held()) {
-		return "", errors.New("keyContinuation is not the key-continuation of keyRotation, signed by this entry's key")
+		return 0, "", errors.New("keyContinuation is not the key-continuation of keyRotation, signed by this entry's key")
 	}
-	return st.rotatedAt, nil
+	return int64(st.rotation), st.rotatedAt, nil
 }
 
 // keyHistoryBeside is the file beside a filesystem registry that holds the
@@ -402,24 +758,25 @@ func (g *gatewayService) keyHistory() ([]byte, error) {
 		return last.doc, last.err
 	}
 	g.keyHistoryKept.walks++
-	made.doc, made.err = walkKeyHistory(data, own, carried, present)
+	made.doc, made.err = walkKeyHistory(data, own, carried, present, g.keyHistoryVersion)
 	g.keyHistoryKept.last = &made
 	return made.doc, made.err
 }
 
 // walkKeyHistory is the key history document of a registry, with what was
-// carried into its store, held to the consumer's check from its own first
-// key, or the finding that it does not hold.
-func walkKeyHistory(data []byte, own heldKey, carried []byte, present bool) ([]byte, error) {
-	entries, err := registryKeyHistory(data, own, carried, present)
+// carried into its store, under the version configured and the carried
+// history imply (registryKeyHistoryOf), held to the consumer's check from
+// its own first key, or the finding that it does not hold.
+func walkKeyHistory(data []byte, own heldKey, carried []byte, present bool, configured string) ([]byte, error) {
+	made, err := registryKeyHistoryOf(data, own, carried, present, configured)
 	if err != nil {
 		return nil, err
 	}
-	doc := keyHistoryDocument(entries)
-	if _, err := checkKeyHistory(doc, entries[0].key); err != nil {
+	pinned := made.entries[0].held()
+	if _, err := checkKeyHistoryOf(made.doc, &pinned, ""); err != nil {
 		return nil, fmt.Errorf("the key history does not hold: %w", err)
 	}
-	return doc, nil
+	return made.doc, nil
 }
 
 // keyHistoryRotationFault is a key rotation's refusal of
@@ -450,10 +807,19 @@ const (
 // registry is append-only, so a history refused here would be answered 500
 // by the route for good.
 func keyHistoryWriteRefusal(before []keyHistoryEntry, at, order, fault string, after func() error) error {
+	last := ""
 	if len(before) > 0 {
-		if last := before[len(before)-1].validFrom; last != "" && at < last {
-			return fmt.Errorf(order, at, last)
-		}
+		last = before[len(before)-1].validFrom
+	}
+	return keyHistoryWriteRefusalAt(last, at, order, fault, after)
+}
+
+// keyHistoryWriteRefusalAt is keyHistoryWriteRefusal from the history's
+// last time (keyHistoryMade.last): the later of its last validFrom and,
+// under version 2, its last continuedAt.
+func keyHistoryWriteRefusalAt(last, at, order, fault string, after func() error) error {
+	if last != "" && at < last {
+		return fmt.Errorf(order, at, last)
 	}
 	if after != nil {
 		if err := after(); err != nil {

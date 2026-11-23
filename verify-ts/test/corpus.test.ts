@@ -15,7 +15,7 @@ import { canonical } from "../src/canon.ts";
 import { maxValues, parse } from "../src/json.ts";
 import { verifyByAlg } from "../src/alg.ts";
 import { reached } from "../src/rotation.ts";
-import { verifyStore } from "../src/verify.ts";
+import { checkKeyHistory, verifyStore } from "../src/verify.ts";
 import {
   corpus,
   materialize,
@@ -373,5 +373,36 @@ test("an argument that is not UTF-8 is no verdict, and never another path", { sk
     const r = run(script);
     assert.equal(r.status, 2, `${what}: ${r.stdout} ${r.stderr}`);
     assert.match(r.stderr.toString(), /not UTF-8/, what);
+  }
+});
+
+// The key-history family (ADR-0055 §9), held on the verdict and on the
+// class of each refusal, which is part of the corpus contract; gateway
+// conform runs the same vectors through the Go check.
+test("every key-history vector, on its verdict and its class", () => {
+  const dir = path.join(corpus, "key-history");
+  const names = fs.readdirSync(dir).filter((n) => n.endsWith(".json")).sort();
+  assert.equal(names.length, 25);
+  for (const name of names) {
+    const v = readVector(path.join(dir, name)) as {
+      name: string;
+      pin: string | { alg: "ES256"; key: string };
+      requireVersion?: string;
+      history: string;
+      expected: { accepted?: { keys: number; inForce: string }; refused?: string };
+    };
+    const pin =
+      typeof v.pin === "string"
+        ? { alg: "" as const, key: Buffer.from(fs.readFileSync(path.join(corpus, v.pin), "utf8").trim(), "hex") }
+        : { alg: "ES256" as const, key: Buffer.from(v.pin.key, "hex") };
+    const got = checkKeyHistory(Buffer.from(v.history, "utf8"), pin, v.requireVersion === undefined ? {} : { requireVersion: v.requireVersion });
+    if (v.expected.accepted !== undefined) {
+      assert.ok(got.accepted, `${v.name}: refused ${got.accepted ? "" : `${got.class}: ${got.reason}`}`);
+      assert.equal(got.entries.length, v.expected.accepted.keys, v.name);
+      assert.equal(got.entries[got.entries.length - 1]!.keyId, v.expected.accepted.inForce, v.name);
+    } else {
+      assert.ok(!got.accepted, `${v.name}: accepted`);
+      assert.equal(got.class, v.expected.refused, `${v.name}: ${got.reason}`);
+    }
   }
 });

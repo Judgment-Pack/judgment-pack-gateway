@@ -867,7 +867,7 @@ func vectorPin(corpusDir string, vector storeVector, ed []byte, p256 *heldKey) (
 }
 
 // corpusCounts is how many vectors of each family a run read.
-type corpusCounts struct{ canon, stores, witness, recovery, retentionAck int }
+type corpusCounts struct{ canon, stores, witness, recovery, retentionAck, keyHistory int }
 
 func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, error) {
 	var failures []string
@@ -947,7 +947,17 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 		return nil, counts, err
 	}
 	counts.retentionAck = ackCount
-	return append(failures, ackFailures...), counts, nil
+	failures = append(failures, ackFailures...)
+
+	// The key histories are read by a consumer of /publickey/history, never
+	// by a verifier of the process contract, so they too are run in process
+	// whatever implementation is under test (ADR-0055 §9).
+	historyFailures, historyCount, err := runKeyHistoryVectors(corpusDir)
+	if err != nil {
+		return nil, counts, err
+	}
+	counts.keyHistory = historyCount
+	return append(failures, historyFailures...), counts, nil
 }
 
 // runStoreVectors holds an implementation to every store vector, of both
@@ -1114,6 +1124,7 @@ func cmdConform(args []string) int {
 		fmt.Printf("%d witness recovery vectors read and not run: they hold this reference witness's own storage, outside the process contract\n", counts.recovery)
 	}
 	fmt.Printf("this implementation's retain vs corpus: %d acknowledgment-line vectors, run in process\n", counts.retentionAck)
+	fmt.Printf("this implementation's key-history check vs corpus: %d key-history vectors, run in process\n", counts.keyHistory)
 	for _, failure := range failures {
 		fmt.Printf("  FAIL %s\n", failure)
 	}
