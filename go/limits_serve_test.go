@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -672,6 +673,154 @@ func TestLimitsOnOrOffActAnswersAlike(t *testing.T) {
 				if strings.HasPrefix(c.name, "A and B") == (codeOn == http.StatusOK) {
 					t.Fatalf("%s: %d %v", c.name, codeOn, outOn)
 				}
+			}
+			assertLimitNothingHeld(t, h.g.limiter)
+		})
+	}
+}
+
+// limitBodyOf is a limiter answer's limit member.
+func limitBodyOf(t *testing.T, body string) string {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("%s: %v", body, err)
+	}
+	limit, _ := out["limit"].(string)
+	return limit
+}
+
+// Two actors under one delegation subject are each keyed by themselves
+// (decision 2, "the caller within the scope"): each takes its own perCaller
+// share, and neither spends the subject's own direct share.
+func TestLimitsDelegatedActorsEachHaveTheirOwnShare(t *testing.T) {
+	h := limitsSetup(t, &limitsConfig{beforeScope: 64, scopes: map[string]limitEntry{unscopedMarker: {
+		scope: limitValues{requestsPerMinute: 60, burst: 10}, perCaller: &limitValues{requestsPerMinute: 60, burst: 1},
+	}}})
+	subject := caller{issuer: "https://issuer.example", subject: "subject-1"}
+	actor := func(name string) *caller {
+		c := subject
+		c.delegated = &delegatedSender{kind: "actor", issuer: "https://issuer.example", subject: name}
+		return &c
+	}
+	charge := func(who *caller) error {
+		pass, refused := h.g.limiter.enter()
+		if refused != nil {
+			t.Fatal(refused)
+		}
+		defer pass.release()
+		return pass.charge(limitCallerOfRequest(who), unscopedMarker)
+	}
+	for _, who := range []*caller{actor("actor-1"), actor("actor-2"), &subject} {
+		if err := charge(who); err != nil {
+			t.Fatalf("the first request of %s: %v", who.subject, err)
+		}
+	}
+	for _, name := range []string{"actor-1", "actor-2"} {
+		var refused *limitRefusal
+		if err := charge(actor(name)); !errors.As(err, &refused) || refused.limit != limitCallerRate {
+			t.Fatalf("the second request of %s: %v, want its own caller-rate refusal", name, err)
+		}
+	}
+	assertLimitNothingHeld(t, h.g.limiter)
+}
+
+// perCaller on a route: each caller of a scope has its own share of it, so
+// one caller at its share is refused caller-rate while another of the same
+// scope is answered.
+func TestLimitsPerCallerOnTheRoute(t *testing.T) {
+	h := limitsSetup(t, &limitsConfig{beforeScope: 64, scopes: map[string]limitEntry{callerScopeA: {
+		scope: limitValues{requestsPerMinute: 60, burst: 10}, perCaller: &limitValues{requestsPerMinute: 60, burst: 1},
+	}}})
+	code, _, body := h.post(t, "/acquire", acquireBodyFor("s-1", "scoped-a", callerScopeA), "a")
+	wantStatus(t, "A's caller, first", code, body, http.StatusOK)
+	before := h.stored(t)
+	code, header, body := h.post(t, "/acquire", acquireBodyFor("s-2", "scoped-a", callerScopeA), "a")
+	if code != http.StatusTooManyRequests || header.Get("Retry-After") != "1" || limitBodyOf(t, body) != limitCallerRate {
+		t.Fatalf("A's caller, second: %d %q %s", code, header.Get("Retry-After"), body)
+	}
+	if h.stored(t) != before {
+		t.Fatal("a request refused at its caller's share stored something")
+	}
+	for _, who := range []string{"ab", "all"} {
+		code, _, body = h.post(t, "/acquire", acquireBodyFor("s-"+who, "scoped-a", callerScopeA), who)
+		wantStatus(t, who+" while A's caller is at its share", code, body, http.StatusOK)
+	}
+	assertLimitNothingHeld(t, h.g.limiter)
+}
+
+// scopeState is a scope's bucket and slots, as text.
+func scopeState(l *requestLimiter, key string) string {
+	s := l.scopes[key]
+	return fmt.Sprintf("tat %d held %d", s.tat.Load(), s.held.Load())
+}
+
+// Reach: a caller of A and B that names C, on every route that reads a
+// scope, leaves C's state as it was; an /act naming no scope from a caller
+// that does not reach none leaves "unscoped"'s state as it was. Each is
+// refused by its route's own step, as without limits.
+func TestLimitsAScopeNotReachedIsNeverCharged(t *testing.T) {
+	h := limitsSetup(t, &limitsConfig{beforeScope: 64, scopes: map[string]limitEntry{
+		limitsScopeC: rateOf(60, 1), unscopedMarker: rateOf(60, 1),
+	}})
+	c, unscoped := scopeState(h.g.limiter, limitsScopeC), scopeState(h.g.limiter, unscopedMarker)
+	for _, tc := range []struct {
+		path, body string
+		want       int
+		says       string
+	}{
+		{"/acquire", acquireBodyFor("s-1", "scoped-c", limitsScopeC), http.StatusBadRequest, scopeRefusal},
+		{"/seal", `{"session":"s-1","scope":"` + limitsScopeC + `"}`, http.StatusBadRequest, "no such session"},
+		{"/act", `{"session":"s-1","platform":"tickets"}`, http.StatusForbidden, `"refusedAt":"scope-identifier"`},
+		{"/verify", ``, http.StatusForbidden, reachRefusalVerify},
+	} {
+		code, _, body := h.post(t, tc.path, tc.body, "ab")
+		if code != tc.want || !strings.Contains(body, tc.says) {
+			t.Fatalf("%s from a caller of A and B: %d %s, want %d %s", tc.path, code, body, tc.want, tc.says)
+		}
+	}
+	if now := scopeState(h.g.limiter, limitsScopeC); now != c {
+		t.Fatalf("C's state changed: %s -> %s", c, now)
+	}
+	if now := scopeState(h.g.limiter, unscopedMarker); now != unscoped {
+		t.Fatalf("unscoped's state changed: %s -> %s", unscoped, now)
+	}
+	assertLimitNothingHeld(t, h.g.limiter)
+}
+
+// ADR-0054 decision 6 as written: a dry-run is counted as a write is, so
+// two dry-runs spend a scope's burst of two, and the write after them is
+// refused by the limit, with the journal, the labels, the store and the
+// receipt sink as they were -- for a caller of one scope (step 3a) and for
+// one of several (step 8a).
+func TestLimitsTwoDryRunsThenAWriteRefused(t *testing.T) {
+	for _, tc := range []struct{ name, who string }{{"step 3a", "b"}, {"step 8a", "both"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := actScopeSetup(t)
+			h.g.dryRunApprovals = true
+			h.g.labels = fsLabels{root: h.g.storeRoot}
+			var hits atomic.Int32
+			sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1) }))
+			t.Cleanup(sink.Close)
+			h.g.forwarder = newReceiptForwarder(&receiptSinkSpec{url: sink.URL})
+			server := limitsOn(t, h.g, &limitsConfig{beforeScope: 64, scopes: map[string]limitEntry{callerScopeB: rateOf(60, 2)}})
+			token := map[string]string{"b": h.tokenB, "both": h.tokenBoth}[tc.who]
+			before := storedUnder(t, h.root)
+			for i, key := range []string{strings.Repeat("e", 64), strings.Repeat("f", 64)} {
+				code, out := authed(t, server, "/act", limitsActBody(h, "dry-"+tc.who, "tickets-b", scopeB, key, h.decisionB, h.cite("b-read", h.scopedSig), `,"dryRun":true`), token)
+				if code != http.StatusOK || out["dryRun"] == nil {
+					t.Fatalf("dry-run %d: %d %v", i+1, code, out)
+				}
+			}
+			code, out := authed(t, server, "/act", limitsActBody(h, "dry-"+tc.who, "tickets-b", scopeB, strings.Repeat("a", 64), h.decisionB, h.cite("b-read", h.scopedSig), ""), token)
+			if code != http.StatusTooManyRequests || out["limit"] != limitScopeRate || out["refusedAt"] != "limit" {
+				t.Fatalf("the write after two dry-runs: %d %v, want 429 scope-rate at limit", code, out)
+			}
+			if storedUnder(t, h.root) != before {
+				t.Fatal("the dry-runs or the refused write changed the journal, the labels or the store")
+			}
+			if n := hits.Load(); n != 0 {
+				t.Fatalf("the receipt sink was sent %d request(s)", n)
 			}
 			assertLimitNothingHeld(t, h.g.limiter)
 		})
