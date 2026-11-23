@@ -221,8 +221,8 @@ func (g *gatewayService) scopeDecisionRecords() map[string][]string {
 // scopedActionJournals is the directory of the journal that holds each scope
 // identifier's journal, its entries and its first-scope index, apart from the
 // journal of none: removing a scope removes its journal whole, and the
-// journal of none reads as it did. Its name is no journal entry's, so journal
-// compaction keeps it as it finds it.
+// journal of none reads as it did. Its name is no journal entry's; journal
+// compaction compacts each journal in it by the journal of none's rule.
 const scopedActionJournals = "scopes"
 
 // scopedActionJournalName is a scope identifier's journal directory.
