@@ -406,3 +406,23 @@ test("every key-history vector, on its verdict and its class", () => {
     }
   }
 });
+
+// The operator journal's own name, held by a link or a directory, is not
+// read as no journal: it is journal-unknown, by its name, as in Go.
+test("an operator journal that is not a regular file is journal-unknown", () => {
+  const v = storeVectors().find((s) => s.name === "v3-journal-unknown")!;
+  for (const make of ["directory", "link"]) {
+    const { root, registry, decisionRecords } = materialize(v);
+    const file = path.join(root, "journals", "operator.jsonl");
+    fs.rmSync(file);
+    if (make === "directory") {
+      fs.mkdirSync(file);
+    } else {
+      fs.writeFileSync(path.join(root, "journals", "elsewhere"), "");
+      fs.symlinkSync("elsewhere", file);
+    }
+    const verdict = JSON.parse(verdictText(verifyStore(root, registry, v.authority, decisionRecords, publicKey)));
+    assert.equal(verdict.ok, false, make);
+    assert.ok(verdict.findings.some((f: Record<string, unknown>) => f.status === "journal-unknown" && f.file === "operator.jsonl"), make);
+  }
+});

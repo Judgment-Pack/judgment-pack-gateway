@@ -629,8 +629,11 @@ func unknownJournalFiles(storeRoot string) ([]string, error) {
 		return nil, fmt.Errorf("journal: %w", err)
 	}
 	var names []string
+	// a known name that is not a regular file (a link, a directory, a
+	// pipe) is not read either, and is named with the rest rather than
+	// read as no journal
 	for _, e := range entries {
-		if !knownJournalFiles[e.Name()] {
+		if !knownJournalFiles[e.Name()] || !e.Type().IsRegular() {
 			names = append(names, e.Name())
 		}
 	}

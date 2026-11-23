@@ -1210,7 +1210,7 @@ func TestEveryCorpusStoreExportsFromThePostgresKindByteForByte(t *testing.T) {
 	if len(paths) == 0 {
 		t.Fatal("no store vectors: the test tests nothing")
 	}
-	staged := 0
+	staged, unknown := 0, 0
 	for _, p := range paths {
 		raw, err := os.ReadFile(p)
 		if err != nil {
@@ -1249,6 +1249,26 @@ func TestEveryCorpusStoreExportsFromThePostgresKindByteForByte(t *testing.T) {
 				}
 				return
 			}
+			// a store holding a journal this release does not read is
+			// refused by both kinds' export, naming it: on this kind, as its
+			// rows in the journal table, under the cut the gateway exports
+			// the kind with (export.go)
+			if names, err := unknownJournalFiles(storeRoot); err != nil {
+				t.Fatal(err)
+			} else if len(names) > 0 {
+				unknown++
+				if _, err := writeExport(exportInputs{authority: vector.Authority, keyID: keyIDFor(publicKey), kind: fsKind, storeRoot: storeRoot, decisionRecords: records}, fsOut); !errors.Is(err, errUnknownJournal) {
+					t.Fatalf("filesystem export of a store holding an unknown journal: %v, want %v", err, errUnknownJournal)
+				}
+				kind, db := pgTestKind(t, "", nil)
+				if _, err := db.runtimeConn(t).exec(`INSERT INTO gateway.journal_records (journal, ordinal, line) VALUES ('refusal-west', 0, '\x7b7d'::bytea)`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := writeExport(exportInputs{authority: vector.Authority, keyID: keyIDFor(publicKey), kind: pgEveryScope{kind}, decisionRecords: records}, filepath.Join(t.TempDir(), "postgresql")); !errors.Is(err, errUnknownJournal) {
+					t.Fatalf("PostgreSQL export of a store holding an unknown journal: %v, want %v", err, errUnknownJournal)
+				}
+				return
+			}
 			if _, err := writeExport(exportInputs{authority: vector.Authority, keyID: keyIDFor(publicKey), kind: fsKind, storeRoot: storeRoot, decisionRecords: records}, fsOut); err != nil {
 				t.Fatalf("export of the filesystem kind: %v", err)
 			}
@@ -1280,6 +1300,9 @@ func TestEveryCorpusStoreExportsFromThePostgresKindByteForByte(t *testing.T) {
 			}
 			requireSameTree(t, "postgresql across scopes", readTreeBytes(t, spreadOut), readTreeBytes(t, fsOut))
 		})
+	}
+	if unknown == 0 {
+		t.Fatal("no store vector holds a journal this release does not read: the refusal is untested")
 	}
 	if staged == 0 {
 		t.Fatal("no store vector holds a staged operator entry: the refusal is untested")

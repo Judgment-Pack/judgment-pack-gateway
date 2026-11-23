@@ -2225,7 +2225,10 @@ of every other finding and of whether any action receipt names that record.
    `journal-missing`, `{status, journal}`. Each file of `journals/` that is not a journal the verifier
    reads (in this release, `operator.jsonl` and `operator.pending`) is `journal-unknown`,
    `{status, file}`, in name order, and fails the verdict: a journal of a later release, or a file
-   put there, is never passed over as though it held. An export holding one is refused by its path.
+   put there, is never passed over as though it held. So is either of those two names where it is
+   not a regular file (a link, a directory, a pipe), rather than read as no journal. An export
+   holding one is refused by its path, and an export of the PostgreSQL kind is refused where the
+   journal table holds rows of any journal but `operator`, naming each.
 
 **Observations.** A report carries, beside `ok` and `findings`, a member
 `observations` when there is anything the verifier says of a receipt, or of a
