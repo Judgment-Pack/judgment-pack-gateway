@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted with conditions, 2026-11-23
 date: 2026-11-23
 deciders: maintainer
 ---
@@ -15,8 +15,9 @@ deciders: maintainer
 >   inside its signed bytes.
 > - **Opt-in per binding:** `callReference: true` on the binding, off by default. An off binding
 >   gets byte-for-byte the request it gets today, and its receipt carries no `callRef`.
-> - **Engine version:** the next after the refusal journal's, in merge order (49 if the refusal
->   journal lands first). A verifier that does not know `callRef` refuses a receipt carrying it.
+> - **Engine version:** the engine version after the refusal journal's (expected 49), assigned at
+>   merge as usual. `callReference: true` is refused at configuration load below it, or where the
+>   receipt version is below 3. A verifier that does not know `callRef` refuses a receipt carrying it.
 
 ## Context and problem statement
 
@@ -56,6 +57,23 @@ already binds whatever the receipt carries.
 - **Configuration.** A binding member `callReference`, boolean, default `false`. It is the operator's
   opt-in for that binding alone; a binding the operator did not author receives the reference only
   when the operator sets it.
+- **The version gate.** `callReference: true` is refused at configuration load, with a sentence
+  naming the binding, where the engine configuration version is below this release's, or where the
+  receipt version is below 3. The gateway never starts with an opt-in it would not honour, so a
+  receipt never goes out without the `callRef` the operator asked for.
+- **The session identifier is not a capability.** Knowing a session identifier lets no one continue,
+  append to, seal or read a session. From engine version 39 (`labelsVersion`,
+  `go/session_labels.go:45`), always on for every engine this release accepts with the opt-in
+  (`go/main.go:954`), a request names its session by a **label** in its scope's namespace. The
+  gateway mints the identifier and resolves only labels: on `/acquire` (`go/serve.go:1399-1401`),
+  on `/act` (`go/act.go:79-89`) and on `/seal` (`go/serve.go:3098-3101`,
+  `go/session_labels.go:427`). An identifier sent as a label is just another label, which names a
+  fresh session of its own. No HTTP route serves a receipt by its session identifier, and `/act`'s
+  `cites` name a receipt by its signature as well (`go/act.go:190`), which the binding is never
+  sent. Seals, which carry the identifier, are already public on `/registry`. The label is never
+  sent to the binding. Sessions are not keyed by the authenticated caller: a caller who knows a
+  session's **label**, and reaches its scope, can continue it, which is why the label stays with the
+  caller and only the minted identifier goes out.
 - **Readers.** The Go and TypeScript verifiers read `callRef` (64 lowercase hex characters) and refuse
   any other form. A reader from before this release refuses a receipt carrying it, as it refuses any
   member it does not know; the release notes say so.
@@ -64,6 +82,9 @@ already binds whatever the receipt carries.
 
 ### Tests
 
+- The gate: `callReference: true` with an engine version below this release's, and with receipt
+  version 2, each refused at load, naming the binding; the same configuration at this release's
+  version with version 3 receipts starts.
 - Off: the request bytes the binding receives are unchanged, and the receipt has no `callRef`.
 - On: the `callRef` in `_meta` equals the receipt's, and `sessionId` equals the receipt's.
 - Two concurrent calls in one session receive distinct references, each in its own receipt.
