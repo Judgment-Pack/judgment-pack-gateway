@@ -4913,8 +4913,10 @@ does not reach every source, the line is judged over the sources it reaches (§6
 a platform of another scope identifier is neither counted nor named. From engine version 46 a
 fourth line follows, `delegation-read-version`, naming each issuing host with its
 `admission.readVersion`: `enforced` when every host is read at `"2"`, so each is named the called
-tool's descriptor digest, `partial` when some are, and `not-enforced` when none is. Below version
-46 the line is absent. A gateway without `delegation` reports none of these lines, and its posture
+tool's descriptor digest, `partial` when some are, and `not-applicable` when none is (version `"1"`
+is the default, not a protection turned off). Served to a caller that does not reach every source,
+it names no host and counts the hosts at each version alone, since a host's name can say which
+scope identifiers its delegations are bound to. Below version 46 the line is absent. A gateway without `delegation` reports none of these lines, and its posture
 is the one it was.
 
 ### 11.10 Definitions and departures

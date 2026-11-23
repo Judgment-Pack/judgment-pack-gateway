@@ -190,7 +190,7 @@ type delegationPosture struct {
 
 // delegationLines are the lines of SPEC.md §11.9, the grants line judged
 // over the sources the gateway serves.
-func delegationLines(d *delegationPosture, sources map[string]sourceSpec) []postureLine {
+func delegationLines(d *delegationPosture, sources map[string]sourceSpec, cut bool) []postureLine {
 	if d == nil {
 		return nil
 	}
@@ -207,7 +207,7 @@ func delegationLines(d *delegationPosture, sources map[string]sourceSpec) []post
 		delegationGrantsLine(sources),
 	}
 	if len(d.readVersions) > 0 {
-		lines = append(lines, delegationReadVersionLine(d.readVersions))
+		lines = append(lines, delegationReadVersionLine(d.readVersions, cut))
 	}
 	return lines
 }
@@ -347,7 +347,7 @@ func hostPosture(in postureInput) postureReport {
 		seedPosture(in),
 		programConfinementPosture(programs),
 		listenerPosture(in),
-	}, append(append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources, in.reach != nil)...), append(append(readOnlyCredentialsLines(in.sources), signingKeyLines(in.signing)...), requestLimitsLines(in)...)...)...),
+	}, append(append(append(delegationLines(in.delegation, in.sources, in.reach != nil), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources, in.reach != nil)...), append(append(readOnlyCredentialsLines(in.sources), signingKeyLines(in.signing)...), requestLimitsLines(in)...)...)...),
 		readOnly: readOnlySourcePostures(in.sources)}
 	if in.limits != nil {
 		report.limits = limitsPosture(in)

@@ -2956,8 +2956,8 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		if err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
-		if declaresToolVersions(b) && !versionAtLeast(cfg.version, admissionReadV2Version) {
-			return nil, fmt.Errorf("platform %s: binding %s declares toolVersions, a version-%s member; engineVersion %s has no toolVersions", p.name, p.binding, admissionReadV2Version, cfg.version)
+		if err := toolVersionsAdmitted(*p, b, cfg.version); err != nil {
+			return nil, err
 		}
 		// The binding's templates, filled with the platform's parameters:
 		// what every source is derived from, and what a policy's tool and

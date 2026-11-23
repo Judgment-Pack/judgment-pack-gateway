@@ -1566,13 +1566,15 @@ server's start uses, and a snapshot that cannot be read refuses the start. Set `
 host says it reads `"2"`: there is no negotiation and no fallback, so a host that does not read it
 refuses every delegated call, binding and standing read until the setting is undone. Any other
 value refuses the configuration; below version 46 the member is refused by name. `/posture` adds
-`delegation-read-version`, naming each host's version. Rollback: remove the member or set `"1"`,
+`delegation-read-version`, naming each host's version (`not-applicable` where none is at `"2"`), and
+to a caller whose reach is cut only the count of hosts at each version. Rollback: remove the member or set `"1"`,
 and restart.
 
 From the same version, the MCP server's tools/list `_meta` names, for each platform tool,
 `descriptorDigest` (the live operation's snapshot entry's, absent where there is none) and
 `versionLabel` (the binding's label, absent where it declares none), and a bindingVersion 2 MCP
-operation may declare `toolVersions`, labels by allowed tool of 1 to 64 characters of
+live operation may declare `toolVersions` (a write operation's tools are never listed, so one that
+declares it is refused), labels by allowed tool of 1 to 64 characters of
 `A-Z a-z 0-9 . _ + -`, the first a letter or digit. A configuration below version 46 refuses a
 binding that declares it. Declaring or changing a label changes the binding's digest and needs a
 recapture; the label is the binding author's name for a version, and nothing reads it as

@@ -109,7 +109,14 @@ const protectionDelegationReadVersion = "delegation-read-version"
 // reads are sent at: enforced where every host is read at "2", so each is
 // named the called tool's descriptor digest, partial where some are, and
 // not-enforced where none is.
-func delegationReadVersionLine(versions map[string]string) postureLine {
+//
+// Served to a caller that does not reach every source (cut), the line names
+// no issuing host and counts them alone: a host's name can say which scope
+// identifiers its delegations are bound to, and a report cut to one
+// caller's reach names nothing of another scope (ADR-0041, decision 3).
+// Where no host is read at "2" the line is not-applicable, version "1" being
+// the default a version bump leaves in place, not a protection turned off.
+func delegationReadVersionLine(versions map[string]string, cut bool) postureLine {
 	hosts := make([]string, 0, len(versions))
 	for h := range versions {
 		hosts = append(hosts, h)
@@ -123,15 +130,19 @@ func delegationReadVersionLine(versions map[string]string) postureLine {
 			atTwo++
 		}
 	}
-	state := postureNotEnforced
+	state := postureNotApplicable
 	switch {
 	case atTwo == len(hosts):
 		state = postureEnforced
 	case atTwo > 0:
 		state = posturePartial
 	}
+	named := strings.Join(parts, ", ")
+	if cut {
+		named = fmt.Sprintf(`%d at "2", %d at "1"`, atTwo, len(hosts)-atTwo)
+	}
 	return postureLine{protectionDelegationReadVersion, state,
-		"admission reads by issuing host: " + strings.Join(parts, ", ") + `; a host read at "2" is named the called tool's descriptor digest, one at "1" is not`}
+		"admission reads by issuing host: " + named + `; a host read at "2" is named the called tool's descriptor digest, one read at version "1" is not`}
 }
 
 // versionLabelForm is a toolVersions label: 1 to 64 characters of A-Z a-z
@@ -170,4 +181,13 @@ func parseToolVersions(raw *vObject, allowed []string) (map[string]string, error
 // refuses.
 func declaresToolVersions(b binding) bool {
 	return (b.live != nil && b.live.toolVersions != nil) || (b.write != nil && b.write.toolVersions != nil)
+}
+
+// toolVersionsAdmitted refuses, by name, a binding that declares
+// toolVersions under an engine configuration below admissionReadV2Version.
+func toolVersionsAdmitted(p platformConfig, b binding, version string) error {
+	if declaresToolVersions(b) && !versionAtLeast(version, admissionReadV2Version) {
+		return fmt.Errorf("platform %s: binding %s declares toolVersions, a version-%s member; engineVersion %s has no toolVersions", p.name, p.binding, admissionReadV2Version, version)
+	}
+	return nil
 }

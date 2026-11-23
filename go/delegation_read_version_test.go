@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -21,7 +22,7 @@ import (
 // its conformance/delegation/admission-reads.json, of which this file is a
 // byte-for-byte copy: the read cases of spec RFC 0030's amendment of
 // 2026-11-22, tables 4 and 5, hand-written and shared with the agent library.
-const admissionReadsSHA256 = "57c8011e7b21ce0fbf4441a85061f01ae5686f5928720325e79fad18f3fdb095"
+const admissionReadsSHA256 = "a620f8e7280652a1c9402c4862ab3ebafa9b8286569a327fdbdd12492f5291e2"
 
 const admissionReadsPath = "../testdata/delegation/admission-reads.json"
 
@@ -281,6 +282,9 @@ func TestAdmissionReadV1UnchangedByteForByte(t *testing.T) {
 
 const testToolDigest = "sha256:5b0c2a7e9d3f4a1b8c6e0d2f4a6b8c0e2d4f6a8b0c2e4d6f8a0b2c4e6d8f0a2b"
 
+// testWriteDigest is the write operation's, apart from the live one's.
+const testWriteDigest = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+
 // At "2" an /acquire names the live operation's approved digest and skills
 // null, whatever the request carries; each new answer refuses under its
 // name with exactly one read, none of them resent at "1"; and at "1" each is
@@ -341,6 +345,37 @@ func TestAdmissionReadV2Acquire(t *testing.T) {
 			}
 		}
 	}
+	// /act, and a dry-run of it, at "2": the read names the write
+	// operation's own descriptor digest, never the live one's, and each of
+	// the four names is answered at refusedAt "delegation".
+	write := h.g.sources["tickets/write"]
+	write.versions = map[string]string{"query": testWriteDigest}
+	h.g.sources["tickets/write"] = write
+	h.g.dryRunApprovals = true
+	h.d.hosts["desk"].readVersion = "2"
+	for i, a := range answers[:4] {
+		for _, dry := range []bool{false, true} {
+			h.host.setAnswer(func(map[string]any) (int, string) { return http.StatusOK, a.answer })
+			before := len(h.host.rawReads())
+			extra := ""
+			if dry {
+				extra = `,"dryRun":true`
+			}
+			key := delegationKey(40 + 2*i + map[bool]int{false: 0, true: 1}[dry])
+			status, out := h.present(t, "/act", h.actBody("s-v2-act", key, extra), cred)
+			if status != http.StatusForbidden || refusalOf(out) != a.at2 || out["refusedAt"] != "delegation" {
+				t.Fatalf("/act (dry-run %v) answered %s: %d %v", dry, a.answer, status, out)
+			}
+			reads := h.host.rawReads()[before:]
+			if len(reads) == 0 || !strings.Contains(string(reads[len(reads)-1]), `"version":"`+testWriteDigest+`"`) || !strings.Contains(string(reads[len(reads)-1]), `"readVersion":"2"`) {
+				t.Fatalf("/act (dry-run %v): the read does not name the write operation's digest: %s", dry, reads)
+			}
+			if h.sent(key) != 0 {
+				t.Fatalf("/act (dry-run %v) refused at %s still sent", dry, a.at2)
+			}
+		}
+	}
+	h.host.setAnswer(nil)
 }
 
 // The read's own refusals are reported where steps 8 to 10 are, before the
@@ -471,12 +506,12 @@ func TestAdmissionReadToolVersionsForm(t *testing.T) {
 // Posture names each issuing host's readVersion from the new engine version,
 // and nothing new below it.
 func TestPostureNamesEachHostsReadVersion(t *testing.T) {
-	if lines := delegationLines(&delegationPosture{}, nil); len(lines) != 3 {
+	if lines := delegationLines(&delegationPosture{}, nil, false); len(lines) != 3 {
 		t.Fatalf("below the version: %v", lines)
 	}
-	for versions, state := range map[string]string{"1,1": postureNotEnforced, "2,1": posturePartial, "2,2": postureEnforced} {
+	for versions, state := range map[string]string{"1,1": postureNotApplicable, "2,1": posturePartial, "2,2": postureEnforced} {
 		v := strings.Split(versions, ",")
-		lines := delegationLines(&delegationPosture{readVersions: map[string]string{"desk": v[0], "issuer-b": v[1]}}, nil)
+		lines := delegationLines(&delegationPosture{readVersions: map[string]string{"desk": v[0], "issuer-b": v[1]}}, nil, false)
 		last := lines[len(lines)-1]
 		if len(lines) != 4 || last.name != protectionDelegationReadVersion || last.state != state || !strings.Contains(last.reason, `desk at "`+v[0]+`", issuer-b at "`+v[1]+`"`) {
 			t.Fatalf("%s: %v", versions, last)
@@ -539,5 +574,134 @@ func TestAdmissionReadV2HoldsTheDigestsAtStart(t *testing.T) {
 	}
 	if v := sources["tickets/live"].versions; v == nil || len(v) != 0 {
 		t.Fatalf("a snapshot holding no descriptorDigest: %v", v)
+	}
+}
+
+// Served to a caller whose reach is cut, the read-version line names no
+// issuing host: a host's name can say which scope identifiers its
+// delegations are bound to, so B's caller learns nothing of A's hosts from
+// it (ADR-0041, decision 3); it counts the hosts at each version alone, the
+// same whatever the hosts are named.
+func TestPostureReadVersionLineNamesNoHostToACutReach(t *testing.T) {
+	line := func(in postureInput) postureLine {
+		t.Helper()
+		for _, l := range hostPosture(in).lines {
+			if l.name == protectionDelegationReadVersion {
+				return l
+			}
+		}
+		t.Fatal("no delegation-read-version line")
+		return postureLine{}
+	}
+	hosts := func(a, b string) *delegationPosture {
+		return &delegationPosture{readVersions: map[string]string{a: "2", b: "1"}}
+	}
+	whole := line(postureInput{configured: true, delegation: hosts("issuer-of-a", "issuer-of-b")})
+	if !strings.Contains(whole.reason, `issuer-of-a at "2"`) {
+		t.Fatalf("the installation's caller: %q", whole.reason)
+	}
+	ofB := line(postureInput{configured: true, delegation: hosts("issuer-of-a", "issuer-of-b"), reach: &scopeReach{}, callerScopes: "checked"})
+	renamed := line(postureInput{configured: true, delegation: hosts("another-a", "another-b"), reach: &scopeReach{}, callerScopes: "checked"})
+	if strings.Contains(ofB.reason, "issuer-of") || ofB != renamed {
+		t.Fatalf("B's caller: %q, with other names %q", ofB.reason, renamed.reason)
+	}
+	if !strings.Contains(ofB.reason, `1 at "2", 1 at "1"`) || ofB.state != posturePartial {
+		t.Fatalf("B's caller: %v", ofB)
+	}
+}
+
+// A version 3 snapshot's descriptorDigest is what the start holds as the
+// tool's version (descriptor_start.go to holdToolVersions), and what a read
+// at "2" then names: the digest the snapshot entry states, byte for byte.
+func TestAdmissionReadV2HoldsAVersion3SnapshotsDigest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "engine.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(path+".descriptors", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner := ToolTaxonomy{Operation: "read", Effect: "read-external"}
+	b := ownedLive("tickets", map[string]ToolTaxonomy{"query": owner})
+	// a version 3 snapshot is the evidence of an owner-approved operation
+	// the gateway does not build (taxonomy.go, snapshot evidence)
+	b.live.customer = true
+	ref := "tickets@sha256:" + strings.Repeat("0", 64)
+	entry := newObject()
+	entry.set("descriptorDigest", vString(testToolDigest))
+	entry.set("taxonomy", taxonomyAsValue(owner))
+	tools := newObject()
+	tools.set("query", entry)
+	server := newObject()
+	server.set("name", vString("fixture"))
+	server.set("version", vString("1"))
+	snap := newObject()
+	snap.set("binding", vString(ref))
+	snap.set("capturedAt", vString("2026-10-28T00:00:00Z"))
+	snap.set("operation", vString("live"))
+	snap.set("platform", vString("tickets"))
+	snap.set("policy", vInt(1))
+	snap.set("server", server)
+	snap.set("snapshotVersion", vString("3"))
+	snap.set("tools", tools)
+	raw := canon(snap)
+	pin := digestOf(string(raw))
+	if err := os.WriteFile(filepath.Join(path+".descriptors", strings.TrimPrefix(pin, "sha256:")+".json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := engineConfig{configPath: path, platforms: []platformConfig{{name: "tickets", binding: ref, operationDescriptors: map[string]string{"live": pin}}},
+		delegation: &delegationSpec{hosts: []delegationHostSpec{{host: "desk", readVersion: "2"}}}}
+	sources := map[string]sourceSpec{"tickets/live": {shape: "mcp"}}
+	if err := holdToolVersions(cfg, map[string]binding{"tickets": b}, sources); err != nil {
+		t.Fatal(err)
+	}
+	if got := sources["tickets/live"].versions["query"]; got != testToolDigest {
+		t.Fatalf("the start held %q, want the entry's %q", got, testToolDigest)
+	}
+	// and the read at "2" names it
+	h := newDelegationHarness(t, false)
+	live := h.g.sources["tickets/live"]
+	live.versions = sources["tickets/live"].versions
+	h.g.sources["tickets/live"] = live
+	h.d.hosts["desk"].readVersion = "2"
+	cred := h.credential(t, statement(t, nil))
+	if status, out := h.present(t, "/acquire", h.acquireBody("s-v3", "query"), cred); status != http.StatusOK {
+		t.Fatalf("acquire: %d %v", status, out)
+	}
+	reads := h.host.rawReads()
+	if !strings.Contains(string(reads[len(reads)-1]), `"version":"`+testToolDigest+`"`) {
+		t.Fatalf("the read does not name the snapshot's digest: %s", reads[len(reads)-1])
+	}
+}
+
+// toolVersions is refused by name below the engine version that reads it,
+// and on a write operation, whose tools are never listed.
+func TestAdmissionReadToolVersionsGates(t *testing.T) {
+	labelled := binding{platform: "tickets", live: &operation{name: "live", toolVersions: map[string]string{"query": "2.4.1"}}}
+	p := platformConfig{name: "tickets", binding: "tickets@sha256:" + strings.Repeat("0", 64)}
+	if err := toolVersionsAdmitted(p, labelled, operatorJournalVersion); err == nil || !strings.Contains(err.Error(), "declares toolVersions, a version-"+admissionReadV2Version+" member") {
+		t.Fatalf("below the version: %v", err)
+	}
+	if err := toolVersionsAdmitted(p, labelled, admissionReadV2Version); err != nil {
+		t.Fatalf("at the version: %v", err)
+	}
+	if err := toolVersionsAdmitted(p, binding{platform: "tickets", live: &operation{name: "live"}}, operatorJournalVersion); err != nil {
+		t.Fatalf("no labels, below the version: %v", err)
+	}
+	op := func(name, effect string) string {
+		return `{"shape":"mcp","server":{"url":"http://127.0.0.1:1/mcp","bearer":"token"},"tools":["update"],"toolTaxonomies":{"update":{"operation":"` + effect + `","effect":"` + effect + `"}},"toolVersions":{"update":"1.0"},"licence":"fixture"}`
+	}
+	for _, c := range []struct {
+		name, effect string
+		refused      bool
+	}{{"write", "act", true}, {"live", "act", false}} {
+		v, err := parseJSON([]byte(op(c.name, c.effect)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = parseTaxonomyOperation(v.(*vObject), c.name)
+		if refused := err != nil && strings.Contains(err.Error(), "toolVersions labels a listed tool"); refused != c.refused {
+			t.Fatalf("operation %s: %v", c.name, err)
+		}
 	}
 }

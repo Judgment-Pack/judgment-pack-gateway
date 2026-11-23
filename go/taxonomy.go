@@ -216,6 +216,11 @@ func parseTaxonomyOperation(raw *vObject, name string) (operation, error) {
 	if op.toolVersions, err = parseToolVersions(raw, op.tools); err != nil {
 		return op, err
 	}
+	// A label is served in the listing's _meta, and a write operation's
+	// tools are never listed: a label there would be read and never shown.
+	if name == "write" && op.toolVersions != nil {
+		return op, fmt.Errorf("operation write: toolVersions labels a listed tool, and a write operation's tools are never listed")
+	}
 	if _, err := ownerDeclaration(op); err != nil {
 		return op, err
 	}
