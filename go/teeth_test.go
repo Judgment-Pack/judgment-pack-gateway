@@ -2359,6 +2359,9 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 	sealScopeObserving = append(sealScopeObserving, sealSaltedObserving...)
 	retentionStating = append(append(retentionStating, sessionRemovalStating...), sealScopeObserving...)
 	retentionObserving = append(append(retentionObserving, sessionRemovalObserving...), sealScopeObserving...)
+	// the approval observation (ADR-0054), stated beside decision-record-not-compared
+	retentionStating = append(retentionStating, "v3-action-single-approval-cited-again")
+	retentionObserving = append(retentionObserving, "v3-action-single-approval-cited-again")
 	supplying := []string{
 		"v3-artifact-missing-no-record", "v3-artifact-not-retained-supplied-elsewhere",
 		"v3-artifact-not-retained-supplied-mismatch", "v3-artifact-not-retained-supplied",
