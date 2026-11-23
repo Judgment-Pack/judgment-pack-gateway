@@ -1,0 +1,14 @@
+{
+  "name": "version-two",
+  "note": "A dry-run receipt of dryRunVersion \"2\", otherwise valid and signed: only \"1\" is this form, so it is malformed. As a receipt, malformed.",
+  "receipt": "{\"action\":{\"approvals\":[{\"digest\":\"sha256:63b0a6cd7c8d483f3b8dddf986c89c8c226f4842ff5ab940d70ecfaacaa42626\",\"id\":\"change-1\",\"kind\":\"single\"}],\"cites\":[{\"callIndex\":0,\"sessionId\":\"s2\",\"signature\":\"ea1231645765ed1a0f27972f6cfbbc9d1a057f673101629801f9f30cf7e8fc704a535f17591f3740f4c6f3644fbf167eef93afb886d20a93f33025131083a60b\"}],\"decision\":{\"packDigest\":\"sha256:4e03c5e500d33132d9bda1452f82e2258acfa7ff8e45146796010a89f34cd081\",\"recordDigest\":\"sha256:c9dea9278f1c5eb9f89c3faf802219b4b41e1c1be4b6fbbe44eb4969647c141d\"},\"request\":\"sha256:b461db8d103fcf566d3cf666587eb1eae33ce4c7e471099a8777761378eaeb3a\",\"requester\":{\"issuer\":\"https://login.example.com/\",\"subject\":\"approver@example.com\",\"tokenDigest\":\"sha256:8e8b713e659574d3ae8537642bb19084ab07060d7f2095e737e97af03254386e\"},\"tool\":{\"endpoint\":\"https://mcp.example.com/\",\"name\":\"update_ticket\",\"shape\":\"mcp\"}},\"authority\":\"gateway:corpus\",\"dryRunVersion\":\"2\",\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"servedAt\":\"2026-09-12T00:00:03Z\",\"signature\":\"d3e3859cdb98c9f0f49cd69dfc141061d4cab97d76e33a74100a6c003747791aa78ec01121a5f1d175812f0ab34ebc67fdb9c73db7d5ede654ad2987df086c08\",\"source\":\"tickets/write\"}",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "status": "malformed"
+      }
+    ]
+  },
+  "asReceipt": "malformed"
+}

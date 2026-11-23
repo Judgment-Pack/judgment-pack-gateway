@@ -115,7 +115,8 @@ after it reached by nothing, so the sessions under them are `key-mismatch` and
 `unregistered-session` beside the walk's finding, which a verifier that follows
 the broken rotation would grade `ok`. The keys rotated to are made from published
 seeds, as `TEST-SEED` is: the SHA-256 of the ASCII text `judgment-pack-gateway
-corpus rotation key 1`, and of the same text ending in `2`. Like `TEST-SEED` they
+corpus rotation key 1`, and of the same text ending in `2`; the key-history vectors also use rotation
+key 3, the same text ending in `3`. Like `TEST-SEED` they
 sign nothing real and must never be used by a deployment. A vector whose walk
 followed a rotation gives `rotations` in `expected`, `{"count", "keyId"}`, and a
 runner compares it whole with the implementation's; a vector without the member
@@ -240,7 +241,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 223 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 234 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). Ten of them,
@@ -550,19 +551,61 @@ runs them in process, with no process-contract command, whatever implementation 
 valid P-256 line, a high-S one, a DER one, one with an unknown `alg`, one with `alg` on a key listed
 as Ed25519, and a P-256 signature with no `alg`.
 
-**Approval citations** (ADR-0054 decision 3; `SPEC.md` §1.2a, `action.approvals`). Ten of
+**Scoped actions and their read-backs** (ADR-0054 decision 1; `SPEC.md` §1.2a, §1.2b).
+`v3-action-scope-valid` holds an action receipt in a session of a scope identifier, carrying `scope`
+and `scopeSalt`, under a version 3 seal: `ok`. `v3-action-scope-seal-mismatch` seals it over another
+scope: `seal-scope-mismatch`. `v3-readback-scope-same` holds an uncertain action and its read-back of
+one scope: the read-back resolves it, and every receipt is `ok`. In `v3-readback-scope-differs`
+(two scopes), `v3-readback-scoped-of-unscoped-action` and `v3-readback-unscoped-of-scoped-action`, the
+read-back is in another session, of another scope or of none, and is
+`action-reconciliation-unresolved`; v0.38.0 makes no such check.
+
+**`key-history/*.json`** — 29 vectors, verify-only, for the key history a consumer of
+`GET /publickey/history` checks (`SPEC.md` §3e, both versions; ADR-0055 §9), which no verifier of a store
+reads. Each holds `pin`, the name of a published key (`TEST-PUBLIC-KEY` in every vector), or
+`{"alg": "ES256", "key": <hex>}`; `requireVersion`, optional, `"2"`; `history`, the answer's exact bytes
+as a JSON string; and `expected`: `{"accepted": {"keys": <distinct keys>, "inForce": <keyId of the last
+entry>}}`, or `{"refused": <class>}`. The class is one of eight, and is part of the corpus contract: a
+check that refuses a vector for another class disagrees with it. `version` is a version unknown or not
+the one required; `form`, the members, their forms and their presence; `key`, a key rule, a `keyId`, a key
+repeated, or a first key that is not the key pinned or the key at the boundary; `rotation`, a pair that is
+not a rotation from the entry before; `ordinal`, an ordinal that is not its place in its store; `time`,
+`validFrom`, `validTo`, `rotatedAt` or `continuedAt` out of order; `continuation`, a continuation of the
+wrong form, signed by the wrong key, or of the wrong `keyId` or `alg`; and `carried`, a `keyHistoryDigest`
+that is not the history before. `gateway conform` runs them in process, whatever implementation is under
+test, and `verify-ts`'s corpus test runs them through its own check. Eight are accepted: one key under
+version `"1"`; `kh-v1-ordinal-given-twice`, two rotations of ordinal 1 that version `"1"` accepts; one
+store; two stores across a continuation, with the same two statements; three stores under one key; a
+`base`; a `base` holding the repeated ordinal; and a continuation a P-256 key signs. Twenty-one are refused:
+`kh-v2-ordinal-given-twice`, the same two statements in one store, `ordinal`, which is the pair a reader of
+the history alone could not tell apart before version `"2"`; an ordinal skipped, and ordinals that keep
+counting across a store, `ordinal`; a store without a continuation, a `base` of version `"2"`, a store
+with an unknown member, and four values the canonical form does not hold (a lone surrogate as
+`keyHistoryVersion`, the number `1.0` as `keyHistoryVersion`, a lone surrogate inside a `keyRotation` string
+and one inside a continuation string), `form`; a continuation signed by another key, with one bit of its signature
+changed, and with its `alg` removed, `continuation`; a digest naming the version `"1"` bytes, and a history
+before the continuation changed, `carried`; a store that does not start at the key before it, and a key
+repeated across stores, `key`; a continuation stamped before its key or after the next rotation, `time`;
+version `"1"` where `"2"` is required, and version `"3"`, `version`. The statements and continuations were
+signed once, from `TEST-SEED`, the published rotation seeds and `TEST-P256-SCALAR`, by a script
+independent of this repository (its own canonical form, Node's Ed25519 and ECDSA P-256, low-S), and are
+frozen: no test signs them again.
+
+**Approval citations** (ADR-0054 decision 3; `SPEC.md` §1.2a, `action.approvals`). Fifteen of
 `v3/stores` hold an action receipt that cites approval records. `v3-action-approvals-valid` cites a
-single and a standing record and is `ok`. Seven are `malformed` at §1.4 order 1, one for each rule of
+single and a standing record and is `ok`. Twelve are `malformed` at §1.4 order 1, one for each rule of
 the form: a `kind` other than `"single"` or `"standing"` (`-kind-other`), a digest in uppercase
 (`-digest-uppercase`), an id holding a tab (`-id-control-character`), an empty array (`-empty`), nine
-entries (`-nine-entries`), one id twice (`-id-twice`), and an entry with a fourth member
-(`-member-extra`). `-appended-after-signing` adds a well-formed citation after the receipt was signed,
+entries (`-nine-entries`), one id twice (`-id-twice`), an entry with a fourth member
+(`-member-extra`), an object in place of the array (`-not-an-array`), an entry that is a string
+(`-entry-not-an-object`), an entry with no digest (`-entry-member-missing`), a digest with no
+`"sha256:"` prefix (`-digest-prefix-missing`), and an empty id (`-id-empty`). `-appended-after-signing` adds a well-formed citation after the receipt was signed,
 and is `signature-mismatch`. `v3-action-single-approval-cited-again` holds two action receipts that
 cite one single record, by id and digest: both are `ok`, and each carries the observation
 `approval-cited-again`. v0.38.0, which does not read the member, returns `ok` for every one but
 `-appended-after-signing`, and makes no such observation.
 
-**`dry-run/*.json`** — 8 vectors for the dry-run receipt (`SPEC.md` §1.2c), which `gateway
+**`dry-run/*.json`** — 10 vectors for the dry-run receipt (`SPEC.md` §1.2c), which `gateway
 verify-dry-run` and verify-ts's `verifyDryRun` read and no receipt verifier accepts. Each holds the
 receipt's bytes as `receipt`, `publicKeyAlg` `"ES256"` where it is signed by the P-256 test key,
 `expected`, the report's `ok` and the statuses of its `findings` (`malformed`, `key-mismatch` or

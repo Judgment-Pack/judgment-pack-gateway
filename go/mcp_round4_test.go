@@ -135,7 +135,7 @@ func TestSignerGate(t *testing.T) {
 	if code, body := acquire("gate-3"); code != http.StatusServiceUnavailable || !strings.Contains(fmt.Sprint(body["error"]), "closed for maintenance") {
 		t.Fatalf("an acquisition under a closed gate: %d %v", code, body)
 	}
-	if err := f.service.admitAction("gate-4"); !errors.As(err, new(unavailable)) {
+	if err := f.service.admitAction("gate-4", ""); !errors.As(err, new(unavailable)) {
 		t.Fatalf("an action under a closed gate: %v", err)
 	}
 	if code, body := post(t, f.signer, "/seal", `{"session":"gate-1"}`); code != http.StatusOK {

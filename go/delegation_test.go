@@ -476,7 +476,7 @@ func TestDelegatedAdmissionRepeatsTheEarlierSteps(t *testing.T) {
 	}
 	h.setNow(time.Date(2026, 10, 30, 1, 0, 0, 0, time.UTC))
 	keys := h.d.keys["desk"]
-	h.d.keys["desk"] = map[string]ed25519.PublicKey{}
+	h.d.keys["desk"] = map[string]heldKey{}
 	if _, r := h.d.admitDelegated(who.delegated, call); r == nil || r.name != refusalKeyMismatch {
 		t.Fatalf("an unpinned key: %v", r)
 	}

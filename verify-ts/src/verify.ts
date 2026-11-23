@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { canonical } from "./canon.ts";
+import { continuationOf, isContinuation } from "./continuation.ts";
 import { citations } from "./citations.ts";
 import type { Citation } from "./citations.ts";
 import {
@@ -1852,58 +1853,6 @@ export function writeVerdict(v: Verdict, write: (text: string) => void): void {
   write(`]${rotations}${cut}}\n`);
 }
 
-// §3d: a registry line is a store continuation when it is one JSON object,
-// no name given twice, whose kind is store-continuation.
-function isContinuation(v: Value | null): boolean {
-  if (v === null || v.type !== "object" || hasDuplicate(v)) {
-    return false;
-  }
-  const kind = member(v, "kind");
-  return kind?.type === "string" && kind.value === "store-continuation";
-}
-
-// keyHistoryDigest names the key history the rotation carried beside the
-// new registry (§3e), by the SHA-256 of its bytes, of previousDigest's form;
-// a verifier is not given that history, and holds the member to its form.
-const continuationMembers = ["kind", "continuationVersion", "continuedAt", "keyId", "previousLines", "previousDigest", "keyHistoryDigest", "signature"];
-
-// continuationOf is a store continuation that holds its form and is signed
-// by the key in force at its line, or null.
-function continuationOf(v: Value, key: ReachedKey): { readonly keyId: string; readonly lines: bigint; readonly digest: string } | null {
-  if (v.type !== "object") {
-    return null;
-  }
-  // alg among them on a continuation a P-256 key signs (ADR-0053 §2)
-  const names = member(v, "alg") !== undefined ? [...continuationMembers, "alg"] : continuationMembers;
-  const alg = recordAlg(v, "alg");
-  if (alg === null || v.members.length !== names.length || !v.members.every((m) => names.includes(m.name))) {
-    return null;
-  }
-  const s = (name: string, form: RegExp): string | null => {
-    const m = member(v, name);
-    return m?.type === "string" && form.test(m.value) ? m.value : null;
-  };
-  const version = s("continuationVersion", /^1$/);
-  const at = s("continuedAt", /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
-  const keyId = s("keyId", /^[0-9a-f]{32}$/);
-  const last = s("previousDigest", /^[0-9a-f]{64}$/);
-  const history = s("keyHistoryDigest", /^[0-9a-f]{64}$/);
-  const signature = s("signature", /^[0-9a-f]{128}$/);
-  const lines = member(v, "previousLines");
-  if (version === null || at === null || keyId === null || last === null || history === null || signature === null || lines?.type !== "number" || !/^(0|[1-9][0-9]*)$/.test(lines.text)) {
-    return null;
-  }
-  const body = canonical({ type: "object", members: v.members.filter((m) => m.name !== "signature") });
-  if (keyId !== key.keyId || alg !== key.alg || body === null) {
-    return null;
-  }
-  const signed = Buffer.concat([Buffer.from("judgment-pack-gateway/store-continuation/1:", "utf8"), body]);
-  if (!verifyByAlg(alg, key, signed, signature)) {
-    return null;
-  }
-  return { keyId, lines: BigInt(lines.text), digest: last };
-}
-
 // registryLink is what a store continuation names of a registry (§3d): its
 // line count, an empty piece after the last line feed no line, and the
 // SHA-256 of its bytes, whole.
@@ -2379,3 +2328,8 @@ function judgeJournals(root: string, registryPath: string, keys: readonly Reache
   }
   return { findings, observations };
 }
+
+// The key history's consumer check (SPEC.md §3e, both versions; ADR-0055),
+// beside the store verifier.
+export { checkKeyHistory } from "./key-history.ts";
+export type { KeyHistoryAnswer, KeyHistoryClass, KeyHistoryEntry, KeyHistoryPin } from "./key-history.ts";

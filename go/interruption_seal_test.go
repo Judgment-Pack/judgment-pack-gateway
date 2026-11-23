@@ -124,7 +124,7 @@ func TestASealAfterInterruptionAnchorsTheSessionItSeals(t *testing.T) {
 	}
 
 	// the engine's own /verify is the plain verdict
-	engine, err := verifyAsEngine(g.storeRoot, g.regPath, "gateway:test", "", edKey(g.publicKey))
+	engine, err := verifyAsEngine(g.storeRoot, g.regPath, "gateway:test", "", nil, edKey(g.publicKey))
 	if err != nil {
 		t.Fatal(err)
 	}

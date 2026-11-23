@@ -1,0 +1,12 @@
+{
+  "name": "kh-v2-p256-continuation",
+  "note": "A rotation to the P-256 key, then a store continuation it signs, alg ES256.",
+  "pin": "TEST-PUBLIC-KEY",
+  "history": "{\"keyHistoryVersion\":\"2\",\"stores\":[{\"keys\":[{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"publicKey\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\",\"validTo\":\"2026-08-01T01:00:00Z\"},{\"alg\":\"ES256\",\"keyContinuation\":\"{\\\"alg\\\":\\\"ES256\\\",\\\"keyId\\\":\\\"dbdb99c64b3d511f72c88fb6c054da73\\\",\\\"kind\\\":\\\"key-continuation\\\",\\\"previous\\\":\\\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\\\",\\\"previousKeyId\\\":\\\"ddb406e95cad582adc111a7d6fbff25d\\\",\\\"rotatedAt\\\":\\\"2026-08-01T01:00:00Z\\\",\\\"rotation\\\":1,\\\"rotationVersion\\\":\\\"1\\\",\\\"signature\\\":\\\"466964cdb006ef1696c971de881f78698d6ff19626e0dc491e2e45cf35c36eb03834397bafaf27c88cbb8adb9f439909261ba7de5de62a8c2180c649ad36b415\\\"}\",\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"keyRotation\":\"{\\\"keyId\\\":\\\"ddb406e95cad582adc111a7d6fbff25d\\\",\\\"kind\\\":\\\"key-rotation\\\",\\\"next\\\":\\\"026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16\\\",\\\"nextAlg\\\":\\\"ES256\\\",\\\"nextKeyId\\\":\\\"dbdb99c64b3d511f72c88fb6c054da73\\\",\\\"rotatedAt\\\":\\\"2026-08-01T01:00:00Z\\\",\\\"rotation\\\":1,\\\"rotationVersion\\\":\\\"1\\\",\\\"signature\\\":\\\"a00263bc5ab21c446544cc21400bedb152f221c4853ba4216807f61d4187d851bcc188bd09f3a4c33487335ac4f0c97274a6b7d6b3003ff63068700cb7890405\\\"}\",\"publicKey\":\"026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16\",\"validFrom\":\"2026-08-01T01:00:00Z\"}]},{\"continuation\":\"{\\\"alg\\\":\\\"ES256\\\",\\\"continuationVersion\\\":\\\"1\\\",\\\"continuedAt\\\":\\\"2026-08-01T02:00:00Z\\\",\\\"keyHistoryDigest\\\":\\\"d5a93f0bc82a242da6607cc66248b053861f868fcd405feb4729354c3a3a23ae\\\",\\\"keyId\\\":\\\"dbdb99c64b3d511f72c88fb6c054da73\\\",\\\"kind\\\":\\\"store-continuation\\\",\\\"previousDigest\\\":\\\"176a58b7ceb49e932780dd93ed9c64fb2c04f325b6461d40ab5d2b28c6dc8f9a\\\",\\\"previousLines\\\":9,\\\"signature\\\":\\\"99aee4ce1a18c15e84a9fb09848a2a582409978ba7079658ac58247156753097330ba236e9c23d9da29734d25f6b948115f96648c85f466f0c0a771d60fc4d13\\\"}\",\"keys\":[{\"alg\":\"ES256\",\"keyId\":\"dbdb99c64b3d511f72c88fb6c054da73\",\"publicKey\":\"026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16\"}]}]}",
+  "expected": {
+    "accepted": {
+      "keys": 2,
+      "inForce": "dbdb99c64b3d511f72c88fb6c054da73"
+    }
+  }
+}

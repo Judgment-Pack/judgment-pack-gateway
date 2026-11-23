@@ -384,7 +384,8 @@ has not been measured.
 The journal is compacted offline, without losing dispatch history, by this procedure.
 `gateway journal compact --store <dir> --archive <dir> --retention <duration>` does its
 steps 3 and 4 (below, "The command"); stopping the gateway processes, the backup and the
-restart stay the operator's.
+restart stay the operator's. Each scope identifier's journal, `actions/scopes/<hash>/`
+(ADR-0054), is compacted by the same procedure as the journal of none.
 
 1. Stop every gateway process that serves the store. The per-key lock holds one
    process only, and the journal's exclusive creation does not guard against a

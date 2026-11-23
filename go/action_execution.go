@@ -263,7 +263,7 @@ func (r *actionReconciliationRequest) member(result value) *vObject {
 // reconcileAction answers an uncertain key by its declared read-back:
 // one the key lookup found uncertain (lookup), or one this request's own
 // dispatch left uncertain.
-func (g *gatewayService) reconcileAction(session, platform string, args value, who *caller, key string, recovery *actionRecovery, prior map[string]any, lookup bool) (map[string]any, error) {
+func (g *gatewayService) reconcileAction(session, platform, scope string, args value, who *caller, key string, recovery *actionRecovery, prior map[string]any, lookup bool) (map[string]any, error) {
 	if recovery == nil || recovery.readBack == nil {
 		return nil, &actionUncertain{"action-reconciliation-unavailable", prior}
 	}
@@ -305,7 +305,10 @@ func (g *gatewayService) reconcileAction(session, platform string, args value, w
 		cited.set(name, value)
 	}
 	r := &actionReconciliationRequest{action: cited, key: key, contract: recovery.digest(), read: recovery.readBack}
-	read, err := g.acquireWithReconciliation(session, platform+"/live", "", request, who, r)
+	// A scoped action's read-back runs its platform's live source in the
+	// action's session, of the same scope, and its receipt carries the scope
+	// (ADR-0054, decision 1).
+	read, err := g.acquireWithScope(session, platform+"/live", "", requestedScope{value: scope, named: scope != ""}, request, who, r)
 	var refused *readBackRefused
 	if errors.As(err, &refused) {
 		if refused.grant {

@@ -456,8 +456,9 @@ func TestThePostgresKindServesScopedPlatformsAndExportsWhatTheFilesystemKindWoul
 	if bytes.Count(data, []byte(`"sealVersion":"3"`)) != 2 {
 		t.Fatalf("the registry holds other than two seals of version 3:\n%s", data)
 	}
-	// a sealed session is refused as sealed, whatever the scope asking
-	if code, got := post(t, server, "/acquire", `{"session":"s-a","source":"never","arguments":{"q":"acme"}}`); code != http.StatusBadRequest || fmt.Sprint(got["error"]) != "session is sealed: s-a" {
+	// a sealed session this process holds is refused for its scope first,
+	// before its seal (ADR-0036; ADR-0054 decision 1)
+	if code, got := post(t, server, "/acquire", `{"session":"s-a","source":"never","arguments":{"q":"acme"}}`); code != http.StatusBadRequest || fmt.Sprint(got["error"]) != fmt.Sprintf(refusalOtherScope, "s-a") {
 		t.Fatalf("an acquisition of no scope into sealed s-a: %d %v", code, got)
 	}
 

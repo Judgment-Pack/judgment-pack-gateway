@@ -1520,7 +1520,8 @@ a service under a signed delegation from an issuing host, the Desk in the refere
 
 It requires `identity`: the issuing host asks for a credential, and revokes one, with a token
 from that issuer whose subject is the host's `requester`. Each key is held to the key rule of
-SPEC.md §8.4 when the file is loaded. The admission read goes to `admission.url`, which must be
+SPEC.md §8.4 when the file is loaded; from version 41 a key may also be a P-256 issuing host's
+("P-256 issuing-host keys (engine version 41)", below). The admission read goes to `admission.url`, which must be
 `https://`, with the token in `admission.credential`, read once at start; a missing, late or
 unreadable answer refuses the call. `operators` are the subjects that may reach a delegated
 action's retained evidence or read-back as the gateway's operator. `bearerReadOnly` admits a
@@ -2936,9 +2937,9 @@ ring's location is the operator's.
 
 An earlier gateway refuses a version-40 file by its version.
 
-## The operator journal (engine version `operatorJournalVersion`)
+## The operator journal (ADR-0056; engine version 44)
 
-The version `operatorJournalVersion` (ADR-0056) adds no member. From it, `gateway retain`,
+Engine version 44 (`operatorJournalVersion` in `go/engine.go`) adds no member. From it, `gateway retain`,
 `gateway remove-scope`, `gateway remove-artifact`, `gateway seal-open` and `gateway store rotate`
 given the configuration begin the store's operator journal, `journals/operator.jsonl`, and write one
 signed entry for each call that changes the store. A store that holds the journal is written to by
@@ -2946,7 +2947,7 @@ every one of them, whatever the configuration's version and whether it is given 
 configuration of an earlier version, on a store with no journal, writes none, as before. Roll the
 commands back to an earlier release only with the version lowered on a store that holds no journal:
 an earlier command makes its change with no entry, which `gateway verify` reports as
-`journal-entry-missing`. The number is assigned in merge order.
+`journal-entry-missing`.
 
 On the PostgreSQL kind the journal is the table `gateway.journal_records`, made by migration 0010
 (schema version 10), which is one-way: back the database up before migrating, as
@@ -2956,22 +2957,90 @@ A removal call that finds the removal file ending in an unterminated line refuse
 loads as a removal record, naming the file and saying to cut it back to the end of its last complete
 line; otherwise its entry's range starts at that line, so ending it covers it.
 
-## Scoped writes, dry-runs and approvals (ADR-0054; version to be assigned)
+## P-256 issuing-host keys (engine version 41)
 
-ADR-0054 adds, from the engine configuration version it assigns (`actScopeVersion` in
-`go/engine.go`, which this engine does not yet read, so a file of that version is refused by its
-version):
+Version 41 lets `delegation.hosts[].keys` pin an issuing host's ECDSA P-256 key, so that the host
+may sign delegation statements with it (spec RFC 0030, amendment of 2026-11-22; SPEC.md §11.1,
+§11.2). It adds no member. The key is written as `retention.acknowledgedBy` writes one from version
+40:
+
+```json
+"keys": [
+  "<the host's Ed25519 public key, 64 lowercase hex characters>",
+  {"alg": "ES256", "key": "<the host's P-256 compressed point, 66 lowercase hex characters>"}
+]
+```
+
+- **The Ed25519 form is unchanged.** A string of 64 lowercase hexadecimal characters is an Ed25519
+  key at every version, held to SPEC.md §8.4's key rule as before.
+- **The P-256 form is an object.** `{"alg": "ES256", "key": …}`, exactly those two members, the key
+  a compressed point (`02` or `03` and the 32 bytes of x) that exists on the curve. A point that
+  fails the rule is refused as `is not a sound P-256 public key`.
+- **A bare 66-character string is refused,** naming both forms: taking it would choose the algorithm
+  from the key's length. So is every other entry, the uncompressed point among them.
+- **Before version 41** the object is refused by name, with the version it needs.
+- **What a pinned P-256 key admits.** A delegation statement holding `alg: "ES256"` whose `keyId` is
+  the point's key id verifies under it, by r||s at low S. A key of one algorithm never verifies a
+  link of the other: such a link is `key-mismatch`. A host may pin both while it moves from one
+  algorithm to the other, and a chain may mix them, link by link.
+
+An earlier gateway refuses a version-41 file by its version.
+
+## Scoped writes (ADR-0054; engine version 43)
+
+ADR-0054 adds, from engine version 43 (`actScopeVersion` in `go/engine.go`):
 
 - **`scope` beside `write: true`.** Such a platform is refused at load unless `identity.callerScopes`
   is an object (a write takes no `"unchecked"`) and the platform names its own `decisionRecords`
   directory: not the gateway's, not another scoped platform's, and not beneath or above either, held
   to the ownership and permission check at start the gateway's directory is held to. An `/act` of that
   scope finds its decision record there and nowhere else; unscoped writes keep the gateway's
-  directory. `gateway verify --decision-records` takes a directory that holds them all.
-- **The request members `scope`, `dryRun` and `approvals`** on `/act` (SPEC.md §6, "`/act`: a scope,
-  a dry-run and approvals").
+  directory. `/verify` looks for a scoped action's record in its scope's directories alone.
+  `gateway verify --decision-records` takes a directory that holds them all.
+  On a filesystem that does not tell case apart, two directories whose names differ only by case
+  are one directory, and neither check folds case: the load check compares the cleaned paths byte
+  for byte, and the start check compares them byte for byte once each part that exists is resolved
+  through its links. Such a pair can load as apart, so spell each scope's directory apart by more
+  than case.
+- **The request member `scope`** on `/act` (SPEC.md §6, "`/act`: a scope, a dry-run and
+  approvals"). A scoped key is kept in its scope's own journal, `actions/scopes/<hash>/`, which
+  `gateway journal compact` compacts by the rule of the journal of none, and `gateway remove-scope`
+  removes once no key there is pending.
 
-Below that version each member is refused by name, as before.
+Below that version `scope` and `decisionRecords` are refused by name, as before. The request
+members `dryRun` and `approvals` are read at no version yet: each is refused as a member `/act`
+does not read.
+
+## A key history that marks each store continuation (engine version 42)
+
+Version 42 adds one member, `keyHistoryVersion` (ADR-0055). Its one value is `"2"`: `/publickey/history`
+answers the key history of version `"2"` (SPEC.md §3e), which lists the history one store at a time, each
+store after the first after its registry's store continuation, so that a consumer refuses a rotation given
+twice or passed over from the history alone. Absent, the gateway answers version `"1"`, byte for byte as
+before.
+
+```json
+"keyHistoryVersion": "2"
+```
+
+- **One value.** Any other value is refused with `engine configuration: keyHistoryVersion is "2", or
+  absent`, and the member in a file of an earlier version is refused by that version.
+- **Who reads it.** `serve` and its SIGHUP rotation, and `gateway store rotate --config` and
+  `gateway store rotate-key --config`, which carry or hold the history the route answers. `rotate-key`,
+  and `store rotate` given by its flags, take the version the carried history implies.
+- **Forward only.** A store whose carried history is of version `"2"` answers `"2"` whatever the
+  configuration says: with the member removed, it keeps answering `"2"`. A store that never carried
+  version `"2"` goes back to `"1"` when the member is removed.
+- **A version 1 history carried before.** It is answered as `base`, where its bytes are `canon` of its
+  value; inside it the ordinal is still held to its form alone.
+- **Several instances on one database.** Set the member on every instance before the first continued
+  rotation. Until then an instance without it answers `"1"`, which is still valid for that store; nothing
+  refuses the mixed state.
+- **Upgrade every reader first.** A consumer of an earlier release refuses version `"2"` whole, and a
+  gateway of an earlier release on a store that carries it answers `500` at `/publickey/history` and
+  refuses the rotate commands.
+
+An earlier gateway refuses a version-42 file by its version.
 
 ## Keyed actions (engine version 14 and later)
 

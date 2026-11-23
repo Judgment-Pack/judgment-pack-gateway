@@ -1,0 +1,9 @@
+{
+  "name": "kh-v1-version-lone-surrogate",
+  "note": "keyHistoryVersion is the string of the lone surrogate U+D800, which the canonical form does not hold.",
+  "pin": "TEST-PUBLIC-KEY",
+  "history": "{\"keyHistoryVersion\":\"\\ud800\",\"keys\":[]}",
+  "expected": {
+    "refused": "form"
+  }
+}

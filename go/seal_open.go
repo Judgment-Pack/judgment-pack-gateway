@@ -373,7 +373,10 @@ type sealOpenOptions struct {
 	// keyVersion and keyPublic are the configuration's signingKeyVersion
 	// and signingPublicKey: the key service's key version the command signs
 	// through, "" where the seed signs (ADR-0050)
-	keyAlg                              string
+	keyAlg string
+	// keyHistoryVersion is the configuration's keyHistoryVersion, "" by
+	// the flags (ADR-0055 §4)
+	keyHistoryVersion                   string
 	keyVersion, keyPublic               string
 	store, registry, authority, session string
 	seedNames                           []string
@@ -464,6 +467,8 @@ func parseSealOpen(args []string) (sealOpenOptions, string) {
 		// names the kind (seal_open_pg.go)
 		o.keyVersion, o.keyPublic, o.keyAlg = cfg.signingKeyVersion, cfg.signingPublicKey, cfg.signingKeyAlgorithm
 		o.engineVersion = cfg.version
+		// the key history store rotate carries (ADR-0055 §4)
+		o.keyHistoryVersion = cfg.keyHistoryVersion
 		o.store, o.registry, o.authority, o.seedNames, o.storage, o.receiptSink = cfg.store, cfg.registry, cfg.authority, []string{cfg.seed}, cfg.storage, cfg.receiptSink
 		o.labels = versionAtLeast(cfg.version, labelsVersion)
 		// the seed by the name it resolves to as well, as serve --config

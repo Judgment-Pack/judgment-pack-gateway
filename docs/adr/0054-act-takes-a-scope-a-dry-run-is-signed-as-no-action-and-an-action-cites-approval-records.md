@@ -132,6 +132,8 @@ both of the following hold:
   names is there, whoever's record it is. Second, a write in one scope must not rest on a decision
   made for another. Unscoped writes keep the gateway's directory. `gateway verify --decision-records`
   takes a directory that holds them all, since its walk is recursive.
+  *2026-11-22:* `/verify`, the engine's own verdict, reads the scope's own `decisionRecords`
+  directory for a scoped action's record, and no other scope's directory or the gateway's.
 
 Below that version both members are refused by name, as today. `writeRequesters` holds as before, and
 the requester must pass both it and the caller-scope check. The MCP front still serves no write tool.

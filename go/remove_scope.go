@@ -305,6 +305,14 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 		out.refused = append(refused, "nothing was removed")
 		return out, nil
 	}
+	// The scope's action journal goes after its sessions (ADR-0054), and the
+	// call is refused, naming each key, while one there is pending.
+	if pending, err := pendingScopedKeys(storeRoot, o.scope, all); err != nil {
+		return out, fmt.Errorf("the scope identifier's action journal could not be read, and nothing was removed: %v", err)
+	} else if len(pending) > 0 {
+		out.refused = append(pending, "nothing was removed")
+		return out, nil
+	}
 	// every label of the scope's namespace goes with its sessions (ADR-0051),
 	// and where the scope holds no session, as where a label was minted and
 	// its source failed, alone: a label is the caller's words
@@ -312,6 +320,9 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 		return out, fmt.Errorf("the store's session labels could not be read, and nothing was removed: %v", err)
 	}
 	if len(plan.sessions) == 0 && len(plan.empty) == 0 {
+		if err := removeScopedActionJournal(storeRoot, o.scope, &out); err != nil {
+			return out, err
+		}
 		if len(plan.labels) == 0 {
 			out.notes = append(out.notes, "no session of the scope identifier is in the store; nothing was removed")
 			return out, nil
@@ -370,6 +381,9 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 	}
 
 	if err := carryOutRemoval(storeRoot, plan); err != nil {
+		return out, err
+	}
+	if err := removeScopedActionJournal(storeRoot, o.scope, &out); err != nil {
 		return out, err
 	}
 	for _, session := range plan.empty {

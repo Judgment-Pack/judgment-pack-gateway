@@ -140,7 +140,7 @@ Rolling the binary back across 0010 is therefore a refusal, never a run on a sch
 and the upgrade notes say so.
 
 **The engine version is unchanged.** Rows are written from `operatorJournalVersion`, or once the
-store holds the journal (section 7). Its number is a placeholder, set at merge.
+store holds the journal (section 7). Its number is 44.
 
 ### B. A torn tail of the removal file
 
@@ -653,7 +653,7 @@ instance writes again, and whether its rate allows one key-service signature for
   - `go/seal_open.go` and `go/seal_open_pg.go`;
   - `go/store_rotate.go` and `go/store_rotate_pg.go`;
   - `go/verify.go` (step 9, `--require-journal`, `journal-torn-tail`), `go/export.go` (path, manifest
-    and reader), and `go/engine.go` (`operatorJournalVersion`, its number a placeholder set at merge);
+    and reader), and `go/engine.go` (`operatorJournalVersion`, 44);
   - `go/operator_journal.go` for Amendment B: the uncovered-bytes judgment, and a call's `removalFrom`
     at a torn last piece that does not parse;
   - `gateway conform`'s process contract, which accepts `--require-journal` as `verify` does;

@@ -34,3 +34,7 @@ go/store_pg/** -text
 
 # The Graph stream fixtures are served as written; a status file is read line by line.
 testdata/microsoft-graph-streams/** -text
+
+# The delegation statement cases are the spec's frozen bytes, held to the SHA-256 their README
+# records, so no checkout may convert a line ending in them.
+testdata/delegation/** -text
