@@ -584,6 +584,11 @@ func TestOperatorJournalExportOlderReaderRefuses(t *testing.T) {
 	if !exportPathWritten("store/journals/operator.jsonl") || exportPathWritten("store/journals/operator.txt") || exportPathWritten("store/journals/Operator.jsonl") {
 		t.Fatal("the journal paths an export writes")
 	}
+	// a journal this release does not read, though its name is a journal's
+	// name, is not a path an export writes, so a reader refuses it by path
+	if exportPathWritten("store/journals/refusal-west.jsonl") {
+		t.Fatal("an export reader takes a journal this release does not read")
+	}
 	manifest := filepath.Join(out, "manifest.json")
 	text := readFile(t, manifest)
 	unknown := strings.Replace(text, `"store/journals/operator.jsonl"`, `"store/journals/operator.txt"`, 1)

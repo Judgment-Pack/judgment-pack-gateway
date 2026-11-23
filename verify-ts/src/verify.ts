@@ -2295,6 +2295,25 @@ function readUnder(root: string, ...names: string[]): Buffer | "absent" | "other
 function judgeJournals(root: string, registryPath: string, keys: readonly ReachedKey[], continued: boolean, required: readonly string[]): { findings: Finding[]; observations: Finding[] } {
   const findings: Finding[] = [];
   const observations: Finding[] = [];
+  // any file of journals/ but the operator journal's two is journal-unknown,
+  // by its name, in name order: a journal this verifier cannot judge is never
+  // passed over as though it held
+  const dir = path.join(root, "journals");
+  let entries: string[] = [];
+  try {
+    if (fs.lstatSync(dir).isDirectory()) {
+      entries = fs.readdirSync(dir).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT" && (err as NodeJS.ErrnoException).code !== "ENOTDIR") {
+      throw err;
+    }
+  }
+  for (const name of entries) {
+    if (name !== "operator.jsonl" && name !== "operator.pending") {
+      findings.push([["status", "journal-unknown"], ["file", name]]);
+    }
+  }
   const read = readUnder(root, "journals", "operator.jsonl");
   const data = typeof read === "string" ? Buffer.alloc(0) : read;
   const pending = readUnder(root, "journals", "operator.pending") !== "absent";
