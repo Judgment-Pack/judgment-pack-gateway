@@ -877,6 +877,13 @@ forwarding, follow it. Where R2 departs from the text above:
   back. No export carries a key (section 8): the export check names one put beside an export's
   journals `unlisted`, as any file its manifest does not list. verify-ts reads a store directory
   and has no export check, so a key there is named by the Go reader alone.
+- **2026-11-24, the one case where another scope's name reaches a verdict by scope.** A verdict by
+  scope reads its own scope's refusal journal alone, and passes over another scope's journal it
+  cannot read. `journals/` is still judged by name and type whole (SPEC.md §4 step 9): a directory,
+  a link or any other file that is not a regular file at another scope's journal name is named
+  `journal-unknown` in every verdict, by scope too. Nothing of that scope's journal is read for it.
+  A store so altered has been tampered with, as one holding a planted file of an unknown name has,
+  and that already fails every verdict.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on
