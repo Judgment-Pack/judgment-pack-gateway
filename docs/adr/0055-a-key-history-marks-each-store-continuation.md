@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-22
 deciders: maintainer
 ---
@@ -137,6 +137,8 @@ The mark it carries is a line that is already signed, and that both kinds alread
   continuation also names the history carried, by `keyHistoryDigest`. The line's SHA-256 is the old store's
   `store-rotated:` mark (§3d), so an operator who holds the old store can match the mark to the
   continuation.
+- **`previousDigest` stays as it is.** The issue's "the old store's last line digest" is met by the existing
+  whole-registry digest, which is stronger.
 - **What `base` holds.** `base` holds a version `"1"` history, carried into the first store by a gateway that
   answered `"1"`. It is the way onto version `"2"` for a store that already crossed a store rotation under
   version `"1"`. Without it, such a store and every store after it could never answer `"2"`: its carried
@@ -216,8 +218,10 @@ before it and the key itself both signed.
   - A new store answering `"2"` by default would break every consumer of v0.38.0 pointed at it, with no
     operator action.
 - **Once carried as `"2"`, always `"2"`.** A store whose carried history is of version `"2"` answers `"2"`
-  whatever the configuration says, because the opt-in is recorded in the carried bytes. Only a store that
-  never carried a version `"2"` history goes back to `"1"` when the member is removed.
+  whatever the configuration says, because the opt-in is recorded in the carried bytes. A store's key-history
+  version only moves forward, never back: with the member removed from a store that already carries a `"2"`
+  history, the gateway keeps answering `"2"`. Only a store that never carried a version `"2"` history goes
+  back to `"1"` when the member is removed.
 - **What `gateway store rotate` carries.** It carries the history the old store's gateway answers under the
   configuration the rotation is given. Given by its flags (filesystem kind), it uses no configuration, and
   carries `"2"` only where the old store already carries `"2"`. To opt a store in at its rotation, give
@@ -225,7 +229,10 @@ before it and the key itself both signed.
 - **Several instances on one database.** On the PostgreSQL kind, every instance on one database answers the
   one registry and row they share, by the version its own configuration names (or `"2"` where the row is
   `"2"`). During a configuration change, instances may answer different versions, and both answers hold.
-  Nothing refuses the mixed state (see the open questions).
+  Nothing refuses the mixed state for now. The window is before the first continued rotation: until then an
+  instance that has not opted in answers `"1"`, and that answer is still valid for that store. The release
+  notes tell operators to set the member on every instance before rotating. A start-lease column that holds
+  every instance to one version is a later record.
 - **How a consumer learns the version.** From the answer's own `keyHistoryVersion`, read before anything
   else. `/publickey` and `/posture` do not change.
 - **A consumer of v0.38.0 refuses version `"2"` whole.** Its check refuses any top-level member besides
@@ -392,7 +399,8 @@ Each vector holds:
   `{"refused": <class>}`.
 
 **The classes.** Both checks name one of these classes, so the two implementations are compared on the
-reason and not only on the verdict:
+reason and not only on the verdict. The eight classes are part of the corpus contract: a runner that names
+another class for a refused vector disagrees with it.
 
 | Class | Covers |
 |---|---|
@@ -411,7 +419,7 @@ independent of this repository, as ADR-0053 §11's are, and then frozen: they ar
 signs them again.
 
 **Keys.** `K0` is `TEST-PUBLIC-KEY`. `K1` and `K2` are the published corpus rotation keys 1 and 2. `K3` is
-rotation key 3, newly published by the same rule: the SHA-256 of the text ending in `3`. `P` is
+rotation key 3, published with this record by the existing seed rule: the SHA-256 of the text ending in `3`. `P` is
 `TEST-P256-PUBLIC-KEY`.
 
 **Notation.** `[K0, K1(1)]` is a store whose keys are K0, then K1 reached by a rotation of ordinal 1.
@@ -461,8 +469,13 @@ The pair that #578 asks for is `kh-v1-ordinal-given-twice` (accepted) and `kh-v2
   `keyHistoryVersion: "2"` is set in an engine configuration of version `<engine-version: assigned at
   merge>`. Every version `"1"` history, carried file, `gateway.key_history` row and `keyHistoryDigest`
   verifies as before.
-- **Upgrade consumers first.** Upgrade every consumer of `/publickey/history` before opting in. A consumer
-  of v0.38.0 or earlier refuses a version `"2"` answer whole.
+- **Upgrade consumers first.** Upgrade every consumer of `/publickey/history` before opting in. v0.38.0
+  refuses version `"2"` in two places: a consumer of v0.38.0 or earlier refuses a version `"2"` answer whole,
+  and a gateway of v0.38.0 on a store that carries one answers `500` at `/publickey/history` and refuses the
+  rotate commands (below). Operators therefore upgrade every reader before opting in.
+- **Several instances on one database.** Set the member on every instance before the first continued
+  rotation. Until then an instance that has not opted in answers `"1"`, which is still valid for that store;
+  nothing refuses the mixed state.
 - **No way back after a store rotation.** Once a store rotation carries a version `"2"` history, that store
   and every store after it answer `"2"` whatever the configuration says. There is no way back to `"1"` for
   them.
@@ -519,6 +532,9 @@ The pair that #578 asks for is `kh-v1-ordinal-given-twice` (accepted) and `kh-v2
 - `docs/postgresql-store.md`: the row holds either version.
 - This record's row in the ADR README.
 
+**Not in this pull request:** a command-line check for consumers (`gateway check-key-history`). It is a later
+record.
+
 **Tests (narrow: the touched packages):**
 
 - **Version `"1"` golden.** A fixed registry, and a fixed carried history, give today's bytes exactly, with
@@ -571,17 +587,25 @@ named):
   - a consumer needs the old registry's link checked from the history;
   - several instances on one database must be held to one version.
 
-### Open questions for the maintainer
+## Acceptance
 
-1. **Removing the member on a store that carries `"2"`.** Recommended: the sticky rule, as decided (answer
-   `"2"`). The alternative is to refuse the start with a sentence naming the member.
-2. **Mixed versions across PostgreSQL instances.** Recommended: leave them unrefused, since both answers
-   hold. The alternative is a `start_lease` column, as ADR-0051 used for labels, which needs a migration.
-3. **The refusal classes as a corpus contract.** Recommended: yes, as listed. The alternative is to compare
-   verdicts only.
-4. **A command-line check for consumers** (`gateway check-key-history`). Recommended: not in this pull
-   request.
-5. **Publishing corpus rotation key 3** by the existing seed rule. Recommended: yes.
+The maintainer accepted option 1 and answered the open questions as follows. Each answer is folded into the
+body above.
+
+1. **Removing the member on a store that carries `"2"`.** A store's key-history version only moves forward,
+   never back. With the engine member removed from a store that already carries a `"2"` history, the
+   gateway keeps answering `"2"` (decision 4).
+2. **Mixed versions across PostgreSQL instances.** Left unrefused for now. The window is before the first
+   continued rotation: an instance that has not opted in answers `"1"`, and that answer is still valid for
+   that store. The release notes tell operators to set the member on every instance before rotating. A
+   start-lease column is a later record (decisions 4 and 10).
+3. **The refusal classes.** The eight classes are part of the corpus contract (decision 9).
+4. **A command-line check for consumers.** Not in this pull request; it is a later record (decision 11).
+5. **Corpus rotation key 3.** Published by the existing seed rule (decision 9).
+
+`previousDigest` stays as it is: the issue's "the old store's last line digest" is met by the existing
+whole-registry digest, which is stronger (decision 1). The release notes list both refusals of v0.38.0, the
+consumer's and the gateway's, so operators upgrade every reader before opting in (decision 10).
 
 This record supersedes nothing. It extends ADR-0052's key history and its carrying across a store rotation,
 and ADR-0053 §8's entries.
