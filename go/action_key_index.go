@@ -41,6 +41,9 @@ type actionKeyMembers struct {
 	// scopeIdentifier is the request's scope member (ADR-0054), read at the
 	// scope step and never at the action-key step: it is no key scope.
 	scopeIdentifier json.RawMessage
+	// limit charges the request at step 8a (ADR-0057), where its route
+	// did not charge it at step 3a; nil charges nothing
+	limit func(requestedScope, *caller) error
 }
 
 // parseActionKeyScope reads keyScope and reconcile at the action-key step.

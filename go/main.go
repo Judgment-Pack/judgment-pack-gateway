@@ -417,7 +417,9 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 	if err != nil {
 		return nil, err
 	}
-	applyServeOptions(service, opts)
+	if err := applyServeOptions(service, opts); err != nil {
+		return nil, err
+	}
 	return service, nil
 }
 
@@ -431,7 +433,9 @@ func buildServiceOn(kind storeKind, seed []byte, authority string, opts serveOpt
 	if err != nil {
 		return nil, err
 	}
-	applyServeOptions(service, opts)
+	if err := applyServeOptions(service, opts); err != nil {
+		return nil, err
+	}
 	return service, nil
 }
 
@@ -455,7 +459,12 @@ func holdServedWitnesses(seed []byte, opts serveOptions) error {
 }
 
 // applyServeOptions sets on a service made what the options say.
-func applyServeOptions(service *gatewayService, opts serveOptions) {
+func applyServeOptions(service *gatewayService, opts serveOptions) error {
+	limiter, err := limiterFor(opts.limits, opts.sources)
+	if err != nil {
+		return err
+	}
+	service.limits, service.limiter = opts.limits, limiter
 	service.maxSourceOutput = opts.maxSourceOutput
 	if opts.maxRequest > 0 {
 		service.maxRequest = opts.maxRequest
@@ -484,6 +493,7 @@ func applyServeOptions(service *gatewayService, opts serveOptions) {
 			service.labels = pgLabels{k: kind}
 		}
 	}
+	return nil
 }
 
 // engineStart is what serve --config judges before it loads the seed, in
@@ -584,6 +594,9 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	if line := callerScopesStartLine(identity, sources); line != "" {
+		fmt.Fprintln(os.Stderr, "start:", line)
+	}
+	if line := requestLimitsStartLine(cfg.limits, sources); line != "" {
 		fmt.Fprintln(os.Stderr, "start:", line)
 	}
 	delegation, err := loadDelegation(cfg.delegation)
@@ -1023,6 +1036,9 @@ func readSeedFile(path string) ([]byte, error) {
 }
 
 type serveOptions struct {
+	// limits is the configuration's limits member (ADR-0057); nil counts
+	// nothing
+	limits *limitsConfig
 	// signer signs in place of the seed's key where it is not nil (ADR-0050)
 	signer           signer
 	requireActionKey bool

@@ -270,13 +270,19 @@ func (s *witnessService) submit(w http.ResponseWriter, r *http.Request, id *iden
 		witnessRefuse(w, http.StatusBadRequest, witnessReasonMalformed, "a submission takes no query")
 		return
 	}
+	pass := limitPassOf(r)
 	if id == nil {
+		pass.leaveBefore()
+		pass.noteUnauthenticated()
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		witnessRefuse(w, http.StatusUnauthorized, witnessReasonToken, "a submission is authenticated, and this engine has no identity configured")
 		return
 	}
 	who, err := bearerCallerFor(id, s.spec.audience, r.Header.Get("Authorization"), time.Now())
+	// the gateway-wide slot is held for the token's check alone (ADR-0057)
+	pass.leaveBefore()
 	if err != nil {
+		pass.noteUnauthenticated()
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		witnessRefuse(w, http.StatusUnauthorized, witnessReasonToken, err.Error())
 		return
