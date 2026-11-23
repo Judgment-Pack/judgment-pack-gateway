@@ -138,7 +138,7 @@ import (
 // 39 either. Version 40 (p256SignerVersion) adds signingKeyAlgorithm: a key
 // service's ECDSA P-256 key version at the HSM protection level signs, and
 // each record it signs names its alg (ADR-0053; signature_alg.go).
-// Version 41 (keyHistoryV2Version) adds keyHistoryVersion: "2" answers the
+// Version 42 (keyHistoryV2Version) adds keyHistoryVersion: "2" answers the
 // key history that marks each store continuation (ADR-0055).
 const engineVersion = keyHistoryV2Version
 

@@ -1904,7 +1904,7 @@ not establish that a `continuation` names the registry that was before it (§3d'
 that no other history leads from the key pinned, or that the answer holds the gateway's latest rotation;
 and within `base` the ordinal is held to its form alone.
 
-**Which version is answered.** Version `"1"`, unless the gateway's engine configuration, of version 41 or
+**Which version is answered.** Version `"1"`, unless the gateway's engine configuration, of version 42 or
 later, holds `keyHistoryVersion: "2"`, or the history carried into its store is of version `"2"`; then
 version `"2"`. A history a store rotation has carried as version `"2"` is so answered by every store after
 it. `gateway store rotate` carries the history the old store's gateway answers under the configuration it

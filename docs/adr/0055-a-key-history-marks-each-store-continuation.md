@@ -526,7 +526,7 @@ The pair that #578 asks for is `kh-v1-ordinal-given-twice` (accepted) and `kh-v2
 
 **Corpus and documents:**
 
-- The 25 vectors, a "Key-history vectors" section in `corpus/README.md`, and rotation key 3.
+- The 29 vectors (25 at acceptance; four `form` vectors added in review), a "Key-history vectors" section in `corpus/README.md`, and rotation key 3.
 - SPEC.md: the text of decision 7.
 - `docs/design/engine-config.md`.
 - `docs/postgresql-store.md`: the row holds either version.
