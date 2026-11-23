@@ -2936,22 +2936,26 @@ ring's location is the operator's.
 
 An earlier gateway refuses a version-40 file by its version.
 
-## Scoped writes, dry-runs and approvals (ADR-0054; version to be assigned)
+## Scoped writes (ADR-0054; the engine version assigned at merge)
 
-ADR-0054 adds, from the engine configuration version it assigns (`actScopeVersion` in
-`go/engine.go`, which this engine does not yet read, so a file of that version is refused by its
-version):
+ADR-0054 adds, from the engine version assigned at merge (`actScopeVersion` in `go/engine.go`, the
+newest of `engineVersions`):
 
 - **`scope` beside `write: true`.** Such a platform is refused at load unless `identity.callerScopes`
   is an object (a write takes no `"unchecked"`) and the platform names its own `decisionRecords`
   directory: not the gateway's, not another scoped platform's, and not beneath or above either, held
   to the ownership and permission check at start the gateway's directory is held to. An `/act` of that
   scope finds its decision record there and nowhere else; unscoped writes keep the gateway's
-  directory. `gateway verify --decision-records` takes a directory that holds them all.
-- **The request members `scope`, `dryRun` and `approvals`** on `/act` (SPEC.md §6, "`/act`: a scope,
-  a dry-run and approvals").
+  directory. `/verify` looks for a scoped action's record in its scope's directories alone.
+  `gateway verify --decision-records` takes a directory that holds them all.
+- **The request member `scope`** on `/act` (SPEC.md §6, "`/act`: a scope, a dry-run and
+  approvals"). A scoped key is kept in its scope's own journal, `actions/scopes/<hash>/`, which
+  `gateway journal compact` compacts by the rule of the journal of none, and `gateway remove-scope`
+  removes once no key there is pending.
 
-Below that version each member is refused by name, as before.
+Below that version `scope` and `decisionRecords` are refused by name, as before. The request
+members `dryRun` and `approvals` are read at no version yet: each is refused as a member `/act`
+does not read.
 
 ## Keyed actions (engine version 14 and later)
 
