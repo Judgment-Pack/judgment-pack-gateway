@@ -685,9 +685,24 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		g.abandonUnminted(sessionID)
 		return nil, closedKey()
 	}
+	// The call reference (ADR-0060): carried by the receipt only when this
+	// request sends it. An attempt another request claimed was dispatched
+	// by that one, under a reference this one never saw, and its uncertain
+	// receipt names none.
+	callRef := ""
 	if !uncertain {
+		var runSpec sourceSpec
+		if runSpec, callRef, err = withCallReference(spec, sessionID); err != nil {
+			if claim != nil {
+				if releaseErr := claim.releaseDispatch(attempt, err.Error()); releaseErr != nil {
+					return nil, actRefusal{"action-key", releaseErr.Error()}
+				}
+			}
+			g.abandonUnminted(sessionID)
+			return nil, err
+		}
 		dispatched = true
-		result, _, _, err = g.runSource(source, spec, canonicalRequest)
+		result, _, _, err = g.runSource(source, runSpec, canonicalRequest)
 		if err == nil {
 			_, err = readEnvelope(result, "mcp")
 		}
@@ -778,7 +793,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			source: source, resultDigest: resultDigest, servedAt: servedAt, authority: g.authority,
 			arguments: canon(arguments), argumentsSalt: argsSalt,
 			who: minted, witness: witness, kind: "action", detail: action, delegation: delegationMember,
-			scope: spec.scope, scopeSalt: scopeSalt,
+			scope: spec.scope, scopeSalt: scopeSalt, callRef: callRef,
 		})
 
 		stored, signature, err := g.store.stamp(core)

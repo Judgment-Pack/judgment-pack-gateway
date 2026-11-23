@@ -597,6 +597,7 @@ export function structureV3(r: ObjectValue): boolean {
   const scope = member(r, "scope");
   const scopeSalt = member(r, "scopeSalt");
   const artifact = member(r, "artifact");
+  const callRef = member(r, "callRef");
   if (
     !isString(sessionId) ||
     !isFlatToken(sessionId.value) ||
@@ -622,6 +623,9 @@ export function structureV3(r: ObjectValue): boolean {
     // the session's scope salt (ADR-0042): optional, with a scope alone, 64
     // lowercase hexadecimal characters when present
     (scopeSalt !== undefined && !(scope !== undefined && isString(scopeSalt) && /^[0-9a-f]{64}$/.test(scopeSalt.value))) ||
+    // the call reference the binding was sent (ADR-0060): optional, on
+    // either kind, 64 lowercase hexadecimal characters when present
+    (callRef !== undefined && !(isString(callRef) && /^[0-9a-f]{64}$/.test(callRef.value))) ||
     !isString(kind) ||
     // that the call kept no payload (§1.3a): optional, on an acquisition
     // alone, and the one string when present

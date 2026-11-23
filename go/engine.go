@@ -163,7 +163,11 @@ import (
 // Version 47 (admissionReadV2Version)
 // adds an issuing host's admission.readVersion and the tools/list _meta
 // members descriptorDigest and versionLabel (ADR-0058; delegation_config.go).
-const engineVersion = admissionReadV2Version
+// Version 48 (callReferenceVersion, a placeholder assigned in merge order, 49
+// expected; call_reference.go) adds a platform's callReference: the binding's
+// tools/call requests carry a per-call reference in _meta, and the receipt
+// signs the same reference (ADR-0060). connect raises no file to it.
+const engineVersion = callReferenceVersion
 
 // actScopeVersion is the engine configuration version from which a platform
 // may set scope beside write: true, and /act reads scope, dryRun and
@@ -174,7 +178,7 @@ const engineVersion = admissionReadV2Version
 // 2 and 3; act_dry_run.go).
 const actScopeVersion = "43"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true, requestLimitsVersion: true, operatorJournalVersion: true, delegationScopeBindingVersion: true, admissionReadV2Version: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true, requestLimitsVersion: true, operatorJournalVersion: true, delegationScopeBindingVersion: true, admissionReadV2Version: true, callReferenceVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -352,6 +356,10 @@ type platformConfig struct {
 	// shape it is the default, set when the configuration is resolved,
 	// unless artifactRetained.
 	notRetained bool
+	// callReference is callReference: true (callReferenceVersion, ADR-0060):
+	// the operator's opt-in for this platform's binding alone to receive a
+	// per-call reference with each call, signed into its receipt.
+	callReference bool
 	// artifactRetained is artifact: "retained" (engineVersion 29), which
 	// only a platform of the gcp-asset shape gives: the operator keeps the
 	// payloads the shape does not keep by default.
@@ -501,7 +509,7 @@ var platformMembers = map[string]bool{
 	"binding": true, "credentials": true, "user": true,
 	"endpoint": false, "environment": false, "write": false, "descriptors": false, "operationDescriptors": false, "descriptorStatements": false,
 	"decisionPolicy": false, "parameters": false, "grant": false, "writeRequesters": false,
-	"scope": false, "artifact": false, "decisionRecords": false,
+	"scope": false, "artifact": false, "decisionRecords": false, "callReference": false,
 }
 
 // parseEngineConfig holds the file to the shape the design note states.
@@ -827,6 +835,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 				if sameEnvKey(key, "HOME") || sameEnvKey(key, "PATH") {
 					return engineConfig{}, fmt.Errorf("engine configuration: platform %s: environment may not set %s; HOME is the user's own and PATH the engine's", name, key)
 				}
+				if sameEnvKey(key, callRefVariable) || sameEnvKey(key, callSessionIDVariable) {
+					return engineConfig{}, fmt.Errorf("engine configuration: platform %s: environment may not set %s, in which the gateway hands adapter-mcp a call's reference (ADR-0060)", name, key)
+				}
 				if pc.tokenStep != nil && sameEnvKey(key, sealedTokenVariable) {
 					return engineConfig{}, fmt.Errorf("engine configuration: platform %s: environment may not set %s, in which the signer hands the token step's sealed token to the adapter", name, key)
 				}
@@ -950,6 +961,11 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 				return engineConfig{}, err
 			}
 			pc.notRetained = !pc.artifactRetained
+		}
+		if v, present := p.get("callReference"); present {
+			if pc.callReference, err = parsePlatformCallReference(v, name, version); err != nil {
+				return engineConfig{}, err
+			}
 		}
 		cfg.platforms = append(cfg.platforms, pc)
 	}
@@ -1918,6 +1934,17 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			}
 			spec.sandbox = &sourceSandbox{helper: adapter("adapter-sandbox"), policy: policy, workspace: workspace, source: name, classes: classes, probe: &sourceSandboxProbe{}}
 			sources[name] = spec
+		}
+	}
+	// A platform's callReference reaches the sources a call runs, its live
+	// and write operations, whatever their shape: one that is not an MCP
+	// server is refused at start (callReferenceRefusal), never ignored.
+	for _, p := range cfg.platforms {
+		for _, op := range []string{"/live", "/write"} {
+			if spec, ok := sources[p.name+op]; ok && p.callReference {
+				spec.callReference = true
+				sources[p.name+op] = spec
+			}
 		}
 	}
 	return sources

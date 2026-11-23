@@ -181,6 +181,10 @@ type sourceSpec struct {
 	// written under artifacts/, and its version 3 receipt carries artifact
 	// "not-retained". false for a source that keeps every payload.
 	notRetained bool
+	// callReference is the platform's callReference (ADR-0060): each call
+	// draws a reference the adapter puts in the tools/call request's _meta,
+	// and the receipt carries as callRef. false for every other source.
+	callReference bool
 	// requestEndpoint, requestPaths and requestMethods are, for a source
 	// with a token step, its operation's endpoint, paths and methods: a
 	// request naming another is refused before a token is obtained for it
@@ -1526,7 +1530,15 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 		}
 	}
 
-	result, adapterDigest, observedAt, err := g.runAcquisitionSource(source, spec, canonicalArgs)
+	// The call reference (ADR-0060) is drawn here, once the session is the
+	// one the receipt will name -- a label's, or a read-back's, the action's
+	// own -- and before the binding is called; a failed draw refuses the call
+	// before the source starts. A source that did not opt in runs as before.
+	runSpec, callRef, err := withCallReference(spec, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	result, adapterDigest, observedAt, err := g.runAcquisitionSource(source, runSpec, canonicalArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -1654,7 +1666,7 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 		arguments: canonicalArgs, argumentsSalt: argsSalt, argumentsSeed: g.store.seed,
 		who: who, witness: witness, kind: "acquisition", detail: acquisition,
 		delegation: delegationMember, reconciler: reconcilerMember,
-		scope: spec.scope, scopeSalt: scopeSalt, notRetained: spec.notRetained,
+		scope: spec.scope, scopeSalt: scopeSalt, notRetained: spec.notRetained, callRef: callRef,
 	})
 
 	if g.beforeStamp != nil {
