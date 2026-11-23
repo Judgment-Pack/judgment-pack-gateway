@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -62,6 +63,9 @@ func TestActScopeRemoveScopeCommand(t *testing.T) {
 // (ADR-0054, decision 1): callerScopes checked, and a decisionRecords of its
 // own, apart from the gateway's and from another scope's.
 func TestActScopeConfigurationLoadChecks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a scoped write needs durable keyed actions, which this platform does not have (action_journal.go), and these cases name POSIX paths")
+	}
 	catalog := catalogWith(t, map[string]string{"postgres": postgresBinding})
 	ref := "postgres@" + digestOf(postgresBinding)
 	keys, apart := abs(t, t.TempDir(), "keys.json"), t.TempDir()
