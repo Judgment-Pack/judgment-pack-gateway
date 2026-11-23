@@ -143,8 +143,14 @@ import (
 // which a delegation statement holding alg "ES256" verifies (spec RFC 0030,
 // amendment of 2026-11-22; delegation_config.go): an earlier version refuses
 // the object form by name, and the 64-character Ed25519 form is unchanged at
-// every version. connect raises no file to 41.
-const engineVersion = delegationP256Version
+// every version. connect raises no file to 41. delegationScopeBindingVersion
+// lets an issuing host's entry name scopeIds, the scope identifiers its
+// delegations may be bound to (spec RFC 0030 §2, Binding a chain to one scope
+// identifier; open question 27; delegation_scope_binding.go): an earlier
+// version refuses the member by name, and an issuing host that names none has
+// every bound chain refused, at binding and at a call. connect raises no file
+// to it.
+const engineVersion = delegationScopeBindingVersion
 
 // actScopeVersion is the engine configuration version from which a platform
 // may set scope beside write: true, and /act reads scope, dryRun and
@@ -153,7 +159,7 @@ const engineVersion = delegationP256Version
 // version is refused by its version, as an earlier release refuses it.
 const actScopeVersion = "43" // placeholder: the maintainer assigns the number in merge order
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, delegationScopeBindingVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.

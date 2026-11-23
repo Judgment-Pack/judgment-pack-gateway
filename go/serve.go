@@ -1289,6 +1289,14 @@ func (g *gatewayService) acquireWithScope(sessionID, source, trail string, scope
 	// source's once both hold, so on the PostgreSQL kind the transaction's
 	// view is one the identity reaches, never one the body alone names. The
 	// refusal is one sentence whatever differs, and names neither identifier.
+	// A request under a delegation is first held to its chain's binding (spec
+	// RFC 0030 §2, the request check, scope-id-mismatch), before the issuing
+	// host is read or anything is counted: under a bound chain it names that
+	// scope identifier, and under an unbound one it names none. A read-back
+	// is not a request under the delegation and is not checked here.
+	if reconciliation == nil && g.delegatedScopeRefused(who, scope) {
+		return nil, badRequest{errors.New(scopeRefusal)}
+	}
 	if !acquisitionHeld(spec, scope, g.reachOf(who)) {
 		return nil, badRequest{errors.New(scopeRefusal)}
 	}

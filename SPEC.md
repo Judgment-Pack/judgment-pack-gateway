@@ -2608,7 +2608,9 @@ the same identity, do not read the claim, and carry no scope data. `/registry`,
 `/publickey` and `/publickey/history` take no token.
 A claim wider than the entry is refused, never narrowed. A request under a delegation (§11)
 carries no claim and its subject is the issuing host's statement: it reaches the sources of no
-scope identifier where its subject's claimless token would, and never a scope identifier. With
+scope identifier where its subject's claimless token would, and never a scope identifier, unless
+its chain is bound to one (§11.1, *A chain bound to one scope identifier*): then it reaches that
+scope identifier's sources alone, where its subject's entry grants it. With
 `"unchecked"` the claim is not read and every caller reaches every source; without `identity`
 every request reaches every source. Where `identity` is configured, or some source is fixed to a
 scope identifier, the start says which of the three holds, and `/posture` reports
@@ -4319,6 +4321,25 @@ statement holds `alg`, ES256 under a P-256 key, held to §1.5's key rule and its
 `keyId` derived from the key's compressed point as §1.5 derives one. Its digest is `"sha256:"` and
 the hexadecimal SHA-256 of `canon` of the whole statement, `signature` included.
 
+**A chain bound to one scope identifier** (spec RFC 0030, amendment of 2026-11-22, §2 *Binding a
+chain to one scope identifier*; §3, clause 9). `scope` is `{"sources"}`, or, on a bound link,
+`{"sources", "scopeId"}`, where `scopeId` is a scope identifier in §1.2a's form and never
+`"unscoped"`; any other `scopeId`, and any other member of `scope`, is `malformed` (step 3). A link
+without it is byte for byte what it was. Every link of a chain has the same binding, the root's:
+an unbound child of a bound link, a bound child of an unbound one, and a child bound to another
+scope identifier are `widened` (step 7). The **request check** (`scope-id-mismatch`) is made once
+step 0 has resolved the chain and before step 8 and any admission read, and reads nothing, counts
+nothing and dispatches nothing. It refuses a request that, under a bound chain, names no scope or
+another than `scopeId`, or names one the issuing host's `scopeIds` (§11.2) does not list; and,
+under an unbound chain, names any scope. On `/acquire` it is answered as a wrong scope, `400` with
+`scope: the request's scope does not match the source's`, which names no scope identifier; on
+`/act`, at `refusedAt: "scope-identifier"` with the same sentence (ADR-0054, decision 1, *Who may
+name it*). The last case is also refused at binding (§11.3), as `scope-id-mismatch`, before step 8,
+so no credential is bound to a chain every call would be refused under. A request that passes the
+check reaches only that scope identifier's sources, and only where its subject's own entry in
+`identity.callerScopes` grants it (§6); a source fixed to another scope identifier, or to none, is
+refused as a wrong scope.
+
 **ES256 statements** (spec RFC 0030, amendment of 2026-11-22, §2 *Signing with a P-256 key*). A
 statement a P-256 key signs holds the top-level member `alg`, the string `"ES256"`, inside what is
 signed and what is digested. A statement an Ed25519 key signs holds no `alg`, and is byte for byte
@@ -4345,7 +4366,7 @@ taken root first:
 | 4 | `key-mismatch` | a link's `keyId` is not the `keyId` of a key the configuration pins for its `host` with the link's algorithm: ES256 where it holds `alg`, Ed25519 where it holds none. A key of the other algorithm is not that key, so an Ed25519-signed statement given `alg: "ES256"`, and an ES256 statement with its `alg` removed, are refused here |
 | 5 | `signature-mismatch` | a link's signature does not verify under that key: by §8.4's equation for Ed25519; for ES256, by §1.5's rules, the low-S rule included |
 | 6 | `chain-broken` | the RFC's narrowing clauses 0 to 3 fail: the root's `parent` is not `null` or its `depth` not `0`; a child's `parent` does not name its parent's `id` and digest; a child's `depth` is not its parent's plus one, or is over 4; a child's `host` is not its parent's |
-| 7 | `widened` | the RFC's clauses 4 to 8 fail: a child's `sub` is not its parent's, member for member; its `issuedAt` is before its parent's or its `expiresAt` after its parent's; an entry of its scope has no entry of its parent's with the same `audience` and `source` whose `tools` and `effects` contain its own; such an entry lacks a limit name of the parent's entry or exceeds its value; or its parent's `mayDelegate` is not `true` |
+| 7 | `widened` | the RFC's clauses 4 to 9 fail: a child's `sub` is not its parent's, member for member; its `issuedAt` is before its parent's or its `expiresAt` after its parent's; an entry of its scope has no entry of its parent's with the same `audience` and `source` whose `tools` and `effects` contain its own; such an entry lacks a limit name of the parent's entry or exceeds its value; or its parent's `mayDelegate` is not `true`; or its `scope.scopeId` is not its parent's, both absent or both the same bytes (clause 9) |
 
 A member a link carries at its top level beside those of version 1 and `alg` is not refused by
 steps 1 to 3: it is signed with the rest, as a receipt's unknown member is, so a member appended after
@@ -4389,7 +4410,11 @@ token from that issuer:
   point that fails the rule is refused as `is not a sound P-256 public key`. A bare string of 66
   characters is refused, naming both forms, since its length would choose the algorithm; so is
   every other entry from version 41. Before version 41 the object is refused by name. A host may
-  pin keys of both algorithms while it moves from one to the other, or of one. `admission` is where the gateway reads the
+  pin keys of both algorithms while it moves from one to the other, or of one. `scopeIds`, from
+  engine configuration version `delegationScopeBindingVersion` (a placeholder, assigned in merge
+  order), is optional: the scope identifiers the host's delegations may be bound to (§11.1), at
+  least one, each in §1.2a's form, none `"unscoped"`, none repeated. Absent is none, so every bound
+  chain of that host is refused. Before that version it is refused by name. `admission` is where the gateway reads the
   host's state (§11.5): `url` an `https://` URL, and `credential` an absolute path to a file
   holding the bearer credential the gateway presents there, read once at start.
 - `operators`: optional, the subjects of the configured issuer that the gateway accepts as its

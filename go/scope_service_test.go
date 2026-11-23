@@ -222,10 +222,13 @@ func TestAGatewayFixingNoScopeRefusesTheMember(t *testing.T) {
 
 // A delegated request to a scoped source that names none or another is
 // refused before the delegation counts the call or the session is
-// admitted; the same request naming the scope is counted once where caller
-// scope identifiers are unchecked. Where they are checked, the default, a
+// admitted. Where caller scope identifiers are checked, the default, a
 // delegated request reaches no scope identifier (ADR-0037, decision 5), and
-// the request naming the scope is refused the same way, uncounted.
+// the request naming the scope is refused the same way, uncounted. Where they
+// are unchecked, a chain bound to no scope identifier is refused the same way
+// when it names one (spec RFC 0030 §2, the request check's case 2): only a
+// chain bound to the scope identifier reaches it
+// (TestABoundChainReachesItsScopeIdentifierAlone).
 func TestADelegatedRequestForAnotherScopeIsNotCounted(t *testing.T) {
 	h := newDelegationHarness(t, false)
 	live := h.g.sources["tickets/live"]
@@ -266,11 +269,11 @@ func TestADelegatedRequestForAnotherScopeIsNotCounted(t *testing.T) {
 		}
 	}
 	status, out := h.present(t, "/acquire", body(asFixed), cred)
-	if status != http.StatusOK || out["receipt"].(map[string]any)["scope"] != testScope {
-		t.Fatalf("the scope as fixed: %d %v", status, out)
+	if status != http.StatusBadRequest || out["error"] != scopeRefusal {
+		t.Fatalf("unchecked, an unbound chain naming the scope as fixed: %d %v", status, out)
 	}
-	if h.host.counted() != counted+1 {
-		t.Fatalf("the acquisition is counted once: %d", h.host.counted()-counted)
+	if h.host.counted() != counted || h.host.readCount() != reads || h.g.started.Load() != started || sessionHeld(h.g, "s-scoped") {
+		t.Fatal("unchecked: an unbound chain naming a scope was counted, read, run or admitted")
 	}
 }
 
