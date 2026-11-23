@@ -23,9 +23,10 @@ const delegationP256Version = "41"
 
 // delegationHostSpec is one issuing host as configured.
 type delegationHostSpec struct {
-	host       string
-	requester  string // the subject of the host's own token from the configured issuer
-	keys       map[string]heldKey // by key identifier, each with the algorithm it is pinned with
+	host      string
+	requester string // the subject of the host's own token from the configured issuer
+	// keys are by key identifier, each with the algorithm it is pinned with.
+	keys       map[string]heldKey
 	admission  string // an https URL
 	credential string // an absolute path to the admission credential
 }
