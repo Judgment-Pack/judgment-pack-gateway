@@ -1399,7 +1399,7 @@ does not reach every source is the report of the sources it reaches alone (ADR-0
 ADR-0041): `programs` and `readOnlySources` list only them, and `programs` is omitted when it
 reaches none; every protection line is judged over them, its state, its counts and the sources
 or platforms it names (`source-user-switch`, `operator-program-confinement`, `delegation-grants`,
-`write-requesters`, `caller-scope-identifiers`, `read-only-credentials`), so the report does
+`write-requesters`, `caller-scope-identifiers`, `read-only-credentials`, `request-limits`), so the report does
 not change with the sources of a scope identifier the caller does not reach. Where it reaches
 no source, `source-user-switch` is `not-applicable`, "this caller's token reaches no source, so there
 is none to judge"; where it reaches none fixed to a scope identifier,
@@ -2989,8 +2989,7 @@ An earlier gateway refuses a file of this version by its version.
 
 ## Scoped writes (ADR-0054; engine version 43)
 
-ADR-0054 adds, from engine version 43 (`actScopeVersion` in `go/engine.go`, the
-newest of `engineVersions`):
+ADR-0054 adds, from engine version 43 (`actScopeVersion` in `go/engine.go`):
 
 - **`scope` beside `write: true`.** Such a platform is refused at load unless `identity.callerScopes`
   is an object (a write takes no `"unchecked"`) and the platform names its own `decisionRecords`
@@ -3047,6 +3046,66 @@ before.
   refuses the rotate commands.
 
 An earlier gateway refuses a version-42 file by its version.
+
+## Request limits (ADR-0057; engine version 44)
+
+From engine version 44 (`requestLimitsVersion` in `go/engine.go`, the newest of `engineVersions`), a
+configuration may carry a top-level `limits` member. Below that version it is refused by name:
+`limits is a version-44 member; engineVersion <m> has no limits`.
+
+```json
+"limits": {
+  "beforeScope": {"inFlight": 1024},
+  "default": {
+    "requestsPerMinute": 600, "burst": 60, "inFlight": 16,
+    "perCaller": {"requestsPerMinute": 120, "burst": 20, "inFlight": 4}
+  },
+  "scopes": {
+    "east-ledger": {"requestsPerMinute": 1200, "burst": 100, "inFlight": 32},
+    "unscoped": {"requestsPerMinute": 60, "burst": 10, "inFlight": 4}
+  }
+}
+```
+
+- **`scopes`** maps a scope's key to its entry: a scope identifier some platform is fixed to, byte for
+  byte, or `"unscoped"` where some platform is of none. **`default`** is the entry of every scope
+  `scopes` does not name. An entry in `scopes` replaces `default` whole; what it leaves out is
+  unlimited for its scope.
+- **An entry** has at least one of `requestsPerMinute` (1 to 600000) with `burst` (1 to 10000),
+  given together as a token bucket; `inFlight` (1 to 4096), the scope's requests counted and not yet
+  answered; and `perCaller`, the same three for each caller within the scope, keyed by the identity
+  the request is authenticated as (a delegated request by its authenticated sender).
+- **`beforeScope`** is `{"inFlight": n}`, 1 to 65536, the gateway-wide cap on requests not yet tied to
+  a scope. Without it, a configured `limits` holds **1024**. Every route is under it but `/publickey`
+  and `/publickey/history`; `/registry` is under it. A request takes a slot when its headers have
+  arrived and gives it back once its token is read, so a slow client holds none: the listener cuts
+  headers after 10 seconds and the whole request, body included, after 30.
+- **What is counted.** `/acquire`, `/act` (a dry-run among them), `/seal` and `/verify`, at the first
+  step that knows the request's scope: before the body for a caller whose token reaches one scope
+  alone; after the route's scope step for one that reaches several (`/act` step 8a, before the session
+  is looked up); `/verify` before the store is read, to every scope the caller reaches, all or nothing.
+  A request whose scope is not established is charged to no scope and refused by its route as before.
+- **The answer** is `429`, `Retry-After` from the refusing state alone, and
+  `{"error", "code": "limit_reached", "limit"}`, with `"refusedAt": "limit"` on `/act`. The sentence is
+  fixed for each `limit` and names no scope. Nothing is minted, journaled, stored or sent to the
+  receipt sink, and no stderr line is written.
+- **Refused at load:** a `limits` with none of its three members or another one; an entry with no
+  member or another one; a number out of range, not an integer, or written with a fraction or an
+  exponent; `requestsPerMinute` without `burst` or the reverse; a `scopes` key no platform is fixed to,
+  or `"unscoped"` where no platform is of none; `perCaller` in a configuration without an identity; and
+  a `perCaller` value above its scope's value for the same member. No refusal quotes a value.
+- **The start line.** `request limits: <n> of <m> scopes are limited, counted by this instance alone`.
+  Without the member, the start writes nothing new.
+- **`/posture`** adds a `request-limits` line, a `limits` member (each reached scope's effective
+  values) and `unauthenticatedRefusals` (the requests refused at the gateway-wide cap or answered
+  `401` since start, which names no scope and is given to every caller). The line and the member are
+  judged over the scopes of the sources the caller reaches alone. `gateway posture` gives the line
+  and the member over every scope, and no count.
+- **Counted by each instance alone, in this release.** N instances admit up to N times each limit, so
+  an operator running several instances sets each limit divided by N. A count shared by the
+  instances is gateway #593.
+- Without the member nothing is counted, and every answer, start line and posture report is as
+  before, byte for byte. The limits are read at start; a `SIGHUP` does not change them.
 
 ## Keyed actions (engine version 14 and later)
 

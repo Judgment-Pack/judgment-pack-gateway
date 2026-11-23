@@ -23,6 +23,7 @@ type actScopeHarness struct {
 	server                       *httptest.Server
 	tokenA, tokenB, tokenBoth    string
 	tokenC                       string
+	issuer                       *testIssuer
 	decisionB, decisionU         string
 }
 
@@ -42,6 +43,7 @@ func actScopeSetup(t *testing.T) *actScopeHarness {
 	sources["scoped-b"] = sourceSpec{argv: []string{os.Args[0]}, env: helperEnv, scope: callerScopeB}
 	h.g = actionKeysService(t, h.root, sources)
 	issuer := newIssuer(t)
+	h.issuer = issuer
 	id := identityFor(t, issuer)
 	id.callers = callerScopes{entries: map[string]callerEntry{
 		subjectA:   {grants: map[string]bool{callerScopeA: true, unscopedMarker: true}},

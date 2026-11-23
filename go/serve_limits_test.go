@@ -113,3 +113,39 @@ func TestAListenerOtherHostsCanReachIsServedUnderLimits(t *testing.T) {
 		})
 	}
 }
+
+// Under the request limits, a loopback listener bounds the open routes'
+// answers as one other hosts can reach does (#595): /registry holds a
+// gateway-wide slot until its answer is written, so readers that take it
+// slowly would otherwise hold the cap. Every other answer has its deadline
+// cleared, and the server's own limits are a loopback listener's.
+func TestALoopbackListenerUnderLimitsBoundsTheOpenAnswers(t *testing.T) {
+	service := limitsService(t)
+	service.limits = &limitsConfig{beforeScope: 4}
+	var err error
+	if service.limiter, err = newRequestLimiter((&fakeLimitClock{}).clock(), 4, nil); err != nil {
+		t.Fatal(err)
+	}
+	server := service.httpServer(&net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8787})
+	if server.IdleTimeout != 0 || server.MaxHeaderBytes != 0 || server.WriteTimeout != 0 {
+		t.Fatalf("a loopback listener's server: %+v", server)
+	}
+	for _, tc := range []struct {
+		path string
+		open bool
+	}{{"/registry", true}, {"/publickey", true}, {keyHistoryRoute, true}, {"/verify", false}, {"/nothing", false}} {
+		before := time.Now()
+		rec := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+		server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		if len(rec.deadlines) != 1 {
+			t.Fatalf("%s: deadlines %v, want one", tc.path, rec.deadlines)
+		}
+		at := rec.deadlines[0]
+		if tc.open && (at.Before(before.Add(30*time.Second)) || at.After(time.Now().Add(30*time.Second))) {
+			t.Fatalf("%s: write deadline %v, want 30s from %v", tc.path, at, before)
+		}
+		if !tc.open && !at.IsZero() {
+			t.Fatalf("%s: write deadline %v, want it cleared", tc.path, at)
+		}
+	}
+}

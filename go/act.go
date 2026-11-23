@@ -59,6 +59,13 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	if err != nil {
 		return nil, err
 	}
+	// step 8a (ADR-0057): a caller of several scopes is charged to the one
+	// step 8 held, before step 9 looks up the label or the session
+	if keyMembers.limit != nil {
+		if err := keyMembers.limit(asked, who); err != nil {
+			return nil, err
+		}
+	}
 	// Each member is read at its own step, so a request with several
 	// faults -- a member of the wrong type among them -- is answered by
 	// the earliest step it fell at.

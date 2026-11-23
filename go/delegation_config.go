@@ -27,10 +27,10 @@ const delegationP256Version = "41"
 // a chain to one scope identifier; open question 27; SPEC.md §11.2). None by
 // default, so a binding is opted into per host and never implied.
 // Its number is 46 in merge order, after request limits (44) and the
-// operator journal (45); it reads "44", the next on main today, because
+// operator journal (45); it reads "45", the next on main today, because
 // engineVersions runs unbroken to the newest, and takes 46 at the merge of
-// main that brings those two.
-const delegationScopeBindingVersion = "44"
+// main that brings the operator journal.
+const delegationScopeBindingVersion = "45"
 
 // delegationHostSpec is one issuing host as configured.
 type delegationHostSpec struct {
