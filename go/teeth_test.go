@@ -2441,8 +2441,8 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 			if err != nil {
 				t.Fatalf("no run: %v", err)
 			}
-			if count != 278 {
-				t.Fatalf("%d store vectors read, want 278", count)
+			if count != 288 {
+				t.Fatalf("%d store vectors read, want 288", count)
 			}
 			disagreeing := map[string]bool{}
 			for _, failure := range failures {
@@ -2625,7 +2625,7 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 	// observes in.
 	if got, want := []int{len(stores), len(okTrue), len(withFindings), len(withWitnesses), len(withRotations), len(stating),
 		len(witnesses), len(refusals), len(readings), len(okReadings), len(withHead)},
-		[]int{278, 69, 275, 3, 23, 41, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
+		[]int{288, 71, 285, 3, 23, 42, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
 		t.Fatalf("the corpus's vectors, by what their answers give: %v, want %v", got, want)
 	}
 	for name := range stating {
