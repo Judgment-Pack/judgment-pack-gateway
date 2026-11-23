@@ -30,7 +30,7 @@ func TestDelegationConfigRefusals(t *testing.T) {
 		return parseDelegationConfig(v, version, id)
 	}
 	spec, err := parse(good, "15", identity)
-	if err != nil || len(spec.hosts) != 1 || !spec.bearerReadOnly || spec.operators[0] != "operator:on-call" || spec.hosts[0].keys[keyIDFor(mustHexBytes(t, pub))] == nil {
+	if err != nil || len(spec.hosts) != 1 || !spec.bearerReadOnly || spec.operators[0] != "operator:on-call" || !spec.hosts[0].keys[keyIDFor(mustHexBytes(t, pub))].is(edKey(mustHexBytes(t, pub))) {
 		t.Fatalf("good: %+v %v", spec, err)
 	}
 	smallOrder := "0100000000000000000000000000000000000000000000000000000000000000"
@@ -133,5 +133,85 @@ func TestEngineConfigCarriesTheDelegation(t *testing.T) {
 	}
 	if _, _, err := load(t, strings.Replace(text, `"engineVersion":"15"`, `"engineVersion":"14"`, 1)); err == nil || !strings.Contains(err.Error(), "delegation is a version-15 member") {
 		t.Fatalf("version 14: %v", err)
+	}
+}
+
+// From delegationP256Version, delegation.hosts[].keys pins a P-256 issuing
+// host's key as {"alg": "ES256", "key": <66 lowercase hex>}, read as
+// retention.acknowledgedBy reads one: a bare 66-character string is refused
+// naming both forms, a point that fails the key rule is not a sound P-256
+// key, and before the version the object is refused by name. The
+// 64-character Ed25519 form is unchanged at every version.
+func TestDelegationConfigP256Keys(t *testing.T) {
+	pub := hex.EncodeToString(ed25519.NewKeyFromSeed(delegationHostSeed).Public().(ed25519.PublicKey))
+	point := "026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16" // RFC 0030's synthetic P-256 key
+	identity := &identitySpec{issuer: testIssuerURL, audience: "gateway:acme", keys: "/k"}
+	tokenPath := abs(t, t.TempDir(), "desk-token")
+	withKeys := func(keys string) string {
+		return strings.Replace(delegationConfigText(pub, "https://desk.example/admission", tokenPath, ""), `"keys":["`+pub+`"]`, `"keys":`+keys, 1)
+	}
+	parse := func(text, version string) (*delegationSpec, error) {
+		v, err := parseJSON([]byte(text))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parseDelegationConfig(v, version, identity)
+	}
+	object := `{"alg":"ES256","key":"` + point + `"}`
+	for _, keys := range []string{`["` + pub + `",` + object + `]`, `[` + object + `]`, `[{"key":"` + point + `","alg":"ES256"}]`} {
+		spec, err := parse(withKeys(keys), delegationP256Version)
+		if err != nil {
+			t.Fatalf("%s: %v", keys, err)
+		}
+		if got := spec.hosts[0].keys["dbdb99c64b3d511f72c88fb6c054da73"]; !got.is(heldKey{alg: algES256, key: mustHexBytes(t, point)}) {
+			t.Fatalf("%s: %+v", keys, spec.hosts[0].keys)
+		}
+	}
+	for _, version := range []string{"15", p256SignerVersion, delegationP256Version} {
+		spec, err := parse(withKeys(`["`+pub+`"]`), version)
+		if err != nil || !spec.hosts[0].keys[keyIDFor(mustHexBytes(t, pub))].is(edKey(mustHexBytes(t, pub))) {
+			t.Fatalf("version %s, an Ed25519 key: %v", version, err)
+		}
+	}
+	bothForms := `keys[0] is an Ed25519 public key of 64 lowercase hexadecimal characters, or {"alg": "ES256", "key": <66 lowercase hexadecimal characters>}`
+	for _, c := range []struct{ name, keys, version, want string }{
+		{"the object before the version", `[` + object + `]`, p256SignerVersion, `keys[0]: a P-256 key, {"alg": "ES256", "key": ...}, is a version-` + delegationP256Version + ` form; engineVersion ` + p256SignerVersion + ` pins Ed25519 keys alone`},
+		{"the object at version 15", `[` + object + `]`, "15", "is a version-" + delegationP256Version + " form"},
+		{"a bare 66-character string", `["` + point + `"]`, delegationP256Version, bothForms},
+		{"a bare 66-character string before the version", `["` + point + `"]`, p256SignerVersion, "keys[0] is not 64 lowercase hexadecimal characters"},
+		{"a point not on the curve", `[{"alg":"ES256","key":"05` + point[2:] + `"}]`, delegationP256Version, "keys[0] is not a sound P-256 public key"},
+		{"x equal to p", `[{"alg":"ES256","key":"02ffffffff00000001000000000000000000000000ffffffffffffffffffffffff"}]`, delegationP256Version, "keys[0] is not a sound P-256 public key"},
+		{"the uncompressed point", `[{"alg":"ES256","key":"04` + strings.Repeat("00", 64) + `"}]`, delegationP256Version, bothForms},
+		{"an upper-case point", `[{"alg":"ES256","key":"` + strings.ToUpper(point) + `"}]`, delegationP256Version, bothForms},
+		{"another alg", `[{"alg":"EdDSA","key":"` + pub + `"}]`, delegationP256Version, bothForms},
+		{"a third member", `[{"alg":"ES256","key":"` + point + `","note":"x"}]`, delegationP256Version, bothForms},
+		{"an Ed25519 key in the object", `[{"alg":"ES256","key":"` + pub + `"}]`, delegationP256Version, bothForms},
+		{"an Ed25519 key in upper case", `["` + strings.ToUpper(pub) + `"]`, delegationP256Version, bothForms},
+		{"an Ed25519 key of small order", `["0100000000000000000000000000000000000000000000000000000000000000"]`, delegationP256Version, "small order"},
+		{"no keys", `[]`, delegationP256Version, "or {\"alg\": \"ES256\""},
+	} {
+		if _, err := parse(withKeys(c.keys), c.version); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Fatalf("%s: want %q, got %v", c.name, c.want, err)
+		}
+	}
+}
+
+// The engine configuration reads the P-256 form from delegationP256Version,
+// and an earlier version refuses it by name.
+func TestEngineConfigDelegationP256Version(t *testing.T) {
+	catalog := catalogWith(t, map[string]string{"postgres": postgresBinding})
+	ref := "postgres@" + digestOf(postgresBinding)
+	good := platformJSON(t, "warehouse", ref, "engine-warehouse", ``)
+	pub := hex.EncodeToString(ed25519.NewKeyFromSeed(delegationHostSeed).Public().(ed25519.PublicKey))
+	point := "026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16"
+	delegation := strings.Replace(delegationConfigText(pub, "https://desk.example/admission", abs(t, t.TempDir(), "token"), ""), `"keys":["`+pub+`"]`, `"keys":[{"alg":"ES256","key":"`+point+`"}]`, 1)
+	extra := `,"identity":{"issuer":"https://login.example","audience":"gateway:acme","keys":"` + abs(t, t.TempDir(), "keys.json") + `"},"delegation":` + delegation
+	text := strings.Replace(engineJSON(t, catalog, extra, good), `"engineVersion":"1"`, `"engineVersion":"`+delegationP256Version+`"`, 1)
+	cfg, _, err := load(t, text)
+	if err != nil || cfg.delegation == nil || cfg.delegation.hosts[0].keys["dbdb99c64b3d511f72c88fb6c054da73"].alg != algES256 {
+		t.Fatalf("version %s: %+v %v", delegationP256Version, cfg.delegation, err)
+	}
+	if _, _, err := load(t, strings.Replace(text, `"engineVersion":"`+delegationP256Version+`"`, `"engineVersion":"`+p256SignerVersion+`"`, 1)); err == nil || !strings.Contains(err.Error(), "is a version-"+delegationP256Version+" form") {
+		t.Fatalf("version %s: %v", p256SignerVersion, err)
 	}
 }
