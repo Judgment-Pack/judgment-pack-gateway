@@ -10,7 +10,7 @@ import { recordAlg } from "./alg.ts";
 import type { Alg } from "./alg.ts";
 import { canonical } from "./canon.ts";
 import { continuationOf, isContinuation } from "./continuation.ts";
-import { hasDuplicate, member, parse } from "./json.ts";
+import { TooLarge, hasDuplicate, maxValues, member, parse } from "./json.ts";
 import type { ObjectValue, Value } from "./json.ts";
 import { keySound, reached, rotationKind, signedBy, statementOf } from "./rotation.ts";
 
@@ -91,6 +91,10 @@ export function checkKeyHistory(bytes: Uint8Array, pin: KeyHistoryPin | null, op
   } catch (e) {
     if (e instanceof Refused) {
       return { accepted: false, class: e.cls, reason: e.message };
+    }
+    // past maxValues values the answer is not read, and is refused
+    if (e instanceof TooLarge) {
+      return { accepted: false, class: "form", reason: `more than ${maxValues} values` };
     }
     throw e;
   }

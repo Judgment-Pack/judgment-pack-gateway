@@ -8,6 +8,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 
 import { checkKeyHistory } from "../src/key-history.ts";
+import { maxValues } from "../src/json.ts";
 import { corpus, publicKey } from "./support.ts";
 
 const history = (name: string): Buffer => Buffer.from((JSON.parse(fs.readFileSync(path.join(corpus, "key-history", name + ".json"), "utf8")) as { history: string }).history, "utf8");
@@ -42,4 +43,10 @@ test("bytes that are not one object, or that give a member twice, are refused by
 test("a pin of another algorithm is refused by key", () => {
   const got = checkKeyHistory(history("kh-v1-one-key"), { alg: "ES256", key: publicKey });
   assert.ok(!got.accepted && got.class === "key");
+});
+
+test("an answer of more values than the reader holds is refused by form, not thrown", () => {
+  const bytes = Buffer.from('{"keyHistoryVersion":"1","keys":[' + "0,".repeat(maxValues) + "0]}", "utf8");
+  const got = checkKeyHistory(bytes, pin);
+  assert.ok(!got.accepted && got.class === "form");
 });
