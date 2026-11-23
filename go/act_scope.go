@@ -60,8 +60,16 @@ func (g *gatewayService) writeReachRefusal(who *caller) string {
 // named under a delegation or by a reservation's sender (neither reaches a
 // scope identifier, SPEC.md §6), and one the caller's token does not reach
 // are one refusal, /acquire's sentence, which quotes neither identifier.
+// So is a request that names no scope from a caller whose token does not
+// reach none, where some write source is fixed to a scope identifier: its
+// label would be looked up in the namespace of none, which the caller does
+// not reach (steps 8 and 9), and the session step's answer would tell it the
+// state of a session of none.
 func (g *gatewayService) actScope(raw json.RawMessage, who *caller) (requestedScope, error) {
 	if len(raw) == 0 {
+		if g.scopedWrite() && !g.reachOf(who).holds("") {
+			return requestedScope{}, actRefusal{"scope-identifier", scopeRefusal}
+		}
 		return requestedScope{}, nil
 	}
 	v, err := parseJSON(raw)
