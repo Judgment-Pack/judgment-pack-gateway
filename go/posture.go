@@ -84,6 +84,10 @@ type postureReport struct {
 	// its token source, its check and whether it serves; listed as programs
 	// are, by the reach of the caller the report is served to.
 	readOnly []readOnlySourcePosture
+	// limits and unauthenticated are the limits member and the count of
+	// unauthenticated refusals, each given only where it is not nil.
+	limits          vArray
+	unauthenticated *int64
 }
 
 // postureInput is the configuration a posture is judged under: the seed's
@@ -120,6 +124,13 @@ type postureInput struct {
 	// signing is the key service's key the gateway signs with, which adds
 	// its line; nil, the seed's key, adds none.
 	signing *signingPosture
+	// limits is the configuration's limits (ADR-0057), which adds the
+	// request-limits line and the limits member; nil adds neither.
+	limits *limitsConfig
+	// unauthenticated is the serving instance's count of unauthenticated
+	// refusals, given to every caller; nil, as gateway posture has, leaves
+	// it out.
+	unauthenticated *int64
 }
 
 // signingPosture is what posture reads of a key service's signer: the key
@@ -327,8 +338,12 @@ func hostPosture(in postureInput) postureReport {
 		seedPosture(in),
 		programConfinementPosture(programs),
 		listenerPosture(in),
-	}, append(append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources, in.reach != nil)...), append(readOnlyCredentialsLines(in.sources), signingKeyLines(in.signing)...)...)...),
+	}, append(append(append(delegationLines(in.delegation, in.sources), writeRequestersLines(in.sources)...), callerScopesLine(in.callerScopes, in.sources, in.reach != nil)...), append(append(readOnlyCredentialsLines(in.sources), signingKeyLines(in.signing)...), requestLimitsLines(in)...)...)...),
 		readOnly: readOnlySourcePostures(in.sources)}
+	if in.limits != nil {
+		report.limits = limitsPosture(in)
+		report.unauthenticated = in.unauthenticated
+	}
 	return report
 }
 
@@ -491,6 +506,12 @@ func (r postureReport) canonical() []byte {
 		}
 		top.set("readOnlySources", readOnly)
 	}
+	if r.limits != nil {
+		top.set("limits", r.limits)
+	}
+	if r.unauthenticated != nil {
+		top.set("unauthenticatedRefusals", vInt(*r.unauthenticated))
+	}
 	return canon(top)
 }
 
@@ -572,6 +593,7 @@ func postureOfConfig(path string, account func(string) (int, string, error)) (po
 	}
 	in := postureInput{configured: true, seed: cfg.seed, sources: deriveSources(cfg, bindings),
 		listener: listenerReach{loopback: listenIsLoopback(cfg.listen), authenticated: cfg.identity != nil}}
+	in.limits = cfg.limits
 	in.callerScopes = "no-identity"
 	if cfg.identity != nil {
 		in.callerScopes = callerScopesMode(&identityConfig{callers: cfg.identity.callers})

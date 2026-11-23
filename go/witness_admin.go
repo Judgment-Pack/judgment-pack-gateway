@@ -62,13 +62,19 @@ type witnessRegistrationAnswer struct {
 // submission is answered, where no identity is configured; and 403 for a
 // token the engine takes of a caller the list does not name.
 func (s *witnessService) operator(w http.ResponseWriter, r *http.Request, id *identityConfig) (*caller, bool) {
+	pass := limitPassOf(r)
 	if id == nil {
+		pass.leaveBefore()
+		pass.noteUnauthenticated()
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		witnessRefuse(w, http.StatusUnauthorized, witnessReasonToken, "an operator's act is authenticated, and this engine has no identity configured")
 		return nil, false
 	}
 	who, err := engineCaller(id, s.spec, r.Header.Get("Authorization"), time.Now())
+	// the gateway-wide slot is held for the token's check alone (ADR-0057)
+	pass.leaveBefore()
 	if err != nil {
+		pass.noteUnauthenticated()
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		witnessRefuse(w, http.StatusUnauthorized, witnessReasonToken, err.Error())
 		return nil, false

@@ -148,7 +148,11 @@ import (
 // key history that marks each store continuation (ADR-0055).
 // Version 43 (actScopeVersion) adds a scoped write platform, with its own
 // decisionRecords and checked caller scopes (ADR-0054; act_scope.go).
-const engineVersion = actScopeVersion
+// Version 44 (requestLimitsVersion) adds limits: a request rate and an
+// in-flight cap for each scope and each caller within it, beside a
+// gateway-wide cap on the requests not yet tied to a scope, counted by each
+// instance alone (ADR-0057; limits_config.go).
+const engineVersion = requestLimitsVersion
 
 // actScopeVersion is the engine configuration version from which a platform
 // may set scope beside write: true, and /act reads scope, dryRun and
@@ -159,7 +163,7 @@ const engineVersion = actScopeVersion
 // 2 and 3; act_dry_run.go).
 const actScopeVersion = "43"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true, requestLimitsVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -236,6 +240,9 @@ type engineConfig struct {
 	// receiptSink is where each receipt /acquire mints is delivered before
 	// /acquire answers (engineVersion 35, receipt_sink.go); nil for none.
 	receiptSink *receiptSinkSpec
+	// limits is the limits member (requestLimitsVersion, limits_config.go);
+	// nil when the configuration carries none, and nothing is counted.
+	limits *limitsConfig
 	// storage names the PostgreSQL kind that keeps the store and the
 	// registry (engineVersion 24, storage_kind.go); nil when the filesystem
 	// kind keeps them at store and registry, as before the member. With it,
@@ -472,7 +479,7 @@ var engineMembers = map[string]bool{
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
 	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
 	"sealOpenAtStart": false, "signingKeyVersion": false, "signingPublicKey": false, "signingKeyAlgorithm": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
-	"receiptSink": false, "retention": false, "keyHistoryVersion": false,
+	"receiptSink": false, "retention": false, "keyHistoryVersion": false, "limits": false,
 }
 
 var platformMembers = map[string]bool{
@@ -1004,6 +1011,20 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	}
 	if err := decisionRecordsApart(cfg.decisionRecords, cfg.platforms, filepath.Clean); err != nil {
 		return engineConfig{}, err
+	}
+	if value, present := obj.get("limits"); present {
+		if !versionAtLeast(version, requestLimitsVersion) {
+			return engineConfig{}, fmt.Errorf("engine configuration: limits is a version-%s member; engineVersion %s has no limits", requestLimitsVersion, version)
+		}
+		scopes := map[string]bool{}
+		for _, p := range cfg.platforms {
+			scopes[limitScopeKey(p.scope)] = true
+		}
+		limits, err := parseLimitsConfig(value, scopes, cfg.identity != nil)
+		if err != nil {
+			return engineConfig{}, err
+		}
+		cfg.limits = limits
 	}
 	return cfg, nil
 }
@@ -2862,7 +2883,7 @@ func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, e
 // engineServeOptions is what `serve` runs for a configuration: the derived
 // sources, the receipt version the design assumes, and the defaults.
 func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec, identity *identityConfig) serveOptions {
-	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), dryRunApprovals: versionAtLeast(cfg.version, actScopeVersion), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed, receiptSink: cfg.receiptSink, labels: versionAtLeast(cfg.version, labelsVersion), keyHistoryVersion: cfg.keyHistoryVersion}
+	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), dryRunApprovals: versionAtLeast(cfg.version, actScopeVersion), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed, receiptSink: cfg.receiptSink, labels: versionAtLeast(cfg.version, labelsVersion), keyHistoryVersion: cfg.keyHistoryVersion, limits: cfg.limits}
 }
 
 // maxKeySetBytes bounds the issuer's key file.
