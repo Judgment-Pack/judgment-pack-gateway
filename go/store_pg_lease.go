@@ -111,13 +111,15 @@ const pgStartLeaseLock = 0x6761746577617973 // "gateways" in ASCII, a constant o
 
 // The lease's statements. $1 is the holder; $2 the period as an interval;
 // $3 the mode (several); $4 the key id; $5 the authority; $6 whether the
-// instance reads sessions by label (labels, schema version 9).
+// instance reads sessions by label (labels, schema version 9); $7 the
+// version of the key history it answers (key_history, schema version 12).
 const (
 	// pgStartLeaseRows reads every row and holds nothing: its holder, its
 	// mode, key id and authority, the whole seconds it has left, whether it
-	// is live, and whether its instance reads sessions by label.
+	// is live, whether its instance reads sessions by label, and the version
+	// of the key history it answers.
 	pgStartLeaseRows = `SELECT l.holder, l.several, l.key_id, l.authority,
-			pg_catalog.ceil(pg_catalog.date_part('epoch', l.expires - n.now))::int8, l.expires > n.now, l.labels
+			pg_catalog.ceil(pg_catalog.date_part('epoch', l.expires - n.now))::int8, l.expires > n.now, l.labels, l.key_history
 		FROM gateway.start_lease l, (SELECT pg_catalog.clock_timestamp() AS now) n ORDER BY l.holder`
 	// pgStartLeaseHoldExpired holds every expired row, NOWAIT: a write of an
 	// instance whose row ran out that still holds it refuses it at once
@@ -127,14 +129,14 @@ const (
 	// pgStartLeaseTakeOver takes one expired row that no write holds.
 	pgStartLeaseTakeOver = `WITH old AS MATERIALIZED (SELECT holder FROM gateway.start_lease
 			WHERE expires <= pg_catalog.clock_timestamp() ORDER BY holder LIMIT 1 FOR UPDATE SKIP LOCKED)
-		UPDATE gateway.start_lease l SET holder = $1, several = $3, key_id = $4, authority = $5, labels = $6,
+		UPDATE gateway.start_lease l SET holder = $1, several = $3, key_id = $4, authority = $5, labels = $6, key_history = $7,
 			renewed = n.now, expires = n.now + $2::interval
 		FROM old, (SELECT pg_catalog.clock_timestamp() AS now) n
 		WHERE l.holder = old.holder
 		RETURNING l.holder`
 	// pgStartLeaseTakeNew takes a new row, where no expired one is free.
-	pgStartLeaseTakeNew = `INSERT INTO gateway.start_lease (holder, several, key_id, authority, labels, renewed, expires)
-		SELECT $1, $3, $4, $5, $6, n.now, n.now + $2::interval FROM (SELECT pg_catalog.clock_timestamp() AS now) n
+	pgStartLeaseTakeNew = `INSERT INTO gateway.start_lease (holder, several, key_id, authority, labels, key_history, renewed, expires)
+		SELECT $1, $3, $4, $5, $6, $7, n.now, n.now + $2::interval FROM (SELECT pg_catalog.clock_timestamp() AS now) n
 		RETURNING holder`
 	// pgStartLeaseRenew renews the holder's row while it is live. As the
 	// fence, it holds the row first and reads the clock after: a renewal
@@ -216,12 +218,14 @@ func newStartLeaseHolder() (string, error) {
 
 // pgInstance is what an instance's row records of it: its mode, the key id
 // it signs under, the authority it names, and whether it reads the session a
-// request names as a label (labelsVersion, ADR-0051).
+// request names as a label (labelsVersion, ADR-0051), and the version of
+// the key history it answers (ADR-0062): "1" or "2".
 type pgInstance struct {
-	several   bool
-	keyID     string
-	authority string
-	labels    bool
+	several    bool
+	keyID      string
+	authority  string
+	labels     bool
+	keyHistory string
 }
 
 // instanceFor is the row an instance under spec, signing with seed for
@@ -267,9 +271,9 @@ func (k *pgKind) fenceMargin() time.Duration { return k.idle + time.Second }
 
 // pgLeaseRow is a row of the lease as pgStartLeaseRows reads it.
 type pgLeaseRow struct {
-	holder, keyID, authority string
-	several, live, labels    bool
-	left                     int64
+	holder, keyID, authority, keyHistory string
+	several, live, labels                bool
+	left                                 int64
 }
 
 // takeStartLease takes a row of the lease for holder, as k.instance, or
@@ -329,6 +333,7 @@ func (k *pgKind) takeStartLease(holder string, period, every time.Duration) (*pg
 			r.left, _ = pgInt8(row[4])
 			r.live, _ = pgBool(row[5])
 			r.labels, _ = pgBool(row[6])
+			r.keyHistory = string(row[7])
 			if r.live {
 				live = append(live, r)
 			} else {
@@ -347,7 +352,11 @@ func (k *pgKind) takeStartLease(holder string, period, every time.Duration) (*pg
 				return err
 			}
 		}
-		args := []any{holder, pgInterval(period), as.several, as.keyID, as.authority, as.labels}
+		keyHistory := as.keyHistory
+		if keyHistory == "" {
+			keyHistory = keyHistoryVersion
+		}
+		args := []any{holder, pgInterval(period), as.several, as.keyID, as.authority, as.labels, keyHistory}
 		rows, err := tx.exec(pgStartLeaseTakeOver, args...)
 		if err != nil {
 			return err
@@ -390,7 +399,8 @@ func (k *pgKind) takeStartLease(holder string, period, every time.Duration) (*pg
 // several-instances mode, instances of that mode alone, each under as's key
 // id and authority, and each reading sessions by label where as does and by
 // the caller's name where as does not (ADR-0051, point 4). Its refusal names
-// the instance it found. Rows that ran
+// the instance it found, and each answering the key history of as's version
+// (ADR-0062). Rows that ran
 // out are not compared (ADR-0035, decision 8): once every instance has
 // stopped, a start is compared with none, as in the one-instance mode, and
 // its key is held by the start's walk of the registry alone, which refuses
@@ -410,9 +420,20 @@ func admitBeside(as pgInstance, live []pgLeaseRow) error {
 			return fmt.Errorf("%w: gateway instance %s serves the database for authority %q, and this instance names %q; every instance serving one database at once names one authority (docs/postgresql-store.md, \"Several instances on one database\")", errInstanceMismatch, r.holder, r.authority, as.authority)
 		case r.labels != as.labels:
 			return fmt.Errorf("%w: gateway instance %s serves the database %s, and this instance %s; every instance serving one database at once reads the session a request names one way: the move to engineVersion %s is not made one instance at a time; stop every instance, seal what is open (gateway seal-open --all), and start them all at the one version (ADR-0051)", errInstanceMismatch, r.holder, labelsReading(r.labels), labelsReading(as.labels), labelsVersion)
+		case leaseKeyHistory(r.keyHistory) != leaseKeyHistory(as.keyHistory):
+			return fmt.Errorf("%w: gateway instance %s serves the database answering the key history of version %q, and this instance answers version %q; every instance serving one database at once answers one key history: the move to keyHistoryVersion \"2\" is not made one instance at a time; stop every instance, and start them all with one keyHistoryVersion (ADR-0062)", errInstanceMismatch, r.holder, leaseKeyHistory(r.keyHistory), leaseKeyHistory(as.keyHistory))
 		}
 	}
 	return nil
+}
+
+// leaseKeyHistory is the key-history version a row or an instance records:
+// "1" where it names none.
+func leaseKeyHistory(version string) string {
+	if version == "" {
+		return keyHistoryVersion
+	}
+	return version
 }
 
 // labelsReading is how an instance reads the session a request names, as

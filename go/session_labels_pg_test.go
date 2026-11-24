@@ -437,7 +437,7 @@ func TestAPostgresStoreAtSchemaEightMigratesToSessionLabels(t *testing.T) {
 	asOwnerIn(t, db, pgNoScope, `INSERT INTO gateway.start_lease (holder, several, key_id, authority, renewed, expires)
 		SELECT $1, true, $2, 'gateway:test', n.now - interval '1 minute', n.now - interval '1 second' FROM (SELECT pg_catalog.clock_timestamp() AS now) n`,
 		newTestLeaseHolder(t), strings.Repeat("a", 32))
-	if applied, err := migratePostgres(db.migrator, set, db.roles, time.Minute); err != nil || !slices.Equal(applied, []int{9, 10, 11}) {
+	if applied, err := migratePostgres(db.migrator, set, db.roles, time.Minute); err != nil || !slices.Equal(applied, pgShippedFrom(9)) {
 		t.Fatalf("the migration from version 8: %v %v", applied, err)
 	}
 	rows := pgTestQuery(t, db.runtime, `SELECT labels FROM gateway.start_lease`)

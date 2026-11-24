@@ -232,7 +232,9 @@ before it and the key itself both signed.
   Nothing refuses the mixed state for now. The window is before the first continued rotation: until then an
   instance that has not opted in answers `"1"`, and that answer is still valid for that store. The release
   notes tell operators to set the member on every instance before rotating. A start-lease column that holds
-  every instance to one version is a later record.
+  every instance to one version is a later record. (2026-11-24: that record is
+  [ADR-0062](0062-postgresql-instances-of-one-database-answer-one-key-history-version.md); a start answering
+  another version than a live instance's is refused.)
 - **How a consumer learns the version.** From the answer's own `keyHistoryVersion`, read before anything
   else. `/publickey` and `/posture` do not change.
 - **A consumer of v0.38.0 refuses version `"2"` whole.** Its check refuses any top-level member besides

@@ -163,6 +163,7 @@ var pgDefinitions = []pgDefinition{
 	{"start_lease", "column", "expires", `timestamp with time zone NOT NULL`},
 	{"start_lease", "column", "holder", `text COLLATE pg_catalog."C" NOT NULL`},
 	{"start_lease", "column", "key_id", `text COLLATE pg_catalog."C" NOT NULL`},
+	{"start_lease", "column", "key_history", `text COLLATE pg_catalog."C" NOT NULL DEFAULT '1'::text`},
 	{"start_lease", "column", "labels", `boolean NOT NULL DEFAULT false`},
 	{"start_lease", "column", "renewed", `timestamp with time zone NOT NULL`},
 	{"start_lease", "column", "several", `boolean NOT NULL`},
