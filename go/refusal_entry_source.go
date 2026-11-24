@@ -4,8 +4,9 @@ package main
 // 9): refusalEntrySource over the configured scopes' journals, on each kind.
 // It reads entries outside every lock, and takes the journal's own lock, the
 // one its appends take, only to move the cursor. It takes no lock an answer
-// takes, and on the PostgreSQL kind it reads and locks on a connection of its
-// own, outside the pool answers use and apart from the writer's.
+// takes, and on the PostgreSQL kind it reads, locks and reads and moves the
+// cursors on a connection of its own, outside the pool answers use and apart
+// from the writer's.
 
 import (
 	"bufio"
@@ -39,7 +40,7 @@ func (g *gatewayService) refusalEntrySourceOf() refusalEntrySource {
 	if kind, onKind := g.kind.(*pgKind); onKind {
 		return newPGRefusalEntries(kind, names)
 	}
-	return fsRefusalEntries{root: g.storeRoot, names: names}
+	return newFSRefusalEntries(g.storeRoot, names)
 }
 
 // configuredJournal holds the source to the journals it was made with, so
@@ -55,11 +56,20 @@ func configuredJournal(names []string, journal string) error {
 
 // fsRefusalEntries reads <root>/journals/<name>.jsonl. One process serves a
 // store of this kind, so the writer's appends and remove-scope are the
-// file's only other users.
+// file's only other users. Its cursors are the files beside the journals
+// (fsForwardingCursors), outside the lock and under it alike: the file's
+// lock is held across the cursor's compare-and-set.
 type fsRefusalEntries struct {
-	root  string
-	names []string
+	root        string
+	names       []string
+	cursorFiles fsForwardingCursors
 }
+
+func newFSRefusalEntries(root string, names []string) fsRefusalEntries {
+	return fsRefusalEntries{root: root, names: names, cursorFiles: fsForwardingCursors{root: root, mu: &sync.Mutex{}}}
+}
+
+func (f fsRefusalEntries) cursors() forwardingCursors { return f.cursorFiles }
 
 func (f fsRefusalEntries) path(journal string) string {
 	return filepath.Join(f.root, journalsDir, journal+".jsonl")
@@ -158,7 +168,7 @@ func durableSize(file *os.File) (int64, error) {
 // from the journal, so the journal was removed (remove-scope takes the
 // cursor with it, under this lock) or replaced since, and a cursor written
 // now would name an entry no journal holds.
-func (f fsRefusalEntries) locked(journal string, at refusalEntryLine, fn func() error) error {
+func (f fsRefusalEntries) locked(journal string, at refusalEntryLine, fn func(forwardingCursors) error) error {
 	if err := configuredJournal(f.names, journal); err != nil {
 		return err
 	}
@@ -194,14 +204,16 @@ func (f fsRefusalEntries) locked(journal string, at refusalEntryLine, fn func() 
 	if _, err := file.ReadAt(got, at.at); err != nil || !bytes.Equal(got, want) {
 		return nil
 	}
-	return fn()
+	return fn(f.cursorFiles)
 }
 
 // --- the PostgreSQL kind ----------------------------------------------------
 
-// pgRefusalEntries reads gateway.journal_records and takes each journal's
-// advisory lock on a connection of its own: not a slot of the pool answers
-// use, and not the writer's, which holds a transaction across a signing.
+// pgRefusalEntries reads gateway.journal_records, takes each journal's
+// advisory lock, and reads and moves the forwarding cursors, on a
+// connection of its own: not a slot of the pool answers use, and not the
+// writer's, which holds a transaction across a signing. No transaction of
+// it spans a delivery: the owner delivers between them.
 type pgRefusalEntries struct {
 	kind  *pgKind
 	names []string
@@ -217,9 +229,10 @@ func (p *pgRefusalEntries) journals() ([]string, error) {
 	return append([]string(nil), p.names...), nil
 }
 
-// onOwn runs fn in one read transaction on the source's own connection,
-// opening it again where it failed.
-func (p *pgRefusalEntries) onOwn(fn func(pgTx) error) error {
+// onOwn runs fn in one transaction of mode on the source's own connection,
+// opening it again where it failed. It holds mu until the transaction
+// ends, so fn uses the transaction it is given and never calls onOwn.
+func (p *pgRefusalEntries) onOwn(mode pgMode, fn func(pgTx) error) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	deadline := time.Now().Add(refusalPGBound)
@@ -236,7 +249,14 @@ func (p *pgRefusalEntries) onOwn(fn func(pgTx) error) error {
 	}
 	view := *p.kind
 	view.operation = refusalPGBound
-	return view.transactOn(p.own, deadline, pgRead, fn)
+	return view.transactOn(p.own, deadline, mode, fn)
+}
+
+// cursors reads the cursors on the source's own connection, each read a
+// transaction of its own; under the lock, locked gives fn the ones of its
+// transaction.
+func (p *pgRefusalEntries) cursors() forwardingCursors {
+	return pgForwardingCursors{docs: pgDocumentsOn{row: p.kind.row, run: p.onOwn}}
 }
 
 func (p *pgRefusalEntries) entriesAfter(journal string, ordinal int64, limit int) ([]refusalEntryLine, error) {
@@ -244,7 +264,7 @@ func (p *pgRefusalEntries) entriesAfter(journal string, ordinal int64, limit int
 		return nil, err
 	}
 	var out []refusalEntryLine
-	err := p.onOwn(func(tx pgTx) error {
+	err := p.onOwn(pgRead, func(tx pgTx) error {
 		rows, err := tx.exec(`SELECT ordinal, line FROM gateway.journal_records WHERE journal = $1 AND ordinal > $2 ORDER BY ordinal LIMIT $3`, journal, ordinal, int64(limit))
 		if err != nil {
 			return err
@@ -266,16 +286,21 @@ func (p *pgRefusalEntries) entriesAfter(journal string, ordinal int64, limit int
 }
 
 // locked takes the journal's advisory lock, the one its appends and
-// remove-scope take (pgRefusalLock), in a transaction on the source's own
-// connection, and runs fn under it only where the journal still holds at at
-// its ordinal; otherwise the journal was removed, or begun again, since at
-// was read, and fn is not run (as on the filesystem kind). The lock is let
-// go when the transaction ends, after fn returns.
-func (p *pgRefusalEntries) locked(journal string, at refusalEntryLine, fn func() error) error {
+// remove-scope take (pgRefusalLock), in a write transaction on the source's
+// own connection, and runs fn under it only where the journal still holds
+// at at its ordinal; otherwise the journal was removed, or begun again,
+// since at was read, and fn is not run (as on the filesystem kind). fn is
+// given the cursors of that transaction: the cursor's read and its
+// compare-and-set are its statements, so they take no slot of the pool, and
+// no remove-scope comes between the lock and the put, as one could where
+// the put waited for a slot past the idle bound that ends this session and
+// lets its lock go. The lock is let go when the transaction ends, after fn
+// returns. The owner delivers before it calls locked, never inside it.
+func (p *pgRefusalEntries) locked(journal string, at refusalEntryLine, fn func(forwardingCursors) error) error {
 	if err := configuredJournal(p.names, journal); err != nil {
 		return err
 	}
-	return p.onOwn(func(tx pgTx) error {
+	return p.onOwn(pgWriteCommitted, func(tx pgTx) error {
 		if _, err := tx.exec(pgRefusalLock, pgRefusalJournalLockClass, refusalLockKey(journal)); err != nil {
 			return err
 		}
@@ -286,9 +311,17 @@ func (p *pgRefusalEntries) locked(journal string, at refusalEntryLine, fn func()
 		if len(rows.rows) != 1 || !bytes.Equal(rows.rows[0][0], at.line) {
 			return nil
 		}
-		return fn()
+		if refusalCursorLockHeld != nil {
+			refusalCursorLockHeld(journal)
+		}
+		return fn(pgForwardingCursors{docs: pgDocumentsOn{row: p.kind.row, run: pgInTransaction(tx)}})
 	})
 }
+
+// refusalCursorLockHeld, where not nil, runs once locked holds the
+// journal's advisory lock and has found the entry there, before fn: a test
+// seam.
+var refusalCursorLockHeld func(journal string)
 
 func (p *pgRefusalEntries) close() {
 	p.mu.Lock()

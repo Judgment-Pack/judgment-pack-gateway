@@ -65,23 +65,40 @@ type refusalEntrySource interface {
 	// entriesAfter is the journal's entries past ordinal, oldest first, at
 	// most limit, whichever instance appended them.
 	entriesAfter(journal string, ordinal int64, limit int) ([]refusalEntryLine, error)
+	// cursors is the journals' forwarding cursors as a pass reads them
+	// first, outside every lock: on the PostgreSQL kind on the source's own
+	// connection, never on the pool.
+	cursors() forwardingCursors
 	// locked runs fn under the journal's lock (ADR-0059 section 7), the one
 	// its appends take, so the cursor moves under it; and only where the
 	// journal, under that lock, still holds at, the entry the cursor is to
 	// name. Where it does not, the journal was removed or begun again since
-	// at was read, and fn is not run: the next pass reads again.
-	locked(journal string, at refusalEntryLine, fn func() error) error
+	// at was read, and fn is not run: the next pass reads again. fn is
+	// given the cursors bound to that lock: on the PostgreSQL kind, the
+	// cursor's read and its compare-and-set are statements of the
+	// transaction that holds the lock, so no remove-scope comes between the
+	// lock and the put. fn moves the cursor and nothing else: no delivery,
+	// no signing, and on the PostgreSQL kind no other use of the source.
+	locked(journal string, at refusalEntryLine, fn func(forwardingCursors) error) error
 }
 
 // noRefusalEntries is the seam where no refusal journal is configured: no
-// journal, so nothing is forwarded and no cursor is read or written.
+// journal, so nothing is forwarded and no cursor is read or written. Its
+// cursors are itself: none, and never moved.
 type noRefusalEntries struct{}
 
 func (noRefusalEntries) journals() ([]string, error) { return nil, nil }
 func (noRefusalEntries) entriesAfter(string, int64, int) ([]refusalEntryLine, error) {
 	return nil, nil
 }
-func (noRefusalEntries) locked(string, refusalEntryLine, func() error) error { return nil }
+func (noRefusalEntries) cursors() forwardingCursors { return noRefusalEntries{} }
+func (noRefusalEntries) locked(string, refusalEntryLine, func(forwardingCursors) error) error {
+	return nil
+}
+func (noRefusalEntries) read(string) (forwardingCursor, error) {
+	return forwardingCursor{ordinal: -1}, nil
+}
+func (noRefusalEntries) advance(string, int64, forwardingCursor) (bool, error) { return false, nil }
 
 // forwardingCursor is a journal's forwarding progress: the highest ordinal
 // the sink acknowledged, and that entry's digest; ordinal -1 for none.
@@ -256,8 +273,17 @@ func (c fsForwardingCursors) advance(journal string, from int64, to forwardingCu
 // scope, named refusalForwardedDocument and the SHA-256 of the journal's
 // name. The compare-and-set is the document's revision: a put at the
 // revision read, so of two instances that read one cursor, one moves it and
-// the other is told it moved.
-type pgForwardingCursors struct{ docs documentSpace }
+// the other is told it moved. The owner's are on its source's own
+// connection (pgRefusalEntries.cursors), and under the journal's lock on
+// the transaction that holds it (pgRefusalEntries.locked).
+type pgForwardingCursors struct{ docs cursorDocuments }
+
+// cursorDocuments is what a cursor needs of a document space: its get, and
+// its put at a revision.
+type cursorDocuments interface {
+	getDocument(name string) ([]byte, string, error)
+	putDocument(name string, data []byte, expected string) (string, error)
+}
 
 func pgForwardingCursorName(journal string) string {
 	sum := sha256.Sum256([]byte(journal))
@@ -302,14 +328,6 @@ func (c pgForwardingCursors) advance(journal string, from int64, to forwardingCu
 	return err == nil, err
 }
 
-// forwardingCursors is the service's cursors, on its kind.
-func (g *gatewayService) forwardingCursors() forwardingCursors {
-	if kind, onKind := g.kind.(*pgKind); onKind {
-		return pgForwardingCursors{kind.ofNoScope().documents()}
-	}
-	return fsForwardingCursors{root: g.storeRoot, mu: &sync.Mutex{}}
-}
-
 // refusalEntryForwarding is the forwarding owner (condition C5). On the
 // PostgreSQL kind with several instances, every instance's owner forwards
 // every journal from the one cursor, whichever instance appended the
@@ -323,9 +341,9 @@ func (g *gatewayService) forwardingCursors() forwardingCursors {
 // an answer or a receipt's delivery.
 type refusalEntryForwarding struct {
 	forwarder *receiptForwarder
-	source    refusalEntrySource
-	cursors   forwardingCursors
-	inFlight  sync.Mutex
+	// source is the journals, and their cursors with them
+	source   refusalEntrySource
+	inFlight sync.Mutex
 	// stderr is where a journal that stops at a diverged cursor is named,
 	// once for each journal (diverged): it is forwarded no more until the
 	// maintainer looks at it, and a stop that says nothing is a journal
@@ -338,11 +356,11 @@ type refusalEntryForwarding struct {
 // newRefusalEntryForwarding is the owner for a sink, or nil: for a sink not
 // on "3", and for one that declines refusal entries, nothing is forwarded
 // and no cursor is written (condition C11).
-func newRefusalEntryForwarding(spec *receiptSinkSpec, source refusalEntrySource, cursors forwardingCursors) *refusalEntryForwarding {
+func newRefusalEntryForwarding(spec *receiptSinkSpec, source refusalEntrySource) *refusalEntryForwarding {
 	if spec == nil || !spec.deliveryV3 || !spec.refusalEntries {
 		return nil
 	}
-	return &refusalEntryForwarding{forwarder: newReceiptForwarder(spec), source: source, cursors: cursors, stderr: os.Stderr, diverged: map[string]bool{}}
+	return &refusalEntryForwarding{forwarder: newReceiptForwarder(spec), source: source, stderr: os.Stderr, diverged: map[string]bool{}}
 }
 
 // divergedOnce names a journal whose forwarding stopped at a diverged
@@ -360,12 +378,14 @@ func (r *refusalEntryForwarding) divergedOnce(journal string) {
 
 // forwardJournal is one pass over one journal: the entries after its
 // cursor, oldest first, each acknowledged before the next is sent, and the
-// cursor moved past the last acknowledged.
+// cursor moved past the last acknowledged. Every read and every delivery is
+// made outside the journal's lock, and outside any transaction: locked
+// only checks the entry again and moves the cursor.
 func (r *refusalEntryForwarding) forwardJournal(ctx context.Context, journal string) error {
 	if r == nil {
 		return nil
 	}
-	from, err := r.cursors.read(journal)
+	from, err := r.source.cursors().read(journal)
 	if err != nil {
 		return err
 	}
@@ -401,8 +421,8 @@ func (r *refusalEntryForwarding) forwardJournal(ctx context.Context, journal str
 	if reached.ordinal == from.ordinal {
 		return nil
 	}
-	return r.source.locked(journal, last, func() error {
-		_, err := r.cursors.advance(journal, from.ordinal, reached)
+	return r.source.locked(journal, last, func(cursors forwardingCursors) error {
+		_, err := cursors.advance(journal, from.ordinal, reached)
 		return err
 	})
 }
@@ -442,7 +462,7 @@ func (r *refusalEntryForwarding) clearStaged() {
 	if r == nil {
 		return
 	}
-	c, onFS := r.cursors.(fsForwardingCursors)
+	c, onFS := r.source.cursors().(fsForwardingCursors)
 	if !onFS {
 		return
 	}
@@ -476,7 +496,7 @@ func (g *gatewayService) refusalEntryForwardingOf() *refusalEntryForwarding {
 	if f == nil || !f.v3 || !f.refusalEntries {
 		return nil
 	}
-	return newRefusalEntryForwarding(&receiptSinkSpec{url: f.url, deliveryV3: true, refusalEntries: true}, g.refusalEntrySourceOf(), g.forwardingCursors())
+	return newRefusalEntryForwarding(&receiptSinkSpec{url: f.url, deliveryV3: true, refusalEntries: true}, g.refusalEntrySourceOf())
 }
 
 // startRefusalEntryForwarding starts the service's owner, under its

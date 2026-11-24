@@ -910,15 +910,42 @@ func newRevision() (string, error) {
 	return hex.EncodeToString(raw[:]), nil
 }
 
+// getDocument and putDocument are pgDocumentsOn's, each in a transaction
+// of its own on a connection of the pool.
 func (d pgDocuments) getDocument(name string) ([]byte, string, error) {
+	return pgDocumentsOn{row: d.k.row, run: d.k.transact}.getDocument(name)
+}
+
+func (d pgDocuments) putDocument(name string, data []byte, expected string) (string, error) {
+	return pgDocumentsOn{row: d.k.row, run: d.k.transact}.putDocument(name, data, expected)
+}
+
+// pgDocumentsOn is a document's get and its put at a revision, the
+// compare-and-set, as the statements on row's documents that run runs: in
+// a transaction of its own on a connection of the pool (pgDocuments), on a
+// connection of the caller's own, or in the transaction a caller holds
+// (pgInTransaction). The revision's rule is here alone, whichever runs it.
+type pgDocumentsOn struct {
+	row string
+	run func(mode pgMode, fn func(pgTx) error) error
+}
+
+// pgInTransaction runs fn in tx, the transaction its caller holds, as one
+// of its statements, whatever mode it is asked: a put in it needs tx to be
+// a write transaction. A failure ends tx, which its caller rolls back.
+func pgInTransaction(tx pgTx) func(pgMode, func(pgTx) error) error {
+	return func(_ pgMode, fn func(pgTx) error) error { return fn(tx) }
+}
+
+func (d pgDocumentsOn) getDocument(name string) ([]byte, string, error) {
 	if !validStoreName(name) {
 		return nil, noRevision, pgRefused("get-document", "not a document's name")
 	}
 	var data []byte
 	revision := noRevision
 	found := false
-	err := d.k.transact(pgRead, func(tx pgTx) error {
-		rows, err := tx.exec(`SELECT data, revision FROM gateway.documents WHERE scope = $1 AND name = $2`, d.k.row, name)
+	err := d.run(pgRead, func(tx pgTx) error {
+		rows, err := tx.exec(`SELECT data, revision FROM gateway.documents WHERE scope = $1 AND name = $2`, d.row, name)
 		if err == nil && len(rows.rows) == 1 {
 			data, revision, found = rows.rows[0][0], string(rows.rows[0][1]), true
 		}
@@ -933,7 +960,7 @@ func (d pgDocuments) getDocument(name string) ([]byte, string, error) {
 	return data, revision, nil
 }
 
-func (d pgDocuments) putDocument(name string, data []byte, expected string) (string, error) {
+func (d pgDocumentsOn) putDocument(name string, data []byte, expected string) (string, error) {
 	if !validStoreName(name) {
 		return noRevision, pgRefused("put-document", "not a document's name")
 	}
@@ -945,17 +972,17 @@ func (d pgDocuments) putDocument(name string, data []byte, expected string) (str
 		return noRevision, storeFailure(faultDurability, "put-document", err)
 	}
 	put := false
-	err = d.k.transact(pgWriteCommitted, func(tx pgTx) error {
+	err = d.run(pgWriteCommitted, func(tx pgTx) error {
 		var rows pgRows
 		var err error
 		if expected == noRevision {
 			rows, err = tx.exec(`INSERT INTO gateway.documents (scope, name, revision, data) VALUES ($1, $2, $3, $4)
-				ON CONFLICT (scope, name) DO NOTHING RETURNING revision`, d.k.row, name, next, data)
+				ON CONFLICT (scope, name) DO NOTHING RETURNING revision`, d.row, name, next, data)
 		} else {
 			// the row is locked by the update, and a concurrent writer's
 			// update waits and then finds the revision it expected gone
 			rows, err = tx.exec(`UPDATE gateway.documents SET revision = $3, data = $4
-				WHERE scope = $1 AND name = $2 AND revision = $5 RETURNING revision`, d.k.row, name, next, data, expected)
+				WHERE scope = $1 AND name = $2 AND revision = $5 RETURNING revision`, d.row, name, next, data, expected)
 		}
 		put = err == nil && len(rows.rows) == 1
 		return err

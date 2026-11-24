@@ -123,7 +123,7 @@ func TestTheForwardersStartRemovesItsOwnJournalsStagingFilesAlone(t *testing.T) 
 	if linked {
 		kept = append(kept, link)
 	}
-	owner := newRefusalEntryForwarding(&receiptSinkSpec{url: "http://127.0.0.1:9/", deliveryV3: true, refusalEntries: true}, standInJournals{own}, fsForwardingCursors{root: root, mu: &sync.Mutex{}})
+	owner := newRefusalEntryForwarding(&receiptSinkSpec{url: "http://127.0.0.1:9/", deliveryV3: true, refusalEntries: true}, withCursors{standInJournals{own}, fsForwardingCursors{root: root, mu: &sync.Mutex{}}})
 	owner.clearStaged()
 	for _, file := range gone {
 		if _, err := os.Lstat(filepath.Join(dir, file)); !os.IsNotExist(err) {
@@ -148,4 +148,7 @@ func (s standInJournals) journals() ([]string, error) { return s, nil }
 func (standInJournals) entriesAfter(string, int64, int) ([]refusalEntryLine, error) {
 	return nil, nil
 }
-func (standInJournals) locked(_ string, _ refusalEntryLine, fn func() error) error { return fn() }
+func (standInJournals) cursors() forwardingCursors { return nil }
+func (standInJournals) locked(_ string, _ refusalEntryLine, fn func(forwardingCursors) error) error {
+	return fn(nil)
+}
