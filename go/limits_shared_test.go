@@ -10,26 +10,68 @@ import (
 )
 
 // fakeSharedRates answers every lease in full, at once until block is set,
-// and from then on only once block is closed.
+// and from then on only once block is closed; after delay where one is
+// set; and with leaseErr, or liveErr for a count, where one is set.
 type fakeSharedRates struct {
-	live   int
-	leases atomic.Int64
-	mu     sync.Mutex
-	block  chan struct{}
+	live              int
+	leases            atomic.Int64
+	counts            atomic.Int64
+	mu                sync.Mutex
+	block             chan struct{}
+	delay             time.Duration
+	leaseErr, liveErr error
 }
 
-func (f *fakeSharedRates) liveInstances() (int, error) { return f.live, nil }
-func (f *fakeSharedRates) makeRow(string) error        { return nil }
-func (f *fakeSharedRates) close()                      {}
+func (f *fakeSharedRates) set(fn func(*fakeSharedRates)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(f)
+}
+
+func (f *fakeSharedRates) liveInstances() (int, error) {
+	f.counts.Add(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.live, f.liveErr
+}
+func (f *fakeSharedRates) makeRow(string) error { return nil }
+func (f *fakeSharedRates) close()               {}
 func (f *fakeSharedRates) lease(_ string, want, _, _ int64) (sharedLease, error) {
 	f.leases.Add(1)
 	f.mu.Lock()
-	block := f.block
+	block, delay, err := f.block, f.delay, f.leaseErr
 	f.mu.Unlock()
 	if block != nil {
 		<-block
 	}
+	time.Sleep(delay)
+	if err != nil {
+		return sharedLease{}, err
+	}
 	return sharedLease{took: want}, nil
+}
+
+// sharedPosture is the request-limits posture line's reason for entries,
+// with l's live state.
+func sharedPosture(l *requestLimiter, entries map[string]limitEntry) string {
+	cfg := &limitsConfig{beforeScope: 64, shared: true, scopes: entries}
+	sources := map[string]sourceSpec{}
+	for scope := range entries {
+		sources[scope] = sourceSpec{scope: scope}
+	}
+	return requestLimitsLines(postureInput{limits: cfg, sources: sources, callerScopes: "checked", sharedLimits: l.sharedState()})[0].reason
+}
+
+// chargeMany charges n requests of scope, and answers how many were
+// admitted.
+func chargeMany(l *requestLimiter, scope string, n int) int {
+	admitted := 0
+	for range n {
+		if chargeOnce(l, scope) == nil {
+			admitted++
+		}
+	}
+	return admitted
 }
 
 // sharedLimiter is a limiter of the entries given whose count is shared.
@@ -76,7 +118,7 @@ func TestASharedScopeAdmitsFromItsBatchWithNoRoundTrip(t *testing.T) {
 	clock := &fakeLimitClock{}
 	l := sharedLimiter(t, clock.clock(), map[string]limitEntry{"scope-a": rateOf(6000, 40)})
 	rates := &fakeSharedRates{live: 1}
-	if line := l.shareOn(rates); !strings.Contains(line, "counted together by the 1 live instances") {
+	if line := l.shareOn(rates, 1); !strings.Contains(line, "counted together by the 1 live instances") {
 		t.Fatalf("start line: %s", line)
 	}
 	if got := l.scopes["scope-a"].shared.tokens.Load(); got != 10 {
@@ -166,5 +208,131 @@ func TestLimitsWithoutSharedSayWhatTheySaidAt50(t *testing.T) {
 	if len(shared) != 1 || shared[0].state != postureEnforced || !strings.Contains(shared[0].reason, "counted together by the instances of this database") ||
 		!strings.Contains(shared[0].reason, "at most cap+N-1") || !strings.HasSuffix(shared[0].reason, "N=2 live instances") {
 		t.Fatalf("shared posture: %+v", shared)
+	}
+}
+
+// A probe whose count of the instances succeeds and whose lease fails
+// leaves the instance counting alone, its bucket as it was: over several
+// such probes the instance admits no more than its own bucket at
+// ceil(limit/N) admits over the span, from the one full bucket of
+// ceil(B/N) it was given as it left the shared count, plus the batch it
+// held. The leases' writes refused while the reads succeed, as on a
+// read-only database, do this.
+func TestAFailedProbeGivesTheInstanceNoFreshBucket(t *testing.T) {
+	clock := &fakeLimitClock{}
+	entries := map[string]limitEntry{"scope-a": rateOf(600, 100)}
+	l := sharedLimiter(t, clock.clock(), entries)
+	l.shared.probeEvery = 5 * time.Millisecond
+	rates := &fakeSharedRates{live: 2}
+	if line := l.shareOn(rates, 2); !strings.Contains(line, "counted together by the 2 live instances") {
+		t.Fatalf("start line: %s", line)
+	}
+	rates.set(func(f *fakeSharedRates) { f.leaseErr = errors.New("the lease's write was refused") })
+	// the batch, one request, then the refill that fails
+	admitted := chargeMany(l, "scope-a", 1)
+	if !sharedWaitUntil(2*time.Second, func() bool { return !l.shared.available.Load() }) {
+		t.Fatal("the shared count is still available with its lease failing")
+	}
+	step := 100 * time.Millisecond
+	steps := 20
+	for range steps {
+		probed := rates.counts.Load() + 2
+		if !sharedWaitUntil(2*time.Second, func() bool { return rates.counts.Load() >= probed }) {
+			t.Fatal("the probe did not run")
+		}
+		admitted += chargeMany(l, "scope-a", 100)
+		clock.advance(step)
+	}
+	// alone: ceil(600/2) a minute, one each 200 ms, from ceil(100/2) at
+	// once; the last charge is (steps-1) steps after the first
+	bound := 1 + 50 + int(time.Duration(steps-1)*step/(200*time.Millisecond))
+	if admitted > bound {
+		t.Fatalf("%d admitted over %d failed probes, above %d: a failed probe refilled the bucket", admitted, steps*2, bound)
+	}
+	if l.shared.available.Load() || !strings.Contains(sharedPosture(l, entries), "the database failed or did not answer") {
+		t.Fatalf("posture after the failed probes: %s", sharedPosture(l, entries))
+	}
+}
+
+// The start's count of the instances is N from the start: where the
+// refill's connection fails at once, the instance counts alone at
+// ceil(limit/N) of that N, not of one instance, and says so.
+func TestASharedStartThatCannotLeaseSplitsByTheStartsCount(t *testing.T) {
+	clock := &fakeLimitClock{}
+	entries := map[string]limitEntry{"scope-a": {scope: limitValues{requestsPerMinute: 6000, burst: 10, inFlight: 4}}}
+	l := sharedLimiter(t, clock.clock(), entries)
+	refused := errors.New("the connection was refused")
+	rates := &fakeSharedRates{live: 2, liveErr: refused, leaseErr: refused}
+	if line := l.shareOn(rates, 2); !strings.Contains(line, "the shared count is unavailable (the connection was refused)") || !strings.Contains(line, "of 2 instances") {
+		t.Fatalf("start line: %s", line)
+	}
+	if got := sharedPosture(l, entries); !strings.Contains(got, "of N=2,") {
+		t.Fatalf("posture: %s", got)
+	}
+	if got := chargeMany(l, "scope-a", 10); got != 5 {
+		t.Fatalf("alone, %d admitted at once of a burst of 10 over 2 instances, want 5", got)
+	}
+	if got := l.scopes["scope-a"].inFlightCap(); got != 2 {
+		t.Fatalf("alone, an in-flight cap of %d of 4 over 2 instances, want 2", got)
+	}
+}
+
+// One refill serves every scope, so a database that answers each lease
+// slowly, though within the bound, leaves a scope with its batch spent
+// waiting for the others' leases. Once that wait passes twice the bound,
+// the instance counts alone, from its own buckets made full once, and
+// /posture says why; probes that still lease slowly give it no fresh
+// bucket, and a probe that leases every scope in time returns it.
+func TestASlowRefillFallsBackToLimitOverNAndReturns(t *testing.T) {
+	clock := &fakeLimitClock{}
+	entries := map[string]limitEntry{}
+	scopes := []string{"scope-a", "scope-b", "scope-c", "scope-d"}
+	for _, scope := range scopes {
+		entries[scope] = rateOf(6000, 40)
+	}
+	l := sharedLimiter(t, clock.clock(), entries)
+	// as 1.9 s of a lease is to the 2 s bound
+	l.shared.bound = 50 * time.Millisecond
+	l.shared.probeEvery = 20 * time.Millisecond
+	rates := &fakeSharedRates{live: 2}
+	if line := l.shareOn(rates, 2); !strings.Contains(line, "counted together by the 2 live instances") {
+		t.Fatalf("start line: %s", line)
+	}
+	rates.set(func(f *fakeSharedRates) { f.delay = 48 * time.Millisecond })
+	fell := sharedWaitUntil(3*time.Second, func() bool {
+		for _, scope := range scopes {
+			_ = chargeOnce(l, scope)
+		}
+		return !l.shared.available.Load()
+	})
+	if !fell {
+		t.Fatal("the scopes' refills waited on one another with no fallback")
+	}
+	if got := sharedPosture(l, entries); !strings.Contains(got, "a scope's refill waited longer than 4s with its batch spent") || !strings.Contains(got, "of N=2,") {
+		t.Fatalf("posture after the slow refills: %s", got)
+	}
+	// alone at ceil(40/2) at once, the clock held: no more than 20 each
+	first := map[string]int{}
+	for _, scope := range scopes {
+		if first[scope] = chargeMany(l, scope, 40); first[scope] > 20 {
+			t.Fatalf("%s alone admitted %d at once, above ceil(40/2)", scope, first[scope])
+		}
+	}
+	// slow probes leave it alone and its buckets as they are
+	probed := rates.counts.Load() + 3
+	if !sharedWaitUntil(3*time.Second, func() bool { return rates.counts.Load() >= probed }) {
+		t.Fatal("the probe did not run")
+	}
+	for _, scope := range scopes {
+		if got := chargeMany(l, scope, 40); got != 0 || l.shared.available.Load() {
+			t.Fatalf("%s: %d admitted after slow probes, available %v: a slow probe refilled the bucket or returned the count", scope, got, l.shared.available.Load())
+		}
+	}
+	rates.set(func(f *fakeSharedRates) { f.delay = 0 })
+	if !sharedWaitUntil(3*time.Second, func() bool { return l.shared.available.Load() }) {
+		t.Fatal("the shared count did not return once the leases answered in time")
+	}
+	if got := sharedPosture(l, entries); strings.Contains(got, "unavailable") {
+		t.Fatalf("posture after the return: %s", got)
 	}
 }

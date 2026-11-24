@@ -200,7 +200,8 @@ func TestThePostgresInstancesUnderLimitsSharedHoldOneLimitTogether(t *testing.T)
 }
 
 // sharedOnKind is a limiter of entries shared on kind's database, through
-// dsn where it is given.
+// dsn where it is given, its first N counted on kind's pool as the start
+// counts it.
 func sharedOnKind(t *testing.T, kind *pgKind, via *pgDSN, entries map[string]limitEntry) (*requestLimiter, string) {
 	t.Helper()
 	l := sharedLimiter(t, monotonicLimitClock(), entries)
@@ -208,7 +209,11 @@ func sharedOnKind(t *testing.T, kind *pgKind, via *pgDSN, entries map[string]lim
 	if via != nil {
 		rates.dsn = *via
 	}
-	return l, l.shareOn(rates)
+	live, err := kind.sharedLiveAtStart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l, l.shareOn(rates, live)
 }
 
 // One scope's row held by another transaction fails that scope's refill at
@@ -216,7 +221,9 @@ func sharedOnKind(t *testing.T, kind *pgKind, via *pgDSN, entries map[string]lim
 // request by request meanwhile, and the held scope refuses scope-rate once
 // its batch is spent, at once, rather than waiting for its row.
 func TestAPostgresScopesHeldRowAddsNoWaitToAnotherScope(t *testing.T) {
-	kind, db := pgTestKind(t, "", nil)
+	db := newPgTestDB(t)
+	db.migrate(t)
+	kind, _ := severalKind(t, db, testSeed, pgStartLeasePeriod)
 	entries := map[string]limitEntry{"scope-a": rateOf(600, 20), "scope-b": rateOf(600, 20)}
 	l, line := sharedOnKind(t, kind, nil, entries)
 	if !strings.Contains(line, "counted together") {
@@ -363,6 +370,38 @@ func TestAPostgresSharedCountFallsBackToLimitOverNAndReturns(t *testing.T) {
 	}
 	if got := posture(); strings.Contains(got, "unavailable") {
 		t.Fatalf("posture after the return: %s", got)
+	}
+}
+
+// The refill's own connection refused from the start: the first N is the
+// start's count of the live rows of the start lease, read on the kind's
+// pool, so the instance counts alone at ceil(limit/N) of those N -- the
+// start line, /posture and the split say so -- never as the one instance.
+func TestAPostgresSharedStartWithItsConnectionRefusedSplitsByTheLeaseRows(t *testing.T) {
+	db := newPgTestDB(t)
+	db.migrate(t)
+	a, _ := severalKind(t, db, testSeed, pgStartLeasePeriod)
+	severalKind(t, db, testSeed, pgStartLeasePeriod)
+	proxy, via := newCutProxy(t, db.runtime)
+	proxy.setCut(true)
+	entry := limitEntry{scope: limitValues{requestsPerMinute: 6000, burst: 10, inFlight: 4}}
+	l, line := sharedOnKind(t, a, &via, map[string]limitEntry{"scope-a": entry})
+	if !strings.Contains(line, "the shared count is unavailable") || !strings.Contains(line, "of 2 instances") {
+		t.Fatalf("start line: %s", line)
+	}
+	cfg := &limitsConfig{beforeScope: 64, shared: true, scopes: map[string]limitEntry{"scope-a": entry}}
+	lines := requestLimitsLines(postureInput{limits: cfg, sources: map[string]sourceSpec{"a": {scope: "scope-a"}}, callerScopes: "checked", sharedLimits: l.sharedState()})
+	if got := lines[0].reason; !strings.Contains(got, "the database failed or did not answer") || !strings.Contains(got, "of N=2,") {
+		t.Fatalf("posture: %s", got)
+	}
+	admitted := 0
+	for range 10 {
+		if chargeOnce(l, "scope-a") == nil {
+			admitted++
+		}
+	}
+	if admitted != 5 {
+		t.Fatalf("alone, %d admitted at once of a burst of 10 over 2 instances, want 5", admitted)
 	}
 }
 

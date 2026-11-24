@@ -249,8 +249,10 @@ func limitsShared(state *sharedState) string {
 	switch {
 	case state == nil:
 		return bounds
+	case !state.available && state.slow:
+		return fmt.Sprintf("the shared count is unavailable: a scope's refill waited longer than %s with its batch spent, so this instance counts alone at ceil(limit/N) of N=%d, and returns to the shared count once a probe, tried every %s, leases every scope's batch within %s; %s", 2*sharedRefillBound, state.live, sharedProbeInterval, 2*sharedRefillBound, bounds)
 	case !state.available:
-		return fmt.Sprintf("the shared count is unavailable: the database did not answer a refill within %s, so this instance counts alone at ceil(limit/N) of N=%d, and returns to the shared count once a refill, tried every %s, succeeds; %s", sharedRefillBound, state.live, sharedProbeInterval, bounds)
+		return fmt.Sprintf("the shared count is unavailable: the database failed or did not answer a refill within %s, so this instance counts alone at ceil(limit/N) of N=%d, and returns to the shared count once a probe, tried every %s, leases every scope's batch; %s", sharedRefillBound, state.live, sharedProbeInterval, bounds)
 	}
 	return fmt.Sprintf("%s; N=%d live instances", bounds, state.live)
 }

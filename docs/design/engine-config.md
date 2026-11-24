@@ -3225,10 +3225,13 @@ configuration may carry a top-level `limits` member. Below that version it is re
     Over any window W the instances admit at most `burst` + ceil(W/T) + N·b (T the interval), and
     never more than the rate over time. A scope's rate may go unadmitted by up to (N−1)·b.
   - *In flight and per caller.* Each instance holds ceil(limit/N), with N the live instances of
-    the start lease, counted every 10 seconds: at most cap + N − 1 in flight in all.
+    the start lease, counted by the start beside its lease (a count that fails fails the start)
+    and every 10 seconds after: at most cap + N − 1 in flight in all.
   - *The database unreachable* (a refill or a count of the instances failed other than by a held
-    row, or got no answer within 2 seconds): each instance counts the rate alone at ceil(limit/N),
-    `/posture` says the shared count is unavailable, and a refill tried every second returns it.
+    row, or got no answer within 2 seconds), or a scope's refill waiting more than 4 seconds with
+    its batch spent: each instance counts the rate alone at ceil(limit/N), from one full bucket
+    made at the move, `/posture` says the shared count is unavailable and why, and a probe every
+    second that leases every scope's batch in time returns it.
   - *`beforeScope`* stays each instance's own.
   - *The start line* ends `counted together by the instances of this database (limits.shared)`,
     and a second line names the live instances once the first batches are leased. The

@@ -17,10 +17,11 @@ deciders: maintainer
 >   The refill runs in the background once a batch is down to half. No request sends a statement or
 >   takes a row lock, and one scope's refill never waits for another scope's row.
 > - **In flight and per caller:** each instance counts alone at ceil(limit/N), where N is the number
->   of live rows of the start lease, read again every 10 seconds and never on a request.
-> - **Database unreachable:** each instance counts the rate alone too, at ceil(limit/N). `/posture`
->   says the shared count is unavailable. The first refill that succeeds returns the instance to the
->   shared count.
+>   of live rows of the start lease. The start reads N beside its lease, or fails; N is read again
+>   every 10 seconds and never on a request.
+> - **Database unreachable or too slow:** each instance counts the rate alone too, at ceil(limit/N),
+>   from one full bucket made at the move. `/posture` says the shared count is unavailable and why.
+>   A probe that leases every scope's batch in time returns the instance to the shared count.
 > - **Without the member, and at engine version 50 and below,** nothing changes, byte for byte, and
 >   the `/posture` line is included in that. The gateway-wide cap (`beforeScope`) stays each
 >   instance's own.
@@ -97,7 +98,10 @@ Write N for the live instances, B for the burst, T for the interval, and b for t
 - **Per caller (E3).** Each instance counts each caller's rate, burst and in-flight cap at
   ⌈limit/N⌉, so in all at most limit + N − 1 of each member.
 - **N is read every 10 seconds** (`sharedInstancesInterval`, the start lease's renewal interval).
-  A starting instance counts itself. The others see a new instance, or one whose row expired, at
+  The start reads the first N from the live rows of the start lease on the kind's pool, once it
+  holds its own row and before it serves; a read that fails, or counts no live row, fails the
+  start, so N is never taken to be 1. A later count that fails keeps the last N. A starting
+  instance counts itself. The others see a new instance, or one whose row expired, at
   their next count. Until then the in-flight and per-caller sums may stand at the earlier N's
   shares for up to 10 seconds.
 - **The gateway-wide cap** (`beforeScope`) stays each instance's own. It bounds requests that no
@@ -110,13 +114,27 @@ Write N for the live instances, B for the burst, T for the interval, and b for t
   (`sharedRefillBound`). The 2 seconds bound the connection, the statements and the commit; the
   statement and lock timeouts are 2 seconds as well. A refill after the instance lost its start
   lease fails its fence, and is unreachable too.
+- **Too slow.** One refill serves every scope, one lease at a time. A database that answers each
+  lease within the 2 seconds, but slowly, leaves a scope waiting for the others' leases. Where a
+  scope's batch is spent and its refill has waited longer than twice the bound (4 seconds) since
+  it was handed over, the request that finds it so moves the instance to counting alone, as an
+  unreachable database does. A wait for the bucket's room is not counted.
 - **While unreachable,** each instance counts the scope's rate alone, from a full bucket at
   ⌈requestsPerMinute/N⌉ and ⌈burst/N⌉. In flight and per caller stay at ⌈limit/N⌉, with N the last
   count. A batch the instance still holds is kept for the shared count's return and is not spent
   meanwhile.
-- **`/posture`** says the shared count is unavailable (section 5).
-- **Recovery.** A probe every second (`sharedProbeInterval`) counts the instances and refills the
-  scopes whose batch is low. Once it succeeds, the instance counts from the shared row again.
+- **One bucket per move.** The scopes' own buckets are made full once, as the instance moves from
+  the shared count to counting alone, and at no other time. A failure while it already counts
+  alone, such as a failed probe, leaves them as they are. So each move adds at most one ⌈B/N⌉ per
+  instance to the bounds of section 3, and a database whose reads succeed while its writes fail
+  adds no more than that.
+- **`/posture`** says the shared count is unavailable, and whether the database failed or did not
+  answer, or a refill waited too long (section 5).
+- **Recovery.** A probe every second (`sharedProbeInterval`) counts the instances and leases each
+  limited scope's batch, up to b. The shared count is available again only once a lease succeeds:
+  the probe returns the instance where every lease succeeds, all within twice the bound. A probe
+  that fails, or is slow, leaves the instance counting alone. At the start the shared count is
+  likewise available only once the first batches are leased.
 
 ### 5. Start lines and `/posture`
 
@@ -129,8 +147,10 @@ Write N for the live instances, B for the burst, T for the interval, and b for t
   `counted by this instance alone; under several instances each one counts its own`, it ends with
   the bounds of section 3 instead, starting `counted together by the instances of this database
   (limits.shared)`. The serving instance adds `N=<n> live instances`. While the database does not
-  answer, the line opens that part with `the shared count is unavailable: the database did not
-  answer a refill within 2s, so this instance counts alone at ceil(limit/N) of N=<n>, …`.
+  answer, the line opens that part with `the shared count is unavailable: the database failed or
+  did not answer a refill within 2s, so this instance counts alone at ceil(limit/N) of N=<n>, …`;
+  where a refill waited too long, with `the shared count is unavailable: a scope's refill waited
+  longer than 4s with its batch spent, …`.
   `gateway posture` has no live state and gives the bounds alone.
 
 ### 6. The schema and the store's commands
@@ -142,7 +162,9 @@ Write N for the live instances, B for the burst, T for the interval, and b for t
   migrations.
 - **Rows.** A row is made, if missing, when an instance shares its count, and is moved only by
   leases. `gateway store remove-scope` removes a scope's row with the scope's other rows. The row
-  holds a bucket's time and nothing a record names.
+  holds a bucket's time and nothing a record names. On PostgreSQL, `remove-scope` is refused while
+  any row of the start lease is held, so the instances are stopped whenever a scope's row is
+  removed.
 - **The database's clock.** The lease is the one statement besides the start lease's that reads
   the database's clock (`TestThePostgresKindReadsNoDatabaseClock` holds both). Receipt and seal
   times stay the gateway's (ADR-0031, decision 9).

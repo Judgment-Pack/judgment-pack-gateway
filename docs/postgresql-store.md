@@ -475,10 +475,12 @@ records itself as the session's holder when it admits the call, before the sourc
   never more than the rate over time: at 6000 a minute (T = 10 ms, b = 10) with a burst of 50 on
   three instances, at most 50 + 100 + 30 = 180 in any one second. In flight
   and per caller each instance holds ceil(limit/N), with N the live rows of `gateway.start_lease`
-  counted every 10 seconds, at most cap + N − 1 in all. Where a refill or a count fails other than
-  by a held row, or gets no answer within 2 seconds, each instance counts the rate alone at
-  ceil(limit/N) until a refill, tried every second, succeeds, and `/posture` says the shared count
-  is unavailable. The gateway-wide cap (`beforeScope`) stays each instance's own. A refill is a
+  counted by the start beside its lease (a count that fails fails the start) and every 10 seconds
+  after, at most cap + N − 1 in all. Where a refill or a count fails other than by a held row, or
+  gets no answer within 2 seconds, or a scope's refill waits more than 4 seconds with its batch
+  spent, each instance counts the rate alone at ceil(limit/N), from one full bucket made at the
+  move, until a probe, tried every second, leases every scope's batch in time, and `/posture` says
+  the shared count is unavailable and why. The gateway-wide cap (`beforeScope`) stays each instance's own. A refill is a
   write fenced on the instance's start lease.
 
 The filesystem kind stays one instance per store and registry.

@@ -22,15 +22,22 @@ package main
 // In flight and per caller (ADR-0061, E2 and E3). Each instance counts a
 // scope's requests in flight, and each caller's rate and requests in
 // flight, alone, at ceil(limit/N), N the instances whose row of the start
-// lease is live; N is read again every sharedInstancesInterval on the same
-// connection, never on a request.
+// lease is live. The start reads the first N on the kind's pool, beside
+// the start lease, and fails where it cannot; N is read again every
+// sharedInstancesInterval on the refill's connection, never on a request,
+// and a count that fails keeps the last N.
 //
 // The database unreachable (E1). A refill, or the count of the instances,
 // that fails other than by its row's lock -- no connection, an error, or no
 // answer within sharedRefillBound -- marks the shared count unavailable:
 // each instance then counts the scope's rate alone too, at ceil(limit/N),
-// and /posture says so. A refill is tried every sharedProbeInterval, and
-// the first that succeeds returns the instance to the shared count.
+// and /posture says so. So does a scope whose batch is spent and whose
+// refill has waited longer than twice sharedRefillBound, as one refill
+// serves every scope. The scopes' own buckets are made full once, as the
+// instance leaves the shared count, and at no other time. A probe every
+// sharedProbeInterval counts the instances and leases each limited scope's
+// batch; it returns the instance to the shared count only where every
+// lease succeeds, and all within twice sharedRefillBound.
 //
 // The gateway-wide cap (beforeScope) stays this instance's alone.
 
@@ -71,6 +78,13 @@ const (
 	// bucket spent is tried again.
 	sharedRoomRetry = 10 * time.Millisecond
 )
+
+// sharedEpoch is the origin of sharedSince, the monotonic clock of the
+// refill's hand-offs.
+var sharedEpoch = time.Now()
+
+// sharedSince is the time since sharedEpoch, at least 1, so 0 is none.
+func sharedSince() int64 { return max(1, int64(time.Since(sharedEpoch))) }
 
 // sharedBatchOf is a scope's batch: the requests of sharedBatchWindow at
 // requestsPerMinute, rounded up, from 1 to maxSharedBatch, and at most the
@@ -119,6 +133,12 @@ type sharedRates interface {
 type sharedCount struct {
 	live      atomic.Int64
 	available atomic.Bool
+	// slow is whether the count is unavailable because a scope's refill
+	// waited too long, rather than because the database failed
+	slow atomic.Bool
+	// bound is sharedRefillBound and probeEvery sharedProbeInterval; a
+	// test shortens them
+	bound, probeEvery time.Duration
 	// due holds each scope whose batch is to be refilled, once: a scope is
 	// sent only while its pending flag is down, so it never fills
 	due    chan *sharedScope
@@ -150,6 +170,10 @@ type sharedScope struct {
 	// pending is up from a request's hand-off to the refill until the
 	// refill is done with the scope
 	pending atomic.Bool
+	// asked is when (sharedSince) the scope was last handed to the
+	// refill and the database has not answered its lease since; 0 for
+	// none. A wait for the bucket's room is not counted.
+	asked atomic.Int64
 	// wait is how long, from the last lease, until the bucket has room
 	// again, in nanoseconds: the Retry-After of a refusal
 	wait atomic.Int64
@@ -161,11 +185,12 @@ type sharedScope struct {
 	alone      atomic.Pointer[gcra]
 }
 
-// newSharedCount makes the shared part of l, for the entries given: every
-// scope counted by one instance until the instances are counted, and the
-// shared count unavailable until shareOn leases the first batches.
+// newSharedCount makes the shared part of l, for the entries given. Its
+// values are split by the live instances once shareOn is given their count
+// the start read, and the shared count is unavailable until then: before
+// it, a scope admits nothing of its rate.
 func newSharedCount(l *requestLimiter, entries map[string]limitEntry) *sharedCount {
-	c := &sharedCount{}
+	c := &sharedCount{bound: sharedRefillBound, probeEvery: sharedProbeInterval}
 	for key, e := range entries {
 		s := l.scopes[key]
 		if s == nil {
@@ -185,7 +210,6 @@ func newSharedCount(l *requestLimiter, entries map[string]limitEntry) *sharedCou
 		c.scopes = append(c.scopes, sh)
 	}
 	c.due = make(chan *sharedScope, len(c.scopes)+1)
-	c.setLive(1)
 	return c
 }
 
@@ -239,6 +263,10 @@ func (s *scopeLimiter) callerBucket() *gcra {
 func (sh *sharedScope) take(now int64) (taken int64, bucket *gcra, wait time.Duration, ok bool) {
 	if !sh.count.available.Load() {
 		g := sh.alone.Load()
+		if g == nil {
+			// not split by the live instances yet: shareOn has not run
+			return 0, nil, 0, false
+		}
 		taken, wait, ok = g.take(&sh.s.tat, now)
 		return taken, g, wait, ok
 	}
@@ -246,6 +274,12 @@ func (sh *sharedScope) take(now int64) (taken int64, bucket *gcra, wait time.Dur
 		n := sh.tokens.Load()
 		if n <= 0 {
 			sh.due()
+			if asked := sh.asked.Load(); asked != 0 && sharedSince()-asked > int64(2*sh.count.bound) {
+				// the refill has not answered this scope in time: the
+				// instance counts alone, and this request is counted so
+				sh.count.fallback(fmt.Sprintf("a refill waited longer than %s with its batch spent", 2*sh.count.bound), true)
+				return sh.take(now)
+			}
 			return 0, nil, time.Duration(sh.wait.Load()), false
 		}
 		if sh.tokens.CompareAndSwap(n, n-1) {
@@ -261,9 +295,11 @@ func (sh *sharedScope) take(now int64) (taken int64, bucket *gcra, wait time.Dur
 // it; it never waits.
 func (sh *sharedScope) due() {
 	if sh.pending.CompareAndSwap(false, true) {
+		sh.asked.CompareAndSwap(0, sharedSince())
 		select {
 		case sh.count.due <- sh:
 		default:
+			sh.asked.Store(0)
 			sh.pending.Store(false)
 		}
 	}
@@ -272,34 +308,70 @@ func (sh *sharedScope) due() {
 // low is whether the scope's batch is at half or less.
 func (sh *sharedScope) low() bool { return 2*sh.tokens.Load() <= sh.batch }
 
-// shareOn starts the shared count on rates: it counts the live instances,
-// makes each limited scope's row, leases each one's first batch, and then
-// refills in the background until stopShared. Where the database does not
-// answer, the instance starts counting alone at ceil(limit/N), and returns
-// to the shared count once a refill succeeds. It answers the start's line.
-func (l *requestLimiter) shareOn(rates sharedRates) string {
+// shareOn starts the shared count on rates, with live the instances the
+// start counted beside its lease: it splits the values by them, makes each
+// limited scope's row, leases each one's first batch, and then refills in
+// the background until stopShared. The shared count is available once a
+// lease succeeds. Where the database does not answer, the instance starts
+// counting alone at ceil(limit/N), and returns to the shared count once a
+// probe succeeds. It answers the start's line.
+func (l *requestLimiter) shareOn(rates sharedRates, live int) string {
 	c := l.shared
 	c.rates = rates
-	c.available.Store(true)
-	c.recount()
-	for _, sh := range c.scopes {
-		if sh.batch == 0 || !c.available.Load() {
-			continue
-		}
-		if err := rates.makeRow(sh.row); err != nil {
-			c.unreachable(err)
-			continue
-		}
-		c.refill(sh)
-	}
+	c.setLive(live)
+	c.leaseAll(true)
 	ctx, end := context.WithCancel(context.Background())
 	c.end, c.done = end, make(chan struct{})
 	go c.run(ctx)
 	if !c.available.Load() {
 		reason, _ := c.failed.Load().(string)
-		return fmt.Sprintf("request limits: the shared count is unavailable (%s); each instance counts alone at ceil(limit/N) of %d instances until the database answers a refill, tried every %s", reason, c.live.Load(), sharedProbeInterval)
+		return fmt.Sprintf("request limits: the shared count is unavailable (%s); each instance counts alone at ceil(limit/N) of %d instances until the database answers a refill, tried every %s", reason, c.live.Load(), c.probeEvery)
 	}
 	return fmt.Sprintf("request limits: counted together by the %d live instances of this database (limits.shared): each scope's rate is leased in batches, and its in-flight cap and per-caller limits are split ceil(limit/N); the gateway-wide cap is this instance's alone", c.live.Load())
+}
+
+// leaseAll leases each limited scope's batch up to b, the first failure
+// ending it, and makes the shared count available where every lease
+// succeeds, all within twice the refill's bound. A scope whose row another
+// transaction holds is tried again by the refill and passed over here; at
+// least one lease must succeed, except where no scope has a rate, and
+// there is nothing to lease. rows makes each scope's row first, as the
+// start does.
+func (c *sharedCount) leaseAll(rows bool) {
+	began := sharedSince()
+	rated, leased := 0, 0
+	for _, sh := range c.scopes {
+		if sh.batch == 0 {
+			continue
+		}
+		rated++
+		if rows {
+			if err := c.rates.makeRow(sh.row); err != nil {
+				c.unreachable(err)
+				return
+			}
+		}
+		sh.pending.Store(true)
+		switch c.lease(sh) {
+		case leaseFailed:
+			return
+		case leaseTaken:
+			leased++
+		}
+	}
+	if rated > 0 && leased == 0 {
+		if !c.available.Load() {
+			c.failed.Store("every limited scope's row was held by another transaction")
+			c.slow.Store(false)
+		}
+		return
+	}
+	if took := time.Duration(sharedSince() - began); took > 2*c.bound {
+		c.fallback(fmt.Sprintf("the probe's leases took %s, longer than %s", took.Round(time.Millisecond), 2*c.bound), true)
+		return
+	}
+	c.slow.Store(false)
+	c.available.Store(true)
 }
 
 // stopShared ends the refill and closes its connection; a limiter that
@@ -323,7 +395,7 @@ func (c *sharedCount) run(ctx context.Context) {
 	defer close(c.done)
 	instances := time.NewTicker(sharedInstancesInterval)
 	defer instances.Stop()
-	probe := time.NewTicker(sharedProbeInterval)
+	probe := time.NewTicker(c.probeEvery)
 	defer probe.Stop()
 	for {
 		select {
@@ -333,6 +405,7 @@ func (c *sharedCount) run(ctx context.Context) {
 			if c.available.Load() {
 				c.refill(sh)
 			} else {
+				sh.asked.Store(0)
 				sh.pending.Store(false)
 			}
 		case <-instances.C:
@@ -346,7 +419,7 @@ func (c *sharedCount) run(ctx context.Context) {
 }
 
 // recount counts the live instances again and splits the values by them;
-// a count that fails is the database unreachable.
+// a count that fails keeps the last N, and is the database unreachable.
 func (c *sharedCount) recount() {
 	if n, err := c.rates.liveInstances(); err != nil {
 		c.unreachable(err)
@@ -356,8 +429,10 @@ func (c *sharedCount) recount() {
 }
 
 // probe tries the database while the shared count is unavailable: the
-// instances counted, then a refill of each limited scope whose batch is
-// low. The first success returns the instance to the shared count.
+// instances counted, then a lease of each limited scope's batch. Only
+// leases that all succeed, in time, return the instance to the shared
+// count; a probe that fails leaves it counting alone, its buckets as they
+// are.
 func (c *sharedCount) probe() {
 	n, err := c.rates.liveInstances()
 	if err != nil {
@@ -365,56 +440,79 @@ func (c *sharedCount) probe() {
 		return
 	}
 	c.setLive(n)
-	c.available.Store(true)
-	for _, sh := range c.scopes {
-		if sh.batch > 0 && sh.low() && c.available.Load() {
-			sh.pending.Store(true)
-			c.refill(sh)
-		}
-	}
+	c.leaseAll(false)
 }
 
-// unreachable marks the shared count unavailable: each scope's rate is
-// counted by this instance alone, from a full bucket at ceil(limit/N).
-func (c *sharedCount) unreachable(err error) {
-	c.failed.Store(err.Error())
-	if c.available.Load() {
-		// the scope's own bucket is not read while the count is shared,
-		// so it is made full before any request reads it
+// unreachable is the database failed: the shared count unavailable.
+func (c *sharedCount) unreachable(err error) { c.fallback(err.Error(), false) }
+
+// fallback marks the shared count unavailable, for why: each scope's rate
+// is counted by this instance alone, at ceil(limit/N). Only the move from
+// the shared count makes the scopes' own buckets full, once; a fallback
+// while the count is already unavailable, a failed probe's, leaves them as
+// they are. slow is whether a refill took too long, rather than failed. A
+// request that finds a refill late calls it as the refill's goroutine
+// does: the swap makes one of them the move.
+func (c *sharedCount) fallback(why string, slow bool) {
+	c.failed.Store(why)
+	c.slow.Store(slow)
+	if c.available.CompareAndSwap(true, false) {
+		// the scope's own bucket is not read while the count is shared;
+		// one a request reads before it is made full here is fuller
+		// than none, never more
 		for _, sh := range c.scopes {
 			sh.s.tat.Store(0)
 		}
-		c.available.Store(false)
 	}
 }
 
 // refill tops the scope's batch up to b, by one lease, where it is at half
-// or less. A row another transaction holds is tried again after
-// sharedBusyRetry; a bucket with less room than asked is tried again once
-// it has room; any other failure is the database unreachable.
+// or less.
 func (c *sharedCount) refill(sh *sharedScope) {
 	if !sh.low() {
+		sh.asked.Store(0)
 		c.settle(sh)
 		return
 	}
-	want := sh.batch - sh.tokens.Load()
+	c.lease(sh)
+}
+
+// leaseOutcome is what one lease came to.
+type leaseOutcome int
+
+const (
+	// leaseTaken: the database answered with the requests it had room for
+	leaseTaken leaseOutcome = iota
+	// leaseBusy: the scope's row was held, or missing and made; tried again
+	leaseBusy
+	// leaseFailed: the database unreachable
+	leaseFailed
+)
+
+// lease is one lease topping the scope's batch up to b. A row another
+// transaction holds is tried again after sharedBusyRetry; a bucket with
+// less room than asked is tried again once it has room; any other failure
+// is the database unreachable.
+func (c *sharedCount) lease(sh *sharedScope) leaseOutcome {
+	want := max(0, sh.batch-sh.tokens.Load())
 	got, err := c.rates.lease(sh.row, want, sh.interval, sh.room)
+	sh.asked.Store(0)
 	switch {
 	case pgCode(err) == pgLockNotAvailable:
 		c.later(sh, sharedBusyRetry)
-		return
+		return leaseBusy
 	case err != nil:
 		c.unreachable(err)
 		sh.pending.Store(false)
-		return
+		return leaseFailed
 	case got.missing:
 		if err := c.rates.makeRow(sh.row); err != nil {
 			c.unreachable(err)
 			sh.pending.Store(false)
-			return
+			return leaseFailed
 		}
 		c.later(sh, 0)
-		return
+		return leaseBusy
 	}
 	sh.tokens.Add(got.took)
 	// room for one more once the bucket's time is within the burst
@@ -422,9 +520,10 @@ func (c *sharedCount) refill(sh *sharedScope) {
 	sh.wait.Store(max(0, ahead) * int64(time.Microsecond))
 	if got.took < want && sh.low() {
 		c.later(sh, max(sharedRoomRetry, time.Duration(ahead)*time.Microsecond))
-		return
+		return leaseTaken
 	}
 	c.settle(sh)
+	return leaseTaken
 }
 
 // settle is the refill done with the scope; a request that found it
@@ -440,9 +539,11 @@ func (c *sharedCount) settle(sh *sharedScope) {
 // up meanwhile.
 func (c *sharedCount) later(sh *sharedScope, d time.Duration) {
 	time.AfterFunc(d, func() {
+		sh.asked.CompareAndSwap(0, sharedSince())
 		select {
 		case c.due <- sh:
 		default:
+			sh.asked.Store(0)
 			sh.pending.Store(false)
 		}
 	})
@@ -453,13 +554,16 @@ func (c *sharedCount) later(sh *sharedScope, d time.Duration) {
 type sharedState struct {
 	live      int64
 	available bool
+	// slow is whether it is unavailable because a refill waited too long
+	slow bool
 }
 
 func (l *requestLimiter) sharedState() *sharedState {
 	if l == nil || l.shared == nil {
 		return nil
 	}
-	return &sharedState{live: l.shared.live.Load(), available: l.shared.available.Load()}
+	c := l.shared
+	return &sharedState{live: c.live.Load(), available: c.available.Load(), slow: c.slow.Load()}
 }
 
 // The shared count's statements. $1 is the scope's row; the lease's $2 is
@@ -492,6 +596,32 @@ type pgSharedRates struct {
 	// mu keeps one statement at a time on conn
 	mu   sync.Mutex
 	conn *pgConn
+}
+
+// sharedLiveAtStart is the first N of limits.shared: the live rows of the
+// start lease, read on the kind's pool by the start, once it holds its own
+// row. A read that fails, or counts no live row, fails the start: N is
+// never taken to be 1.
+func (k *pgKind) sharedLiveAtStart() (int, error) {
+	n := int64(0)
+	err := k.ofNoScope().transact(pgRead, func(tx pgTx) error {
+		rows, err := tx.exec(pgStartLeaseLiveCount)
+		if err != nil {
+			return err
+		}
+		if len(rows.rows) != 1 {
+			return errors.New("the live instances did not read")
+		}
+		n, _ = pgInt8(rows.rows[0][0])
+		return nil
+	})
+	if err == nil && n < 1 {
+		err = errors.New("no row of the start lease is live, this instance's among them")
+	}
+	if err != nil {
+		return 0, fmt.Errorf("request limits: limits.shared splits the limits by the live instances, and the start could not count them: %w", err)
+	}
+	return int(n), nil
 }
 
 func newPgSharedRates(kind *pgKind) *pgSharedRates {
