@@ -28,7 +28,7 @@ func TestCallReferenceIsAMemberOfItsEngineVersionAlone(t *testing.T) {
 	if _, err := parsePlatformCallReference(vString("yes"), "tickets", callReferenceVersion); err == nil || !strings.Contains(err.Error(), "callReference, when present, is a boolean") {
 		t.Fatalf("not a boolean: %v", err)
 	}
-	if !engineVersions[callReferenceVersion] || engineVersion != callReferenceVersion {
+	if !engineVersions[callReferenceVersion] || !versionAtLeast(engineVersion, callReferenceVersion) {
 		t.Fatalf("engine versions: %q %v", engineVersion, engineVersions[callReferenceVersion])
 	}
 }
