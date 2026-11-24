@@ -489,9 +489,17 @@ records itself as the session's holder when it admits the call, before the sourc
   fails other than by a held row, or
   gets no answer within 2 seconds, or a scope's refill waits more than 4 seconds with its batch
   spent, each instance counts the rate alone at ceil(limit/N), from its own bucket carried over from
-  its last spell alone, until a probe, tried every second, leases every scope's batch in time, and `/posture` says
-  the shared count is unavailable and why. The gateway-wide cap (`beforeScope`) stays each instance's own. A refill is a
-  write fenced on the instance's start lease.
+  its last spell alone, until a probe, tried every second, leases every limited scope's batch, one
+  scope after another, all within 4 seconds, and `/posture` says the shared count is unavailable
+  and why. With many limited scopes that sum can keep an instance alone (at 25 ms a lease, about
+  160 scopes). The instances still sharing do not know of one counting alone, so while k of N
+  count alone a window W admits up to B + ceil(W/T) + N·b + k·(ceil(B/N) + ceil(W/T_N)), T_N the
+  interval of ceil(rpm/N): about k/N of the rate more, for as long as it lasts. Treat a lasting
+  fallback, on any instance's `/posture`, as an alert condition. The gateway-wide cap
+  (`beforeScope`) stays each instance's own. A refill is a write fenced on the instance's start
+  lease. Enabling `limits.shared`, or changing a limit value, is a stop-all change: the start
+  lease does not compare them between instances, so stop every instance, change the
+  configuration, and start them.
 
 The filesystem kind stays one instance per store and registry.
 

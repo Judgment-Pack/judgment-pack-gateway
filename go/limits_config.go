@@ -245,12 +245,13 @@ func limitsShared(state *sharedState) string {
 		"so over any span the instances admit no more than the bucket leased plus the batches they held at its start, at most N times b, " +
 		"and a scope's rate may go unadmitted by the up to (N-1) times b the other instances hold; " +
 		"each instance holds a scope's in-flight cap and each caller's limits at ceil(limit/N), so at most cap+N-1 requests of a scope are in flight in all; " +
+		"while k of the N instances count alone and the others keep leasing, a window W admits up to k times (ceil(B/N) + ceil(W/T_N)) more, T_N the interval of ceil(rate/N), for as long as that lasts, so a lasting fallback is an alert condition; " +
 		"the gateway-wide cap is each instance's own"
 	switch {
 	case state == nil:
 		return bounds
 	case !state.available && state.slow:
-		return fmt.Sprintf("the shared count is unavailable: a scope's refill waited longer than %s with its batch spent, so this instance counts alone at ceil(limit/N) of N=%d, and returns to the shared count once a probe, tried every %s, leases every scope's batch within %s; %s", 2*sharedRefillBound, state.live, sharedProbeInterval, 2*sharedRefillBound, bounds)
+		return fmt.Sprintf("the shared count is unavailable: a scope's refill waited longer than %s with its batch spent, so this instance counts alone at ceil(limit/N) of N=%d, and returns to the shared count once a probe, tried every %s, leases every limited scope's batch, one scope after another, all within %s; %s", 2*sharedRefillBound, state.live, sharedProbeInterval, 2*sharedRefillBound, bounds)
 	case !state.available:
 		return fmt.Sprintf("the shared count is unavailable: the database failed or did not answer a refill within %s, so this instance counts alone at ceil(limit/N) of N=%d, and returns to the shared count once a probe, tried every %s, leases every scope's batch; %s", sharedRefillBound, state.live, sharedProbeInterval, bounds)
 	}

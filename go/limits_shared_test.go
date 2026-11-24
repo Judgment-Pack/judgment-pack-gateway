@@ -402,3 +402,25 @@ func TestASlowRefillFallsBackToLimitOverNAndReturns(t *testing.T) {
 		t.Fatalf("posture after the return: %s", got)
 	}
 }
+
+// Before shareOn has split the values by the live instances, a shared
+// scope has neither a batch nor a bucket of its own, and admits nothing:
+// no request of a shared scope is counted before the start has read N.
+func TestASharedScopeAdmitsNothingBeforeTheStartSharesItsCount(t *testing.T) {
+	clock := &fakeLimitClock{}
+	entries := map[string]limitEntry{"scope-a": rateOf(6000, 40)}
+	l := sharedLimiter(t, clock.clock(), entries)
+	if l.scopes["scope-a"].shared.alone.Load() != nil || l.shared.available.Load() {
+		t.Fatal("a shared scope has a bucket or a count before shareOn")
+	}
+	var refused *limitRefusal
+	if err := chargeOnce(l, "scope-a"); !errors.As(err, &refused) || refused.limit != limitScopeRate {
+		t.Fatalf("before shareOn: %v, want a scope-rate refusal", err)
+	}
+	if line := l.shareOn(&fakeSharedRates{live: 2}, 2); !strings.Contains(line, "counted together by the 2 live instances") {
+		t.Fatalf("start line: %s", line)
+	}
+	if err := chargeOnce(l, "scope-a"); err != nil {
+		t.Fatalf("after shareOn: %v", err)
+	}
+}
