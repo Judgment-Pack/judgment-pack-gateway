@@ -33,8 +33,8 @@ func TestTheApprovalRecordsMemberIsRefusedByNameBelow52(t *testing.T) {
 	at := func(version, extra string) string {
 		return strings.Replace(base, `"engineVersion":"24"`, `"engineVersion":"`+version+`"`+extra, 1)
 	}
-	dir := abs(t, t.TempDir(), "approvals")
-	member := `,"approvalRecords":"` + strings.ReplaceAll(dir, `\`, `\\`) + `"`
+	dir := filepath.Join(t.TempDir(), "approvals")
+	member := `,"approvalRecords":"` + abs(t, dir) + `"`
 	if _, err := parseEngineConfig([]byte(at("51", member))); err == nil || err.Error() != "engine configuration: approvalRecords is a version-52 member; engineVersion 51 has no approvalRecords" {
 		t.Fatalf("below 52: %v", err)
 	}
