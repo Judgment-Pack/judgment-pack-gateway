@@ -3156,9 +3156,10 @@ member `/act` does not read, as before. From that version a platform may set `sc
 `/acquire` reads it. A reservation sender reaches no scope identifier, and one that names `scope` is
 refused. Under a delegation the chain's scope binding governs (§11.1, *A chain bound to one scope
 identifier*): a delegated `/act` names a scope exactly when its chain is bound to that same scope
-identifier, the issuing host's `scopeIds` lists it and the subject's entry grants it; otherwise it is
-refused at the scope step, before the session, the platform and any admission read, with `/acquire`'s
-sentence. Under a bound chain a request that names no scope is refused there too, and an unbound chain
+identifier, the issuing host's `scopeIds` lists it and the subject's entry grants it. A subject whose
+entry reaches no write source is refused at step 2, before the body is read, `403` at
+`refusedAt: "scope-identifier"`, as every such caller is. Otherwise it is refused at the scope step,
+before the session, the platform and any admission read, with `/acquire`'s sentence. Under a bound chain a request that names no scope is refused there too, and an unbound chain
 names none. A write source of another scope than the one named is refused at the platform step with
 the same sentence, under a delegation as for every caller. A scoped action's receipt carries `scope` and `scopeSalt`; it
 cites only receipts of its own scope; its decision record is found in its platform's directory alone,

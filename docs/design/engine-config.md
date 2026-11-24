@@ -2721,7 +2721,7 @@ of the seed's key ([ADR-0050](../adr/0050-an-external-signer-in-a-key-service.md
 - **The pin.** `signingPublicKey` is required whenever `signingKeyVersion` is set, and given only beside it: `signingKeyVersion` without it is refused by name at configuration load. A key version that answers another public key signs nothing.
 
 - **Form.** The value is a resource name of exactly that form: `projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>/cryptoKeyVersions/<n>`. Under an earlier version the member is refused by name, and out of form it is refused before anything is asked. Beside `witness` it is refused: the witness's checkpoints are signed by the seed's key.
-- **The seed.** `seed` stays required. With a key service it keys the arguments commitment and signs nothing.
+- **The seed.** `seed` stays required, and with a key service it signs nothing. It is read at start, beside the registry and any key rotation under way (SPEC.md §3b). It keys a version 2 receipt's `argumentsDigest` alone. `gateway serve` writes version 3, whose arguments commitment is salted per commitment from 32 random bytes returned to the caller (SPEC.md §1, *Commitments and their salts*), not keyed by the seed.
 - **At start.** The gateway reads the version's public key once, holds it to the version asked, `EC_SIGN_ED25519`, its CRC32C and one Ed25519 key, and derives its `keyId` from it. The registry's walk must end at that key, as at a seed's. The start line names the version, its protection level and the `keyId`.
 - **Calls.**
   - Each receipt and each seal is one `asymmetricSign` at the built-in `https://cloudkms.googleapis.com`.
