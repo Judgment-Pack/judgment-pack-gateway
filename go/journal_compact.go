@@ -116,6 +116,9 @@ func cmdJournal(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "open" {
 		return cmdJournalOpen(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "reset" {
+		return cmdJournalReset(args[1:], stdout, stderr)
+	}
 	if len(args) == 0 || args[0] != "compact" {
 		fmt.Fprintln(stderr, journalUsage)
 		return 2

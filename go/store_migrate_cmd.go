@@ -36,6 +36,9 @@ func cmdStore(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "remove-scope" {
 		return cmdStoreRemoveScope(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "journal-reset" {
+		return cmdStoreJournalReset(args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "rotate" {
 		return cmdStoreRotate(args[1:], stdout, stderr)
 	}
@@ -43,7 +46,7 @@ func cmdStore(args []string, stdout, stderr io.Writer) int {
 		return cmdStoreRotateKey(args[1:], stdout, stderr)
 	}
 	if len(args) == 0 || args[0] != "migrate" {
-		fmt.Fprintln(stderr, storeUsage+"\n"+storeRemoveScopeUsage+"\n"+storeRetainUsage+"\n"+storeRotateUsage+"\n"+storeRotateKeyUsage)
+		fmt.Fprintln(stderr, storeUsage+"\n"+storeRemoveScopeUsage+"\n"+storeRetainUsage+"\n"+storeRotateUsage+"\n"+storeRotateKeyUsage+"\n"+storeJournalResetUsage)
 		return 2
 	}
 	flags, code := storeFlags(args[1:], []string{"--connection-file", "--connection-env", "--owner", "--runtime", "--timeout"}, "store migrate", storeUsage, stderr)

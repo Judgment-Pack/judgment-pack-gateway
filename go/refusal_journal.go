@@ -1418,18 +1418,18 @@ func refusalStartLine(scopes int) string {
 
 // completeCutOffRefusalRemovals completes, before any key is read, each
 // removal of a configured scope's refusal journal that a remove-scope run
-// was cut off in, on the filesystem kind (ADR-0059 §8, as built): a key
+// was cut off in, and the reset of the sources of no scope's journal a
+// gateway journal reset --unscoped run was cut off in where a source of no
+// scope is configured, on the filesystem kind (ADR-0059 §8, as built): a key
 // left beside a journal that run took would otherwise make the journal
 // again under the old key, with no word. Each completion is one stderr line.
 // A journal holding bytes the entry does not name is the scope's since the
 // removal, under its new key, and is left with no line.
 func (g *gatewayService) completeCutOffRefusalRemovals(stderr io.Writer) error {
-	scopes := map[string]bool{}
-	for _, spec := range g.sources {
-		if spec.scope != "" {
-			scopes[spec.scope] = true
-		}
-	}
+	// the scope keys the start journals: each scope identifier, and
+	// unscopedMarker where a source has none, whose journal a cut-off
+	// gateway journal reset --unscoped run leaves (gateway #611)
+	scopes := limitScopeKeys(g.sources)
 	if len(scopes) == 0 {
 		return nil
 	}
@@ -1448,8 +1448,11 @@ func (g *gatewayService) completeCutOffRefusalRemovals(stderr io.Writer) error {
 			return fmt.Errorf("refusal journal: journal %s: %v", refusalJournalName(scope), err)
 		}
 		for _, note := range out.notes {
-			if note == refusalRemovalCompletedNote {
+			switch note {
+			case refusalRemovalCompletedNote:
 				fmt.Fprintf(stderr, "refusal journal: journal %s: a remove-scope run was cut off; %s\n", refusalJournalName(scope), note)
+			case refusalResetCompletedNote:
+				fmt.Fprintf(stderr, "refusal journal: journal %s: a journal reset run was cut off; %s\n", refusalJournalName(scope), note)
 			}
 		}
 	}

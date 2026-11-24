@@ -18,7 +18,7 @@ deciders: maintainer
 >   `previous`, `at`, `keyId`, `alg` (optional), `body` and `signature`. It is signed through the
 >   configured signer over `"judgment-pack-gateway/journal-entry/1:"`.
 > - **The operator journal's bodies:** `retain`, `remove-scope`, `remove-artifact`, `seal-open`,
->   `store-rotate` and `store-continued`. The `retain` body holds `acknowledgments` (the file's SHA-256)
+>   `store-rotate`, `store-continued` and, as built 2026-11-24 (gateway #611), `refusal-journal-reset`. The `retain` body holds `acknowledgments` (the file's SHA-256)
 >   and `acknowledgedBy` (the key ids).
 > - **New findings of `gateway verify`:** `journal-entry-forged`, `journal-order`,
 >   `journal-entry-missing` and `journal-entry-mismatch`. There is also `journal-missing`, which is
@@ -422,6 +422,7 @@ order. The kinds and their other members:
 | `remove-artifact` | `remove-artifact` | `by`; `removalBytes`; `removalDigest` |
 | `seal-open` | `seal-open` | `seals`; `sealDigest`; `delivered`, `true` where each session's receipts went to the configured sink first, `false` under `--no-sink` |
 | `store-rotate` | `store rotate`, in the store rotated **from** | `seals`; `sealDigest`; `delivered` |
+| `refusal-journal-reset` | `journal reset --unscoped`, `store journal-reset --unscoped` (as built 2026-11-24, gateway #611) | `by`; `refusalJournalBytes` and `refusalJournalDigest`, both required: the removed journal of the sources of no scope (ADR-0059 §8) |
 | `store-continued` | `store rotate`, in the store rotated **to**, as ordinal 0 | `continuation`, the SHA-256 of the new registry's first line without its `0x0A` (the mark's digest, §3d); `previousJournalBytes`; `previousJournalDigest`, the SHA-256 of the old journal's bytes, whole (of no bytes where the old store holds none) |
 
 - **`removalBytes` and `removalDigest`.** `removalBytes` is the number of bytes the call appended to the

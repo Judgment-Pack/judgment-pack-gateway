@@ -235,15 +235,17 @@ was made from: `journals/<name>.key`, `0600`, on the filesystem kind, or the jou
 name). Where that key is gone, no one can open those entries again: `gateway journal open`, with
 or without `--reveal-salt`, can no longer match one to a request body or print its salt. They stay
 verifiable as signed records, each entry's signature and chain still checked. Keep the export,
-which holds and verifies them, and on the filesystem kind move `<name>.jsonl` out of the restored
-`journals/` before the start, so that the gateway draws a new key and the scope's journal begins
-again. On the PostgreSQL kind the journal's rows cannot be moved aside, so the scope stays
-write-failed. The way out is `gateway store remove-scope --scope <id>` of that scope: it writes an
-operator entry naming the removed journal, then removes the journal's rows, its key row where one
-is there, and its forwarding cursor, and the next start draws a new key. Where the scope still
-holds records, that command removes them too, so take it only for a scope whose records may go;
-otherwise the scope's refusals stay unjournaled. The sources of no scope (`unscoped`), which
-remove-scope refuses, have no such way out: their refusals stay unjournaled.
+which holds and verifies them. For a scope identifier, the way out on both kinds is
+`gateway remove-scope --scope <id>` (`gateway store remove-scope` on the PostgreSQL kind): it writes
+an operator entry naming the removed journal, then removes the journal, its key where one is there,
+and its forwarding cursor, and the next start draws a new key. Where the scope still holds records,
+that command removes them too, so take it only for a scope whose records may go; otherwise the
+scope's refusals stay unjournaled. For the sources of no scope (`unscoped`), which remove-scope
+refuses, the way out on both kinds is `gateway journal reset --config <file> --unscoped --by <label>`
+(`gateway store journal-reset --unscoped` on the PostgreSQL kind), with the gateway stopped: it
+writes a `refusal-journal-reset` operator entry naming the journal's bytes, then removes that
+journal, its key and its forwarding cursor, and nothing else; the next start draws a new key and
+journals their refusals again (gateway #611).
 
 ## What a kind must pass
 

@@ -974,6 +974,22 @@ forwarding, follow it. Where R2 departs from the text above:
   hexadecimal, another length), and never one carrying the start's own process identifier.
   `remove-scope` of a scope also removes its journal's staged files and says so in one stderr line.
   A staged file holds a key no entry was made under, so nothing it removes was ever used.
+- **2026-11-24, a way out for the journal of the sources of no scope (gateway #611).** Where the
+  `unscoped` journal's key is lost, as after a restore from a full export, `gateway journal reset
+  --config <file> --unscoped --by <label>` (filesystem) and `gateway store journal-reset --unscoped`
+  (PostgreSQL) take that journal alone: its name is `refusalJournalName("unscoped")` by
+  construction, and any scope argument is a usage error (exit 2). They run on remove-scope's rails:
+  the gateway stopped (the registry's hold; the start lease), the journal held under its lock, a
+  signed operator entry of the new kind `refusal-journal-reset` (`by`, `refusalJournalBytes`,
+  `refusalJournalDigest`, both required, beside the envelope's `registryFrom` and `removalFrom`)
+  written before anything is removed, then the key, the cursor and the journal, in that order. No
+  receipt, session, removal record or other journal is touched. An absent or empty journal is left
+  and no entry is written. A filesystem run cut off after its entry is completed by a second run,
+  or by the next start where a source of no scope is configured: the completion rule reads the last
+  `refusal-journal-reset` entry for `unscoped` as it reads a scope's last `remove-scope` entry. On
+  the PostgreSQL kind the entry and the removal are one transaction. A store whose configuration is
+  below `operatorJournalVersion` and holds no operator journal is refused, since the entry is the
+  reset's one trace.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on

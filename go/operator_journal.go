@@ -138,6 +138,10 @@ var operatorBodies = map[string]map[string]bool{
 	"seal-open":       {"seals": true, "sealDigest": true, "delivered": true},
 	"store-rotate":    {"seals": true, "sealDigest": true, "delivered": true},
 	"store-continued": {"continuation": true, "previousJournalBytes": true, "previousJournalDigest": true},
+	// gateway journal reset --unscoped and gateway store journal-reset
+	// --unscoped (gateway #611): the journal of the sources of no scope,
+	// named by both members, which are required here
+	refusalJournalResetKind: {"by": true, "refusalJournalBytes": true, "refusalJournalDigest": true},
 }
 
 func hexMember(obj *vObject, name string, n int) (string, bool) {

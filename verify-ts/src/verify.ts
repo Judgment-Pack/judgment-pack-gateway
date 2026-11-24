@@ -1956,6 +1956,10 @@ const operatorBodies: ReadonlyMap<string, ReadonlyMap<string, boolean>> = new Ma
   ["seal-open", new Map([["seals", true], ["sealDigest", true], ["delivered", true]])],
   ["store-rotate", new Map([["seals", true], ["sealDigest", true], ["delivered", true]])],
   ["store-continued", new Map([["continuation", true], ["previousJournalBytes", true], ["previousJournalDigest", true]])],
+  // gateway journal reset --unscoped and gateway store journal-reset
+  // --unscoped (gateway #611): the journal of the sources of no scope, named
+  // by both members, which are required here
+  ["refusal-journal-reset", new Map([["by", true], ["refusalJournalBytes", true], ["refusalJournalDigest", true]])],
 ]);
 
 interface JournalEntry {
