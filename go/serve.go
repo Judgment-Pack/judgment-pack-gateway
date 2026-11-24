@@ -3309,6 +3309,7 @@ func (g *gatewayService) routes() http.Handler {
 		if g.limits != nil {
 			// the count is of no scope, and every caller reads it
 			in.limits = g.limits
+			in.sharedLimits = g.limiter.sharedState()
 			in.refusalJournal = g.refusalConfig
 			n := g.limiter.unauthenticatedRefusals()
 			in.unauthenticated = &n

@@ -131,6 +131,10 @@ type postureInput struct {
 	// limits is the configuration's limits (ADR-0057), which adds the
 	// request-limits line and the limits member; nil adds neither.
 	limits *limitsConfig
+	// sharedLimits is the serving instance's shared count under
+	// limits.shared (ADR-0061): the live instances and whether the
+	// database answers; nil, as gateway posture has, leaves them out.
+	sharedLimits *sharedState
 	// refusalJournal adds the fixed refusal-journal line; nil adds none
 	refusalJournal *refusalJournalConfig
 	// unauthenticated is the serving instance's count of unauthenticated

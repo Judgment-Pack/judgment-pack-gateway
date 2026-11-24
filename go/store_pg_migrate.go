@@ -475,18 +475,20 @@ var pgPrivileges = map[string][]string{
 	"rotated":           {"SELECT", "INSERT"},
 	"key_history":       {"SELECT"},
 	"journal_records":   {"SELECT", "INSERT"},
+	"limit_rates":       {"SELECT", "INSERT", "UPDATE"},
 }
 
 // pgTables are the schema's tables, in the order the start reads them.
-var pgTables = []string{"blobs", "documents", "entries", "journal_records", "key_history", "log_records", "logs", "removal_records", "rotated", "schema_migrations", "scope_identifiers", "secrets", "series", "series_holders", "session_labels", "start_lease"}
+var pgTables = []string{"blobs", "documents", "entries", "journal_records", "key_history", "limit_rates", "log_records", "logs", "removal_records", "rotated", "schema_migrations", "scope_identifiers", "secrets", "series", "series_holders", "session_labels", "start_lease"}
 
 // pgScopedTables are the tables whose rows carry a scope identifier: row
 // security is enabled and forced on each. The scope identifiers' rows
 // (schema version 3) and the removal records' (schema version 5) are each
 // of no scope, held by the same policy; a series' holders (schema version
 // 6) are of the series' scope; a session label (schema version 9) is of its
-// namespace's.
-var pgScopedTables = []string{"blobs", "documents", "entries", "removal_records", "scope_identifiers", "series", "series_holders", "session_labels"}
+// namespace's; a shared request rate (schema version 11) is of the scope it
+// counts.
+var pgScopedTables = []string{"blobs", "documents", "entries", "limit_rates", "removal_records", "scope_identifiers", "series", "series_holders", "session_labels"}
 
 // pgTablePrivileges are the privileges a table has (pgPrivilegesHold); from
 // PostgreSQL 17 a table has MAINTAIN besides (pgTablePrivilegesOn).

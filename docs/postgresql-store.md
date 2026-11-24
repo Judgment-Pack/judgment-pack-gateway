@@ -196,7 +196,7 @@ scope it removes, as the owner, in its own transaction. A scope that holds no ro
 removed too where the journal holds entries, under an operator entry naming no removal record
 (`removalBytes` 0) and the journal by `refusalJournalBytes` and `refusalJournalDigest`. A key beside
 no entry stays, and a scope holding neither is left as it was (ADR-0059, as built 2026-11-24). The refusal journals need no migration past
-0010, which is the last schema version of this release.
+0010. Schema version 11 (below) is the last of this release.
 
 An entry's lengths are of the bytes an export writes. `gateway export` writes the rows, in ordinal
 order, each line and its `0x0A`, as `store/journals/operator.jsonl`, the path of the filesystem
@@ -208,6 +208,14 @@ refuses a database at schema version 10, by its start and by its `gateway store 
 gateway older than its schema does not run on it". Stop every instance and back the database up
 before `gateway store migrate` applies it; going back to v0.39.0 or earlier means restoring that
 backup.
+
+Schema version 11 (migration 0011, [ADR-0061](adr/0061-request-limits-counted-together-by-the-instances-of-one-database.md))
+makes `gateway.limit_rates`, a row for each scope whose request rate the instances count together
+(`limits.shared`, engine version 51): the scope's form and the bucket's time, in microseconds of
+the database's clock. Row security is forced under the scope policy. The run-time login may read,
+insert and update its scope's row, and never delete one. Migration 0011 is one-way as 0010 is: a
+v0.40.0 gateway refuses a database at schema version 11. Stop every instance and back the database
+up before `gateway store migrate` applies it.
 
 ## One instance per database
 
@@ -457,6 +465,25 @@ records itself as the session's holder when it admits the call, before the sourc
   second call into the session could find the first's take-up or receipt and be refused `409` or
   `400` for a session its own instance holds.
 
+- **Request limits counted together** (`limits.shared`, engine version 51; ADR-0061). Without the
+  member each instance counts its own limits (ADR-0057). With it, each scope's rate is leased from
+  its row of `gateway.limit_rates` in batches of b = ceil(rpm/600), 1 to 64 and at most the burst,
+  by one statement on a connection of the instance's own, never the pool's, at a low-water mark
+  of b/2. The lease takes the row `NOWAIT`: a held row fails at once, and that scope alone is tried
+  again after 50 ms. No request sends a statement or waits for a row. Over any window W the
+  instances admit at most B + ceil(W/T) + N·b (B the burst, T the interval, N the instances), and
+  never more than the rate over time: at 6000 a minute (T = 10 ms, b = 10) with a burst of 50 on
+  three instances, at most 50 + 100 + 30 = 180 in any one second. In flight
+  and per caller each instance holds ceil(limit/N), with N the live rows of `gateway.start_lease`
+  counted by the start beside its lease (a count that fails fails the start) and every 10 seconds
+  after (a later count that fails keeps the last N), at most cap + N − 1 in all. Where a refill
+  fails other than by a held row, or
+  gets no answer within 2 seconds, or a scope's refill waits more than 4 seconds with its batch
+  spent, each instance counts the rate alone at ceil(limit/N), from its own bucket carried over from
+  its last spell alone, until a probe, tried every second, leases every scope's batch in time, and `/posture` says
+  the shared count is unavailable and why. The gateway-wide cap (`beforeScope`) stays each instance's own. A refill is a
+  write fenced on the instance's start lease.
+
 The filesystem kind stays one instance per store and registry.
 
 ## Sealing the sessions an instance left open
@@ -609,8 +636,9 @@ start refuses a table it was not restored on.
 | `gateway.key_history` (schema version 8: the key history a store rotation carried into the database) | SELECT | every one: it carries no scope, and holds one row at most |
 | `gateway.session_labels` (schema version 9: each session label and the session id minted for it) | SELECT, INSERT | its namespace's: the scope it is of, or none |
 | `gateway.journal_records` (schema version 10: the journals' entries, a row each) | SELECT, INSERT | every one: it carries no scope, and a row is admitted only at the end of its journal's chain |
+| `gateway.limit_rates` (schema version 11: a scope's shared request rate, ADR-0061) | SELECT, INSERT, UPDATE | its scope's |
 
-Append-only by privilege: nothing but a document and the start lease's rows are changed once written,
+Append-only by privilege: nothing but a document, the start lease's rows and a scope's shared rate are changed once written,
 and nothing but a document is removed; a scope identifier, once recorded, stays, and a removal
 record is the run-time login's to read alone. Rows leave otherwise only by `gateway store
 remove-scope`, as the migration login acting as the owner ("Removing one scope identifier's
@@ -777,7 +805,8 @@ gateway store remove-scope (--connection-file <path> | --connection-env <NAME>) 
 
 The command removes every row of one scope identifier, its sessions (`gateway.series`, and their
 take-ups, `gateway.series_holders`), receipts
-(`gateway.entries`), payloads (`gateway.blobs`) and documents, and its row of
+(`gateway.entries`), payloads (`gateway.blobs`), documents and shared request rate
+(`gateway.limit_rates`, schema version 11), and its row of
 `gateway.scope_identifiers`, and records the removal, in one transaction
 ([ADR-0034](adr/0034-removing-one-scope-identifiers-records.md)). It takes the migration login's
 connection string as `gateway store migrate` does, never printed. The records are signed by the

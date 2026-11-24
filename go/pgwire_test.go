@@ -482,11 +482,12 @@ func pgSQLText(t *testing.T) map[string]string {
 	return text
 }
 
-// The kind reads no clock of the database but in the start lease: no
-// statement it sends or schema file it carries names one, so no time it
-// holds is the server's (ADR-0031, decision 9). The lease's statements
-// alone read it, as clock_timestamp() and nothing else, each on the lease's
-// table: an expiry several instances judge is the database's.
+// The kind reads no clock of the database but in the start lease and the
+// shared request rates: no statement it sends or schema file it carries
+// names one, so no time it holds is the server's (ADR-0031, decision 9).
+// The lease's statements, and the shared rates' lease (ADR-0061), alone
+// read it, as clock_timestamp() and nothing else, each on its own table: an
+// expiry, or a bucket's time, several instances judge is the database's.
 func TestThePostgresKindReadsNoDatabaseClock(t *testing.T) {
 	clock := regexp.MustCompile(`(?i)\b(now|clock_timestamp|statement_timestamp|transaction_timestamp|timeofday|pg_postmaster_start_time)\s*\(|\b(current_timestamp|current_date|current_time|localtimestamp|localtime)\b`)
 	for name, text := range pgSQLText(t) {
@@ -515,6 +516,30 @@ func TestThePostgresKindReadsNoDatabaseClock(t *testing.T) {
 	}
 	if read != 10 {
 		t.Errorf("%d of the start lease's statements read the database's clock; rows, hold expired, take over, take new, renew, release, fence, live count, series holder and series holders do", read)
+	}
+	// the shared request rates (ADR-0061): their lease reads it, on their
+	// table, by clock_timestamp() alone
+	shared, err := os.ReadFile("limits_shared.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read = 0
+	for _, literal := range regexp.MustCompile("`[^`]*`|\"(?:[^\"\\\\\\n]|\\\\.)*\"").FindAllString(string(shared), -1) {
+		found := clock.FindAllString(literal, -1)
+		for _, f := range found {
+			if strings.ToLower(f) != "clock_timestamp(" {
+				t.Errorf("the shared rates name %q, and read the database's clock by clock_timestamp() alone", f)
+			}
+		}
+		if len(found) > 0 {
+			read++
+			if !strings.Contains(literal, "gateway.limit_rates") {
+				t.Errorf("a statement of the shared rates that reads the database's clock is not on their table: %s", literal)
+			}
+		}
+	}
+	if read != 1 {
+		t.Errorf("%d of the shared rates' statements read the database's clock; the lease does", read)
 	}
 }
 

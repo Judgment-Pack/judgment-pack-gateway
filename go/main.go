@@ -924,6 +924,10 @@ func (s *kindStart) keep(ctx context.Context, lost func(error)) {
 // after the release; releases the lease, so the next instance starts at
 // once -- one left behind expires; and closes the kind.
 func (s *kindStart) stop(said io.Writer) {
+	if s.service != nil {
+		// the shared count's refill ends before the lease goes (ADR-0061)
+		s.service.limiter.stopShared()
+	}
 	if s.endRenewal != nil {
 		s.endRenewal()
 		<-s.renewed
@@ -1012,6 +1016,12 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 		// open (session_labels.go)
 		err = labelsAtStart(service)
 	}
+	sharedLive := 0
+	if err == nil && service.limiter != nil && service.limiter.shared != nil {
+		// limits.shared (ADR-0061): the first N, counted beside the start
+		// lease on the kind's pool; a count that fails fails the start
+		sharedLive, err = kind.sharedLiveAtStart()
+	}
 	if err == nil {
 		// a lease lost while the start ran ends it here
 		select {
@@ -1024,6 +1034,11 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 		return nil, err
 	}
 	started.service = service
+	if service.limiter != nil && service.limiter.shared != nil {
+		// limits.shared (ADR-0061): the first batches leased, and the
+		// refill run beside the requests, on a connection of its own
+		fmt.Fprintln(r.said, "start:", service.limiter.shareOn(newPgSharedRates(kind), sharedLive))
+	}
 	fmt.Fprintln(r.said, "start:", storageStartLine(cfg.storage))
 	fmt.Fprintf(r.said, "start: gateway instance %s holds the start lease, which runs %s from each renewal by the database's clock and is renewed every %s\n", holder, r.period, r.every)
 	if cfg.storage.several {

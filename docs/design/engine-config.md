@@ -3210,9 +3210,33 @@ configuration may carry a top-level `limits` member. Below that version it is re
   `401` since start, which names no scope and is given to every caller). The line and the member are
   judged over the scopes of the sources the caller reaches alone. `gateway posture` gives the line
   and the member over every scope, and no count.
-- **Counted by each instance alone, in this release.** N instances admit up to N times each limit, so
-  an operator running several instances sets each limit divided by N. A count shared by the
-  instances is gateway #593.
+- **Counted by each instance alone, without `shared`.** N instances admit up to N times each limit,
+  so an operator running several instances sets each limit divided by N, or gives `shared`.
+- **`shared`** (engine version 51, `sharedLimitsVersion`; ADR-0061) is `true` or `false`. `true`
+  counts the limits together across the instances of one PostgreSQL database, and is valid only
+  with `storage.kind` `"postgresql"` and `storage.instances` `"several"`. Refused by name: the
+  member below version 51, true or false (`limits.shared is a version-51 member; engineVersion <m>
+  has no limits.shared`), and `true` on the filesystem kind or with one instance. `false` or left
+  out, nothing changes, byte for byte, the start line and the `/posture` line among them.
+  - *The rate.* Each scope's bucket is a row of `gateway.limit_rates` (schema version 11), on the
+    database's clock. Each instance leases a batch of b = ceil(requestsPerMinute/600) requests
+    (1 to 64, at most `burst`) with one statement and admits from it. The refill runs in the
+    background once a batch is down to half, so no request reaches the database or waits for a row.
+    Over any window W the instances admit at most `burst` + ceil(W/T) + N·b (T the interval), and
+    never more than the rate over time. A scope's rate may go unadmitted by up to (N−1)·b.
+  - *In flight and per caller.* Each instance holds ceil(limit/N), with N the live instances of
+    the start lease, counted by the start beside its lease (a count that fails fails the start)
+    and every 10 seconds after, a later count that fails keeping the last N: at most cap + N − 1
+    in flight in all.
+  - *The database unreachable* (a refill failed other than by a held row, or got no answer within
+    2 seconds), or a scope's refill waiting more than 4 seconds with
+    its batch spent: each instance counts the rate alone at ceil(limit/N), from its own bucket
+    carried over from its last spell alone, `/posture` says the shared count is unavailable and why, and a probe every
+    second that leases every scope's batch in time returns it.
+  - *`beforeScope`* stays each instance's own.
+  - *The start line* ends `counted together by the instances of this database (limits.shared)`,
+    and a second line names the live instances once the first batches are leased. The
+    `request-limits` posture line gives the bounds in place of `counted by this instance alone`.
 - Without the member nothing is counted, and every answer, start line and posture report is as
   before, byte for byte. The limits are read at start; a `SIGHUP` does not change them.
 

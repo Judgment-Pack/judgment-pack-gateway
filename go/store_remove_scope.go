@@ -468,6 +468,11 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 		}
 		notes = append(notes, fmt.Sprintf("no session of the scope identifier is in the store; its %d session label(s), naming no session, are removed", held.labels))
 	}
+	// the scope's shared request rate (schema version 11, ADR-0061): a
+	// bucket's time and nothing a record names, so its row goes uncounted
+	if _, err := c.exec(`DELETE FROM gateway.limit_rates WHERE scope = $1`, row); err != nil {
+		return failed(err)
+	}
 
 	// the records and the scope identifier's row, of no scope
 	if _, err := c.exec(`SELECT pg_catalog.set_config('gateway.scope', $1, true)`, pgNoScope); err != nil {

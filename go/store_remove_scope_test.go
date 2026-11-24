@@ -143,6 +143,23 @@ func TestPostgresRemoveScopeRemovesOneScopesRowsAndRecordsIt(t *testing.T) {
 	var said bytes.Buffer
 	started.stop(&said)
 	server.Close()
+	// a shared request rate for each scope (schema version 11, ADR-0061):
+	// scope-a's goes with scope-a, scope-b's stays
+	rates := db.runtimeConn(t)
+	for _, scope := range []string{"scope-a", "scope-b"} {
+		if err := rates.script("BEGIN"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rates.exec(`SELECT pg_catalog.set_config('gateway.scope', $1, true)`, pgRowScope(scope)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rates.exec(sharedRateRow, pgRowScope(scope)); err != nil {
+			t.Fatal(err)
+		}
+		if err := rates.script("COMMIT"); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	code, stdout, stderr = remove()
 	if code != 0 || stderr != "store remove-scope: removed 2 session(s), 1 sealed, holding 3 receipt(s), 1 payload(s), and 0 document(s)\n" {
@@ -160,8 +177,14 @@ func TestPostgresRemoveScopeRemovesOneScopesRowsAndRecordsIt(t *testing.T) {
 		if n := pgCount(t, c, pgScopedRowCount); n != 0 {
 			t.Errorf("scope-a holds %d rows", n)
 		}
+		if n := pgCount(t, c, `SELECT count(*)::int8 FROM gateway.limit_rates`); n != 0 {
+			t.Errorf("scope-a holds %d shared request rates", n)
+		}
 	})
 	pgInScopeOn(t, c, pgRowScope("scope-b"), func() {
+		if n := pgCount(t, c, `SELECT count(*)::int8 FROM gateway.limit_rates`); n != 1 {
+			t.Errorf("scope-b holds %d shared request rates", n)
+		}
 		if got := pgColumn(t, c, `SELECT name FROM gateway.series`); !slices.Equal(got, []string{"s-b"}) {
 			t.Errorf("scope-b holds the sessions %v", got)
 		}

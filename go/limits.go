@@ -267,6 +267,11 @@ type scopeLimiter struct {
 	callers    map[limitCallerKey]*limitedCaller
 	// nextSweep is when a full table may next be swept, under mu
 	nextSweep int64
+
+	// shared is the scope's part of a count shared by the instances of
+	// one database (limits.shared, ADR-0061); nil where this instance
+	// counts alone, as ADR-0057 has it
+	shared *sharedScope
 }
 
 func (s *scopeLimiter) lock()   { s.mu.Lock() }
@@ -293,7 +298,7 @@ func (s *scopeLimiter) holdCaller(key limitCallerKey, now int64) (*limitedCaller
 		c = &limitedCaller{}
 		s.callers[key] = c
 	}
-	if s.callerMost > 0 && c.held.Load() >= s.callerMost {
+	if most := s.callerCap(); most > 0 && c.held.Load() >= most {
 		return nil, limitFull(limitCallerInFlight)
 	}
 	c.held.Add(1)
@@ -303,8 +308,9 @@ func (s *scopeLimiter) holdCaller(key limitCallerKey, now int64) (*limitedCaller
 // sweep drops the idle callers: nothing in flight, and a full bucket. A
 // fresh entry would be the same, so dropping one loses nothing.
 func (s *scopeLimiter) sweep(now int64) {
+	rate := s.callerBucket()
 	for key, c := range s.callers {
-		if c.held.Load() == 0 && (s.callerRate == nil || c.tat.Load() <= now) {
+		if c.held.Load() == 0 && (rate == nil || c.tat.Load() <= now) {
 			delete(s.callers, key)
 		}
 	}
@@ -322,6 +328,10 @@ type requestLimiter struct {
 
 	// fixed when the limiter is made, and read with no lock
 	scopes map[string]*scopeLimiter
+
+	// shared is the count the instances of one database share
+	// (limits.shared, ADR-0061); nil where this instance counts alone
+	shared *sharedCount
 }
 
 // newRequestLimiter makes the limiter: beforeScope is the gateway-wide cap,
@@ -397,6 +407,10 @@ type scopeHold struct {
 	caller                  *limitedCaller
 	scopeTaken, callerTaken int64
 	scopeRated, callerRated bool
+	// the buckets taken from: the scope's own, or, on a shared count, the
+	// one of the split values taken from (nil for the scope's, a request
+	// of the batch this instance leased)
+	scopeBucket, callerBucket *gcra
 }
 
 // errLimitCharged is a second charge of one request: a fault of the route,
@@ -481,30 +495,42 @@ func (s *scopeLimiter) take(caller *limitCallerKey, now int64) (scopeHold, *limi
 			return h, refused
 		}
 	}
-	if s.most > 0 && !takeSlot(&s.held, s.most) {
+	if s.most > 0 && !takeSlot(&s.held, s.inFlightCap()) {
 		dropCaller(h.caller)
 		return h, limitFull(limitScopeInFlight)
 	}
-	if h.caller != nil && s.callerRate != nil {
-		taken, wait, ok := s.callerRate.take(&h.caller.tat, now)
+	if rate := s.callerBucket(); h.caller != nil && rate != nil {
+		taken, wait, ok := rate.take(&h.caller.tat, now)
 		if !ok {
 			dropScope(s)
 			dropCaller(h.caller)
 			return h, &limitRefusal{limit: limitCallerRate, retryAfter: retryAfterOf(wait)}
 		}
-		h.callerTaken, h.callerRated = taken, true
+		h.callerTaken, h.callerRated, h.callerBucket = taken, true, rate
 	}
 	if s.rate != nil {
-		taken, wait, ok := s.rate.take(&s.tat, now)
+		var (
+			taken  int64
+			bucket = s.rate
+			wait   time.Duration
+			ok     bool
+		)
+		if s.shared != nil {
+			// the batch this instance leased, or its own bucket while
+			// the database does not answer; never a statement
+			taken, bucket, wait, ok = s.shared.take(now)
+		} else {
+			taken, wait, ok = s.rate.take(&s.tat, now)
+		}
 		if !ok {
 			if h.callerRated {
-				s.callerRate.giveBack(&h.caller.tat, h.callerTaken)
+				h.callerBucket.giveBack(&h.caller.tat, h.callerTaken)
 			}
 			dropScope(s)
 			dropCaller(h.caller)
 			return h, &limitRefusal{limit: limitScopeRate, retryAfter: retryAfterOf(wait)}
 		}
-		h.scopeTaken, h.scopeRated = taken, true
+		h.scopeTaken, h.scopeRated, h.scopeBucket = taken, true, bucket
 	}
 	return h, nil
 }
@@ -513,10 +539,14 @@ func (s *scopeLimiter) take(caller *limitCallerKey, now int64) (scopeHold, *limi
 // buckets' requests and its slots.
 func (h scopeHold) giveBack() {
 	if h.callerRated {
-		h.s.callerRate.giveBack(&h.caller.tat, h.callerTaken)
+		h.callerBucket.giveBack(&h.caller.tat, h.callerTaken)
 	}
-	if h.scopeRated {
-		h.s.rate.giveBack(&h.s.tat, h.scopeTaken)
+	switch {
+	case h.scopeRated && h.scopeBucket == nil:
+		// a request of the leased batch goes back to it
+		h.s.shared.tokens.Add(1)
+	case h.scopeRated:
+		h.scopeBucket.giveBack(&h.s.tat, h.scopeTaken)
 	}
 	h.release()
 }

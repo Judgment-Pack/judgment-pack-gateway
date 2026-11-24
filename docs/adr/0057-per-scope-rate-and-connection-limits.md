@@ -457,6 +457,10 @@ They are released by a deferred call, so a panic that the server recovers releas
   a row lock, on every counted request of every scope. That is the coupling decision 4 forbids. It
   would also give every scope a new refusal whenever the database is slow, whether the limiter then
   failed open or closed. Shared counting is gateway #593, for v0.41.0, with its own record.
+- **2026-11-24:** shared counting is [ADR-0061](0061-request-limits-counted-together-by-the-instances-of-one-database.md):
+  an opt-in `limits.shared: true` (engine version 51, several instances on PostgreSQL) leases each
+  scope's rate from the database in batches off the request path, and splits in-flight and
+  per-caller limits by the live instances. Without it, this section holds unchanged.
 
 ### 7. Compatibility, rollback and the release notes
 

@@ -176,7 +176,13 @@ import (
 // prefix of its own, and its refusalEntries switch (ADR-0059 section 9): an
 // earlier version refuses both by name, and a sink without the member is
 // sent exactly what it is sent before.
-const engineVersion = sinkDeliveryV3Version
+// Version 51 (sharedLimitsVersion; limits_shared.go) adds limits.shared: the
+// instances serving one PostgreSQL database (storage.instances "several")
+// count each scope's request limits together, the rate from a row of the
+// database leased in batches and the in-flight and per-caller limits split
+// by the live instances (ADR-0061). An earlier version refuses the member
+// by name, and a configuration without it counts as before.
+const engineVersion = sharedLimitsVersion
 
 // actScopeVersion is the engine configuration version from which a platform
 // may set scope beside write: true, and /act reads scope, dryRun and
@@ -187,7 +193,7 @@ const engineVersion = sinkDeliveryV3Version
 // 2 and 3; act_dry_run.go).
 const actScopeVersion = "43"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true, requestLimitsVersion: true, operatorJournalVersion: true, delegationScopeBindingVersion: true, admissionReadV2Version: true, refusalJournalVersion: true, callReferenceVersion: true, sinkDeliveryV3Version: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true, requestLimitsVersion: true, operatorJournalVersion: true, delegationScopeBindingVersion: true, admissionReadV2Version: true, refusalJournalVersion: true, callReferenceVersion: true, sinkDeliveryV3Version: true, sharedLimitsVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -1065,6 +1071,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		}
 		limits, err := parseLimitsConfig(value, scopes, cfg.identity != nil)
 		if err != nil {
+			return engineConfig{}, err
+		}
+		if err := holdSharedLimits(limits, version, cfg.storage); err != nil {
 			return engineConfig{}, err
 		}
 		cfg.limits = limits
