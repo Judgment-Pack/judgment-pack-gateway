@@ -1,0 +1,30 @@
+{
+  "about": "Handwritten. What gateway mcp's tools/list serves of each tool at engine version 47 (admission read version 2, ADR-0058 decision 7), for the fixture of served-listing.json: one platform, tickets, whose live operation allows four tools, described by a V3 snapshot that gives each tool a descriptorDigest, and the engine's seal tool. The binding labels three of the tools in toolVersions; read has no label. Beside served-listing.json's members, _meta names descriptorDigest, the snapshot entry's digest, and versionLabel, the binding's label, each absent where there is none. The seal tool carries neither. Below version 47 the same fixture, labels left out (a binding below it declares none), serves served-listing.json byte for byte.",
+  "tools": [
+    {
+      "name": "engine.seal",
+      "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
+      "_meta": {"operation": "act", "effect": "act"}
+    },
+    {
+      "name": "tickets.read",
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true},
+      "_meta": {"operation": "read", "effect": "read-external", "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+    },
+    {
+      "name": "tickets.search",
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true},
+      "_meta": {"operation": "discover", "effect": "read-external", "descriptorDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "versionLabel": "2.4.1"}
+    },
+    {
+      "name": "tickets.update",
+      "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
+      "_meta": {"operation": "act", "effect": "act", "descriptorDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "versionLabel": "1.0.0"}
+    },
+    {
+      "name": "tickets.verify",
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true},
+      "_meta": {"operation": "check", "effect": "read-external", "checkKind": "test", "experimental": true, "descriptorDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "versionLabel": "0.3"}
+    }
+  ]
+}
