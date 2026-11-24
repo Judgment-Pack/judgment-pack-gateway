@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -88,7 +89,8 @@ func TestAPostgresStartRefusesARunTimeRoleThatMayChangeAJournal(t *testing.T) {
 
 // A gateway whose migrations stop at 0009 -- v0.38.0's, and the release
 // before the journal's -- refuses a database at schema 0010: its migration
-// and its start alike, and nothing is changed (ADR-0056, Amendment A).
+// and its start alike, and nothing is changed (ADR-0056, Amendment A). The
+// database is migrated to every shipped version, 0010 or later.
 func TestJournalRecordsMigrationRefusesAnOlderGateway(t *testing.T) {
 	db := newPgTestDB(t)
 	db.migrate(t)
@@ -100,7 +102,7 @@ func TestJournalRecordsMigrationRefusesAnOlderGateway(t *testing.T) {
 	older.versions = slices.Clone(shipped.versions[:9])
 	older.definitionsHeld = false
 	before := db.fingerprint(t)
-	if _, err := migratePostgres(db.migrator, older, db.roles, time.Minute); err == nil || !strings.Contains(err.Error(), "the database's schema is at version 10 and this gateway's migrations reach version 9") {
+	if _, err := migratePostgres(db.migrator, older, db.roles, time.Minute); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("the database's schema is at version %d and this gateway's migrations reach version 9", len(shipped.versions))) {
 		t.Fatalf("an older gateway's migration: %v", err)
 	}
 	view := &pgKind{pool: newPgPool(db.runtime, 1), operation: pgDefaultOperation, clock: time.Now}
