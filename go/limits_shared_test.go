@@ -254,6 +254,31 @@ func TestAFailedProbeGivesTheInstanceNoFreshBucket(t *testing.T) {
 	}
 }
 
+// A count of the instances that fails after the start keeps the last N
+// and moves nothing: with the leases succeeding the count stays shared,
+// so a count failing beside them never makes the buckets full again.
+func TestACountThatFailsBesideLeasesThatSucceedKeepsTheSharedCount(t *testing.T) {
+	clock := &fakeLimitClock{}
+	entries := map[string]limitEntry{"scope-a": rateOf(600, 100)}
+	l := sharedLimiter(t, clock.clock(), entries)
+	rates := &fakeSharedRates{live: 2}
+	if line := l.shareOn(rates, 2); !strings.Contains(line, "counted together by the 2 live instances") {
+		t.Fatalf("start line: %s", line)
+	}
+	rates.set(func(f *fakeSharedRates) { f.liveErr = errors.New("the count was refused"); f.live = 5 })
+	for range 20 {
+		l.shared.recount()
+		chargeMany(l, "scope-a", 1)
+		clock.advance(100 * time.Millisecond)
+	}
+	if !l.shared.available.Load() || l.shared.live.Load() != 2 {
+		t.Fatalf("after failed counts: available %v, N %d; want the shared count kept at N=2", l.shared.available.Load(), l.shared.live.Load())
+	}
+	if got := sharedPosture(l, entries); !strings.Contains(got, "counted together") {
+		t.Fatalf("posture after failed counts: %s", got)
+	}
+}
+
 // The start's count of the instances is N from the start: where the
 // refill's connection fails at once, the instance counts alone at
 // ceil(limit/N) of that N, not of one instance, and says so.

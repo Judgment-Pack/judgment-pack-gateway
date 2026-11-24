@@ -27,9 +27,11 @@ package main
 // sharedInstancesInterval on the refill's connection, never on a request,
 // and a count that fails keeps the last N.
 //
-// The database unreachable (E1). A refill, or the count of the instances,
-// that fails other than by its row's lock -- no connection, an error, or no
-// answer within sharedRefillBound -- marks the shared count unavailable:
+// The database unreachable (E1). A refill that fails other than by its
+// row's lock -- no connection, an error, or no answer within
+// sharedRefillBound -- marks the shared count unavailable (a count of the
+// instances that fails keeps the last N and moves nothing, so that a count
+// failing beside leases that succeed never makes a bucket full again):
 // each instance then counts the scope's rate alone too, at ceil(limit/N),
 // and /posture says so. So does a scope whose batch is spent and whose
 // refill has waited longer than twice sharedRefillBound, as one refill
@@ -419,11 +421,10 @@ func (c *sharedCount) run(ctx context.Context) {
 }
 
 // recount counts the live instances again and splits the values by them;
-// a count that fails keeps the last N, and is the database unreachable.
+// a count that fails keeps the last N and moves nothing: whether the
+// database answers is for the refills to say.
 func (c *sharedCount) recount() {
-	if n, err := c.rates.liveInstances(); err != nil {
-		c.unreachable(err)
-	} else {
+	if n, err := c.rates.liveInstances(); err == nil {
 		c.setLive(n)
 	}
 }
@@ -434,12 +435,7 @@ func (c *sharedCount) recount() {
 // count; a probe that fails leaves it counting alone, its buckets as they
 // are.
 func (c *sharedCount) probe() {
-	n, err := c.rates.liveInstances()
-	if err != nil {
-		c.unreachable(err)
-		return
-	}
-	c.setLive(n)
+	c.recount()
 	c.leaseAll(false)
 }
 

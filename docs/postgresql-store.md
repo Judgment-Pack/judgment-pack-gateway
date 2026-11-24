@@ -476,7 +476,8 @@ records itself as the session's holder when it admits the call, before the sourc
   three instances, at most 50 + 100 + 30 = 180 in any one second. In flight
   and per caller each instance holds ceil(limit/N), with N the live rows of `gateway.start_lease`
   counted by the start beside its lease (a count that fails fails the start) and every 10 seconds
-  after, at most cap + N − 1 in all. Where a refill or a count fails other than by a held row, or
+  after (a later count that fails keeps the last N), at most cap + N − 1 in all. Where a refill
+  fails other than by a held row, or
   gets no answer within 2 seconds, or a scope's refill waits more than 4 seconds with its batch
   spent, each instance counts the rate alone at ceil(limit/N), from one full bucket made at the
   move, until a probe, tried every second, leases every scope's batch in time, and `/posture` says

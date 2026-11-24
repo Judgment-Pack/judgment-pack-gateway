@@ -109,8 +109,9 @@ Write N for the live instances, B for the burst, T for the interval, and b for t
 
 ### 4. The database unreachable (E1)
 
-- **Unreachable** means that a refill, or a count of the instances, failed other than by its row's
-  lock. That covers no connection, an error from the database, and no answer within 2 seconds
+- **Unreachable** means that a refill failed other than by its row's lock. A count of the
+  instances that fails after the start keeps the last N and moves nothing, so a count failing
+  beside leases that succeed never makes a bucket full again. That covers no connection, an error from the database, and no answer within 2 seconds
   (`sharedRefillBound`). The 2 seconds bound the connection, the statements and the commit; the
   statement and lock timeouts are 2 seconds as well. A refill after the instance lost its start
   lease fails its fence, and is unreachable too.
