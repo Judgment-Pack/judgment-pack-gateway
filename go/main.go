@@ -48,7 +48,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | verify-dry-run | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | seal-open | remove-artifact | remove-scope | retain | sessions | journal | store | mcp | posture | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | verify-dry-run | verify-key-history | export | conform | adapter-conform | witness | serve | connect | publishers | keygen | rotate-key | seal-open | remove-artifact | remove-scope | retain | sessions | journal | store | mcp | posture | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -58,6 +58,8 @@ func main() {
 		os.Exit(cmdVerify(os.Args[2:]))
 	case "verify-dry-run":
 		os.Exit(cmdVerifyDryRun(os.Args[2:], os.Stdout, os.Stderr))
+	case "verify-key-history":
+		os.Exit(cmdVerifyKeyHistory(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	case "export":
 		os.Exit(cmdExport(os.Args[2:], os.Stdout, os.Stderr))
 	case "conform":
