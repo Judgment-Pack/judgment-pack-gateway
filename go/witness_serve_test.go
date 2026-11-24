@@ -1071,6 +1071,17 @@ func TestAWitnessReadUnderLimitsGivesItsSlotBackAtItsBound(t *testing.T) {
 	client := &http.Client{Transport: &http.Transport{DialContext: pipe.dial}, Timeout: 30 * time.Second}
 	for _, what := range []string{"head", "statements"} {
 		path := "/witness/trails/" + testTrail + "/" + what
+		// A client's answer arrives before its server unwinds the request,
+		// so the last request may still hold the slot and its place among
+		// the reads: wait until both are free, or this request is refused
+		// at the cap and the waits below see the last one's state.
+		idle := time.Now().Add(20 * time.Second)
+		for (limiter.beforeHeld.Load() != 0 || len(f.svc.reading) != 0) && time.Now().Before(idle) {
+			time.Sleep(time.Millisecond)
+		}
+		if n := limiter.beforeHeld.Load(); n != 0 || len(f.svc.reading) != 0 {
+			t.Fatalf("%s: the last request never gave back its slot (%d held) or its place among the reads", what, n)
+		}
 		conn, err := pipe.dial(context.Background(), "", "")
 		if err != nil {
 			t.Fatal(err)
