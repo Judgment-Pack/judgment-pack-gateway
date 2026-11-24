@@ -1543,6 +1543,7 @@ func pgGrantsOfVersion(t *testing.T, grants []byte, version int) []byte {
 		{8, "\n    EXECUTE pg_catalog.format('GRANT SELECT ON gateway.key_history TO %I', runtime);"},
 		{9, ", gateway.session_labels"},
 		{10, ", gateway.journal_records"},
+		{11, "\n    EXECUTE pg_catalog.format('GRANT SELECT, INSERT, UPDATE ON gateway.limit_rates TO %I', runtime);"},
 	} {
 		if version >= later.version {
 			continue

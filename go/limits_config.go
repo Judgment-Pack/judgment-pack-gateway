@@ -20,11 +20,16 @@ const defaultBeforeScope = 1024
 
 // limitsConfig is the limits member: the gateway-wide cap, the default
 // entry, and the entry of each scope key it names (a scope identifier, or
-// unscopedMarker). Each instance counts alone.
+// unscopedMarker). Each instance counts alone, unless shared is set
+// (limits.shared, engineVersion 51, ADR-0061): the instances of one
+// PostgreSQL database then count the scopes' limits together.
 type limitsConfig struct {
 	beforeScope int
 	byDefault   *limitEntry
 	scopes      map[string]limitEntry
+	// shared is limits.shared; sharedGiven is whether the member is there,
+	// true or false, which an engineVersion before 51 refuses by name
+	shared, sharedGiven bool
 }
 
 var (
@@ -34,6 +39,7 @@ var (
 	errLimitsScopes    = errors.New("engine configuration: limits.scopes is an object whose keys are scope identifiers")
 	errLimitsUnknown   = errors.New("engine configuration: limits.scopes: a key is a scope identifier some platform is fixed to, or \"unscoped\" where some platform is of none")
 	errLimitsPerCaller = errors.New("engine configuration: limits: perCaller counts each caller, and this configuration has no identity to name one")
+	errLimitsShared    = errors.New("engine configuration: limits.shared is true or false")
 )
 
 // parseLimitsConfig holds the limits member to its form. platformScopes are
@@ -44,10 +50,17 @@ func parseLimitsConfig(v value, platformScopes map[string]bool, identity bool) (
 	if !ok || len(obj.names) == 0 {
 		return nil, errLimitsForm
 	}
-	if exactlyMembers(obj, map[string]bool{"beforeScope": false, "default": false, "scopes": false}, "engine configuration: limits") != nil {
+	if exactlyMembers(obj, map[string]bool{"beforeScope": false, "default": false, "scopes": false, "shared": false}, "engine configuration: limits") != nil {
 		return nil, errLimitsForm
 	}
 	cfg := &limitsConfig{beforeScope: defaultBeforeScope, scopes: map[string]limitEntry{}}
+	if shared, present := obj.get("shared"); present {
+		b, isBool := shared.(vBool)
+		if !isBool {
+			return nil, errLimitsShared
+		}
+		cfg.shared, cfg.sharedGiven = bool(b), true
+	}
 	if before, present := obj.get("beforeScope"); present {
 		b, isObject := before.(*vObject)
 		if !isObject || len(b.names) != 1 || exactlyMembers(b, map[string]bool{"inFlight": true}, "") != nil {
@@ -194,7 +207,14 @@ func limiterFor(c *limitsConfig, sources map[string]sourceSpec) (*requestLimiter
 	if c == nil {
 		return nil, nil
 	}
-	return newRequestLimiter(monotonicLimitClock(), c.beforeScope, c.entries(limitScopeKeys(sources)))
+	entries := c.entries(limitScopeKeys(sources))
+	l, err := newRequestLimiter(monotonicLimitClock(), c.beforeScope, entries)
+	if err == nil && c.shared {
+		// counted by this instance alone until the start shares it
+		// (shareOn), once the start lease is held
+		l.shared = newSharedCount(l, entries)
+	}
+	return l, err
 }
 
 // requestLimitsStartLine is the start's line where limits is configured,
@@ -204,6 +224,9 @@ func requestLimitsStartLine(c *limitsConfig, sources map[string]sourceSpec) stri
 		return ""
 	}
 	keys := limitScopeKeys(sources)
+	if c.shared {
+		return fmt.Sprintf("request limits: %d of %d scopes are limited, counted together by the instances of this database (limits.shared)", len(c.entries(keys)), len(keys))
+	}
 	return fmt.Sprintf("request limits: %d of %d scopes are limited, counted by this instance alone", len(c.entries(keys)), len(keys))
 }
 
@@ -212,6 +235,34 @@ func requestLimitsStartLine(c *limitsConfig, sources map[string]sourceSpec) stri
 const protectionRequestLimits = "request-limits"
 
 const limitsPerInstance = "counted by this instance alone; under several instances each one counts its own"
+
+// limitsShared is how the limits are counted under limits.shared
+// (ADR-0061): the bounds of the shared count, and, where the serving
+// instance reports it, the live instances and whether the database answers.
+func limitsShared(state *sharedState) string {
+	const bounds = "counted together by the instances of this database (limits.shared): " +
+		"each scope's rate is leased from the database in batches of b, the requests of 100 ms of its rate, from 1 to 64 and at most its burst, " +
+		"so over any span the instances admit no more than the bucket leased plus the batches they held at its start, at most N times b, " +
+		"and a scope's rate may go unadmitted by the up to (N-1) times b the other instances hold; " +
+		"each instance holds a scope's in-flight cap and each caller's limits at ceil(limit/N), so at most cap+N-1 requests of a scope are in flight in all; " +
+		"the gateway-wide cap is each instance's own"
+	switch {
+	case state == nil:
+		return bounds
+	case !state.available:
+		return fmt.Sprintf("the shared count is unavailable: the database did not answer a refill within %s, so this instance counts alone at ceil(limit/N) of N=%d, and returns to the shared count once a refill, tried every %s, succeeds; %s", sharedRefillBound, state.live, sharedProbeInterval, bounds)
+	}
+	return fmt.Sprintf("%s; N=%d live instances", bounds, state.live)
+}
+
+// limitsCounting is how the report's limits are counted: limitsPerInstance
+// unless limits.shared is set.
+func limitsCounting(in postureInput) string {
+	if !in.limits.shared {
+		return limitsPerInstance
+	}
+	return limitsShared(in.sharedLimits)
+}
 
 // requestLimitsLines is the line, given only where limits is configured,
 // judged over the sources the report is of (already cut to the caller's
@@ -224,13 +275,14 @@ func requestLimitsLines(in postureInput) []postureLine {
 		return []postureLine{{protectionRequestLimits, state, reason}}
 	}
 	keys := limitScopeKeys(in.sources)
+	counting := limitsCounting(in)
 	whose := "this gateway serves"
 	if in.reach != nil {
 		whose = "this caller's token reaches"
 	}
 	before := fmt.Sprintf("the gateway-wide cap holds %d requests before their scope", in.limits.beforeScope)
 	if len(keys) == 0 {
-		return line(postureNotApplicable, fmt.Sprintf("%s no source, so there is no scope to judge; %s; %s", whose, before, limitsPerInstance))
+		return line(postureNotApplicable, fmt.Sprintf("%s no source, so there is no scope to judge; %s; %s", whose, before, counting))
 	}
 	entries := in.limits.entries(keys)
 	full := 0
@@ -242,14 +294,14 @@ func requestLimitsLines(in postureInput) []postureLine {
 	counts := fmt.Sprintf("%d of the %d scopes %s have a request rate and an in-flight cap", full, len(keys), whose)
 	switch {
 	case len(entries) == 0:
-		return line(postureNotEnforced, fmt.Sprintf("none of the %d scopes %s is limited; %s; %s", len(keys), whose, before, limitsPerInstance))
+		return line(postureNotEnforced, fmt.Sprintf("none of the %d scopes %s is limited; %s; %s", len(keys), whose, before, counting))
 	case in.callerScopes != "checked":
 		// any caller can spend any scope's share
-		return line(posturePartial, fmt.Sprintf("%s, and callers are not held to their scopes, so any caller can spend any scope's share; %s; %s", counts, before, limitsPerInstance))
+		return line(posturePartial, fmt.Sprintf("%s, and callers are not held to their scopes, so any caller can spend any scope's share; %s; %s", counts, before, counting))
 	case full == len(keys):
-		return line(postureEnforced, fmt.Sprintf("%s, and callers are held to their scopes; %s; %s", counts, before, limitsPerInstance))
+		return line(postureEnforced, fmt.Sprintf("%s, and callers are held to their scopes; %s; %s", counts, before, counting))
 	}
-	return line(posturePartial, fmt.Sprintf("%s; %s; %s", counts, before, limitsPerInstance))
+	return line(posturePartial, fmt.Sprintf("%s; %s; %s", counts, before, counting))
 }
 
 // limitsPosture is the posture member: one entry for each scope of the
@@ -285,4 +337,24 @@ func limitValuesObject(v limitValues) *vObject {
 		}
 	}
 	return o
+}
+
+// holdSharedLimits holds limits.shared to its version and its storage: a
+// member of engineVersion 51 on, and, set true, only where the store is
+// PostgreSQL served by several instances (storage.instances "several"),
+// the one place a count is shared. Each refusal names the member.
+func holdSharedLimits(c *limitsConfig, version string, storage *storageSpec) error {
+	switch {
+	case c == nil || !c.sharedGiven:
+		return nil
+	case !versionAtLeast(version, sharedLimitsVersion):
+		return fmt.Errorf("engine configuration: limits.shared is a version-%s member; engineVersion %s has no limits.shared", sharedLimitsVersion, version)
+	case !c.shared:
+		return nil
+	case storage == nil:
+		return errors.New("engine configuration: limits.shared counts the limits together in a PostgreSQL store's database, and this configuration keeps its store on the filesystem; give storage.kind \"postgresql\" with storage.instances \"several\", or leave limits.shared out")
+	case !storage.several:
+		return errors.New("engine configuration: limits.shared counts the limits together across several instances, and this configuration serves its database by one instance; give storage.instances \"several\", or leave limits.shared out")
+	}
+	return nil
 }

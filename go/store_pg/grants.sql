@@ -23,7 +23,10 @@
 -- column labels (schema version 9) is written and read under the table's
 -- grant. The journals (schema version 10) are SELECT and INSERT: the owner
 -- appends the operator journal with the removals, and the run-time role
--- with its seals; no row of one is changed or removed. Nothing is
+-- with its seals; no row of one is changed or removed. The shared request
+-- rates (schema version 11) are SELECT, INSERT and UPDATE: an instance
+-- makes a scope's row and leases batches from it; the migration login,
+-- acting as the owner, removes it with the scope's other rows. Nothing is
 -- TRUNCATE, REFERENCES, TRIGGER or DDL.
 
 DO $grants$
@@ -40,5 +43,6 @@ BEGIN
     EXECUTE pg_catalog.format('GRANT SELECT ON gateway.removal_records TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT, INSERT ON gateway.rotated TO %I', runtime);
     EXECUTE pg_catalog.format('GRANT SELECT ON gateway.key_history TO %I', runtime);
+    EXECUTE pg_catalog.format('GRANT SELECT, INSERT, UPDATE ON gateway.limit_rates TO %I', runtime);
 END
 $grants$;
