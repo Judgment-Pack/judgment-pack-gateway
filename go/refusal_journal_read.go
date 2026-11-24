@@ -370,6 +370,17 @@ func describeRefusalRemoval(body *vObject, removed []byte) {
 // a run cut off between them leaves the journal, the bytes its operator
 // entry names, which the next run or start completes; so a key beside no
 // journal is never a removal's leftover, but one drawn since.
+// refusalRemovalStep, where not nil, is told each step of a refusal
+// journal's removal: a file's suffix once it is removed, "sync" once the
+// directory is synced. A test seam.
+var refusalRemovalStep func(step string)
+
+func refusalRemovalStepped(step string) {
+	if refusalRemovalStep != nil {
+		refusalRemovalStep(step)
+	}
+}
+
 func (r *refusalRemoval) remove() error {
 	if !journalFilesLock {
 		// No flock here, so the held handle excludes nothing, and the
@@ -377,12 +388,22 @@ func (r *refusalRemoval) remove() error {
 		// first. remove-scope runs with the gateway stopped here.
 		r.release()
 	}
+	// the key and the cursor go first, and their removal is synced before
+	// the journal goes: a journal left without its key after a crash is one
+	// a completion recognizes by the bytes its entry names, on every
+	// filesystem, never a key left without its journal
 	for _, suffix := range []string{".key", ".forwarded", ".jsonl"} {
+		if suffix == ".jsonl" {
+			syncDir(r.dir)
+			refusalRemovalStepped("sync")
+		}
 		if err := os.Remove(filepath.Join(r.dir, r.name+suffix)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("the refusal journal's %s could not be removed: %v; the records stand, and a second run completes the removal", suffix, err)
 		}
+		refusalRemovalStepped(suffix)
 	}
 	syncDir(r.dir)
+	refusalRemovalStepped("sync")
 	return nil
 }
 

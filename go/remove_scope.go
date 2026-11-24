@@ -99,6 +99,9 @@ func parseRemoveScope(args []string) (removeScopeOptions, string) {
 	if !isScopeIdentifier(flags["--scope"]) {
 		return removeScopeOptions{}, "--scope is a scope identifier: " + scopeForm
 	}
+	if flags["--scope"] == unscopedMarker {
+		return removeScopeOptions{}, removeUnscopedRefusal
+	}
 	if !isScopeIdentifier(flags["--by"]) {
 		return removeScopeOptions{}, "--by is a label of the form of a scope identifier: " + scopeForm
 	}
@@ -179,6 +182,12 @@ func cmdRemoveScopeAt(args []string, stdout, stderr io.Writer, stamp func() stri
 // removeScope is the command: the seed read, the registry there and held as
 // a gateway holds it while it runs, and the scope's sessions removed under
 // it. unlocked is a platform that locks no registry.
+// removeUnscopedRefusal refuses --scope "unscoped" before anything is read:
+// it is the key of the sources of none (limitScopeKey), so removing it would
+// take the live refusal journal, key and cursor of every caller of no scope,
+// and nothing removed can be restored.
+const removeUnscopedRefusal = `--scope may not be "unscoped": it names the sources of no scope, whose records and refusal journal remove-scope does not take`
+
 func removeScope(o removeScopeOptions, stamp func() string) (out removalOutcome, unlocked bool, err error) {
 	seed, err := loadSeed(o.seedNames[0])
 	if err != nil {

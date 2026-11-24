@@ -162,6 +162,10 @@ func cmdStoreRemoveScopeAt(args []string, stdout, stderr io.Writer, stamp func()
 		fmt.Fprintf(stderr, "%s: --scope is a scope identifier: %s\n%s\n", command, scopeForm, usage)
 		return 2
 	}
+	if flags["--scope"] == unscopedMarker {
+		fmt.Fprintf(stderr, "%s: %s\n%s\n", command, removeUnscopedRefusal, usage)
+		return 2
+	}
 	if !isScopeIdentifier(flags["--by"]) {
 		fmt.Fprintf(stderr, "%s: --by is a label of the form of a scope identifier: %s\n%s\n", command, scopeForm, usage)
 		return 2

@@ -35,7 +35,7 @@ func TestAKeyDrawFallsBackWhereTheStoreLinksNoFile(t *testing.T) {
 	s := j.scopes[callerScopeA]
 	dir := filepath.Join(h.g.storeRoot, journalsDir)
 	key := readFile(t, filepath.Join(dir, s.name+".key"))
-	if len(key) != refusalKeyFileBytes || strings.TrimSuffix(key, "\n") != hex.EncodeToString(s.secret) {
+	if len(key) != 65 || strings.TrimSuffix(key, "\n") != hex.EncodeToString(s.secret) {
 		t.Fatalf("the key drawn in place: %q", key)
 	}
 	entries, err := os.ReadDir(h.g.storeRoot)
@@ -62,9 +62,10 @@ func TestAKeyDrawFallsBackWhereTheStoreLinksNoFile(t *testing.T) {
 	}
 }
 
-// A key file shorter than a key beside no journal, as a draw in place
-// ended part way leaves it, is drawn again at the start, which says so;
-// beside a journal holding entries the start still refuses it.
+// A key file that does not decode as a key beside no journal, as a draw in
+// place ended part way leaves it, is drawn again at the start, which says
+// so; beside a journal holding entries the start still refuses it. A whole
+// key with no line feed after it is a key, and is kept.
 func TestAShortKeyBesideNoEntryIsDrawnAgain(t *testing.T) {
 	h := limitsSetup(t, refusalLimits())
 	dir := filepath.Join(h.g.storeRoot, journalsDir)
@@ -80,12 +81,26 @@ func TestAShortKeyBesideNoEntryIsDrawnAgain(t *testing.T) {
 		t.Fatalf("the start: %v", err)
 	}
 	h.g.refusals.stop()
-	if strings.Count(stderr.String(), "refusal journal: journal "+name+": its key file is shorter than a key and no entry is beside it") != 1 {
+	if strings.Count(stderr.String(), "refusal journal: journal "+name+": its key file is not a whole key and no entry is beside it") != 1 {
 		t.Errorf("stderr: %q", stderr.String())
 	}
 	key, err := os.ReadFile(filepath.Join(dir, name+".key"))
-	if err != nil || len(key) != refusalKeyFileBytes || !bytes.Equal(key[64:], []byte("\n")) {
+	if err != nil || len(key) != 65 || !bytes.Equal(key[64:], []byte("\n")) {
 		t.Fatalf("the key drawn again: %q %v", key, err)
+	}
+
+	// a whole key without its line feed, beside no journal, is kept
+	whole := key[:64]
+	if err := os.WriteFile(filepath.Join(dir, name+".key"), whole, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	quiet := &refusalStderr{}
+	if err := h.g.openRefusalJournals(&refusalJournalConfig{maxBytes: refusalDefaultCap}, quiet); err != nil {
+		t.Fatalf("the start over a whole key with no line feed: %v", err)
+	}
+	h.g.refusals.stop()
+	if got := readFile(t, filepath.Join(dir, name+".key")); got != string(whole) || strings.Contains(quiet.String(), "not a whole key") {
+		t.Fatalf("a whole key with no line feed was drawn again: %q, stderr %q", got, quiet.String())
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, name+".key"), []byte("ab12"), 0o600); err != nil {

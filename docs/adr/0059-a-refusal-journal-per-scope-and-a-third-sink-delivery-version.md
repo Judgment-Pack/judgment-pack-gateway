@@ -943,9 +943,12 @@ forwarding, follow it. Where R2 departs from the text above:
   filesystem kind the entry is appended and synced before the journal goes, with nothing staged,
   since no record is appended; a run cut off after it is completed as a record path's is. The
   command says what it removed. A key beside no entry stays, and a scope holding neither is left as
-  before, with the same output.
+  before, with the same output. Both commands refuse `--scope unscoped` before anything is read:
+  it is the key of the sources of none (`limitScopeKey`), and the no-record path would take their
+  live journal, key and cursor, which nothing can restore.
 - **2026-11-24, the journal goes last, so a key beside none is a draw.** On the filesystem kind the
-  removal takes the key, then the cursor, then the journal. A run cut off between them leaves the
+  removal takes the key, then the cursor, syncs the directory, then removes the journal, so the
+  order holds on every filesystem. A run cut off between them leaves the
   journal, the bytes its entry names, which the next run or start completes. A journal that is gone
   is a removal completed, so a key or cursor beside none is never a removal's leftover: a key the
   start drew since stays across restarts, with no line on stderr. The start and a second run
@@ -959,10 +962,11 @@ forwarding, follow it. Where R2 departs from the text above:
   fails because the store cannot link that file (`EXDEV`, with `journals/` on another filesystem;
   `EPERM`, `ENOTSUP` or `EOPNOTSUPP`), the staged file is removed and the key is made in place
   under `O_EXCL`, written and synced, as before; any other link failure refuses the draw. A draw in
-  place ended part way can leave a `.key` shorter than its 65 bytes (64 hexadecimal digits and a
-  line feed): beside an absent or empty `.jsonl` no entry was made under it, so the start removes
-  it, draws the key again and says so in one stderr line. A short `.key` beside a journal holding
-  entries still refuses the start.
+  place ended part way can leave a `.key` that does not decode as a key (32 bytes in hexadecimal,
+  a line feed after them or none): beside an absent or empty `.jsonl` no entry was made under it,
+  so the start removes it, draws the key again and says so in one stderr line. A whole key, with its
+  line feed or without, is kept. A `.key` that does not decode beside a journal holding entries
+  still refuses the start.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on

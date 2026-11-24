@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"strconv"
 	"strings"
@@ -109,5 +110,50 @@ func TestAPostgresStoreRemoveScopeTakesTheRefusalJournalOfAScopeThatHoldsNoRecor
 	}
 	if pgRowsFile(t, db, "journal_records") != journal {
 		t.Fatal("a run that removed nothing wrote an entry")
+	}
+}
+
+// store remove-scope refuses --scope "unscoped" before anything is read,
+// as remove-scope does: the sources of none's refusal journal and its key
+// stand. A command that takes it as a scope fails it.
+func TestAPostgresStoreRemoveScopeRefusesTheUnscopedMarker(t *testing.T) {
+	db, _, config, _ := pgJournalService(t, false)
+	h := limitsSetup(t, refusalLimits())
+	j, err := newRefusalJournals(&refusalJournalConfig{maxBytes: refusalDefaultCap}, map[string]bool{unscopedMarker: true}, newRefusalPG(db.open(t, nil)),
+		h.g.store.signing.key, h.g.provenanceKeys, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(j.store.close)
+	s := j.scopes[unscopedMarker]
+	j.handOff(s, "/seal", refusalNote{reason: "session"}, 404, unitCaller(), nil, time.Now())
+	j.round()
+	name := refusalJournalName(unscopedMarker)
+	journalOf := func() []byte {
+		var data []byte
+		if err := db.open(t, nil).transact(pgRead, func(tx pgTx) error {
+			var err error
+			data, err = pgJournalFile(tx, name)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	data := journalOf()
+	if len(data) == 0 {
+		t.Fatal("no unscoped refusal journal")
+	}
+	connection := writeConnection(t, db.migrator)
+	code, _, stderr := runStoreRemoveScope("--connection-file", connection, "--owner", db.roles.owner, "--runtime", db.roles.runtime,
+		"--config", config, "--scope", unscopedMarker, "--by", "operator-1", "--timeout", "60")
+	if code != 2 || !strings.Contains(stderr, removeUnscopedRefusal) {
+		t.Fatalf("store remove-scope --scope unscoped: %d %q", code, stderr)
+	}
+	if left := journalOf(); !bytes.Equal(left, data) {
+		t.Fatal("the unscoped refusal journal changed")
+	}
+	if _, err := (pgSecrets{db.open(t, nil)}).getSecret(refusalKeyName(name)); err != nil {
+		t.Fatalf("the key was removed: %v", err)
 	}
 }

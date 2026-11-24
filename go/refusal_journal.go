@@ -306,7 +306,7 @@ func newRefusalJournals(cfg *refusalJournalConfig, keys map[string]bool, store r
 				return nil, fmt.Errorf("refusal journal: the key of journal %s could not be read or made: %v", s.name, err)
 			}
 			if redrawn {
-				fmt.Fprintf(stderr, "refusal journal: journal %s: its key file is shorter than a key and no entry is beside it, as a draw ended part way leaves it; the key is drawn again\n", s.name)
+				fmt.Fprintf(stderr, "refusal journal: journal %s: its key file is not a whole key and no entry is beside it, as a draw ended part way leaves it; the key is drawn again\n", s.name)
 			}
 		}
 		secret, missing, err := store.key(s.name)
@@ -858,21 +858,36 @@ func drawKeyInPlace(path string, text []byte) error {
 	return nil
 }
 
-// refusalKeyFileBytes is a key file's full form: 64 hexadecimal digits
-// and a line feed.
-const refusalKeyFileBytes = 65
+// refusalKeyFileBound is the most a key file is read for: its full form is
+// 64 hexadecimal digits and a line feed.
+const refusalKeyFileBound = 4096
 
-// redrawShortKey removes a key file shorter than its full form where the
+// refusalKeyDecodes is whether a key file's bytes are a key as the start
+// reads one (refusalFS.key): 32 bytes in hexadecimal, a line feed after
+// them or none.
+func refusalKeyDecodes(raw []byte) bool {
+	k, err := hex.DecodeString(strings.TrimSuffix(string(raw), "\n"))
+	return err == nil && len(k) == 32
+}
+
+// redrawShortKey removes a key file that does not decode as a key where the
 // journal beside it is absent or empty: what a draw in place ended part
-// way leaves, and never a key an entry was made under. It answers whether
-// it removed one, so the key is drawn again. A short key beside a journal
+// way leaves, and never a key an entry was made under. A whole key, with
+// its line feed or without, is left. It answers whether it removed one, so
+// the key is drawn again. A key file that does not decode beside a journal
 // holding entries, or one that cannot be looked at, is left, and reading
 // it refuses the start, as before.
 func (f refusalFS) redrawShortKey(name string) (bool, error) {
 	path := filepath.Join(f.dir(), name+".key")
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() >= refusalKeyFileBytes {
+	if err != nil || !info.Mode().IsRegular() {
 		return false, nil
+	}
+	if info.Size() <= refusalKeyFileBound {
+		raw, err := os.ReadFile(path)
+		if err != nil || refusalKeyDecodes(raw) {
+			return false, nil
+		}
 	}
 	if journal, err := os.Lstat(filepath.Join(f.dir(), name+".jsonl")); err == nil && journal.Size() > 0 || err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, nil

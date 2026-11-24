@@ -222,3 +222,58 @@ func TestRestartsBeforeAnyEntryKeepTheKeyAfterACompletedRemoval(t *testing.T) {
 		key = got
 	}
 }
+
+// remove-scope refuses --scope "unscoped" before anything is read: it is the
+// key of the sources of none, so the no-record path would take their live
+// refusal journal, key and cursor. The journal and its files stand, and no
+// operator entry is written. A command that takes it as a scope fails it.
+func TestRemoveScopeRefusesTheUnscopedMarker(t *testing.T) {
+	g, config := journalStore(t)
+	data := refusedOnlyJournal(t, g, config, unscopedMarker)
+	dir := filepath.Join(g.storeRoot, journalsDir)
+	name := refusalJournalName(unscopedMarker)
+	before := 0
+	if _, err := os.Lstat(journalFile(g)); err == nil {
+		before = len(journalEntries(t, g))
+	}
+	var stdout, stderr bytes.Buffer
+	code := cmdRemoveScopeAt([]string{"--config", config, "--scope", unscopedMarker, "--by", "operator-2"}, &stdout, &stderr, fixedStamp(removalStamp))
+	if code != 2 || !strings.Contains(stderr.String(), removeUnscopedRefusal) {
+		t.Fatalf("remove-scope --scope unscoped: exit %d\nstderr %q", code, stderr.String())
+	}
+	if now, err := os.ReadFile(filepath.Join(dir, name+".jsonl")); err != nil || !bytes.Equal(now, data) {
+		t.Fatalf("the unscoped refusal journal changed: %v", err)
+	}
+	for _, suffix := range []string{".key", ".forwarded"} {
+		if _, err := os.Lstat(filepath.Join(dir, name+suffix)); err != nil {
+			t.Errorf("%s was removed: %v", suffix, err)
+		}
+	}
+	after := 0
+	if _, err := os.Lstat(journalFile(g)); err == nil {
+		after = len(journalEntries(t, g))
+	}
+	if after != before {
+		t.Fatalf("%d operator entries, %d before", after, before)
+	}
+}
+
+// A refusal journal's removal takes the key and the cursor, syncs the
+// directory, and only then removes the journal, so the order holds on every
+// filesystem: a crash never leaves a key without its journal. A removal
+// that syncs only at the end fails it.
+func TestARefusalJournalsRemovalSyncsBeforeTheJournalGoes(t *testing.T) {
+	g, config := journalStore(t)
+	refusedOnlyJournal(t, g, config, refusedOnly)
+	var steps []string
+	refusalRemovalStep = func(step string) { steps = append(steps, step) }
+	t.Cleanup(func() { refusalRemovalStep = nil })
+	var stdout, stderr bytes.Buffer
+	if code := cmdRemoveScopeAt([]string{"--config", config, "--scope", refusedOnly, "--by", "operator-2"}, &stdout, &stderr, fixedStamp(removalStamp)); code != 0 {
+		t.Fatalf("remove-scope: exit %d, %q", code, stderr.String())
+	}
+	refusalRemovalStep = nil
+	if got, want := strings.Join(steps, " "), ".key .forwarded sync .jsonl sync"; got != want {
+		t.Fatalf("the removal's steps: %q; want %q", got, want)
+	}
+}
