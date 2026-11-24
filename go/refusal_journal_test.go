@@ -301,9 +301,6 @@ func TestRefusalJournalCountsALimitRefusalInTheTally(t *testing.T) {
 	a := j.scopes[callerScopeA]
 	a.since = a.since.Add(-time.Minute)
 	j.store = refusalFS{root: h.g.storeRoot}
-	// the tally reopens the journal the stop closed: close it again, as a
-	// platform without flock deletes no file a handle holds
-	t.Cleanup(j.closeFiles)
 	j.writeTally(a, time.Now())
 	bodies := refusalBodies(t, h.g.storeRoot, callerScopeA)
 	if len(bodies) != 2 {
@@ -323,7 +320,6 @@ func refusalUnit(t *testing.T, maxBytes int64) (*limitsHarness, *refusalJournals
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(j.closeFiles)
 	return h, j, j.scopes[callerScopeA]
 }
 
@@ -410,7 +406,6 @@ func TestRefusalJournalRefusesAMissingKeyAndAKeyGoneBackwards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(j.closeFiles)
 	s := j.scopes[callerScopeA]
 	j.handOff(s, "/seal", refusalNote{reason: "session"}, 404, unitCaller(), nil, time.Now())
 	if s.secret != nil || len(s.queue) != 0 || s.tally[dropWriteFailed].Load() != 1 || !strings.Contains(stderr.String(), "holds entries and no key") {
@@ -581,11 +576,8 @@ func TestRefusalJournalRemovalTakesTheJournalAndNamesIt(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, s.name+".forwarded"), []byte("0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !journalFilesLock {
-		// remove-scope runs with the gateway stopped where there is no
-		// flock: the writer holds no file then
-		j.closeFiles()
-	}
+	// the writer holds no journal file between rounds, so the removal
+	// deletes the files on every platform with no stop first
 	r, err := holdRefusalRemoval(h.g.storeRoot, callerScopeA)
 	if err != nil || len(r.data) == 0 {
 		t.Fatalf("hold: %v", err)

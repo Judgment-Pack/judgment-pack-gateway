@@ -221,9 +221,15 @@ type refusalScope struct {
 	loaded       bool
 	refusalsFull bool
 	closed       bool
-	file         *os.File
-	// lost is where the journal's key went, or became another, while the
-	// gateway served (remove-scope): its records are dropped from then on
+	// found and seen are the filesystem kind's: found is whether the
+	// journal's file was there at start or this writer has opened it since
+	// (a missing file is then a removal, never made again), and seen is
+	// the file whose end the writer holds
+	found bool
+	seen  os.FileInfo
+	// lost is where the journal's key went, or became another, or its file
+	// went, while the gateway served (remove-scope): its records are
+	// dropped from then on
 	lost bool
 }
 
@@ -290,6 +296,9 @@ func newRefusalJournals(cfg *refusalJournalConfig, keys map[string]bool, store r
 			fmt.Fprintf(stderr, "refusal journal: journal %s holds entries and no key; its records are not written (write-failed)\n", s.name)
 		}
 		s.secret = secret
+		if fs, ok := store.(interface{ foundAtStart(name string) bool }); ok {
+			s.found = fs.foundAtStart(s.name)
+		}
 		j.scopes[key] = s
 		j.order = append(j.order, s)
 	}
@@ -405,23 +414,10 @@ func (j *refusalJournals) stop() {
 		close(j.stopping)
 		select {
 		case <-j.done:
-			j.closeFiles()
 		case <-time.After(refusalDrainWithin + time.Second):
 		}
 		j.store.close()
 	})
-}
-
-// closeFiles closes each scope's journal file of the filesystem kind, once
-// the writer has returned (or, in a test, never ran): nothing else holds them.
-func (j *refusalJournals) closeFiles() {
-	for _, s := range j.scopes {
-		if s.file != nil {
-			unlockJournalFile(s.file)
-			s.file.Close()
-			s.file, s.loaded = nil, false
-		}
-	}
 }
 
 func (j *refusalJournals) run() {
@@ -757,41 +753,108 @@ func (f refusalFS) key(name string) ([]byte, bool, error) {
 	return k, false, nil
 }
 
-func (f refusalFS) open(s *refusalScope) error {
-	if s.file != nil {
-		return nil
-	}
-	if err := os.MkdirAll(f.dir(), 0o700); err != nil {
-		return err
-	}
+// foundAtStart is whether the journal's file is there as the gateway
+// starts: from then on its absence is a removal, never a journal to begin.
+// A look that fails takes it as there, so a doubt never makes a file.
+func (f refusalFS) foundAtStart(name string) bool {
+	_, err := os.Lstat(filepath.Join(f.dir(), name+".jsonl"))
+	return !errors.Is(err, os.ErrNotExist)
+}
+
+// openRound opens the journal's file and takes its lock, for one append
+// round (ADR-0059 §8, as built). Only a journal the writer has not found,
+// at start or since, is made: under O_EXCL, and only while the key it holds
+// is at its path. Once found, a missing file is a removal, whole or cut off
+// before the key went, and the scope is lost until the next start. created
+// is whether this round made the file.
+func (f refusalFS) openRound(s *refusalScope) (file *os.File, created bool, err error) {
 	path := filepath.Join(f.dir(), s.name+".jsonl")
-	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
-		return errJournalNotRegular
+	for try := 0; try < 2; try++ {
+		created = false
+		if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
+			return nil, false, errJournalNotRegular
+		}
+		file, err = os.OpenFile(path, os.O_RDWR, 0)
+		if errors.Is(err, os.ErrNotExist) {
+			if s.found {
+				s.lost = true
+				return nil, false, errRefusalKeyLost
+			}
+			if err := f.heldKey(s); err != nil {
+				return nil, false, err
+			}
+			if err := os.MkdirAll(f.dir(), 0o700); err != nil {
+				return nil, false, err
+			}
+			file, err = os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			created = err == nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		s.found = true
+		if err := lockJournalFile(file); err != nil {
+			if created {
+				f.unmake(s, file)
+			}
+			file.Close()
+			return nil, false, err
+		}
+		// remove-scope may have taken the path between the open and the
+		// lock: the file is the path's, or the round looks again
+		held, serr := file.Stat()
+		if at, aerr := os.Lstat(path); serr == nil && aerr == nil && os.SameFile(held, at) {
+			return file, created, nil
+		}
+		unlockJournalFile(file)
+		file.Close()
+		if serr != nil {
+			return nil, false, serr
+		}
 	}
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		return err
+	return nil, false, errors.New("the journal's file changed while it was opened")
+}
+
+// unmake takes away an empty journal file the round made and wrote nothing
+// to, while the path is still that file: it was never a journal, so the
+// scope has not found one either.
+func (f refusalFS) unmake(s *refusalScope, file *os.File) {
+	path := filepath.Join(f.dir(), s.name+".jsonl")
+	held, err := file.Stat()
+	at, aerr := os.Lstat(path)
+	if err != nil || aerr != nil || !os.SameFile(held, at) || held.Size() != 0 {
+		return
 	}
-	s.file, s.loaded = file, false
-	return nil
+	if !journalFilesLock {
+		// no flock here: a handle open on the file keeps the platform from
+		// deleting it, and nothing else holds it (ADR-0059 §8, as built)
+		file.Close()
+	}
+	if os.Remove(path) == nil {
+		syncDir(f.dir())
+		s.found = false
+	}
 }
 
 // load reads the journal's end, truncating a torn last piece first: nothing
 // else writes the file, and appending after it would make a forged line.
-func (f refusalFS) load(s *refusalScope) error {
-	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
+func (f refusalFS) load(s *refusalScope, file *os.File, info os.FileInfo) error {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	data, err := io.ReadAll(s.file)
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return err
 	}
 	lines, torn := journalLines(data)
 	if torn > 0 {
-		if err := s.file.Truncate(int64(len(data) - torn)); err != nil {
+		if err := file.Truncate(int64(len(data) - torn)); err != nil {
 			return err
 		}
-		if err := s.file.Sync(); err != nil {
+		if err := file.Sync(); err != nil {
 			return err
 		}
 	}
@@ -801,7 +864,7 @@ func (f refusalFS) load(s *refusalScope) error {
 		end.previous = journalDigest(last)
 		end.lastKeyID, end.closed = lastEntryOf(last)
 	}
-	s.end, s.loaded = end, true
+	s.end, s.loaded, s.seen = end, true, info
 	if end.closed {
 		s.closed = true
 	}
@@ -812,65 +875,57 @@ func (f refusalFS) load(s *refusalScope) error {
 // was made under; the entry is dropped and counted (write-failed).
 var errRefusalKeyLost = errors.New("the journal's key is gone, or is another than the one its records were made under")
 
-// readKey is the journal's key as its file holds it, making none.
-func (f refusalFS) readKey(name string) ([]byte, error) {
-	raw, err := os.ReadFile(filepath.Join(f.dir(), name+".key"))
-	if err != nil {
-		return nil, err
+// heldKey is whether the journal's key file still holds the key the queued
+// entries were made under. A key that is gone or another loses the scope
+// until the next start (remove-scope); any other failure of the read is
+// this entry's alone, dropped and counted, and the next entry reads again.
+func (f refusalFS) heldKey(s *refusalScope) error {
+	raw, err := os.ReadFile(filepath.Join(f.dir(), s.name+".key"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	k, err := hex.DecodeString(strings.TrimSuffix(string(raw), "\n"))
-	if err != nil || len(k) != 32 {
-		return nil, errors.New("the key file is not 32 bytes in hexadecimal")
+	if err == nil {
+		k, derr := hex.DecodeString(strings.TrimSuffix(string(raw), "\n"))
+		if derr == nil && len(k) == 32 && bytes.Equal(k, s.secret) {
+			return nil
+		}
 	}
-	return k, nil
+	s.lost = true
+	return errRefusalKeyLost
 }
 
-// holdsPath is whether the file the writer holds is the journal's path's.
-func (f refusalFS) holdsPath(s *refusalScope) bool {
-	held, err := s.file.Stat()
-	if err != nil {
-		return false
-	}
-	at, err := os.Lstat(filepath.Join(f.dir(), s.name+".jsonl"))
-	return err == nil && os.SameFile(held, at)
-}
-
+// append is one round: the journal's file opened and locked, its key
+// checked, the entry appended and synced, the lock let go and the file
+// closed. The writer holds no file between rounds; it trusts the end it
+// holds while the file is the one it read and of the length it left.
 func (f refusalFS) append(s *refusalScope, entry func(end refusalEnd) ([]byte, error)) error {
 	if s.lost {
 		return errRefusalKeyLost
 	}
-	if err := f.open(s); err != nil {
+	file, created, err := f.openRound(s)
+	if err != nil {
 		return err
 	}
-	if err := lockJournalFile(s.file); err != nil {
+	defer file.Close()
+	defer unlockJournalFile(file)
+	written := false
+	if created {
+		// a round that made the file and wrote nothing leaves no file
+		defer func() {
+			if !written {
+				f.unmake(s, file)
+			}
+		}()
+	}
+	if err := f.heldKey(s); err != nil {
 		return err
 	}
-	if !f.holdsPath(s) {
-		// The file is no longer the journal's, as after remove-scope while
-		// the gateway serves: an entry goes to the journal at the path,
-		// under the key it was made under, or nowhere, and never to the
-		// unlinked file or into a journal made anew without its key.
-		unlockJournalFile(s.file)
-		s.file.Close()
-		s.file, s.loaded = nil, false
-		if k, err := f.readKey(s.name); err != nil || !bytes.Equal(k, s.secret) {
-			s.lost = true
-			return errRefusalKeyLost
-		}
-		if err := f.open(s); err != nil {
-			return err
-		}
-		if err := lockJournalFile(s.file); err != nil {
-			return err
-		}
-		if !f.holdsPath(s) {
-			unlockJournalFile(s.file)
-			return errors.New("the journal's file changed while it was opened")
-		}
+	info, err := file.Stat()
+	if err != nil {
+		return err
 	}
-	defer unlockJournalFile(s.file)
-	if info, err := s.file.Stat(); err != nil || !s.loaded || info.Size() != s.end.bytes {
-		if err := f.load(s); err != nil {
+	if !s.loaded || s.seen == nil || !os.SameFile(s.seen, info) || info.Size() != s.end.bytes {
+		if err := f.load(s, file, info); err != nil {
 			s.loaded = false
 			return err
 		}
@@ -879,14 +934,15 @@ func (f refusalFS) append(s *refusalScope, entry func(end refusalEnd) ([]byte, e
 	if err != nil || line == nil {
 		return err
 	}
-	if _, err := s.file.WriteAt(line, s.end.bytes); err != nil {
+	if _, err := file.WriteAt(line, s.end.bytes); err != nil {
 		s.loaded = false
 		return err
 	}
-	if err := s.file.Sync(); err != nil {
+	if err := file.Sync(); err != nil {
 		s.loaded = false
 		return err
 	}
+	written = true
 	keyID, closed := lastEntryOf(line[:len(line)-1])
 	s.end = refusalEnd{ordinal: s.end.ordinal + 1, previous: journalDigest(line[:len(line)-1]), bytes: s.end.bytes + int64(len(line)), lastKeyID: keyID, closed: closed}
 	return nil
@@ -1157,12 +1213,54 @@ func refusalStartLine(scopes int) string {
 	return fmt.Sprintf("refusal journal: %d scopes are journaled, each bounded by its request rate", scopes)
 }
 
+// completeCutOffRefusalRemovals completes, before any key is read, each
+// removal of a configured scope's refusal journal that a remove-scope run
+// was cut off in, on the filesystem kind (ADR-0059 §8, as built): a key
+// left beside a journal that run took would otherwise make the journal
+// again under the old key, with no word. Each completion is one stderr line.
+// A journal holding bytes the entry does not name is the scope's since the
+// removal, under its new key, and is left with no line.
+func (g *gatewayService) completeCutOffRefusalRemovals(stderr io.Writer) error {
+	scopes := map[string]bool{}
+	for _, spec := range g.sources {
+		if spec.scope != "" {
+			scopes[spec.scope] = true
+		}
+	}
+	if len(scopes) == 0 {
+		return nil
+	}
+	keys, err := g.provenanceKeys()
+	if err != nil {
+		return fmt.Errorf("refusal journal: the registry's keys could not be read: %v", err)
+	}
+	sorted := make([]string, 0, len(scopes))
+	for scope := range scopes {
+		sorted = append(sorted, scope)
+	}
+	sort.Strings(sorted)
+	for _, scope := range sorted {
+		var out removalOutcome
+		if err := completeClaimedRefusalRemoval(g.storeRoot, scope, keys, &out); err != nil {
+			return fmt.Errorf("refusal journal: journal %s: %v", refusalJournalName(scope), err)
+		}
+		for _, note := range out.notes {
+			if note == refusalRemovalCompletedNote {
+				fmt.Fprintf(stderr, "refusal journal: journal %s: a remove-scope run was cut off; %s\n", refusalJournalName(scope), note)
+			}
+		}
+	}
+	return nil
+}
+
 // openRefusalJournals makes the gateway's journals over the scopes its
 // limiter holds, on its store's kind, before it serves.
 func (g *gatewayService) openRefusalJournals(cfg *refusalJournalConfig, stderr io.Writer) error {
 	var store refusalStore = refusalFS{root: g.storeRoot}
 	if kind, onKind := g.kind.(*pgKind); onKind {
 		store = newRefusalPG(kind)
+	} else if err := g.completeCutOffRefusalRemovals(stderr); err != nil {
+		return err
 	}
 	j, err := newRefusalJournals(cfg, limitScopeKeys(g.sources), store, g.store.signing.key, g.provenanceKeys, stderr)
 	if err != nil {

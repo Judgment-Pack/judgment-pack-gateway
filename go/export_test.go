@@ -437,6 +437,14 @@ func TestExportCheckFindsEveryAlteration(t *testing.T) {
 			os.Mkdir(filepath.Join(dir, "store", "receipts", "replayed"), 0o700)
 			return "store/receipts/replayed"
 		}, "unlisted"},
+		{"a refusal journal's key added", func(t *testing.T, dir string) string {
+			// no export carries a refusal journal's key (ADR-0059 §8): one
+			// beside the journals is a key that leaked, and is named
+			rel := "store/journals/" + refusalJournalName(callerScopeA) + ".key"
+			os.MkdirAll(filepath.Join(dir, "store", "journals"), 0o700)
+			os.WriteFile(filepath.Join(dir, filepath.FromSlash(rel)), []byte(strings.Repeat("ab", 32)+"\n"), 0o600)
+			return rel
+		}, "unlisted"},
 		{"a directory of decision records added", func(t *testing.T, dir string) string {
 			os.Mkdir(filepath.Join(dir, "decision-records"), 0o700)
 			return "decision-records"

@@ -214,13 +214,19 @@ func refusalJournalsIn(storeRoot string) ([]string, error) {
 }
 
 // judgeRefusalJournals is SPEC.md §4 step 9 on every refusal journal of a
-// store's root: a finding, or journal-from and any torn tail observed.
-func (r *report) judgeRefusalJournals(storeRoot string, keys []reachedKey) error {
+// store's root: a finding, or journal-from and any torn tail observed. A
+// verdict by scope reads its own scope's journal alone, as it reports
+// no other (ADR-0059 §8): another scope's journal that cannot be read does
+// not stop it.
+func (r *report) judgeRefusalJournals(storeRoot string, keys []reachedKey, only string) error {
 	names, err := refusalJournalsIn(storeRoot)
 	if err != nil {
 		return err
 	}
 	for _, name := range names {
+		if only != "" && name != only {
+			continue
+		}
 		data, there, err := readJournalPath(storeRoot, name+".jsonl")
 		if errors.Is(err, errJournalNotRegular) {
 			continue

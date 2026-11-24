@@ -297,8 +297,8 @@ request = "sha256:" + hex(SHA-256(salt || "refusal-request:" || route || 0x0A ||
   refused. That is no bytes where it had read none, and never more than the route's body cap. It is
   raw bytes, not `canon`, because a refused body may not parse. It follows §1.2a's form,
   `salt || label || value`, with a label of its own.
-- **`K_scope`** is the scope's commitment key: 32 random bytes, drawn when the journal's first entry
-  is written.
+- **`K_scope`** is the scope's commitment key: 32 random bytes, drawn when the gateway starts for the
+  scope (as built, 2026-11-24; the decision first said when the journal's first entry is written).
   - **Filesystem kind:** `<root>/journals/<name>.key`, created exclusively, `0600`, and synced before
     that entry, by the store's create-once secret put (`secretSpace.putSecret`,
     `go/store_contract.go`).
@@ -856,6 +856,44 @@ forwarding, follow it. Where R2 departs from the text above:
   `write-failed`, until the next start. On the PostgreSQL kind each append's transaction reads the
   key row under the lock and drops the entry, counted the same way, where the row is gone or holds
   another key. Neither kind writes into a journal that no key opens.
+- **2026-11-24, the filesystem writer holds a journal for one round.** This replaces the held file
+  of the line above. On the filesystem kind the writer holds no journal file between entries: each
+  entry opens the journal, takes its lock, checks that the path is still the file it opened and that
+  the key file holds the key the entry was made under, appends, syncs, lets the lock go and closes
+  the file. Only a journal the writer has not found, at start or since, is made: under `O_EXCL`, and
+  while the key it holds is at its path. Once found, a missing `.jsonl` is a removal, whole or cut
+  off before the `.key` went, and the scope's entries are dropped, counted as `write-failed`, until
+  the next start; so are they where the key is gone or another. A key that cannot be read for
+  another cause drops that one entry, counted the same way. The writer reads the journal again where
+  the file is another than the one it read, or its length is not the end it holds. A round that
+  made the file and wrote nothing to it takes the empty file away. A `remove-scope` cut off
+  between the `.jsonl` and the `.key` therefore never has the journal made again under the old key
+  while the gateway runs. Across a restart, too: before any key is read, the start completes the
+  removal of each configured scope whose last `remove-scope` entry in the operator journal names a
+  refusal journal that is gone or is the bytes it names, as a second `remove-scope` run would, and
+  says so on stderr. The first entry after it is made under a key drawn then. The PostgreSQL kind
+  is unchanged.
+- **2026-11-24, the key is drawn at start, and a key file is no journal.** `K_scope` is drawn, or
+  read where it is already held, when the gateway starts for each scope the configuration names,
+  as the K_scope paragraph above now says, not when the first entry is written. A `.key`
+  beside no `.jsonl` is therefore the state of a scope that has refused nothing yet, and verify
+  names nothing for it. A `.jsonl` beside no `.key` is judged whole, as an export's is, since no
+  verdict reads the key; the writer names that loss (`write-failed`), and so does reading an entry
+  back. No export carries a key (section 8): the export check names one put beside an export's
+  journals `unlisted`, as any file its manifest does not list. verify-ts reads a store directory
+  and has no export check, so a key there is named by the Go reader alone.
+- **2026-11-24, the one case where another scope's name reaches a verdict by scope.** A verdict by
+  scope reads its own scope's refusal journal alone, and passes over another scope's journal it
+  cannot read. `journals/` is still judged by name and type whole (SPEC.md §4 step 9): a directory,
+  a link or any other file that is not a regular file at another scope's journal name is named
+  `journal-unknown` in every verdict, by scope too. Nothing of that scope's journal is read for it.
+  A store so altered has been tampered with, as one holding a planted file of an unknown name has,
+  and that already fails every verdict.
+- **2026-11-24, an entry's place in its journal.** Entries of one journal follow the writer's queue
+  order, not the order answers reach clients. Each answer is written and flushed before its entry
+  is handed off, so that no answer waits on the journal (section 5), and a later request's entry can
+  be queued before an earlier one's. An entry's `answeredAt` is the gateway's clock when its answer
+  was written, and the ordinals and `previous` links give the order the entries were written in.
 - **2026-11-24, a forwarding cursor's files in `journals/`.** On the filesystem kind a cursor is
   written by staging it beside its path and renaming it into place, so a process ended between
   the two leaves `<name>.forwarded.<pid>.<12 lowercase hex>.tmp`. Both readers know, for a refusal
