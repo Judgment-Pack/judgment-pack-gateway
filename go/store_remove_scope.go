@@ -422,19 +422,25 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 		}
 		next++
 	}
-	if len(lines) > 0 {
-		// the scope's refusal journal, its key and its cursor, under the
-		// journal's lock, and their trace in the entry (ADR-0059 §8)
-		body := removalBody("remove-scope", o.by, o.scope)
-		removed, err := pgRemoveRefusalJournal(tx, limitScopeKey(o.scope))
-		if err != nil {
-			return failed(err)
-		}
-		describeRefusalRemoval(body, removed)
+	// the scope's refusal journal, its key and its cursor, under the
+	// journal's lock, and their trace in the entry (ADR-0059 §8). Where the
+	// scope holds no record, a journal holding entries goes alone, under an
+	// entry naming no record and the journal, and a key beside no entry
+	// stays, as before (as built 2026-11-24).
+	body := removalBody("remove-scope", o.by, o.scope)
+	removed, err := pgRemoveRefusalJournal(tx, limitScopeKey(o.scope), len(lines) > 0)
+	if err != nil {
+		return failed(err)
+	}
+	describeRefusalRemoval(body, removed)
+	if len(lines) > 0 || len(removed) > 0 {
 		// the entry naming the records, in their transaction (ADR-0056 §5)
 		if err := journal.removalEntry(tx, lines, body); err != nil {
 			return failed(err)
 		}
+	}
+	if len(removed) > 0 {
+		notes = append(notes, fmt.Sprintf("the scope's refusal journal, %d bytes, its key and its cursor are removed", len(removed)))
 	}
 	gone, err := c.exec(`DELETE FROM gateway.scope_identifiers WHERE scope = $1 AND identifier = $2`, pgNoScope, row)
 	if err != nil {
@@ -442,8 +448,12 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 	}
 	switch {
 	case held.none() && held.labels > 0:
+	case held.none() && gone.tag == "DELETE 1" && len(removed) > 0:
+		notes = append(notes, "the scope identifier was recorded and held no row; its record is removed, beside its refusal journal")
 	case held.none() && gone.tag == "DELETE 1":
 		notes = append(notes, "the scope identifier was recorded and held no row; its record is removed, and nothing else was")
+	case held.none() && len(removed) > 0:
+		notes = append(notes, "no row of the scope identifier is in the store; nothing else was removed")
 	case held.none():
 		notes = append(notes, "no row of the scope identifier is in the store; nothing was removed")
 	}

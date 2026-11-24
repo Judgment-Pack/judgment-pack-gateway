@@ -366,7 +366,10 @@ func describeRefusalRemoval(body *vObject, removed []byte) {
 	body.set("refusalJournalDigest", vString(journalDigest(removed)))
 }
 
-// remove takes the journal, its key and its cursor away.
+// remove takes the journal's key and its cursor away, and then the journal:
+// a run cut off between them leaves the journal, the bytes its operator
+// entry names, which the next run or start completes; so a key beside no
+// journal is never a removal's leftover, but one drawn since.
 func (r *refusalRemoval) remove() error {
 	if !journalFilesLock {
 		// No flock here, so the held handle excludes nothing, and the
@@ -374,7 +377,7 @@ func (r *refusalRemoval) remove() error {
 		// first. remove-scope runs with the gateway stopped here.
 		r.release()
 	}
-	for _, suffix := range []string{".jsonl", ".key", ".forwarded"} {
+	for _, suffix := range []string{".key", ".forwarded", ".jsonl"} {
 		if err := os.Remove(filepath.Join(r.dir, r.name+suffix)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("the refusal journal's %s could not be removed: %v; the records stand, and a second run completes the removal", suffix, err)
 		}

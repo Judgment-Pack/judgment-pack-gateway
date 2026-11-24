@@ -324,7 +324,7 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 		if err := removeScopedActionJournal(storeRoot, o.scope, &out); err != nil {
 			return out, err
 		}
-		if err := completeClaimedRefusalRemoval(storeRoot, o.scope, keys, &out); err != nil {
+		if err := removeRefusalJournalAlone(storeRoot, o, keys, &out); err != nil {
 			return out, err
 		}
 		if len(plan.labels) == 0 {
@@ -762,23 +762,33 @@ func payloadOwner(receipts []*storedReceipt, digest string) string {
 // it removed what a cut-off run left.
 const refusalRemovalCompletedNote = "the scope's refusal journal, which the operator journal's remove-scope entry names, its key and its cursor are removed now"
 
-// completeClaimedRefusalRemoval completes a removal a run was cut off in,
-// after its operator entry and before the refusal journal went (ADR-0059
-// §8): where the operator journal's last remove-scope entry of the scope
-// names a refusal journal, and the journal there is the bytes it names or
-// is gone, the journal, its key and its cursor are removed now. A journal
-// holding other bytes is the scope's since, which no entry names: it
-// stands, and the call says so.
-func completeClaimedRefusalRemoval(storeRoot, scope string, keys []reachedKey, out *removalOutcome) error {
+// refusalClaim is what the operator journal's last remove-scope entry of a
+// scope names of its refusal journal: claimed where it names one, by the
+// length and digest of the bytes removed (ADR-0059 §8).
+type refusalClaim struct {
+	claimed bool
+	bytes   int64
+	digest  string
+}
+
+// names is whether data is the journal the claim names, byte for byte.
+func (c refusalClaim) names(data []byte) bool {
+	return c.claimed && int64(len(data)) == c.bytes && journalDigest(data) == c.digest
+}
+
+// lastRefusalClaim reads the operator journal's last remove-scope entry of
+// the scope that loads under keys, and what it names of the scope's refusal
+// journal; no such entry, or no operator journal, claims nothing.
+func lastRefusalClaim(storeRoot, scope string, keys []reachedKey) (refusalClaim, error) {
+	var c refusalClaim
 	data, there, err := readJournalPath(storeRoot, operatorJournal+".jsonl")
 	if err != nil {
-		return fmt.Errorf("the operator journal could not be read: %v", err)
+		return c, fmt.Errorf("the operator journal could not be read: %v", err)
 	}
 	if !there {
-		return nil
+		return c, nil
 	}
 	lines, _ := journalLines(data)
-	claimed, claimedBytes, claimedDigest := false, int64(0), ""
 	for _, line := range lines {
 		if _, ok := loadJournalEntry(line, operatorJournal, keys); !ok {
 			continue
@@ -802,33 +812,82 @@ func completeClaimedRefusalRemoval(storeRoot, scope string, keys []reachedKey, o
 		if named, _ := memberString(body, "scope"); named != scope {
 			continue
 		}
-		claimedDigest, claimed = memberString(body, "refusalJournalDigest")
-		claimedBytes, _ = recordCount(body, "refusalJournalBytes")
+		c.digest, c.claimed = memberString(body, "refusalJournalDigest")
+		c.bytes, _ = recordCount(body, "refusalJournalBytes")
 	}
-	if !claimed {
-		return nil
+	return c, nil
+}
+
+// completeClaimedRefusalRemoval completes a removal a run was cut off in,
+// after its operator entry and before the refusal journal went (ADR-0059
+// §8): where the operator journal's last remove-scope entry of the scope
+// names a refusal journal, and the journal there is the bytes it names, the
+// journal, its key and its cursor are removed now. A journal holding other
+// bytes is the scope's since, which no entry names: it stands, and the call
+// says so.
+func completeClaimedRefusalRemoval(storeRoot, scope string, keys []reachedKey, out *removalOutcome) error {
+	claim, err := lastRefusalClaim(storeRoot, scope, keys)
+	if err != nil || !claim.claimed {
+		return err
 	}
 	r, err := holdRefusalRemoval(storeRoot, scope)
 	if err != nil {
 		return err
 	}
 	defer r.release()
-	if len(r.data) > 0 && (int64(len(r.data)) != claimedBytes || journalDigest(r.data) != claimedDigest) {
-		out.notes = append(out.notes, fmt.Sprintf("the scope's refusal journal, %d bytes, is not the one the operator journal's remove-scope entry names; it stands", len(r.data)))
+	return r.completeClaimed(claim, out)
+}
+
+// completeClaimed is completeClaimedRefusalRemoval on the journal r holds.
+// No journal there, or an empty one, is a removal that completed: remove
+// takes the journal last, so a key or a cursor beside none is never what a
+// cut-off run left, but a key drawn since, at a start, and it stays.
+func (r *refusalRemoval) completeClaimed(claim refusalClaim, out *removalOutcome) error {
+	if len(r.data) == 0 {
 		return nil
 	}
-	left := false
-	for _, suffix := range []string{".jsonl", ".key", ".forwarded"} {
-		if _, err := os.Lstat(filepath.Join(r.dir, r.name+suffix)); err == nil {
-			left = true
-		}
-	}
-	if !left {
+	if !claim.names(r.data) {
+		out.notes = append(out.notes, fmt.Sprintf("the scope's refusal journal, %d bytes, is not the one the operator journal's remove-scope entry names; it stands", len(r.data)))
 		return nil
 	}
 	if err := r.remove(); err != nil {
 		return err
 	}
 	out.notes = append(out.notes, refusalRemovalCompletedNote)
+	return nil
+}
+
+// removeRefusalJournalAlone is remove-scope's work on the scope's refusal
+// journal where the scope holds no record (ADR-0059 §8, as built
+// 2026-11-24): a removal a run was cut off in is completed; and a journal
+// holding entries no remove-scope entry names, as a scope whose callers
+// were only ever refused leaves, is removed with its key and its cursor,
+// under its lock, after an operator entry that names it alone: no removal
+// record, and the journal by its length and digest. A run cut off after
+// the entry is completed by the next run, or the next start, as one cut off
+// after a record path's entry. A key beside no journal, or an empty one,
+// stays, as before.
+func removeRefusalJournalAlone(storeRoot string, o removeScopeOptions, keys []reachedKey, out *removalOutcome) error {
+	claim, err := lastRefusalClaim(storeRoot, o.scope, keys)
+	if err != nil {
+		return err
+	}
+	r, err := holdRefusalRemoval(storeRoot, o.scope)
+	if err != nil {
+		return fmt.Errorf("%v, and nothing else was removed", err)
+	}
+	defer r.release()
+	if len(r.data) == 0 || claim.names(r.data) {
+		return r.completeClaimed(claim, out)
+	}
+	body := removalBody("remove-scope", o.by, o.scope)
+	describeRefusalRemoval(body, r.data)
+	if err := o.journal.refusalRemovalEntry(body); err != nil {
+		return fmt.Errorf("%v; the scope's refusal journal was not removed", err)
+	}
+	if err := r.remove(); err != nil {
+		return err
+	}
+	out.notes = append(out.notes, fmt.Sprintf("the scope's refusal journal, %d bytes, its key and its cursor are removed", len(r.data)))
 	return nil
 }
