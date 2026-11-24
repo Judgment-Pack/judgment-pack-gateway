@@ -81,7 +81,7 @@ func requestApprovals(raw json.RawMessage) (value, error) {
 // it was found, the receipts cited, the policy the write was held to, the
 // tool, and the approvals the requester cites. An action receipt adds its
 // delivery, its request commitment and what the target answered.
-func actionClaims(requester *caller, d decision, exact bool, cites []citation, policy *decisionPolicy, approvals value, spec sourceSpec, tool string) *vObject {
+func actionClaims(requester *caller, d decision, exact bool, cites []citation, policy *decisionPolicy, approvals value, approvalsResolved bool, spec sourceSpec, tool string) *vObject {
 	action := newObject()
 	action.set("requester", identityObject(requester))
 	decided := newObject()
@@ -131,6 +131,13 @@ func actionClaims(requester *caller, d decision, exact bool, cites []citation, p
 	if approvals != nil {
 		action.set("approvals", approvals)
 	}
+	// Every citation resolved in the scope's approval-record directory
+	// before the write (ADR-0063): true, under the signature, and absent
+	// where none was named or none is cited, so such a receipt is the one
+	// it was before the member existed.
+	if approvals != nil && approvalsResolved {
+		action.set("approvalsResolved", vBool(true))
+	}
 	return action
 }
 
@@ -145,6 +152,7 @@ type dryRunInput struct {
 	cites                                    []citation
 	policy                                   *decisionPolicy
 	approvals                                value
+	approvalsResolved                        bool
 	request                                  *vObject
 	canonicalRequest                         []byte
 }
@@ -188,7 +196,7 @@ func (g *gatewayService) dryRunAct(in dryRunInput) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	action := actionClaims(in.who, in.decision, in.exact, in.cites, in.policy, in.approvals, spec, in.tool)
+	action := actionClaims(in.who, in.decision, in.exact, in.cites, in.policy, in.approvals, in.approvalsResolved, spec, in.tool)
 	action.set("request", vString(commitmentOver(requestSalt, "request:", in.canonicalRequest)))
 	receipt := newObject()
 	receipt.set("dryRunVersion", vString(dryRunVersion1))

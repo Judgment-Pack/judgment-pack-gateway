@@ -506,6 +506,7 @@ func applyServeOptions(service *gatewayService, opts serveOptions) error {
 	service.dryRunApprovals = opts.dryRunApprovals
 	service.identity = opts.identity
 	service.decisionRecords = opts.decisionRecords
+	service.approvalRecords = opts.approvalRecords
 	service.witnessedBy = opts.witnessedBy
 	service.seedPath = opts.seedPath
 	service.keyHistoryVersion = opts.keyHistoryVersion
@@ -1144,6 +1145,9 @@ type serveOptions struct {
 	// (executor.md). Empty when serve was not started from a
 	// configuration, and every /act is then refused.
 	decisionRecords string
+	// approvalRecords is the gateway's approval-record directory
+	// (ADR-0063), empty where the configuration names none.
+	approvalRecords string
 	// witnessedBy is the witness named for each trail (ADR-0014), from the
 	// configuration's witnessedBy or --witnessed-by.
 	witnessedBy map[string]namedWitness

@@ -107,6 +107,9 @@ type sourceSpec struct {
 	// decisionRecords is a scoped write source's decision-record directory
 	// (ADR-0054), "" for every other source.
 	decisionRecords string
+	// approvalRecords is a scoped write source's approval-record directory
+	// (ADR-0063), "" for every other source and where none is named.
+	approvalRecords string
 	actionRecovery  map[string]*actionRecovery
 	sandbox         *sourceSandbox
 	// Descriptor provenance is selected by the operator's configuration. A
@@ -361,6 +364,9 @@ type gatewayService struct {
 	// decisionRecords is where an action's cited decision record is looked
 	// for (executor.md); empty refuses every action.
 	decisionRecords string
+	// approvalRecords is where an unscoped action's approval citations are
+	// resolved (ADR-0063); empty, they are the requester's claim.
+	approvalRecords string
 	// seedPath is the seed file serve was started with, which /posture
 	// judges as gateway posture does; empty where none was named.
 	seedPath string

@@ -14,7 +14,7 @@ import (
 // same bytes agree with every vector (SPEC.md §1.2c).
 func TestDryRunVectors(t *testing.T) {
 	failures, count, err := runDryRunVectors(corpusPath())
-	if err != nil || count != 11 || len(failures) != 0 {
+	if err != nil || count != 12 || len(failures) != 0 {
 		t.Fatalf("%d vectors, %v, %v", count, failures, err)
 	}
 }
