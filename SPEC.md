@@ -2810,7 +2810,9 @@ A claim wider than the entry is refused, never narrowed. A request under a deleg
 carries no claim and its subject is the issuing host's statement: it reaches the sources of no
 scope identifier where its subject's claimless token would, and never a scope identifier, unless
 its chain is bound to one (§11.1, *A chain bound to one scope identifier*): then it reaches that
-scope identifier's sources alone, where its subject's entry grants it. With
+scope identifier's sources alone, where its subject's entry grants it. A reservation sender other
+than the run's actor admitted for a scope identifier (§11.8, *A scoped delegated action*) reaches
+that identifier's sources alone in the same way. With
 `"unchecked"` the claim is not read and every caller reaches every source; without `identity`
 every request reaches every source. Where `identity` is configured, or some source is fixed to a
 scope identifier, the start says which of the three holds, and `/posture` reports
@@ -3153,8 +3155,10 @@ engine configuration version 43 (`actScopeVersion`); below it `scope` is refused
 member `/act` does not read, as before. From that version a platform may set `scope` beside
 `write: true` where `identity.callerScopes` is an object and the platform names its own
 `decisionRecords`, disjoint from the gateway's and from every other scope's. `scope` is then read as
-`/acquire` reads it. A reservation sender reaches no scope identifier, and one that names `scope` is
-refused. Under a delegation the chain's scope binding governs (§11.1, *A chain bound to one scope
+`/acquire` reads it. A reservation sender names `scope` only for a scoped delegated key, where the
+issuing host's `scopeIds` lists it, the subject's entry grants it and its own token reaches it (§11.8,
+*A scoped delegated action*); otherwise it is refused, as a scope identifier that exists nowhere is.
+Under a delegation the chain's scope binding governs (§11.1, *A chain bound to one scope
 identifier*): a delegated `/act` names a scope exactly when its chain is bound to that same scope
 identifier, the issuing host's `scopeIds` lists it and the subject's entry grants it. A subject whose
 entry reaches no write source is refused at step 2, before the body is read, `403` at
@@ -4935,12 +4939,31 @@ for a host read at `"2"`, §11.5), answered `200` with
 exactly `{"standing": "current"}` or `{"standing": "removed"}`; `removed` refuses as
 `action-key-unauthenticated`, and anything else as `standing-unknown`.
 
-**A scoped delegated action.** A sender other than the actor reaches no scope identifier (§6), so it
-cannot look up or reconcile, by its key, an action a delegated request made in a scope: a request
-naming that scope, or naming none on a platform whose write source is fixed to one, is refused at
-the scope identifier's step with its one sentence, before any key is read. It is never answered
-about the scoped key as if it were of no scope. The delegated caller reconciles such a key under
-its bound chain (§11.1).
+**A scoped delegated action.** A sender other than the actor names the scope identifier of a key that
+a delegated request made in a scope in the `/act` member `scope`, as the actor's request does; its
+`reservation` is unchanged. It may name it only where all three hold: (a) the reservation's issuing
+host lists it in its `scopeIds`; (b) the caller entry of the reservation's `sub` grants it (§6); and
+(c) the sender's own token reaches it (§6), the issuing host's requester and an operator as well as the
+subject. An operator whose token does not reach it is granted it in its caller entry first. The three
+are held once the table has said, from the configuration alone, who the token is, and before the
+subject's standing is read. Where any fails, the request is answered exactly as one naming a scope
+identifier that exists nowhere: `400`, `refusedAt: "scope-identifier"`, with `/acquire`'s sentence.
+Nothing of the standing, the issuing host, the session, the key or the journal is read. So a sender
+learns nothing of a scope it does not reach. Where it does reach the scope (c), the issuing host's
+requester or an operator can still tell from the answer whether (a) and (b) hold, that is whether
+the subject's entry grants the scope. That is by design: the sender already reaches the scope, and
+learns only whether the subject's entry grants it too. Under the request limits a sender whose
+token reaches several scopes is charged at step 8a, as a delegated sender, to the scope it is
+admitted to; one whose token reaches one scope alone is charged to that scope at step 3a. Admitted, the
+sender reaches that identifier's sources alone (§6), and the key's namespace is the actor's, derived
+as before. The table holds as written within that one scope: evidence and read-back only, never a
+dispatch or a reservation; `action-key-actor-only`, `action-key-scope-conflict` and
+`action-journal-exhausted` as above. A read-back answers no member the actor's own read-back of the key
+does not, beyond `reconciler`. A sender that names no scope on a platform whose write source is fixed
+to one, or names a scope on a platform of another scope or of none, is refused at the scope step with
+its one sentence. A request is never answered about a scoped key as if it were of no scope. Nothing
+recorded changes: `scope.json` and the first-scope record keep their three members. The delegated
+caller still reconciles such a key under its bound chain (§11.1).
 
 **The read-back.** A key the lookup finds uncertain is answered by its declared read-back, which
 runs `<platform>/live` with the declared read tool, not the write's source (spec #291 L1). Once the
@@ -4989,8 +5012,12 @@ fourth line follows, `delegation-read-version`, naming each issuing host with it
 tool's descriptor digest, `partial` when some are, and `not-applicable` when none is (version `"1"`
 is the default, not a protection turned off). Served to a caller that does not reach every source,
 it names no host and counts the hosts at each version alone, since a host's name can say which
-scope identifiers its delegations are bound to. Below version 47 the line is absent. A gateway without `delegation` reports none of these lines, and its posture
-is the one it was.
+scope identifiers its delegations are bound to. Below version 47 the line is absent. Where some
+issuing host names `scopeIds` and some write source is fixed to a scope identifier, a last line
+follows, `delegation-scoped-reservation`, `enforced`, saying that a reservation sender names a scoped
+delegated key's scope identifier only where §11.8's three conditions hold, and is otherwise refused as
+for a scope identifier that exists nowhere; elsewhere it is absent. A gateway without `delegation`
+reports none of these lines, and its posture is the one it was.
 
 ### 11.10 Definitions and departures
 

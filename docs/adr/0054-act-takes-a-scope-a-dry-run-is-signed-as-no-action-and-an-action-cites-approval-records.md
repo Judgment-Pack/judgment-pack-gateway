@@ -109,7 +109,9 @@ identifier. Elsewhere it is refused as a member `/act` does not read, as it is t
 holds. `keyScope` keeps its meaning: it is the authority-keyed first scope, not a scope identifier.
 
 **Who may name it.** A sender that names a `reservation` (§11.8) has no chain and reaches no scope
-identifier (§6: "never a scope identifier"); one that names `scope` is refused at the scope step. A
+identifier (§6: "never a scope identifier"); one that names `scope` is refused at the scope step.
+*2026-11-24:* such a sender may name the scope of a scoped delegated key where three conditions hold
+(see the amendment of that date below). A
 request under a delegation is held to its chain's scope binding, the RFC 0030 amendment of 2026-11-22
 that binds a delegation chain to exactly one scope identifier (§2; SPEC.md §11.1). A delegated `/act`
 may name a scope only when its chain is bound to that same scope identifier, the issuing host's
@@ -544,3 +546,70 @@ Accepted by the maintainer's reviewer on 2026-11-22, with these settled:
 - An unscoped action may still cite a scoped receipt (decision 6, "A citation is no existence oracle").
 - Two conditions are folded in: a delegated scoped write is lifted by the RFC 0030 scope binding in
   v0.40.0 (decision 1, "Who may name it"); and #507's per-scope limits count dry-runs (decision 6).
+
+## Amendment (2026-11-24): a reservation sender reconciles a scoped delegated key (#596)
+
+Until now a sender other than the run's actor -- the subject, the issuing host or an operator
+(SPEC.md §11.8) -- reached no scope identifier. When the delegated caller was gone, nobody could
+look up or reconcile by its key an action that a delegated request had made in a scope. The
+maintainer's reviewer settled the following.
+
+1. **Who may name the scope.** A sender other than the actor may name a scope identifier for a
+   delegated key only where all three hold: (a) the reservation's issuing host lists it in its
+   `scopeIds`; (b) the caller entry of the subject (the reservation's `sub`) grants it; (c) the
+   sender's own token reaches it (ADR-0037), for every sender kind, an operator's included. An
+   operator without that reach is first granted the scope in its caller entry.
+2. **The refusal.** Where any of the three fails, the answer is byte for byte the answer to a scope
+   identifier that exists nowhere: `400`, `refusedAt: "scope-identifier"`, `/acquire`'s sentence. It
+   is given before any standing, issuing host, session, key or journal is read. A request is never
+   answered about a scoped key as if it were of no scope.
+3. **No engine version.** A request that names no scope is answered as before, and so is every
+   request on a configuration where no issuing host names `scopeIds` or no write source is fixed to a
+   scope identifier. `/posture` gains one line, `delegation-scoped-reservation`, `enforced`, only where
+   both hold.
+4. **Within the scope the sender table is unchanged.** Evidence and read-back only, never a dispatch
+   or a reservation; `action-key-actor-only`, `action-key-scope-conflict` and
+   `action-journal-exhausted` behave as before, within that one scope.
+5. **The read-back.** A read-back answered to an admitted sender carries no member the actor's own
+   read-back of the same key does not, beyond the `reconciler` member §11.7 already records.
+6. **The records.** An unscoped reservation's records stay byte for byte what they were.
+
+**How the sender names it.** In `/act`'s existing `scope` member, as the actor's request does. No
+member is added: `reservation` stays `{sub, rootActor, host}`. The scope member already says which
+scope's journal and namespace a request is in, and the issuing host is already named by the
+reservation, so a second member would only restate the first.
+
+**Where it is held.** At the reservation step, once the sender table has said from the configuration
+alone who the token is, and before the subject's standing read, which that step made first before.
+Step 8 alone could not hold it there: by step 8 the standing has been read, the request's caller is
+the subject rather than the sender's own token, and step 6's write-reach check of the subject needs
+the identifier the sender is admitted for. A request naming no scope keeps the old order exactly.
+Step 8 then holds the request to
+the identifier admitted, and the issuing host's `scopeIds` is checked again there, as it is for a bound
+chain. The sender's reach is that identifier alone, where the subject's entry grants it, as a bound
+chain's is (ADR-0041). Under #507's limits (ADR-0057), a sender whose token reaches one scope is
+charged at step 3a as before. One of several scopes is charged at step 8a to the scope it names, by
+its own sender, where before it was charged to `"unscoped"`, the only scope it could name.
+
+**The namespace and the records.** Nothing changes. The scoped key's namespace is derived from the
+delegation's scope as the actor's is, and the scope identifier is not added to the reservation scope's
+value. So a key recorded before this change is found, and `scope.json`, the subject record and the
+first-scope record keep their three members, of no scope and of one alike. The scope identifier is
+already bound by the namespace and by the scope's own journal directory. Adding it to the recorded
+scope would make every scoped record written earlier fail the byte comparisons that hold a
+reservation to its scope.
+
+**Ordering consequence.** A subject that names a scope its conditions do not admit is now answered
+with the scope sentence and is not read for its standing, where before it was read first.
+
+**Tests.** Each sender kind is admitted and served the actor's evidence and read-back, and the
+read-back's members are compared with the actor's. Each condition failing alone is compared byte for
+byte with a scope that exists nowhere, with no host read and the journal's bytes unchanged (for the
+subject, (b) cannot fail while (c) holds, so its row fails both). The subject's `removed` and unread
+standing are tested, and so is every sender after revocation. A request naming no scope, or another
+scope, is refused. The unscoped records are compared with main's bytes, and the posture line is
+checked. Mutants: each condition dropped, a different sentence, and the scope identifier added to the
+reservation scope's value.
+
+**The specification side** follows as judgment-pack-spec#401, the RFC 0030 §4 rule 4 follow-up. Until
+then SPEC.md §11.8 states the rule as this gateway's.

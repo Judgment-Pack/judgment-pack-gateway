@@ -24,8 +24,12 @@ import (
 const reachRefusalScopedAct = "scope identifier: this caller's token reaches no write source"
 
 // scopedWrite is whether some write source is fixed to a scope identifier.
-func (g *gatewayService) scopedWrite() bool {
-	for name, spec := range g.sources {
+func (g *gatewayService) scopedWrite() bool { return scopedWriteIn(g.sources) }
+
+// scopedWriteIn is whether some write source of sources is fixed to a scope
+// identifier.
+func scopedWriteIn(sources map[string]sourceSpec) bool {
+	for name, spec := range sources {
 		if strings.HasSuffix(name, "/write") && spec.scope != "" {
 			return true
 		}
@@ -93,11 +97,13 @@ func (g *gatewayService) actScope(raw json.RawMessage, who *caller) (requestedSc
 // where asked is not named. Under a delegation the chain's binding governs
 // (delegatedScopeRefused): a chain bound to a scope identifier names that
 // one, which the issuing host's scopeIds lists, and an unbound chain names
-// none. A reservation's sender has no chain and reaches no scope identifier
-// (SPEC.md §6), so one that names any is refused there. Then, for every
-// caller, the caller's reach holds the scope named (reachOf): a bound chain
-// reaches its own identifier alone, and only where its subject's own entry
-// grants it. Neither check reads an issuing host or counts anything.
+// none. A reservation's sender has no chain: it names the scope identifier
+// the reservation step admitted it for (senderScopeHeld) and no other, and
+// one admitted for none names none (SPEC.md §11.8). Then, for every caller,
+// the caller's reach holds the scope named (reachOf): a bound chain, and a
+// sender admitted for a scope identifier, reach that identifier alone, and
+// only where the subject's own entry grants it. Neither check reads an
+// issuing host or counts anything.
 func (g *gatewayService) actScopeHeld(who *caller, asked requestedScope) bool {
 	if g.delegatedScopeRefused(who, asked) {
 		return false
@@ -314,8 +320,9 @@ func (g *gatewayService) actionNamespaceIn(who *caller, key, scope string) strin
 	v.set("authority", vString(g.authority))
 	v.set("scope", vString(scope))
 	if who.delegated != nil {
-		// a delegated request names a scope only under a chain bound to it
-		// (actScopeHeld): the key is the delegation's within that scope
+		// a delegated request names a scope only under a chain bound to it,
+		// or as a sender admitted for it (actScopeHeld): the key is the
+		// delegation's within that scope, whichever sender asks
 		v.set("delegation", who.delegated.scope.value())
 	} else {
 		v.set("issuer", vString(who.issuer))

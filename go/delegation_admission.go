@@ -70,6 +70,12 @@ type delegatedSender struct {
 	issuer, subject string
 	scope           reservationScope
 	credential      *boundCredential // the actor's alone
+	// scopeID is the scope identifier a sender other than the actor named
+	// beside its reservation and was admitted for at the reservation step
+	// (senderScopeHeld), or "" where it named none. It is never part of
+	// scope, so the key's namespace and every record are derived as they
+	// were (actionNamespaceIn takes the request's scope, held to this one).
+	scopeID string
 }
 
 // reservationScope is what a delegated action key is scoped to: the
@@ -333,6 +339,21 @@ func (d *delegationService) admitDelegated(s *delegatedSender, call delegatedCal
 // operator, in that order, or nil, which refuses as
 // action-key-unauthenticated. The subject's row reads its standing.
 func (d *delegationService) senderFor(who *caller, scope reservationScope) (*delegatedSender, *delegationRefusal) {
+	sender, refusal := d.senderOf(who, scope)
+	if refusal != nil {
+		return nil, refusal
+	}
+	if refusal := d.senderStanding(sender); refusal != nil {
+		return nil, refusal
+	}
+	return sender, nil
+}
+
+// senderOf is the sender table's row read from the configuration alone,
+// before the subject's standing is read (senderStanding): /act holds a
+// sender that names a scope identifier to it between the two
+// (senderScopeHeld), so a scope it may not name reads no issuing host.
+func (d *delegationService) senderOf(who *caller, scope reservationScope) (*delegatedSender, *delegationRefusal) {
 	unauthenticated := refuse(refusalKeyUnauthenticated, "")
 	host := d.hosts[scope.host]
 	if who == nil || who.delegated != nil || host == nil {
@@ -341,13 +362,6 @@ func (d *delegationService) senderFor(who *caller, scope reservationScope) (*del
 	sender := &delegatedSender{issuer: who.issuer, subject: who.subject, scope: scope}
 	switch {
 	case who.issuer == scope.sub.issuer && who.subject == scope.sub.subject:
-		switch d.standingRead(host, scope.sub) {
-		case "current":
-		case "removed":
-			return nil, unauthenticated
-		default:
-			return nil, refuse(refusalStandingUnknown, "the issuing host's standing for the subject could not be read")
-		}
 		sender.kind = "subject"
 	case who.subject == host.requester:
 		sender.kind = "host"
@@ -357,6 +371,22 @@ func (d *delegationService) senderFor(who *caller, scope reservationScope) (*del
 		return nil, unauthenticated
 	}
 	return sender, nil
+}
+
+// senderStanding is the subject's standing read (SPEC.md §11.8): current
+// admits, removed refuses as action-key-unauthenticated, and anything else
+// as standing-unknown. The issuing host and an operator read none.
+func (d *delegationService) senderStanding(s *delegatedSender) *delegationRefusal {
+	if s.kind != "subject" {
+		return nil
+	}
+	switch d.standingRead(d.hosts[s.scope.host], s.scope.sub) {
+	case "current":
+		return nil
+	case "removed":
+		return refuse(refusalKeyUnauthenticated, "")
+	}
+	return refuse(refusalStandingUnknown, "the issuing host's standing for the subject could not be read")
 }
 
 // attachDelegation makes the service the enforcing host of delegated calls

@@ -203,6 +203,15 @@ func reachOf(id *identityConfig, who *caller) (scopeReach, error) {
 				}
 				return scopeReach{}, nil
 			}
+		} else if id := who.delegated.scopeID; id != "" {
+			// A sender other than the actor admitted for one scope
+			// identifier at the reservation step (senderScopeHeld) reaches
+			// that identifier's sources alone, and only where the subject's
+			// own entry grants it, as a chain bound to it does.
+			if entry.grant(id) {
+				return scopeReach{ids: map[string]bool{id: true}}, nil
+			}
+			return scopeReach{}, nil
 		}
 		// A chain's subject is stated by its issuing host, and a chain
 		// carries no claim: a delegated request reaches the sources of no
