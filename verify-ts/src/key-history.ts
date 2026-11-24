@@ -14,6 +14,11 @@ import { TooLarge, hasDuplicate, maxValues, member, parse } from "./json.ts";
 import type { ObjectValue, Value } from "./json.ts";
 import { keySound, reached, rotationKind, signedBy, statementOf } from "./rotation.ts";
 
+// keyHistoryInputBound is the most bytes of a key history the command line
+// reads, 16 MiB: far above the corpus's largest history (under 4 KiB) and
+// over ten thousand keys, and the gateway's command reads the same bound.
+export const keyHistoryInputBound = 16 << 20;
+
 export type KeyHistoryClass = "version" | "form" | "key" | "rotation" | "ordinal" | "time" | "continuation" | "carried";
 
 // One key of a history; the key at a store rotation is one entry, its

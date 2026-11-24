@@ -596,7 +596,10 @@ not a rotation from the entry before; `ordinal`, an ordinal that is not its plac
 `validFrom`, `validTo`, `rotatedAt` or `continuedAt` out of order; `continuation`, a continuation of the
 wrong form, signed by the wrong key, or of the wrong `keyId` or `alg`; and `carried`, a `keyHistoryDigest`
 that is not the history before. `gateway conform` runs them in process, whatever implementation is under
-test, and `verify-ts`'s corpus test runs them through its own check. Eight are accepted: one key under
+test, and `verify-ts`'s corpus test runs them through its own check. `gateway verify-key-history` and
+verify-ts's `verify-key-history` (`SPEC.md` §3e) are run over them too, from a file, each held to one line
+of output for each vector: `{"accepted":true,"version":<version>,"keys":<keys>,"inForce":<inForce>}`, or
+`{"accepted":false,"refused":<class>}`. Eight are accepted: one key under
 version `"1"`; `kh-v1-ordinal-given-twice`, two rotations of ordinal 1 that version `"1"` accepts; one
 store; two stores across a continuation, with the same two statements; three stores under one key; a
 `base`; a `base` holding the repeated ordinal; and a continuation a P-256 key signs. Twenty-one are refused:

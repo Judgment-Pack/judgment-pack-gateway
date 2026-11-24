@@ -25,6 +25,17 @@
 //                      (SPEC.md §4, "A verdict by scope") and takes no
 //                      decision-records directory, and in any other place,
 //                      or with one, is a usage error, exit 64
+//   main.ts verify-key-history [--public-key <key> [--public-key-alg ES256]] [--require-version 2] <file|->
+//                      the consumer's check of a fetched key history
+//                      (SPEC.md §3e; ADR-0055); <key> is the first key's
+//                      lowercase hexadecimal characters (64 for Ed25519,
+//                      the 66 of a compressed point under ES256), and the
+//                      file, or standard input for -, at most 16 MiB;
+//                      stdout: one line of JSON, {"accepted":true,
+//                      "version","keys","inForce"} or {"accepted":false,
+//                      "refused":<class>}; exit 0 accepted, 1 refused, 64
+//                      for a usage error, an input that cannot be read or
+//                      is over the bound
 //   main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]
 //                      a reading of a chain of witness statements
 //                      (SPEC.md §8.6); stdout: the answer, a refusal
@@ -33,11 +44,14 @@
 
 import * as fs from "node:fs";
 
-import type { Pin } from "./alg.ts";
+import type { Alg, Pin } from "./alg.ts";
 import { canonical } from "./canon.ts";
-import { Bytes, NoVerdict, code, documentBound } from "./inputs.ts";
+import { Bytes, NoVerdict, code, documentBound, readDocument } from "./inputs.ts";
 import { TooLarge, maxValues, parse } from "./json.ts";
 import type { Value } from "./json.ts";
+import { checkKeyHistory, keyHistoryInputBound } from "./key-history.ts";
+import type { KeyHistoryAnswer, KeyHistoryPin } from "./key-history.ts";
+import { keySound } from "./rotation.ts";
 import { isScopeIdentifier } from "./structure.ts";
 import { verifyStore, writeVerdict } from "./verify.ts";
 import { readWitnessFiles } from "./witness.ts";
@@ -189,6 +203,9 @@ function main(args: string[]): number {
     process.stdout.write(bytes);
     return 0;
   }
+  if (command === "verify-key-history") {
+    return verifyKeyHistory(rest);
+  }
   // --public-key-alg ES256, first or not at all (ADR-0053 §11).
   const p256 = command === "verify" && rest[0] === "--public-key-alg";
   const badAlg = p256 && rest[1] !== "ES256";
@@ -294,9 +311,98 @@ function main(args: string[]): number {
     process.stderr.write("verify: --artifacts <dir> goes before the store root, after --ordinary-seals-only; a directory so named is given as ./--artifacts\n");
   }
   process.stderr.write(
-    "usage: main.ts canon | main.ts verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n",
+    "usage: main.ts canon | main.ts verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts verify-key-history [--public-key <key> [--public-key-alg ES256]] [--require-version 2] <file|-> | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n",
   );
   return 64;
+}
+
+const keyHistoryUsage = "usage: main.ts verify-key-history [--public-key <key> [--public-key-alg ES256]] [--require-version 2] <file|->\n";
+
+// verifyKeyHistory is main.ts verify-key-history [--public-key <key>
+// [--public-key-alg ES256]] [--require-version 2] <file|->: checkKeyHistory
+// on the file's bytes, or on standard input for -, from the key pinned
+// where one is given, and its verdict as one line of JSON on standard
+// output, in the members and order of the gateway's command. Exit 0 for a
+// history that holds, 1 for one that is refused, naming the class, 64 for a
+// usage error or an input that cannot be read or is over
+// keyHistoryInputBound, and 2 for a check that threw: then nothing is
+// written on standard output.
+function verifyKeyHistory(args: string[]): number {
+  const usage = (why: string): number => {
+    process.stderr.write(`verify-key-history: ${why}\n${keyHistoryUsage}`);
+    return 64;
+  };
+  let rest = args;
+  let pin: KeyHistoryPin | null = null;
+  if (rest[0] === "--public-key") {
+    const text = rest[1];
+    if (text === undefined) {
+      return usage("--public-key takes a key");
+    }
+    let alg: Alg = "";
+    rest = rest.slice(2);
+    if (rest[0] === "--public-key-alg") {
+      if (rest[1] !== "ES256") {
+        return usage("--public-key-alg is ES256; without it the key is an Ed25519 key's 64 lowercase hexadecimal characters");
+      }
+      alg = "ES256";
+      rest = rest.slice(2);
+    }
+    const raw = (alg === "" ? /^[0-9a-f]{64}$/ : /^[0-9a-f]{66}$/).test(text) ? Buffer.from(text, "hex") : null;
+    if (raw === null || !keySound(alg, raw)) {
+      return usage(`--public-key is not a ${alg === "" ? "ed25519" : alg} public key of its form`);
+    }
+    pin = { alg, key: raw };
+  }
+  let requireVersion: string | undefined;
+  if (rest[0] === "--require-version") {
+    if (rest[1] !== "2") {
+      return usage('--require-version is "2"');
+    }
+    requireVersion = "2";
+    rest = rest.slice(2);
+  }
+  if (rest.length !== 1) {
+    return usage("exactly one file, or - for standard input");
+  }
+  const target = rest[0]!;
+  if (target !== "-" && target.startsWith("--")) {
+    return usage(`unknown or misplaced option ${target}; a file so named is given as ./${target}`);
+  }
+  let bytes: Uint8Array;
+  try {
+    if (target === "-") {
+      const input = readInput(keyHistoryInputBound);
+      if (input === null) {
+        throw new NoVerdict(`standard input is larger than ${keyHistoryInputBound} bytes`);
+      }
+      bytes = input;
+    } else {
+      // the file is the command line's last entry
+      bytes = readDocument(exactArguments([target])[0]!, "the key history", keyHistoryInputBound);
+    }
+  } catch (e) {
+    if (e instanceof NoVerdict) {
+      process.stderr.write(`verify-key-history: ${e.message}\n`);
+      return 64;
+    }
+    throw e;
+  }
+  let got: KeyHistoryAnswer;
+  try {
+    got = checkKeyHistory(bytes, pin, requireVersion === undefined ? {} : { requireVersion });
+  } catch (e) {
+    process.stderr.write(`verify-key-history: the check failed with no class: ${e instanceof Error ? e.message : String(e)}\n`);
+    return 2;
+  }
+  if (!got.accepted) {
+    process.stderr.write(`verify-key-history: refused (${got.class}): ${got.reason}\n`);
+    process.stdout.write(JSON.stringify({ accepted: false, refused: got.class }) + "\n");
+    return 1;
+  }
+  const last = got.entries[got.entries.length - 1]!;
+  process.stdout.write(JSON.stringify({ accepted: true, version: got.version, keys: got.entries.length, inForce: last.keyId }) + "\n");
+  return 0;
 }
 
 // witness answers the process contract's witness command.
