@@ -967,6 +967,13 @@ forwarding, follow it. Where R2 departs from the text above:
   so the start removes it, draws the key again and says so in one stderr line. A whole key, with its
   line feed or without, is kept. A `.key` that does not decode beside a journal holding entries
   still refuses the start.
+- **2026-11-24, a staged key file of any journal's name is removed (gateway #611).** The start
+  removes, before any key is read, every staged key file of the exact form in the store's root,
+  whatever journal it names, so the leftover of a scope no longer configured goes too. It removes a
+  regular file alone, never a link, a directory or a near miss (another prefix, uppercase
+  hexadecimal, another length), and never one carrying the start's own process identifier.
+  `remove-scope` of a scope also removes its journal's staged files and says so in one stderr line.
+  A staged file holds a key no entry was made under, so nothing it removes was ever used.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on

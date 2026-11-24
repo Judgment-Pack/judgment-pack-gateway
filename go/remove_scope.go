@@ -231,7 +231,25 @@ func removeScope(o removeScopeOptions, stamp func() string) (out removalOutcome,
 		return out, unlocked, err
 	}
 	out, err = removeScopeFrom(o.store, o.authority, key, walk, o, stamp)
+	if err == nil && len(out.refused) == 0 {
+		err = removeStagedKeysOf(o.store, o.scope, &out)
+	}
 	return out, unlocked, err
+}
+
+// removeStagedKeysOf removes the staged key files a start ended mid-draw
+// left in the store's root for the scope's refusal journal (gateway #611):
+// a key no entry was made under, which a start no longer configured with
+// the scope would leave there.
+func removeStagedKeysOf(storeRoot, scope string, out *removalOutcome) error {
+	n, err := (refusalFS{root: storeRoot}).removeStagedKeys(refusalJournalName(limitScopeKey(scope)))
+	if err != nil {
+		return fmt.Errorf("a staged key file of the scope's refusal journal could not be removed: %v", err)
+	}
+	if n > 0 {
+		out.notes = append(out.notes, fmt.Sprintf("%d staged key file(s) of the scope's refusal journal, which a start ended mid-draw left, are removed", n))
+	}
+	return nil
 }
 
 // passesSignedOrders is whether a receipt's ladder status is past order 6
