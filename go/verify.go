@@ -146,6 +146,10 @@ type receipt struct {
 	// approvals is action.approvals (SPEC.md §1.2a; ADR-0054 decision 3),
 	// nil for a receipt that cites none.
 	approvals []approvalCitation
+	// approvalsResolved is action.approvalsResolved (ADR-0063): the
+	// gateway resolved every citation in its approval-record directory
+	// before the write. False where the member is absent.
+	approvalsResolved bool
 }
 
 func receiptFrom(obj *vObject) (*receipt, error) {

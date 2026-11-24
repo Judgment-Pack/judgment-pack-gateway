@@ -15,7 +15,7 @@ export const dryRunPrefix = "judgment-pack-gateway/dry-run/1:";
 
 // true where required
 const dryRunMembers: Record<string, boolean> = { dryRunVersion: true, authority: true, keyId: true, servedAt: true, signature: true, source: true, action: true, scope: false, delegation: false, alg: false };
-const actionMembers: Record<string, boolean> = { requester: true, decision: true, cites: true, tool: true, request: true, policy: false, approvals: false };
+const actionMembers: Record<string, boolean> = { requester: true, decision: true, cites: true, tool: true, request: true, policy: false, approvals: false, approvalsResolved: false };
 
 export type DryRunReport = { readonly ok: boolean; readonly findings: ReadonlyArray<{ readonly status: string }>; readonly dryRun: true };
 

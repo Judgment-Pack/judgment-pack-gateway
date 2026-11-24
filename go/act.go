@@ -232,6 +232,20 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	if err != nil {
 		return nil, err
 	}
+	// Where the action's scope names an approval-record directory
+	// (ADR-0063, step 16a), every citation resolves there or the action is
+	// refused, before the decision record is looked for and before anything
+	// of the key is touched. A write fixed to a scope identifier resolves in
+	// its platform's directory alone. Resolution is the gateway's fact, not
+	// the request's: approvals is unchanged, so the key's approved content
+	// and its identity are what they are without the directory.
+	approvalsResolved := false
+	if dir := g.approvalRecordsFor(spec); approvals != nil && dir != "" {
+		if err := resolveApprovals(dir, approvals); err != nil {
+			return nil, err
+		}
+		approvalsResolved = true
+	}
 	// A write fixed to a scope identifier finds its record in its platform's
 	// directory and nowhere else (ADR-0054, step 17); every other write in
 	// the gateway's.
@@ -315,7 +329,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		return g.dryRunAct(dryRunInput{
 			sessionID: sessionID, scope: asked.value, platform: platform, source: source, tool: tool,
 			spec: spec, who: who, decision: decision, exact: exact, cites: cites, policy: policy,
-			approvals: approvals, request: request, canonicalRequest: canonicalRequest,
+			approvals: approvals, approvalsResolved: approvalsResolved, request: request, canonicalRequest: canonicalRequest,
 		})
 	}
 	var claim *actionClaim
@@ -781,7 +795,7 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			}
 		}
 
-		action := actionClaims(minted, decision, exact, cites, policy, approvals, spec, tool)
+		action := actionClaims(minted, decision, exact, cites, policy, approvals, approvalsResolved, spec, tool)
 		if claim != nil {
 			delivery := newObject()
 			delivery.set("key", vString(key))

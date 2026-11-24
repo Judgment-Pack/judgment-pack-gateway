@@ -241,7 +241,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 253 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 258 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). Ten of them,
@@ -631,7 +631,16 @@ cite one single record, by id and digest: both are `ok`, and each carries the ob
 `approval-cited-again`. v0.38.0, which does not read the member, returns `ok` for every one but
 `-appended-after-signing`, and makes no such observation.
 
-**`dry-run/*.json`** — 11 vectors for the dry-run receipt (`SPEC.md` §1.2c), which `gateway
+**Resolved approval citations** (ADR-0063; `SPEC.md` §1.2a, `action.approvalsResolved`). Five more
+of `v3/stores` hold the gateway's mark that every citation resolved in its approval-record
+directory before the write. `v3-action-approvals-resolved` is `v3-action-approvals-valid` with the
+mark `true`, and is `ok`; `v3-action-approvals-claimed-only` cites one single record with no mark,
+as a gateway that names no directory signs it, and is `ok`. Three are `malformed` at §1.4 order 1:
+the mark `false` (`-resolved-false`), the string `"true"` (`-resolved-string`), and the mark on an
+action that cites no record (`-resolved-without-approvals`). A verifier resolves nothing again: it
+holds no directory. v0.40.0, which does not read the mark, returns `ok` for all five.
+
+**`dry-run/*.json`** — 12 vectors for the dry-run receipt (`SPEC.md` §1.2c), which `gateway
 verify-dry-run` and verify-ts's `verifyDryRun` read and no receipt verifier accepts. Each holds the
 receipt's bytes as `receipt`, `publicKeyAlg` `"ES256"` where it is signed by the P-256 test key,
 `expected`, the report's `ok` and the statuses of its `findings` (`malformed`, `key-mismatch` or
@@ -643,7 +652,8 @@ with no `request` (`member-missing`), a receipt's members signed under the dry-r
 (`relabelled-as-receipt`, `signature-mismatch` as a receipt), a scoped one as a store holds it
 (`in-a-store`), one naming another key (`key-mismatch`), the same holding a number canonical JSON
 admits none of (`non-canonical-under-another-key`, `malformed` before the key is compared), and one
-signed under the receipt prefix (`signed-under-the-receipt-prefix`).
+signed under the receipt prefix (`signed-under-the-receipt-prefix`), and one whose action carries
+`approvalsResolved: true` (`approvals-resolved`, ADR-0063), `ok`.
 
 **The key and the signature vectors.** `TEST-P256-SCALAR` is the synthetic scalar, the 32 bytes `01`
 repeated, published for building vectors alone, as `TEST-SEED` is. `TEST-P256-PUBLIC-KEY` is its

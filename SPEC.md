@@ -309,6 +309,7 @@ returns `ok` for it, and reports nothing of its delivery (§4, **Observations**)
 | `cites` | array of `{ "sessionId": flat token (§3a), "callIndex": non-negative integer, "signature": signature }` | the acquisition receipts the requester says the decision record relied on |
 | `policy` | `"sha256:" + hex` — **optional** | the decision policy the gateway held the action to before it was sent, by digest (below); absent when its operator held the tool to none |
 | `approvals` | array of 1 to 8 `{ "kind": "single" or "standing", "id": string, "digest": "sha256:" + hex }` — **optional** | the approval records the requester cites, in the order given (below); absent when it cites none |
+| `approvalsResolved` | `true` — **optional** | every citation of `approvals` was resolved in the gateway's approval-record directory before the write (below); absent otherwise, and never without `approvals` |
 | `tool` | `{ "shape": string, "endpoint": string or `null`, "name": string, "transport": "http" }`, `transport` **optional** | what was called, named as `acquisition` names its adapter; for a write to a remote MCP server, `endpoint` is the server's URL and `transport` is `"http"` (below) |
 | `request` | `"sha256:" + hex` | a commitment (above) to the request the executor sent |
 | `adapter` | as in `acquisition` | the executor that performed it; for an uncertain delivery (§1.2b), the gateway's uncertainty recorder |
@@ -373,6 +374,17 @@ covered this scope or this write, or was not withdrawn. A party that holds a rec
 bytes and judges it by its own format. `id` is in the clear, so a system should mint opaque ones;
 `digest` is unsalted, so a record of little entropy can be guessed from it, and a record format should
 carry a random nonce. A verifier written before this member tolerates it and reports nothing of it.
+
+**`approvalsResolved`** (ADR-0063). Present, it is the JSON value `true`, beside `approvals`; any
+other value, or the member on an action with no `approvals`, is `malformed` (§1.4 order 1). It is
+signed with every other member. A gateway that names an approval-record directory for the action's
+scope (§6, "`/act`: a scope, a dry-run and approvals") signs it on every action whose citations all
+resolved there, and refuses the others; a gateway that names none never signs it, and its citations
+are claims as above. A verifier holds no such directory and resolves nothing again. A receipt that
+verifies and carries the member establishes this much more than a claim: the signing gateway found,
+before the write was sent, under its directory for the action's scope, a regular file at
+`<kind>/<id>` whose bytes hash to each `digest`. It does not establish what a record says, who made
+it, or that it is there now. A verifier written before this member tolerates it.
 
 **What `decision` establishes.** Without `policy`, an action receipt
 establishes no more than this: the gateway that minted it found a decision
@@ -848,7 +860,7 @@ of the object without `signature`, Ed25519, or ES256 exactly as a receipt is (`a
 | `source` | `<platform>/write` |
 | `scope` | optional, §1.2a's form; present exactly when the write source is fixed to a scope identifier |
 | `delegation` | optional, §11.7's form, the action's `requester` standing for `caller`; present exactly under a delegation, `admittedAt` being the time of the non-counting admission read |
-| `action` | exactly `{requester, decision, cites, tool, request, policy, approvals}`, `policy` and `approvals` optional, each of §1.2a's forms; no `adapter`, `observedAt` or `delivery`, since no target answered |
+| `action` | exactly `{requester, decision, cites, tool, request, policy, approvals, approvalsResolved}`, `policy`, `approvals` and `approvalsResolved` optional, each of §1.2a's forms; no `adapter`, `observedAt` or `delivery`, since no target answered |
 
 It has no other member: no `receiptVersion`, `kind`, `sessionId`, `callIndex`, `prevSignature`,
 `resultDigest`, `argumentsCommitment`, `witness`, `scopeSalt` or `artifact`. `action.request` is a
@@ -1085,7 +1097,7 @@ statuses of the ladder and do not replace it.)
 
 | Order | Status | Condition |
 |---|---|---|
-| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `action.approvals` present and not of its stated form, `decision.recordBytes` present and not `"exact"`, `witness` present and not an object whose `origin`, `keyId` and `trail` are each of their stated forms, `delegation` or `reconciler` present and not of its stated form (§11.7), `scope` present and not a string of its stated form, `artifact` present and not the string `"not-retained"` or on a receipt that is not an acquisition — and never a relational one but the comparisons within one receipt that §11.7 states: `caller` `null` or naming another issuer or subject than `delegation.subject`, an action's `requester` likewise, and `reconciler` on a receipt that is not an acquisition carrying `reconciliation` |
+| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `action.approvals` present and not of its stated form, `action.approvalsResolved` present and not `true` or present without `action.approvals`, `decision.recordBytes` present and not `"exact"`, `witness` present and not an object whose `origin`, `keyId` and `trail` are each of their stated forms, `delegation` or `reconciler` present and not of its stated form (§11.7), `scope` present and not a string of its stated form, `artifact` present and not the string `"not-retained"` or on a receipt that is not an acquisition — and never a relational one but the comparisons within one receipt that §11.7 states: `caller` `null` or naming another issuer or subject than `delegation.subject`, an action's `requester` likewise, and `reconciler` on a receipt that is not an acquisition carrying `reconciliation` |
 | 2 | `unsupported-version` | `receiptVersion` is neither `"2"` nor `"3"` |
 | 3 | `key-mismatch` | `keyId` is not the key id of a key the verifier reached (§3b): the key it pinned, or a key a rotation it followed rotated to |
 | 4 | `signature-mismatch` | the signature does not verify, under the key `keyId` names, over the input §1.2 or §1.2a defines for the receipt's version |
@@ -3215,9 +3227,34 @@ where the write would then be refused at its key: it establishes nothing about t
 `/act` request, and a per-scope limit on `/act` requests counts it.
 
 **Approvals.** `approvals` is §1.2a's form, read after the citations resolve and before the decision
-record is found, and refused `400` at `approvals` when out of form or empty. Nothing is read, fetched
-or compared: each entry is the requester's claim. The receipt carries it as `action.approvals`, in
-the order given, and it enters the key's approved content as identity version `"3"` (§1.2b).
+record is found, and refused `400` at `approvals` when out of form or empty. Where no approval-record
+directory is named for the action's scope, nothing is read, fetched or compared: each entry is the
+requester's claim. The receipt carries it as `action.approvals`, in the order given, and it enters
+the key's approved content as identity version `"3"` (§1.2b).
+
+**Resolved approvals** (ADR-0063; engine configuration version 52). Where the configuration names
+`approvalRecords` for the action's scope (the gateway's for an action of none, the platform's own
+for a write fixed to a scope identifier, never another's), every citation is resolved next, at step
+16a, before the decision record is found and before anything of the key is read:
+
+1. Each citation's `kind` and `id` are each one path segment: not empty, `.` or `..`, with no `/`, `\`
+   or control character, and every code point below U+0300. Otherwise the action is refused `400` at
+   `approvals`, naming the citation's index and the rule.
+2. The record is the file `<dir>/<kind>/<id>`. The directory, the kind's directory and the record are
+   each looked at without following a link; the record is a regular file, opened without following a
+   link, and the file opened is the file looked at. At most 1 MiB + 1 byte is read, and the
+   SHA-256 of the bytes, `"sha256:"` and 64 lowercase hexadecimal characters, is the citation's
+   `digest`, the record at most 1 MiB long.
+3. A citation for which step 2 fails, for whatever reason, refuses the action `400` at `approvals`
+   with one sentence: "a cited approval record does not resolve: every citation names a record this
+   gateway holds, by its kind, its id and the digest of its bytes, before anything is sent". It names
+   no directory, path, check or citation, and is the same whether or not another scope holds the
+   record. Nothing is locked, reserved, dispatched or minted.
+
+Every citation resolves or the action is refused. The receipt then carries `action.approvalsResolved:
+true`. A dry-run resolves alike and its receipt carries the member too. `approvals` itself is
+unchanged, so the key's approved content and identity are those of the same request without the
+directory. Without the member, and below version 52, `/act` is as above, byte for byte.
 
 ### Who may ask for a write
 

@@ -15,7 +15,7 @@ const p256Pin = { alg: "ES256", key: fs.readFileSync(path.join(corpus, "TEST-P25
 
 test("every dry-run vector", () => {
   const names = fs.readdirSync(path.join(corpus, "dry-run")).filter((n) => n.endsWith(".json")).sort();
-  assert.equal(names.length, 11);
+  assert.equal(names.length, 12);
   for (const name of names) {
     const v = JSON.parse(fs.readFileSync(path.join(corpus, "dry-run", name), "utf8"));
     const pin = v.publicKeyAlg === "ES256" ? p256Pin : publicKey;
