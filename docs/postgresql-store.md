@@ -188,6 +188,13 @@ The operator journal on this kind is the rows of `gateway.journal_records` under
   entry, in the migration's transaction that makes the new registry. A rerun holds an entry there to
   the new registry, and writes it again where it is not there.
 
+The refusal journals (ADR-0059) are rows of the same table, one journal per configured scope, each
+under its `refusal-` name (24 letters after it, within the table's CHECK on a name of 1 to 32
+characters). Each journal's key is kept in `gateway.secrets`, and its forwarding cursor in
+`gateway.documents`, a document of no scope. `gateway store remove-scope` deletes all three for the
+scope it removes, as the owner, in its own transaction. The refusal journals need no migration past
+0010, which is the last schema version of this release.
+
 An entry's lengths are of the bytes an export writes. `gateway export` writes the rows, in ordinal
 order, each line and its `0x0A`, as `store/journals/operator.jsonl`, the path of the filesystem
 kind's file, and `gateway verify` reads the export as it reads a store of that kind. An export by
