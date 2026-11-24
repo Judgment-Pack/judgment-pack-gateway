@@ -53,7 +53,7 @@ func (s *standInEntries) entriesAfter(journal string, ordinal int64, limit int) 
 	return out, nil
 }
 
-func (s *standInEntries) locked(_ string, fn func() error) error {
+func (s *standInEntries) locked(_ string, _ refusalEntryLine, fn func() error) error {
 	s.mu.Lock()
 	s.locks++
 	s.held = true
@@ -198,8 +198,8 @@ func TestRefusalEntriesAreForwardedFromTheCursorAndItMovesForwardAlone(t *testin
 }
 
 // A sink that declines refusal entries, or one not on 3, is given no
-// forwarding and no cursor; the seam as this change leaves it names no
-// journal.
+// forwarding and no cursor; the seam where no refusal journal is configured
+// names no journal.
 func TestASinkThatDeclinesRefusalEntriesIsGivenNoForwarding(t *testing.T) {
 	for _, text := range []string{
 		`{"url":"https://sink.example/r","deliveryVersion":"3","refusalEntries":false}`,

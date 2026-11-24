@@ -68,6 +68,12 @@ func TestThePostgresKindKeepsOneRefusalJournalUnderItsLock(t *testing.T) {
 		t.Fatalf("the shared key does not open an entry: %v", err)
 	}
 
+	// the journal's forwarding cursor, as the forwarding owner writes it
+	cursors := pgForwardingCursors{db.open(t, nil).ofNoScope().documents()}
+	if moved, err := cursors.advance(name, -1, forwardingCursor{ordinal: 0, digest: "sha256:" + journalDigest(lines[0])}); !moved || err != nil {
+		t.Fatalf("the cursor: %v %v", moved, err)
+	}
+
 	// the owner's transaction, as gateway store remove-scope opens it
 	c, err := pgConnect(db.migrator, time.Now().Add(time.Minute))
 	if err != nil {
@@ -100,5 +106,8 @@ func TestThePostgresKindKeepsOneRefusalJournalUnderItsLock(t *testing.T) {
 		return err
 	}); err != nil || len(data) != 0 {
 		t.Fatalf("the rows stand: %v %d", err, len(data))
+	}
+	if at, err := cursors.read(name); err != nil || at.ordinal != -1 {
+		t.Fatalf("the forwarding cursor stands: %+v %v", at, err)
 	}
 }

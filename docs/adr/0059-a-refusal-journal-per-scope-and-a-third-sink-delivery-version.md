@@ -653,6 +653,8 @@ It is journaled once, in that scope's journal, and nowhere else. A charge needs 
   - The writer forwards each entry after it is appended, in ordinal order for each journal, one
     delivery in flight gateway-wide, through an HTTP transport of its own, so it never takes a
     connection a receipt's delivery would use.
+  - The forwarder sends the journal's lines as they are, and does not verify their chain; the sink
+    verifies it.
   - A delivery that is not acknowledged is sent again later, oldest first, at most once every 5
     seconds for each journal. It never holds a request, an answer, another journal's forwarding, or
     the writer's appends.
@@ -903,6 +905,34 @@ forwarding, follow it. Where R2 departs from the text above:
   no `.tmp`) is `journal-unknown` too. No export carries either file. The forwarder's start
   removes, before its first pass, the staging files of its own journals' exact names, regular
   files alone, and never follows a link.
+- **2026-11-24, the journals as the forwarder's source.** The owner's `refusalEntrySource`
+  (`go/refusal_entry_source.go`) names the configured scopes' journals and reads their entries
+  outside every lock: on the filesystem kind the journal's file, lines that end in a line feed
+  alone, so a torn tail is never sent; on the PostgreSQL kind the rows, on a connection of its own,
+  neither a slot of the pool answers use nor the writer's. The cursor moves under the lock the
+  journal's appends take: on the filesystem kind the file's `flock`, for that one move as for one
+  append round, once the path is still the file locked (none where the platform has no `flock`, as
+  for the writer); on the PostgreSQL kind the journal's advisory lock, in a read transaction on that
+  connection. The cursor's compare-and-set is still the document of no scope, on the pool. Under the
+  lock the journal must still hold, at its place, the entry the cursor is to name; where it does
+  not, or where the journal has no file, the cursor is not moved. The owner moves it only after the
+  sink acknowledged an entry read from the journal, so a journal with no file by then was removed
+  since the read, and `remove-scope` takes the cursor with it under the same lock: a cursor written
+  after it would name an entry no journal holds and stop the scope's next journal at a diverged
+  cursor. A journal not yet made holds no entry, and nothing of it is forwarded.
+- **2026-11-24, only a durable entry is forwarded.** On the filesystem kind the source reads a
+  journal's file no further than its size taken under the file's `flock`, which is let go before
+  the bytes are read. The writer syncs each line before it lets the lock go, so a line still in the
+  page cache is never forwarded: a power loss could otherwise put another entry at its ordinal, and
+  the sink would hold two signed entries at one ordinal that the store does not show. Where the
+  platform has no `flock`, the bound is the size at the read. On the PostgreSQL kind a row is read
+  only once its transaction has committed.
+- **2026-11-24, a line whose write or sync fails is cut back.** On the filesystem kind the writer
+  takes the journal's file back to the end before that line, and syncs it, still under the round's
+  lock, so the size the lock shows never counts a line that may not be durable. The entry is dropped
+  and counted (`write-failed`), and the next entry is written at its ordinal. Where the cut or its
+  sync fails too, the scope is lost until the next start, which judges the file, and no later entry
+  is written after it.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on

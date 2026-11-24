@@ -894,6 +894,27 @@ func (f refusalFS) heldKey(s *refusalScope) error {
 	return errRefusalKeyLost
 }
 
+// refusalSync syncs a journal's file: a test seam.
+var refusalSync = func(file *os.File) error { return file.Sync() }
+
+// cutBack takes the journal's file back to at, the end before a line whose
+// write or sync failed, and syncs it, still under the round's lock: the
+// size the lock shows (fsRefusalEntries, durableSize) must never count a
+// line that may not be on disk, since a power loss could then put another
+// entry at its ordinal. Where the cut or its sync fails too, the scope is
+// lost until the next start, which judges the file: no later entry is
+// written after a line that may not be durable. The entry is dropped and
+// counted (write-failed) by the caller either way.
+func (refusalFS) cutBack(s *refusalScope, file *os.File, at int64) {
+	if err := file.Truncate(at); err != nil {
+		s.lost = true
+		return
+	}
+	if err := refusalSync(file); err != nil {
+		s.lost = true
+	}
+}
+
 // append is one round: the journal's file opened and locked, its key
 // checked, the entry appended and synced, the lock let go and the file
 // closed. The writer holds no file between rounds; it trusts the end it
@@ -936,10 +957,12 @@ func (f refusalFS) append(s *refusalScope, entry func(end refusalEnd) ([]byte, e
 	}
 	if _, err := file.WriteAt(line, s.end.bytes); err != nil {
 		s.loaded = false
+		f.cutBack(s, file, s.end.bytes)
 		return err
 	}
-	if err := file.Sync(); err != nil {
+	if err := refusalSync(file); err != nil {
 		s.loaded = false
+		f.cutBack(s, file, s.end.bytes)
 		return err
 	}
 	written = true
