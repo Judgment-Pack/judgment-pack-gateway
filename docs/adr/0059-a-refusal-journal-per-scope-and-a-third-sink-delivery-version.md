@@ -884,6 +884,11 @@ forwarding, follow it. Where R2 departs from the text above:
   `journal-unknown` in every verdict, by scope too. Nothing of that scope's journal is read for it.
   A store so altered has been tampered with, as one holding a planted file of an unknown name has,
   and that already fails every verdict.
+- **2026-11-24, an entry's place in its journal.** Entries of one journal follow the writer's queue
+  order, not the order answers reach clients. Each answer is written and flushed before its entry
+  is handed off, so that no answer waits on the journal (section 5), and a later request's entry can
+  be queued before an earlier one's. An entry's `answeredAt` is the gateway's clock when its answer
+  was written, and the ordinals and `previous` links give the order the entries were written in.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on
