@@ -43,7 +43,7 @@ var dryRunMembers = map[string]bool{
 // observedAt or delivery, since no target answered.
 var dryRunActionMembers = map[string]bool{
 	"requester": true, "decision": true, "cites": true, "tool": true, "request": true,
-	"policy": false, "approvals": false,
+	"policy": false, "approvals": false, "approvalsResolved": false,
 }
 
 // dryRunReport is what verify-dry-run answers. DryRun is true in every

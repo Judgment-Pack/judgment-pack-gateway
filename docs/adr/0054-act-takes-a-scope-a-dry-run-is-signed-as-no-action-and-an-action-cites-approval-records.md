@@ -316,7 +316,9 @@ content are not compared. Option K, resolution against an operator-held director
 that a file with that digest was present before the write, as `decision` does. It is deferred because
 approval systems keep their records elsewhere, and a directory would need a synchronization path that
 this record does not design. Option L is deferred for the same reason: it would require only a claim,
-so it needs K to mean much.
+so it needs K to mean much. *(2026-11-24: K is taken up by ADR-0063, which resolves each citation in
+a directory the operator fills, with no synchronization, and marks a resolved action
+`approvalsResolved`; L is gateway #622.)*
 
 **The approved content.** `approvals` enters the approved content of §1.2b, but only when it is
 present. A reservation made by a request that names none records `identityVersion` `"2"` and is
@@ -433,7 +435,7 @@ gateway's corpus (RFC 0014, "Conformance"). The specification pull request chang
 - **Bad:** a new signed form, a new prefix and two new verifier entry points. Each must be carried in
   Go and in verify-ts.
 - **Revisit when:** a delegation is to reach more than one scope identifier; approvals are to be resolved or
-  required (K, L); a single approval is to be refused on reuse rather than observed; or dry-runs are to
+  required (K, L; K revisited by ADR-0063 on 2026-11-24); a single approval is to be refused on reuse rather than observed; or dry-runs are to
   be retained or rate-limited.
 
 ### What the release notes must say
@@ -541,7 +543,7 @@ Accepted by the maintainer's reviewer on 2026-11-22, with these settled:
 - A single approval cited again is reported by the verifier (`approval-cited-again`) and not refused
   by the gateway; the issuing host checks reuse.
 - Resolution against an operator-held directory (option K), and a policy that requires an approval
-  (option L), are deferred to a later record.
+  (option L), are deferred to a later record. *(2026-11-24: K is ADR-0063; L is gateway #622.)*
 - RFC 0018 §10 gains the paragraph as a dated amendment; it is not frozen.
 - An unscoped action may still cite a scoped receipt (decision 6, "A citation is no existence oracle").
 - Two conditions are folded in: a delegated scoped write is lifted by the RFC 0030 scope binding in

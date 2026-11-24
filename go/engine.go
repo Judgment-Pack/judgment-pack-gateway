@@ -182,7 +182,13 @@ import (
 // database leased in batches and the in-flight and per-caller limits split
 // by the live instances (ADR-0061). An earlier version refuses the member
 // by name, and a configuration without it counts as before.
-const engineVersion = sharedLimitsVersion
+// Version 52 (approvalRecordsVersion; approval_records.go) adds
+// approvalRecords, the gateway's and a scoped write platform's: where the
+// action's directory is named, every approval citation /act is sent is
+// resolved there before anything is sent, and the receipt says so
+// (ADR-0063). An earlier version refuses the member by name, and a
+// configuration without it reads every citation as a claim, as before.
+const engineVersion = approvalRecordsVersion
 
 // actScopeVersion is the engine configuration version from which a platform
 // may set scope beside write: true, and /act reads scope, dryRun and
@@ -193,7 +199,7 @@ const engineVersion = sharedLimitsVersion
 // 2 and 3; act_dry_run.go).
 const actScopeVersion = "43"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true, requestLimitsVersion: true, operatorJournalVersion: true, delegationScopeBindingVersion: true, admissionReadV2Version: true, refusalJournalVersion: true, callReferenceVersion: true, sinkDeliveryV3Version: true, sharedLimitsVersion: true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true, "12": true, "13": true, "14": true, "15": true, "16": true, "17": true, "18": true, "19": true, "20": true, "21": true, "22": true, "23": true, "24": true, "25": true, "26": true, "27": true, "28": true, "29": true, "30": true, "31": true, metadataTokenVersion: true, delegatedTokenVersion: true, assertionAlgorithmVersion: true, receiptSinkVersion: true, keyServiceSignerVersion: true, sealSinkVersion: true, retentionVersion: true, labelsVersion: true, p256SignerVersion: true, delegationP256Version: true, keyHistoryV2Version: true, actScopeVersion: true, requestLimitsVersion: true, operatorJournalVersion: true, delegationScopeBindingVersion: true, admissionReadV2Version: true, refusalJournalVersion: true, callReferenceVersion: true, sinkDeliveryV3Version: true, sharedLimitsVersion: true, approvalRecordsVersion: true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -250,6 +256,9 @@ type engineConfig struct {
 	platforms         []platformConfig // in name order
 	version           string
 	mcp               *mcpConfig // the MCP server's own settings; nil when the configuration has none
+	// approvalRecords is the gateway's approval-record directory
+	// (ADR-0063), "" where the configuration names none
+	approvalRecords string
 	// witness makes the signer a checkpoint witness (ADR-0013); nil when the
 	// configuration has none.
 	witness *witnessSpec
@@ -337,6 +346,10 @@ type platformConfig struct {
 	// decisionRecords is the directory a write fixed to a scope identifier
 	// finds its decision record in (ADR-0054), "" for every other platform.
 	decisionRecords string
+	// approvalRecords is the directory a write fixed to a scope identifier
+	// resolves its approval citations in (ADR-0063), "" where it names none
+	// and for every other platform.
+	approvalRecords string
 	// descriptors pins the snapshot of the live operation's tool
 	// descriptors that connect captured, sha256:<64 hex>; "" when none. The
 	// frontend reads it; a new capture also has descriptorStatements provenance.
@@ -521,6 +534,7 @@ var engineMembers = map[string]bool{
 	"mcp": false, "witness": false, "witnessedBy": false, "sandbox": false, "delegation": false,
 	"sealOpenAtStart": false, "signingKeyVersion": false, "signingPublicKey": false, "signingKeyAlgorithm": false, "acceptOtherHostsOverPlainHTTP": false, "measureSandboxAtStart": false,
 	"receiptSink": false, "retention": false, "keyHistoryVersion": false, "limits": false, "refusalJournal": false,
+	"approvalRecords": false,
 }
 
 var platformMembers = map[string]bool{
@@ -528,6 +542,7 @@ var platformMembers = map[string]bool{
 	"endpoint": false, "environment": false, "write": false, "descriptors": false, "operationDescriptors": false, "descriptorStatements": false,
 	"decisionPolicy": false, "parameters": false, "grant": false, "writeRequesters": false,
 	"scope": false, "artifact": false, "decisionRecords": false, "callReference": false,
+	"approvalRecords": false,
 }
 
 // parseEngineConfig holds the file to the shape the design note states.
@@ -611,6 +626,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 		}
 		*m.into = s
+	}
+	if cfg.approvalRecords, err = parseApprovalRecords(obj, version); err != nil {
+		return engineConfig{}, err
 	}
 	if identityValue, present := obj.get("identity"); present {
 		identity, err := requireObject(identityValue, "identity")
@@ -974,6 +992,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		if pc.decisionRecords, err = parsePlatformDecisionRecords(p, name, version, pc.write, pc.scope, callers); err != nil {
 			return engineConfig{}, err
 		}
+		if pc.approvalRecords, err = parsePlatformApprovalRecords(p, name, version, pc.write, pc.scope); err != nil {
+			return engineConfig{}, err
+		}
 		if artifactValue, present := p.get("artifact"); present {
 			if pc.artifactRetained, err = parsePlatformArtifact(artifactValue, name, version, pc.write); err != nil {
 				return engineConfig{}, err
@@ -1059,6 +1080,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		return engineConfig{}, errSigningPublicKeyRequired
 	}
 	if err := decisionRecordsApart(cfg.decisionRecords, cfg.platforms, nestedAsSpelled); err != nil {
+		return engineConfig{}, err
+	}
+	if err := approvalRecordsApart(cfg.approvalRecords, cfg.platforms, nestedAsSpelled); err != nil {
 		return engineConfig{}, err
 	}
 	if value, present := obj.get("limits"); present {
@@ -1931,7 +1955,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if b.write.url != "" {
 				endpoint, transport = b.write.url, "http"
 			}
-			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.write), grant: grant, requesters: p.requesters, scope: p.scope, decisionRecords: p.decisionRecords}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies, binding: p.binding, actionRecovery: b.actionRecovery, approval: approvalOf(p, b.write), publishers: customerPublishers(cfg, b), effects: declaredEffects(b.write), grant: grant, requesters: p.requesters, scope: p.scope, decisionRecords: p.decisionRecords, approvalRecords: p.approvalRecords}
 		}
 	}
 	if cfg.sandbox != nil {
@@ -2346,6 +2370,25 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 		}
 	}
 	if err := decisionRecordsApart(cfg.decisionRecords, cfg.platforms, nestedOnDisk); err != nil {
+		return nil, err
+	}
+	// The approval-record directories (ADR-0063): each held as a
+	// decision-record directory is, and apart as those are, by what each
+	// resolves to.
+	if cfg.approvalRecords != "" {
+		if err := holdApprovalRecords(cfg.approvalRecords, host); err != nil {
+			return nil, fmt.Errorf("approvalRecords: %v", err)
+		}
+	}
+	for _, p := range cfg.platforms {
+		if p.approvalRecords == "" {
+			continue
+		}
+		if err := holdApprovalRecords(p.approvalRecords, host); err != nil {
+			return nil, fmt.Errorf("platform %s: approvalRecords: %v", p.name, err)
+		}
+	}
+	if err := approvalRecordsApart(cfg.approvalRecords, cfg.platforms, nestedOnDisk); err != nil {
 		return nil, err
 	}
 	seen := map[int]string{}
@@ -2963,7 +3006,7 @@ func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, e
 // engineServeOptions is what `serve` runs for a configuration: the derived
 // sources, the receipt version the design assumes, and the defaults.
 func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec, identity *identityConfig) serveOptions {
-	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), dryRunApprovals: versionAtLeast(cfg.version, actScopeVersion), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed, receiptSink: cfg.receiptSink, labels: versionAtLeast(cfg.version, labelsVersion), keyHistoryVersion: cfg.keyHistoryVersion, limits: cfg.limits, refusalJournal: cfg.refusalJournal}
+	return serveOptions{requireActionKey: versionAtLeast(cfg.version, "14"), dryRunApprovals: versionAtLeast(cfg.version, actScopeVersion), sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, approvalRecords: cfg.approvalRecords, witnessedBy: cfg.witnessedBy, seedPath: cfg.seed, receiptSink: cfg.receiptSink, labels: versionAtLeast(cfg.version, labelsVersion), keyHistoryVersion: cfg.keyHistoryVersion, limits: cfg.limits, refusalJournal: cfg.refusalJournal}
 }
 
 // maxKeySetBytes bounds the issuer's key file.

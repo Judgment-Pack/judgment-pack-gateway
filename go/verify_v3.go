@@ -510,6 +510,19 @@ func validateActionClaims(obj *vObject, r *receipt) error {
 		}
 		r.approvals = approvals
 	}
+	// The gateway's mark that every citation resolved before the write
+	// (ADR-0063): optional, true when present, and only beside approvals.
+	// A verifier holds no approval-record directory and resolves nothing
+	// again; the mark is what the signer says it found.
+	if v, present := obj.get("approvalsResolved"); present {
+		if b, ok := v.(vBool); !ok || !bool(b) {
+			return errors.New("action: approvalsResolved, when present, is true")
+		}
+		if r.approvals == nil {
+			return errors.New("action: approvalsResolved is present and approvals is not")
+		}
+		r.approvalsResolved = true
+	}
 	r.cites = cites
 	r.recordDigest, _ = memberString(decision, "recordDigest")
 	r.packDigest, _ = memberString(decision, "packDigest")

@@ -380,6 +380,8 @@ verification requires their retained evidence (SPEC.md §9).
 - `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve an
   action receipt's `decision.recordDigest` ([receipt-v3.md](receipt-v3.md)). The engine refuses
   one that anyone but root, the signer and its owner could write a record into (below).
+- `approvalRecords`, optional from version 52, is where `/act` resolves the approval records an
+  action cites ("Resolved approval citations (ADR-0063; engine version 52)", below).
 - `listen` is a literal loopback address with a port — `127.0.0.1:8787` or `[::1]:8787` —
   and the engine refuses any other, a name such as `localhost` included, since a resolver may
   map a name elsewhere, unless the file is of version 19 and has an `identity` and
@@ -3124,6 +3126,33 @@ ADR-0054 adds, from engine version 43 (`actScopeVersion` in `go/engine.go`):
 
 Below that version `scope` and `decisionRecords` are refused by name, and `dryRun` and `approvals`
 as members `/act` does not read, as before.
+
+## Resolved approval citations (ADR-0063; engine version 52)
+
+Version 52 (`approvalRecordsVersion` in `go/approval_records.go`) adds `approvalRecords`, at the top
+level and on a platform: an approval-record directory that the operator fills by whatever means it
+chooses. The gateway only reads it; nothing is synchronized or fetched.
+
+- **Where.** The top-level member is the directory of every unscoped write. A platform's is allowed
+  only beside `scope` and `write: true`, and is then that scope's. Once the top-level member is
+  given, every write fixed to a scope identifier must name its own. Each scoped directory is apart
+  from the gateway's and from every other scope's, never beneath or above either, by the load and
+  start checks `decisionRecords` has. An absolute path of plain spelling.
+- **At start** each one must be there, a directory and not a link. It is held to the ownership and
+  permission check the decision-record directory is held to: it, everything beneath it and every
+  directory on the way to it are owned by root, the signer or its owner, and writable by nobody else.
+- **A record** is the file `<dir>/<kind>/<id>` of a citation, `kind` being `single` or `standing`;
+  its digest is the SHA-256 of the file's bytes, and it is at most 1 MiB. Name each file by the id
+  the requester will cite, using code points below U+0300 alone, with no `/` or `\`, and not `.` or
+  `..`. No link is followed at any level.
+- **What `/act` does** (SPEC.md §6, "Resolved approvals"): every citation of an action of the
+  directory's scope resolves there before anything is sent, or the action is refused `400` at
+  `approvals` with one sentence that names no directory and no path. The receipt marks a resolved
+  action `approvalsResolved: true`.
+
+Below version 52 either member is refused by name (`approvalRecords is a version-52 member;
+engineVersion <m> has no approvalRecords`). Without it, at any version, a citation is the
+requester's claim, and every answer and receipt is as before, byte for byte.
 
 ## A key history that marks each store continuation (engine version 42)
 

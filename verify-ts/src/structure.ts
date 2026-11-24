@@ -312,6 +312,7 @@ export function isActionClaims(v: Value | undefined): v is ObjectValue {
   const tool = member(v, "tool");
   const policy = member(v, "policy");
   const approvals = member(v, "approvals");
+  const resolved = member(v, "approvalsResolved");
   return (
     isIdentity(member(v, "requester")) &&
     decision?.type === "object" &&
@@ -332,7 +333,10 @@ export function isActionClaims(v: Value | undefined): v is ObjectValue {
     (policy === undefined || isDigest(policy)) &&
     // the approval records the requester cites (ADR-0054): optional, and of
     // their form when present
-    (approvals === undefined || isApprovals(approvals))
+    (approvals === undefined || isApprovals(approvals)) &&
+    // the gateway's mark that every citation resolved before the write
+    // (ADR-0063): optional, true when present, and only beside approvals
+    (resolved === undefined || (resolved.type === "boolean" && resolved.value && approvals !== undefined))
   );
 }
 
