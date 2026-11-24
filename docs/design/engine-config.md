@@ -3166,6 +3166,37 @@ configuration may carry a top-level `limits` member. Below that version it is re
 - Without the member nothing is counted, and every answer, start line and posture report is as
   before, byte for byte. The limits are read at start; a `SIGHUP` does not change them.
 
+## The refusal journal (ADR-0059; engine version 48)
+
+Engine version 46 (`refusalJournalVersion` in `go/engine.go`; its number is taken in merge order,
+expected 48) adds one optional member:
+
+```json
+"refusalJournal": {"maxBytesPerScope": 67108864}
+```
+
+Where it is given, each refused request that `limits` charged to a scope, and whose charge took
+that scope's hold, is signed into that scope's refusal journal, `journals/refusal-<name>.jsonl`
+(`gateway journal name --scope <key>` prints the name), after its answer is written and flushed.
+The answer is the one the gateway gives without the member. An entry holds the route, the refusal's
+code, its status, the caller and a salted commitment to the request body; never the body.
+`gateway journal open --config <file> --journal <name> --ordinal <n> --route <route> --body <file>`
+answers whether a body is the one an entry commits to, read-only, as the configuration's login.
+
+- `maxBytesPerScope` is an integer from 1048576 to 1073741824, 64 MiB by default. Refusal entries
+  stop at the cap less its sixteenth; the rest takes the tallies, and the last is a tally with
+  `full: true`, after which the journal takes nothing.
+- A tally a minute counts each scope's limit refusals, and the records not written: `queue-full`,
+  `write-failed` and `journal-full`. stderr gives one line a minute of the records not written.
+- The load refuses the member below its version, a configuration with no `identity`, and one in
+  which some scope has no `requestsPerMinute` in `limits`.
+- The key each journal's commitments are made under is drawn when the gateway starts: on the
+  filesystem kind `journals/<name>.key`, 0600; on the PostgreSQL kind a row of `gateway.secrets`.
+  No export carries it. On the PostgreSQL kind the journal is rows of `gateway.journal_records`,
+  each inserted under the journal's two-key advisory lock; no migration and no grant is added.
+- `remove-scope` removes the scope's journal, its key and its cursor with the scope's records, and
+  names the journal's bytes and digest in its operator journal entry.
+
 ## Keyed actions (engine version 14 and later)
 
 Version 14 and every later version require a caller-chosen `actionKey` on `/act`: 64 lowercase hex

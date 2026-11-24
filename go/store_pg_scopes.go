@@ -273,6 +273,9 @@ func (k *pgKind) exportCut() (*storeCut, error) {
 			}
 			// and the operator journal in the same snapshot, so its
 			// entries name the records and seals the cut holds
+			if cut.refusalJournals, err = pgRefusalJournalFiles(tx); err != nil {
+				return err
+			}
 			if cut.journal, err = pgJournalFile(tx, operatorJournal); err != nil {
 				return err
 			}

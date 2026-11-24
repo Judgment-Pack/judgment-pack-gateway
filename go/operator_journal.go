@@ -18,6 +18,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -132,7 +133,7 @@ type journalEntry struct {
 // member is required (ADR-0056 §4).
 var operatorBodies = map[string]map[string]bool{
 	"retain":          {"by": true, "scope": false, "acknowledgments": true, "acknowledgedBy": true, "sessions": true, "removalBytes": true, "removalDigest": true},
-	"remove-scope":    {"by": true, "scope": true, "removalBytes": true, "removalDigest": true},
+	"remove-scope":    {"by": true, "scope": true, "removalBytes": true, "removalDigest": true, "refusalJournalBytes": false, "refusalJournalDigest": false},
 	"remove-artifact": {"by": true, "removalBytes": true, "removalDigest": true},
 	"seal-open":       {"seals": true, "sealDigest": true, "delivered": true},
 	"store-rotate":    {"seals": true, "sealDigest": true, "delivered": true},
@@ -202,7 +203,7 @@ func loadJournalEntry(line []byte, journal string, keys []reachedKey) (*journalE
 	}
 	rawBody, _ := obj.get("body")
 	body, ok := rawBody.(*vObject)
-	if !ok || !e.bodyLoads(body) {
+	if !ok || !e.bodyFits(body, journal) {
 		return nil, false
 	}
 	// the key the walk reached, by the algorithm alg names, and the
@@ -276,12 +277,22 @@ func (e *journalEntry) bodyLoads(body *vObject) bool {
 		case "delivered":
 			v, _ := body.get(name)
 			_, holds = v.(vBool)
+		case "refusalJournalBytes":
+			var n int64
+			n, holds = recordCount(body, name)
+			holds = holds && n > 0
+		case "refusalJournalDigest":
+			_, holds = hexMember(body, name, 64)
 		}
 		if !holds {
 			return false
 		}
 	}
-	return true
+	// a removed refusal journal is named by both members or by neither
+	// (ADR-0059 §8, amending ADR-0056 §4)
+	_, withBytes := body.get("refusalJournalBytes")
+	_, withDigest := body.get("refusalJournalDigest")
+	return withBytes == withDigest
 }
 
 // --- reading a journal --------------------------------------------------------
@@ -532,8 +543,24 @@ func judgeOperatorJournal(data []byte, pending bool, keys []reachedKey, registry
 	return j
 }
 
-// knownJournalFiles are the files of journals/ this release reads.
+// knownJournalFiles are the operator journal's files of journals/, which
+// this release reads; isKnownJournalFile adds the refusal journals'.
 var knownJournalFiles = map[string]bool{operatorJournal + ".jsonl": true, operatorJournal + ".pending": true}
+
+// isKnownJournalFile is whether this release reads a file of journals/ so
+// named: the operator journal's two, and a refusal journal and its key, by
+// the refusal journal name's form (ADR-0059 §1, §8).
+func isKnownJournalFile(name string) bool {
+	if knownJournalFiles[name] {
+		return true
+	}
+	for _, suffix := range []string{".jsonl", ".key"} {
+		if stem, ok := strings.CutSuffix(name, suffix); ok && isRefusalJournalName(stem) {
+			return true
+		}
+	}
+	return false
+}
 
 // judgeJournals is SPEC.md §4 step 9 on a store's root: each journal it
 // holds is judged, and a journal with no finding observed as journal-from.
@@ -546,6 +573,15 @@ func (r *report) judgeJournals(storeRoot string, registry []byte, walk *registry
 	if err := r.judgeUnknownJournals(storeRoot); err != nil {
 		return err
 	}
+	if err := r.judgeOperatorJournalOf(storeRoot, registry, walk); err != nil {
+		return err
+	}
+	// the refusal journals (ADR-0059 §8), each judged alone
+	return r.judgeRefusalJournals(storeRoot, walk.keys)
+}
+
+// judgeOperatorJournalOf is judgeJournals on the operator journal.
+func (r *report) judgeOperatorJournalOf(storeRoot string, registry []byte, walk *registryWalk) error {
 	data, there, err := readJournalPath(storeRoot, operatorJournal+".jsonl")
 	if errors.Is(err, errJournalNotRegular) {
 		data, there, err = nil, false, nil
@@ -633,7 +669,7 @@ func unknownJournalFiles(storeRoot string) ([]string, error) {
 	// pipe) is not read either, and is named with the rest rather than
 	// read as no journal
 	for _, e := range entries {
-		if !knownJournalFiles[e.Name()] || !e.Type().IsRegular() {
+		if !isKnownJournalFile(e.Name()) || !e.Type().IsRegular() {
 			names = append(names, e.Name())
 		}
 	}
@@ -645,7 +681,7 @@ func unknownJournalFiles(storeRoot string) ([]string, error) {
 // journal-missing, and the verdict fails.
 func (r *report) requireJournals(names []string) {
 	for _, name := range names {
-		if r.journals[name] || !r.journalEvidence {
+		if r.journals[name] || (!r.journalEvidence && !isRefusalJournalName(name)) {
 			continue
 		}
 		r.Findings = append(r.Findings, finding{"status": "journal-missing", "journal": name})

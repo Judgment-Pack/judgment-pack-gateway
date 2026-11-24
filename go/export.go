@@ -584,6 +584,24 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 				return nil, err
 			}
 		}
+		// the refusal journals, whole, with no key and no cursor (ADR-0059
+		// §8); an export by scope takes none
+		refusals := cut.refusalJournals
+		if in.storeRoot != "" {
+			files, err := refusalJournalFilesIn(in.storeRoot)
+			if err != nil {
+				return nil, err
+			}
+			if len(files) > 0 && len(refusals) > 0 {
+				return nil, errors.New("refusal journals: the kind keeps them, and the store directory named beside it holds some; the export takes neither for the other")
+			}
+			if len(files) > 0 {
+				refusals = files
+			}
+		}
+		if err := putRefusalJournals(refusals, w.put); err != nil {
+			return nil, err
+		}
 	}
 	// the decision records, read after the cut, as verification walks them
 	recordsThere := false
@@ -922,9 +940,11 @@ func exportPathWritten(p string) bool {
 		return true
 	case len(parts) == 3 && parts[0] == "store" && parts[1] == journalsDir:
 		// the journals this release writes, and no other: an export holding
-		// a journal this release cannot judge is refused, by its path
+		// a journal this release cannot judge is refused, by its path. A
+		// refusal journal travels by its exact name, without its key
+		// (ADR-0059 §8).
 		name, ok := strings.CutSuffix(parts[2], ".jsonl")
-		return ok && name == operatorJournal
+		return ok && (name == operatorJournal || isRefusalJournalName(name))
 	case len(parts) >= 2 && parts[0] == "decision-records":
 		return true
 	case len(parts) == 2 && parts[0] == "descriptors":
