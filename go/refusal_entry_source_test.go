@@ -305,7 +305,7 @@ func TestOneRefusalEntryDeliveryIsInFlightGatewayWide(t *testing.T) {
 // leaves it. A locked that takes no lock fails it.
 func TestTheRefusalCursorMovesUnderTheJournalFilesLockAlone(t *testing.T) {
 	if !journalFilesLock {
-		t.Skip("no flock on this platform: the writer is the file's one writer, and remove-scope runs with the gateway stopped")
+		t.Skip("no flock on this platform: the cursor moves under no file lock, and remove-scope relies on the gateway being stopped, which this platform does not check (remove-scope says so on stderr)")
 	}
 	h := limitsSetup(t, refusalLimits())
 	j := sourceJournals(t, h, refusalFS{root: h.g.storeRoot}, callerScopeA, callerScopeB)
