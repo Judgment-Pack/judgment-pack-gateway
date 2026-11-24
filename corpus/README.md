@@ -241,7 +241,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 248 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 250 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). Ten of them,
@@ -261,7 +261,13 @@ the journal of the synthetic scope `corpus-a`: one that holds (`journal-from`, w
 one closed by its tally with `full: true`; one whose entries name the tool their route resolved, the first with its pinned `descriptorDigest`; an entry naming a `descriptorDigest` and no `tool` (`journal-entry-forged`, at ordinal 1); an entry forged; an entry of another scope's journal; an
 operator body in a refusal journal (each `journal-entry-forged`, at ordinal 1); a `previous` that
 is not the line before it (`journal-order`); a torn last piece (`journal-torn-tail`, with its
-`bytes`); and the journal's name under the option with no journal (`journal-missing`). They cover: a valid sealed version 3 session; an action receipt whose
+`bytes`); and the journal's name under the option with no journal (`journal-missing`). The two
+`v3-journal-remove-scope-*` vectors are `v3-journal-refusal-holds` after `gateway remove-scope` of
+`corpus-a`, which holds the refusal journal and no session (ADR-0059 §8, as built 2026-11-24): the
+journal is gone, and the operator journal's second entry is `remove-scope`'s, naming no removal
+record (`removalBytes` 0) and the journal by `refusalJournalBytes` and `refusalJournalDigest` (no
+finding, `journal-from`); and the same entry with `refusalJournalDigest` dropped and signed again
+(`journal-entry-forged`, at ordinal 1). They cover: a valid sealed version 3 session; an action receipt whose
 citation and decision record both resolve; `citation-unresolved` for a wrong
 signature; `malformed` for the right signature cited in another case, since a
 cited signature has the form §1.2a gives it; `decision-record-mismatch`,

@@ -1951,7 +1951,7 @@ const journalEnvelope = ["journal", "journalVersion", "ordinal", "previous", "at
 // kind, registryFrom and removalFrom: true where the member is required.
 const operatorBodies: ReadonlyMap<string, ReadonlyMap<string, boolean>> = new Map([
   ["retain", new Map([["by", true], ["scope", false], ["acknowledgments", true], ["acknowledgedBy", true], ["sessions", true], ["removalBytes", true], ["removalDigest", true]])],
-  ["remove-scope", new Map([["by", true], ["scope", true], ["removalBytes", true], ["removalDigest", true]])],
+  ["remove-scope", new Map([["by", true], ["scope", true], ["removalBytes", true], ["removalDigest", true], ["refusalJournalBytes", false], ["refusalJournalDigest", false]])],
   ["remove-artifact", new Map([["by", true], ["removalBytes", true], ["removalDigest", true]])],
   ["seal-open", new Map([["seals", true], ["sealDigest", true], ["delivered", true]])],
   ["store-rotate", new Map([["seals", true], ["sealDigest", true], ["delivered", true]])],
@@ -2224,10 +2224,23 @@ function journalBodyOf(body: ObjectValue): Omit<JournalEntry, "ordinal" | "previ
       case "delivered":
         holds = m.type === "boolean";
         break;
+      case "refusalJournalBytes": {
+        const n = countOf(m);
+        holds = n !== null && n > 0;
+        break;
+      }
+      case "refusalJournalDigest":
+        holds = hexOf(m, 64) !== undefined;
+        break;
     }
     if (!holds) {
       return null;
     }
+  }
+  // a removed refusal journal is named by both members or by neither
+  // (ADR-0059 section 8, amending ADR-0056 section 4), as gateway verify reads it
+  if ((member(body, "refusalJournalBytes") === undefined) !== (member(body, "refusalJournalDigest") === undefined)) {
+    return null;
   }
   return e;
 }
