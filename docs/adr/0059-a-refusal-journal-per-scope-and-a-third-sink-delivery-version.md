@@ -980,6 +980,17 @@ forwarding, follow it. Where R2 departs from the text above:
   cursor again, naming an entry no journal holds. No transaction spans a delivery: the owner reads
   and delivers outside every transaction and lock, and the locked transaction only checks the entry
   and moves the cursor. On the filesystem kind nothing changes.
+- **2026-11-24, one read of a journal per pass (#611).** A pass reads the entry at the cursor and
+  the batch after it in one read, on both kinds; it read them in two before. On the filesystem kind
+  the source keeps, for each configured journal, the line its last read ended on: the file's
+  identity, the offset after the line, its ordinal and its bytes. The next read that begins at or
+  after that line starts there, and not at byte 0, only where the file is the same one
+  (`os.SameFile`), its durable size is at least that offset, and the line is still there, read
+  again at its place; anything else drops it and reads the file whole, as a file replaced
+  (`remove-scope` and a new journal), cut back or rewritten is. So a pass over a journal that has
+  not changed reads that one line and no entry byte past it. The source keeps one line for each
+  journal, whatever the journal's length, and drops it once the file is gone. The durable bound and
+  the torn tail's rule are as before.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on

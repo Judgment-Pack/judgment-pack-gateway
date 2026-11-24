@@ -389,22 +389,25 @@ func (r *refusalEntryForwarding) forwardJournal(ctx context.Context, journal str
 	if err != nil {
 		return err
 	}
+	// one read: the entry at the cursor, where there is one, and the batch
+	// after it
+	after, limit := from.ordinal, refusalForwardBatch
 	if from.ordinal >= 0 {
-		// the entry at the cursor is the one acknowledged there
-		at, err := r.source.entriesAfter(journal, from.ordinal-1, 1)
-		if err != nil {
-			return err
-		}
-		if len(at) != 1 || at[0].ordinal != from.ordinal {
-			return errCursorDiverged
-		}
-		if held, err := r.forwarder.heldRefusalEntry(journal, at[0].line); err != nil || held.digest != from.digest {
-			return errCursorDiverged
-		}
+		after, limit = from.ordinal-1, refusalForwardBatch+1
 	}
-	entries, err := r.source.entriesAfter(journal, from.ordinal, refusalForwardBatch)
+	entries, err := r.source.entriesAfter(journal, after, limit)
 	if err != nil {
 		return err
+	}
+	if from.ordinal >= 0 {
+		// the entry at the cursor is the one acknowledged there
+		if len(entries) == 0 || entries[0].ordinal != from.ordinal {
+			return errCursorDiverged
+		}
+		if held, err := r.forwarder.heldRefusalEntry(journal, entries[0].line); err != nil || held.digest != from.digest {
+			return errCursorDiverged
+		}
+		entries = entries[1:]
 	}
 	reached := from
 	var last refusalEntryLine

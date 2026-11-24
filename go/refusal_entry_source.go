@@ -63,10 +63,79 @@ type fsRefusalEntries struct {
 	root        string
 	names       []string
 	cursorFiles fsForwardingCursors
+	// lastRead is where each journal's last read ended, or nil, where
+	// every read is of the whole file
+	lastRead *fsLastRead
 }
 
 func newFSRefusalEntries(root string, names []string) fsRefusalEntries {
-	return fsRefusalEntries{root: root, names: names, cursorFiles: fsForwardingCursors{root: root, mu: &sync.Mutex{}}}
+	return fsRefusalEntries{root: root, names: names, cursorFiles: fsForwardingCursors{root: root, mu: &sync.Mutex{}},
+		lastRead: &fsLastRead{lines: map[string]fsReadLine{}}}
+}
+
+// fsLastRead is, for each configured journal, the last line its last read
+// ended on, so that the next read, which begins at or after that line,
+// starts there and not at byte 0: one line for each journal, whatever its
+// length, dropped where the file is gone, replaced or cut back.
+type fsLastRead struct {
+	mu    sync.Mutex
+	lines map[string]fsReadLine
+}
+
+// fsReadLine is a line as a read left it: the file read (os.SameFile), the
+// offset after the line, its ordinal and its bytes with their line feed.
+type fsReadLine struct {
+	file    os.FileInfo
+	end     int64
+	ordinal int64
+	line    []byte
+}
+
+// from is where a read of the entries past ordinal may start in file, of
+// identity held and durable size durable: the line the last read ended on,
+// where the next is past it or is it, and only where it is still there:
+// the same file, at least that long, and holding that line at its place.
+// Anything else is dropped, and the file is read whole.
+func (r *fsLastRead) from(journal string, file *os.File, held os.FileInfo, durable, ordinal int64) (fsReadLine, bool) {
+	if r == nil {
+		return fsReadLine{}, false
+	}
+	r.mu.Lock()
+	last, ok := r.lines[journal]
+	r.mu.Unlock()
+	if !ok || last.ordinal > ordinal+1 {
+		// an earlier entry is asked for: the read starts at byte 0
+		return fsReadLine{}, false
+	}
+	n := int64(len(last.line))
+	if !os.SameFile(last.file, held) || durable < last.end {
+		r.forget(journal)
+		return fsReadLine{}, false
+	}
+	got := make([]byte, n)
+	if _, err := file.ReadAt(got, last.end-n); err != nil || !bytes.Equal(got, last.line) {
+		r.forget(journal)
+		return fsReadLine{}, false
+	}
+	return last, true
+}
+
+func (r *fsLastRead) keep(journal string, line fsReadLine) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines[journal] = line
+}
+
+func (r *fsLastRead) forget(journal string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.lines, journal)
 }
 
 func (f fsRefusalEntries) cursors() forwardingCursors { return f.cursorFiles }
@@ -90,26 +159,32 @@ func (f fsRefusalEntries) journals() ([]string, error) {
 // read. Each entry's at is where its line begins, which locked reads it at
 // again. A journal with no file, or an empty one, holds no entry. Where no
 // file lock is taken (journalFilesLock false), the bound is the size at the
-// read.
+// read. The read starts at the line the last one ended on, where it is
+// still there (fsLastRead.from), and otherwise at byte 0; the bound and the
+// torn tail's rule are the same either way.
 func (f fsRefusalEntries) entriesAfter(journal string, ordinal int64, limit int) ([]refusalEntryLine, error) {
 	if err := configuredJournal(f.names, journal); err != nil {
 		return nil, err
 	}
 	info, err := os.Lstat(f.path(journal))
 	if errors.Is(err, os.ErrNotExist) {
+		f.lastRead.forget(journal)
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
+		f.lastRead.forget(journal)
 		return nil, errJournalNotRegular
 	}
 	if info.Size() == 0 {
+		f.lastRead.forget(journal)
 		return nil, nil
 	}
 	file, err := os.Open(f.path(journal))
 	if errors.Is(err, os.ErrNotExist) {
+		f.lastRead.forget(journal)
 		return nil, nil
 	}
 	if err != nil {
@@ -120,16 +195,32 @@ func (f fsRefusalEntries) entriesAfter(journal string, ordinal int64, limit int)
 	if err != nil {
 		return nil, err
 	}
+	held, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
 	if refusalReadAfterBound != nil {
 		refusalReadAfterBound(journal)
 	}
-	in := bufio.NewReaderSize(io.LimitReader(file, durable), 64<<10)
 	var out []refusalEntryLine
-	var at int64
-	for i := int64(0); len(out) < limit; i++ {
+	start, i := int64(0), int64(0)
+	if last, ok := f.lastRead.from(journal, file, held, durable, ordinal); ok {
+		if last.ordinal > ordinal {
+			out = append(out, refusalEntryLine{ordinal: last.ordinal, line: append([]byte(nil), last.line[:len(last.line)-1]...), at: last.end - int64(len(last.line))})
+		}
+		start, i = last.end, last.ordinal+1
+	}
+	var read io.Reader = io.NewSectionReader(file, start, durable-start)
+	if refusalScanReader != nil {
+		read = refusalScanReader(journal, read)
+	}
+	in := bufio.NewReaderSize(read, 64<<10)
+	at := start
+	var last *fsReadLine
+	for ; len(out) < limit; i++ {
 		line, err := in.ReadBytes('\n')
 		if err == io.EOF {
-			return out, nil // a torn tail, or none
+			break // a torn tail, or none
 		}
 		if err != nil {
 			return nil, err
@@ -138,9 +229,19 @@ func (f fsRefusalEntries) entriesAfter(journal string, ordinal int64, limit int)
 			out = append(out, refusalEntryLine{ordinal: i, line: line[:len(line)-1], at: at})
 		}
 		at += int64(len(line))
+		last = &fsReadLine{file: held, end: at, ordinal: i, line: line}
+	}
+	if last != nil {
+		last.line = append([]byte(nil), last.line...)
+		f.lastRead.keep(journal, *last)
 	}
 	return out, nil
 }
+
+// refusalScanReader, where not nil, is given the reader of the bytes
+// entriesAfter reads past the line it starts at, and the bytes it reads are
+// read through what it returns: a test seam.
+var refusalScanReader func(journal string, r io.Reader) io.Reader
 
 // refusalReadAfterBound, where not nil, runs once entriesAfter has its bound
 // and let the lock go, before it reads: a test seam.
