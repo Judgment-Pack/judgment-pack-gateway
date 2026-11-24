@@ -213,7 +213,7 @@ func TestRefusalEntryForwardingResumesFromTheCursorAfterAStop(t *testing.T) {
 	j := sourceJournals(t, h, refusalFS{root: h.g.storeRoot}, callerScopeA)
 	name := refusalJournalName(callerScopeA)
 	appendRefusals(t, j, callerScopeA, 6)
-	source := fsRefusalEntries{root: h.g.storeRoot, names: refusalJournalNames(j)}
+	source := newFSRefusalEntries(h.g.storeRoot, refusalJournalNames(j))
 	var ackBelow atomic.Int64
 	ackBelow.Store(3)
 	sink, url := ordinalSink(t, func(ordinal int64) bool { return ordinal < ackBelow.Load() })
@@ -278,7 +278,7 @@ func TestOneRefusalEntryDeliveryIsInFlightGatewayWide(t *testing.T) {
 		_, digest := entryOrdinal(t, got[k])
 		_, _ = io.WriteString(w, `{"acknowledged":"`+digest+`"}`)
 	})
-	source := fsRefusalEntries{root: h.g.storeRoot, names: refusalJournalNames(j)}
+	source := newFSRefusalEntries(h.g.storeRoot, refusalJournalNames(j))
 	cursors := fsForwardingCursors{root: h.g.storeRoot, mu: &sync.Mutex{}}
 	owner := ownerFor(t, server.URL, source, cursors)
 	var wg sync.WaitGroup
@@ -311,7 +311,7 @@ func TestTheRefusalCursorMovesUnderTheJournalFilesLockAlone(t *testing.T) {
 	j := sourceJournals(t, h, refusalFS{root: h.g.storeRoot}, callerScopeA, callerScopeB)
 	name := refusalJournalName(callerScopeA)
 	appendRefusals(t, j, callerScopeA, 2)
-	source := fsRefusalEntries{root: h.g.storeRoot, names: refusalJournalNames(j)}
+	source := newFSRefusalEntries(h.g.storeRoot, refusalJournalNames(j))
 	entries, err := source.entriesAfter(name, -1, 8)
 	if err != nil || len(entries) != 2 || entries[1].ordinal != 1 {
 		t.Fatalf("the entries: %d %v", len(entries), err)
@@ -322,7 +322,7 @@ func TestTheRefusalCursorMovesUnderTheJournalFilesLockAlone(t *testing.T) {
 	t.Cleanup(letGo)
 	ran := make(chan error, 1)
 	go func() {
-		ran <- source.locked(name, entries[1], func() error { close(inside); <-release; return nil })
+		ran <- source.locked(name, entries[1], func(forwardingCursors) error { close(inside); <-release; return nil })
 	}()
 	<-inside
 	go func() { appendRefusal(j, callerScopeA); close(done) }()
@@ -345,7 +345,7 @@ func TestTheRefusalCursorMovesUnderTheJournalFilesLockAlone(t *testing.T) {
 	}
 
 	runs := 0
-	count := func() error { runs++; return nil }
+	count := func(forwardingCursors) error { runs++; return nil }
 	other := entries[1]
 	other.line = append([]byte(nil), entries[0].line...)
 	if err := source.locked(name, other, count); err != nil || runs != 0 {
@@ -387,7 +387,8 @@ func TestTwoPostgresInstancesForwardRefusalEntriesPassingOverNone(t *testing.T) 
 		source := newPGRefusalEntries(db.open(t, nil), refusalJournalNames(j))
 		t.Cleanup(source.close)
 		sources = append(sources, source)
-		owners = append(owners, ownerFor(t, url, source, pgForwardingCursors{db.open(t, nil).ofNoScope().documents()}))
+		// the source's own cursors, on its connection
+		owners = append(owners, ownerFor(t, url, source, nil))
 	}
 	var wg sync.WaitGroup
 	for _, owner := range owners {
@@ -431,7 +432,7 @@ func TestTwoPostgresInstancesForwardRefusalEntriesPassingOverNone(t *testing.T) 
 	t.Cleanup(letGo)
 	ran := make(chan error, 1)
 	go func() {
-		ran <- sources[1].locked(name, entries[0], func() error { close(inside); <-release; return nil })
+		ran <- sources[1].locked(name, entries[0], func(forwardingCursors) error { close(inside); <-release; return nil })
 	}()
 	select {
 	case <-inside:
@@ -452,7 +453,7 @@ func TestTwoPostgresInstancesForwardRefusalEntriesPassingOverNone(t *testing.T) 
 	runs := 0
 	other := entries[0]
 	other.line = []byte(`{"not":"the entry"}`)
-	if err := sources[0].locked(name, other, func() error { runs++; return nil }); err != nil || runs != 0 {
+	if err := sources[0].locked(name, other, func(forwardingCursors) error { runs++; return nil }); err != nil || runs != 0 {
 		t.Fatalf("an entry the journal does not hold there: ran %d, %v", runs, err)
 	}
 }
@@ -470,7 +471,7 @@ func TestTheRefusalSourceReadsOnlyWhatTheJournalHoldsDurably(t *testing.T) {
 	j := sourceJournals(t, h, refusalFS{root: h.g.storeRoot}, callerScopeA)
 	name := refusalJournalName(callerScopeA)
 	appendRefusals(t, j, callerScopeA, 1)
-	source := fsRefusalEntries{root: h.g.storeRoot, names: refusalJournalNames(j)}
+	source := newFSRefusalEntries(h.g.storeRoot, refusalJournalNames(j))
 
 	// a writer's round in progress: it holds the lock, and its line is not
 	// yet synced

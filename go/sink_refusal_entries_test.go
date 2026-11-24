@@ -53,13 +53,30 @@ func (s *standInEntries) entriesAfter(journal string, ordinal int64, limit int) 
 	return out, nil
 }
 
-func (s *standInEntries) locked(_ string, _ refusalEntryLine, fn func() error) error {
+// cursors is none of the stand-in's own: a test gives the owner its
+// cursors (withCursors).
+func (s *standInEntries) cursors() forwardingCursors { return nil }
+
+func (s *standInEntries) locked(_ string, _ refusalEntryLine, fn func(forwardingCursors) error) error {
 	s.mu.Lock()
 	s.locks++
 	s.held = true
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); s.held = false; s.mu.Unlock() }()
-	return fn()
+	return fn(nil)
+}
+
+// withCursors is a source whose cursors are c, outside its lock and under
+// it alike: a stand-in's, or ones a test makes apart from the source.
+type withCursors struct {
+	refusalEntrySource
+	c forwardingCursors
+}
+
+func (w withCursors) cursors() forwardingCursors { return w.c }
+
+func (w withCursors) locked(journal string, at refusalEntryLine, fn func(forwardingCursors) error) error {
+	return w.refusalEntrySource.locked(journal, at, func(forwardingCursors) error { return fn(w.c) })
 }
 
 // lockChecked refuses a cursor moved outside the journal's lock.
@@ -123,13 +140,18 @@ func entrySink(t *testing.T) (*standInSink, string, func(refuse func(n int) bool
 	return sink, server.URL, answer, sent
 }
 
+// ownerFor is the owner over source, with cursors in place of the
+// source's own where cursors is not nil.
 func ownerFor(t *testing.T, url string, source refusalEntrySource, cursors forwardingCursors) *refusalEntryForwarding {
 	t.Helper()
+	if cursors != nil {
+		source = withCursors{source, cursors}
+	}
 	spec, err := parseSinkMember(t, `{"url":"`+url+`","deliveryVersion":"3"}`, sinkDeliveryV3Version)
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := newRefusalEntryForwarding(spec, source, cursors)
+	owner := newRefusalEntryForwarding(spec, source)
 	if owner == nil {
 		t.Fatal("no forwarding for a sink on 3 that takes refusal entries")
 	}
@@ -211,7 +233,7 @@ func TestASinkThatDeclinesRefusalEntriesIsGivenNoForwarding(t *testing.T) {
 			t.Fatal(err)
 		}
 		root := t.TempDir()
-		owner := newRefusalEntryForwarding(spec, standInJournalOf(2), fsForwardingCursors{root: root, mu: &sync.Mutex{}})
+		owner := newRefusalEntryForwarding(spec, withCursors{standInJournalOf(2), fsForwardingCursors{root: root, mu: &sync.Mutex{}}})
 		if owner != nil {
 			t.Fatalf("%s: forwarded", text)
 		}

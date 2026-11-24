@@ -913,7 +913,8 @@ forwarding, follow it. Where R2 departs from the text above:
   journal's appends take: on the filesystem kind the file's `flock`, for that one move as for one
   append round, once the path is still the file locked (none where the platform has no `flock`, as
   for the writer); on the PostgreSQL kind the journal's advisory lock, in a read transaction on that
-  connection. The cursor's compare-and-set is still the document of no scope, on the pool. Under the
+  connection. The cursor's compare-and-set is still the document of no scope, on the pool (until the
+  cursor moved onto that connection, 2026-11-24, below). Under the
   lock the journal must still hold, at its place, the entry the cursor is to name; where it does
   not, or where the journal has no file, the cursor is not moved. The owner moves it only after the
   sink acknowledged an entry read from the journal, so a journal with no file by then was removed
@@ -967,6 +968,29 @@ forwarding, follow it. Where R2 departs from the text above:
   so the start removes it, draws the key again and says so in one stderr line. A whole key, with its
   line feed or without, is kept. A `.key` that does not decode beside a journal holding entries
   still refuses the start.
+- **2026-11-24, the PostgreSQL cursor on the source's own connection (#611).** A forwarding pass
+  takes no slot of the pool. The cursor's first read is a read transaction on the source's own
+  connection, as the entries' read is. Under the lock, the source takes the journal's advisory lock
+  in a write transaction on that connection, finds the entry there again, and then reads the cursor
+  and makes its compare-and-set as statements of that same transaction: the revision rule is the
+  document space's own (`pgDocumentsOn`, one code path for the pool's documents and a transaction's).
+  So no `remove-scope` comes between the lock and the put. Before, the put waited for a slot of the
+  pool with the lock's transaction open; a wait past the idle bound ended the session and let the
+  lock go, and a `remove-scope` then could take the journal and its cursor before the put made the
+  cursor again, naming an entry no journal holds. No transaction spans a delivery: the owner reads
+  and delivers outside every transaction and lock, and the locked transaction only checks the entry
+  and moves the cursor. On the filesystem kind nothing changes.
+- **2026-11-24, one read of a journal per pass (#611).** A pass reads the entry at the cursor and
+  the batch after it in one read, on both kinds; it read them in two before. On the filesystem kind
+  the source keeps, for each configured journal, the line its last read ended on: the file's
+  identity, the offset after the line, its ordinal and its bytes. The next read that begins at or
+  after that line starts there, and not at byte 0, only where the file is the same one
+  (`os.SameFile`), its durable size is at least that offset, and the line is still there, read
+  again at its place; anything else drops it and reads the file whole, as a file replaced
+  (`remove-scope` and a new journal), cut back or rewritten is. So a pass over a journal that has
+  not changed reads that one line and no entry byte past it. The source keeps one line for each
+  journal, whatever the journal's length, and drops it once the file is gone. The durable bound and
+  the torn tail's rule are as before.
 - **2026-11-24, a staged key file of any journal's name is removed (gateway #611).** The start
   removes, before any key is read, every staged key file of the exact form in the store's root,
   whatever journal it names, so the leftover of a scope no longer configured goes too. It removes a
