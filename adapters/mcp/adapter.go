@@ -110,6 +110,62 @@ type Config struct {
 	Descriptors *DescriptorTarget
 	// MaxOutput bounds the envelope in bytes.
 	MaxOutput int64
+	// CallMeta, when given, is the call reference and session identifier
+	// the gateway handed this call (ADR-0060): the tools/call request's
+	// params carry them in _meta, and nothing else there. nil leaves the
+	// request as it always was, byte for byte.
+	CallMeta *CallMeta
+}
+
+// CallMeta is one call's reference and the session the receipt names.
+type CallMeta struct {
+	CallRef   string
+	SessionID string
+}
+
+// The environment variables the gateway hands a call's reference in, and
+// the _meta names the server receives it under.
+const (
+	CallRefVariable   = "ADAPTER_MCP_CALL_REF"
+	SessionIDVariable = "ADAPTER_MCP_SESSION_ID"
+	MetaCallRef       = "judgment-pack/callRef"
+	MetaSessionID     = "judgment-pack/sessionId"
+)
+
+// toolsCallParams is the tools/call request's params: the tool and its
+// arguments, and, for a call the gateway handed a reference, _meta with
+// exactly the reference and the session identifier.
+func toolsCallParams(tool string, arguments json.RawMessage, meta *CallMeta) map[string]any {
+	if meta == nil {
+		return map[string]any{"name": tool, "arguments": arguments}
+	}
+	return map[string]any{"name": tool, "arguments": arguments,
+		"_meta": map[string]string{MetaCallRef: meta.CallRef, MetaSessionID: meta.SessionID}}
+}
+
+// TakeCallMeta reads a call's reference from the environment, and takes
+// both variables out of it, so a server this adapter starts inherits
+// neither. Both absent is no reference; one without the other, or a
+// reference not of its form, is refused.
+func TakeCallMeta(lookup func(string) (string, bool), unset func(string) error) (*CallMeta, error) {
+	ref, hasRef := lookup(CallRefVariable)
+	session, hasSession := lookup(SessionIDVariable)
+	if err := unset(CallRefVariable); err != nil {
+		return nil, err
+	}
+	if err := unset(SessionIDVariable); err != nil {
+		return nil, err
+	}
+	if !hasRef && !hasSession {
+		return nil, nil
+	}
+	if !hasRef || !hasSession || session == "" {
+		return nil, errors.New("call-reference: the call reference and the session identifier are given together or not at all")
+	}
+	if len(ref) != 64 || strings.Trim(ref, "0123456789abcdef") != "" {
+		return nil, errors.New("call-reference: the call reference is not 64 lowercase hex characters")
+	}
+	return &CallMeta{CallRef: ref, SessionID: session}, nil
 }
 
 // Request is the canonical arguments the gateway hands the adapter on
@@ -395,7 +451,7 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 		return finish(nil, fmt.Errorf("tool %q: %v", req.Tool, err))
 	}
 	// The call.
-	raw, err = rpc.call(ctx, "tools/call", map[string]any{"name": req.Tool, "arguments": req.Arguments})
+	raw, err = rpc.call(ctx, "tools/call", toolsCallParams(req.Tool, req.Arguments, cfg.CallMeta))
 	if err != nil {
 		return fail(err)
 	}

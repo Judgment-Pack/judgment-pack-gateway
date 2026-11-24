@@ -159,6 +159,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "adapter-mcp:", err)
 			return 1
 		}
+		if cfg.CallMeta, err = mcp.TakeCallMeta(os.LookupEnv, os.Unsetenv); err != nil {
+			fmt.Fprintln(stderr, "adapter-mcp:", err)
+			return 1
+		}
 		envelope, err := mcp.Acquire(ctx, cfg, req)
 		if err != nil {
 			fmt.Fprintln(stderr, "adapter-mcp:", err)

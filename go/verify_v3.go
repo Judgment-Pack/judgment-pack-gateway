@@ -62,6 +62,13 @@ func validateVersion3(obj *vObject, r *receipt) error {
 	if _, present := obj.get("argumentsDigest"); present {
 		return errors.New("argumentsDigest does not exist in version 3")
 	}
+	// The call reference the binding was sent (ADR-0060): optional, on either
+	// kind, 64 lowercase hexadecimal characters when present.
+	if v, present := obj.get("callRef"); present {
+		if s, ok := stringOf(v); !ok || !isCallRef(s) {
+			return errors.New("version 3 callRef is not 64 lowercase hex characters")
+		}
+	}
 	if err := requireDigest(obj, "argumentsCommitment"); err != nil {
 		return err
 	}
