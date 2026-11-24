@@ -927,6 +927,12 @@ forwarding, follow it. Where R2 departs from the text above:
   the sink would hold two signed entries at one ordinal that the store does not show. Where the
   platform has no `flock`, the bound is the size at the read. On the PostgreSQL kind a row is read
   only once its transaction has committed.
+- **2026-11-24, a line whose write or sync fails is cut back.** On the filesystem kind the writer
+  takes the journal's file back to the end before that line, and syncs it, still under the round's
+  lock, so the size the lock shows never counts a line that may not be durable. The entry is dropped
+  and counted (`write-failed`), and the next entry is written at its ordinal. Where the cut or its
+  sync fails too, the scope is lost until the next start, which judges the file, and no later entry
+  is written after it.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on
