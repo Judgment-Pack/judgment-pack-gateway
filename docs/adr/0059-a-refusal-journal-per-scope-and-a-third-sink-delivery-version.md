@@ -903,6 +903,21 @@ forwarding, follow it. Where R2 departs from the text above:
   no `.tmp`) is `journal-unknown` too. No export carries either file. The forwarder's start
   removes, before its first pass, the staging files of its own journals' exact names, regular
   files alone, and never follows a link.
+- **2026-11-24, the journals as the forwarder's source.** The owner's `refusalEntrySource`
+  (`go/refusal_entry_source.go`) names the configured scopes' journals and reads their entries
+  outside every lock: on the filesystem kind the journal's file, lines that end in a line feed
+  alone, so a torn tail is never sent; on the PostgreSQL kind the rows, on a connection of its own,
+  neither a slot of the pool answers use nor the writer's. The cursor moves under the lock the
+  journal's appends take: on the filesystem kind the file's `flock`, for that one move as for one
+  append round, once the path is still the file locked (none where the platform has no `flock`, as
+  for the writer); on the PostgreSQL kind the journal's advisory lock, in a read transaction on that
+  connection. The cursor's compare-and-set is still the document of no scope, on the pool. Under the
+  lock the journal must still hold, at its place, the entry the cursor is to name; where it does
+  not, or where the journal has no file, the cursor is not moved. The owner moves it only after the
+  sink acknowledged an entry read from the journal, so a journal with no file by then was removed
+  since the read, and `remove-scope` takes the cursor with it under the same lock: a cursor written
+  after it would name an entry no journal holds and stop the scope's next journal at a diverged
+  cursor. A journal not yet made holds no entry, and nothing of it is forwarded.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on

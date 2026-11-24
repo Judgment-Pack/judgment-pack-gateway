@@ -267,6 +267,10 @@ type gatewayService struct {
 	// refusal_journal.go), and refusalConfig their member; nil for none
 	refusals      *refusalJournals
 	refusalConfig *refusalJournalConfig
+	// refusalForwarding is the owner that forwards refusal entries to a sink
+	// on "3" (sink_refusal_entries.go), once started; nil for none. No answer
+	// awaits it.
+	refusalForwarding *refusalEntryForwarding
 	// readHeaderTimeout, where not zero, replaces the listener's
 	// listenerReadHeaderTimeout: a test seam.
 	readHeaderTimeout time.Duration

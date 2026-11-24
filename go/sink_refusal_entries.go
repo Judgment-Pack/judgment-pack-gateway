@@ -4,8 +4,8 @@ package main
 // through which the refusal journal hands its entries to the sink, the
 // forwarding owner that decides which instance forwards which entries
 // (condition C5), and each journal's forwarding cursor. The refusal journal
-// is not part of this change: refusalEntrySource is the seam it fills, and
-// until it does, noRefusalEntries names no journal and nothing is forwarded.
+// fills the seam (refusal_entry_source.go) where it is configured; where it
+// is not, noRefusalEntries names no journal and nothing is forwarded.
 // A sink that declines refusal entries (receiptSink.refusalEntries false,
 // condition C11) is given no forwarding at all, and no cursor is written.
 
@@ -48,10 +48,12 @@ const (
 var refusalJournalNamePattern = regexp.MustCompile(`^[a-z-]{1,32}$`)
 
 // refusalEntryLine is one entry of a refusal journal: its ordinal and its
-// line without the line feed.
+// line without the line feed; on the filesystem kind, at is the offset in
+// the journal's file where the line begins.
 type refusalEntryLine struct {
 	ordinal int64
 	line    []byte
+	at      int64
 }
 
 // refusalEntrySource is the seam the refusal journal fills (ADR-0059
@@ -64,19 +66,22 @@ type refusalEntrySource interface {
 	// most limit, whichever instance appended them.
 	entriesAfter(journal string, ordinal int64, limit int) ([]refusalEntryLine, error)
 	// locked runs fn under the journal's lock (ADR-0059 section 7), the one
-	// its appends take, so the cursor moves under it.
-	locked(journal string, fn func() error) error
+	// its appends take, so the cursor moves under it; and only where the
+	// journal, under that lock, still holds at, the entry the cursor is to
+	// name. Where it does not, the journal was removed or begun again since
+	// at was read, and fn is not run: the next pass reads again.
+	locked(journal string, at refusalEntryLine, fn func() error) error
 }
 
-// noRefusalEntries is the seam as this change leaves it: no journal, so
-// nothing is forwarded and no cursor is read or written.
+// noRefusalEntries is the seam where no refusal journal is configured: no
+// journal, so nothing is forwarded and no cursor is read or written.
 type noRefusalEntries struct{}
 
 func (noRefusalEntries) journals() ([]string, error) { return nil, nil }
 func (noRefusalEntries) entriesAfter(string, int64, int) ([]refusalEntryLine, error) {
 	return nil, nil
 }
-func (noRefusalEntries) locked(_ string, fn func() error) error { return fn() }
+func (noRefusalEntries) locked(string, refusalEntryLine, func() error) error { return nil }
 
 // forwardingCursor is a journal's forwarding progress: the highest ordinal
 // the sink acknowledged, and that entry's digest; ordinal -1 for none.
@@ -382,6 +387,7 @@ func (r *refusalEntryForwarding) forwardJournal(ctx context.Context, journal str
 		return err
 	}
 	reached := from
+	var last refusalEntryLine
 	for _, entry := range entries {
 		if entry.ordinal != reached.ordinal+1 {
 			break // no ordinal is passed over
@@ -390,12 +396,12 @@ func (r *refusalEntryForwarding) forwardJournal(ctx context.Context, journal str
 		if err != nil || !r.deliver(ctx, held) {
 			break
 		}
-		reached = forwardingCursor{ordinal: entry.ordinal, digest: held.digest}
+		reached, last = forwardingCursor{ordinal: entry.ordinal, digest: held.digest}, entry
 	}
 	if reached.ordinal == from.ordinal {
 		return nil
 	}
-	return r.source.locked(journal, func() error {
+	return r.source.locked(journal, last, func() error {
 		_, err := r.cursors.advance(journal, from.ordinal, reached)
 		return err
 	})
@@ -462,15 +468,31 @@ func (r *refusalEntryForwarding) run(ctx context.Context, every time.Duration) {
 	}
 }
 
-// startRefusalEntryForwarding starts the service's owner, under its
-// lifetime, where its sink is on "3" and takes refusal entries; the seam is
-// noRefusalEntries until the refusal journal fills it.
-func startRefusalEntryForwarding(g *gatewayService) {
+// refusalEntryForwardingOf is the service's owner where its sink is on "3"
+// and takes refusal entries, over its configured refusal journals
+// (refusalEntrySourceOf), or nil; it is not started.
+func (g *gatewayService) refusalEntryForwardingOf() *refusalEntryForwarding {
 	f := g.forwarder
 	if f == nil || !f.v3 || !f.refusalEntries {
+		return nil
+	}
+	return newRefusalEntryForwarding(&receiptSinkSpec{url: f.url, deliveryV3: true, refusalEntries: true}, g.refusalEntrySourceOf(), g.forwardingCursors())
+}
+
+// startRefusalEntryForwarding starts the service's owner, under its
+// lifetime, where its sink is on "3" and takes refusal entries. Its source's
+// own connection, on the PostgreSQL kind, is closed when the lifetime ends.
+func startRefusalEntryForwarding(g *gatewayService) {
+	owner := g.refusalEntryForwardingOf()
+	if owner == nil {
 		return
 	}
-	owner := newRefusalEntryForwarding(&receiptSinkSpec{url: f.url, deliveryV3: true, refusalEntries: true}, noRefusalEntries{}, g.forwardingCursors())
+	g.refusalForwarding = owner
 	owner.clearStaged()
-	go owner.run(g.forwardingContext(), refusalForwardEvery)
+	go func() {
+		owner.run(g.forwardingContext(), refusalForwardEvery)
+		if c, ok := owner.source.(interface{ close() }); ok {
+			c.close()
+		}
+	}()
 }

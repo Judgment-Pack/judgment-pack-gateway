@@ -148,4 +148,4 @@ func (s standInJournals) journals() ([]string, error) { return s, nil }
 func (standInJournals) entriesAfter(string, int64, int) ([]refusalEntryLine, error) {
 	return nil, nil
 }
-func (standInJournals) locked(_ string, fn func() error) error { return fn() }
+func (standInJournals) locked(_ string, _ refusalEntryLine, fn func() error) error { return fn() }
