@@ -955,7 +955,14 @@ forwarding, follow it. Where R2 departs from the text above:
   neither reader's name rules change. It is synced there and then linked to `journals/<name>.key`. The
   link never overwrites a key; where one is there it is read. A start ended mid-draw leaves the
   staged file and no short `.key`. The next start removes, before any key is read, the staged files
-  of its own journals' exact names, regular files only, and never follows a link.
+  of its own journals' exact names, regular files only, and never follows a link. Where the link
+  fails because the store cannot link that file (`EXDEV`, with `journals/` on another filesystem;
+  `EPERM`, `ENOTSUP` or `EOPNOTSUPP`), the staged file is removed and the key is made in place
+  under `O_EXCL`, written and synced, as before; any other link failure refuses the draw. A draw in
+  place ended part way can leave a `.key` shorter than its 65 bytes (64 hexadecimal digits and a
+  line feed): beside an absent or empty `.jsonl` no entry was made under it, so the start removes
+  it, draws the key again and says so in one stderr line. A short `.key` beside a journal holding
+  entries still refuses the start.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on

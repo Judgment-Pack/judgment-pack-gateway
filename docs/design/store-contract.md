@@ -232,9 +232,12 @@ export says `refusal journal: journal <name> holds entries and no key; its recor
 refusals; the journal still verifies. Before the start, put the key back from the store the export
 was made from: `journals/<name>.key`, `0600`, on the filesystem kind, or the journal's
 `gateway.secrets` row on the PostgreSQL kind (`gateway journal name --scope <key>` prints the
-name). Where that key is gone, no one can open those entries again: keep the export, which holds
-and verifies them, and on the filesystem kind move `<name>.jsonl` out of the restored `journals/`
-before the start, so that the gateway draws a new key and the scope's journal begins again.
+name). Where that key is gone, no one can open those entries again: `gateway journal open`, with
+or without `--reveal-salt`, can no longer match one to a request body or print its salt. They stay
+verifiable as signed records, each entry's signature and chain still checked. Keep the export,
+which holds and verifies them, and on the filesystem kind move `<name>.jsonl` out of the restored
+`journals/` before the start, so that the gateway draws a new key and the scope's journal begins
+again.
 
 ## What a kind must pass
 
