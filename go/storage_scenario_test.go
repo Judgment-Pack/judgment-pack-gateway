@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -258,7 +259,11 @@ func TestStorageScenarioThroughTheBinary(t *testing.T) {
 	}
 	code, stdout, stderr = binaryRun(t, binary, nil, "store", "migrate", "--connection-file", migration, "--owner", db.roles.owner, "--runtime", db.roles.runtime)
 	said = append(said, stdout, stderr)
-	if code != 0 || !strings.HasPrefix(stdout, `{"applied":[1,2,3,4,5,6,7,8,9,10],`) {
+	applied := make([]string, len(pgShippedMigrations().versions))
+	for i := range applied {
+		applied[i] = strconv.Itoa(i + 1)
+	}
+	if code != 0 || !strings.HasPrefix(stdout, `{"applied":[`+strings.Join(applied, ",")+`],`) {
 		t.Fatalf("store migrate: %d %s %s", code, stdout, stderr)
 	}
 	config := filepath.Join(dir, "engine.json")
