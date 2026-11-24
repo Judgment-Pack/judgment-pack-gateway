@@ -1201,7 +1201,9 @@ export function verifyStore(
   // §1.3a: the removal records, under the keys the walk reached.
   const loaded = loadRemovals(root, keys, budget);
   // §4 step 9: the store's journals (ADR-0056 §6), and --require-journal.
-  const journals = judgeJournals(root, registryPath, keys, continuation !== null, options.requireJournal ?? []);
+  // A verdict by scope reads its scope's refusal journal alone (ADR-0059 §8).
+  const onlyJournal = options.scope === undefined ? undefined : refusalJournalName(options.scope);
+  const journals = judgeJournals(root, registryPath, keys, continuation !== null, options.requireJournal ?? [], onlyJournal);
   const retention: Retention = { removals: loaded.removals, supplied: options.artifacts };
   // §4 step 4: a sealed session a session-removal record names, by its id,
   // its seal's signature and count, under the seal's key or one the walk
@@ -2451,8 +2453,10 @@ function readUnder(root: string, ...names: string[]): Buffer | "absent" | "other
 }
 
 // judgeJournals is §4 step 9 on a store's root, and --require-journal: the
-// findings and observations it adds to the verdict.
-function judgeJournals(root: string, registryPath: string, keys: readonly ReachedKey[], continued: boolean, required: readonly string[]): { findings: Finding[]; observations: Finding[] } {
+// findings and observations it adds to the verdict. A verdict by scope
+// names its scope's refusal journal as only, and reads no other, as it
+// reports no other.
+function judgeJournals(root: string, registryPath: string, keys: readonly ReachedKey[], continued: boolean, required: readonly string[], only?: string): { findings: Finding[]; observations: Finding[] } {
   const findings: Finding[] = [];
   const observations: Finding[] = [];
   // any file of journals/ but the operator journal's two, and a refusal
@@ -2514,6 +2518,9 @@ function judgeJournals(root: string, registryPath: string, keys: readonly Reache
   }
   const refusalNames = listed.filter((f) => f.endsWith(".jsonl") && isRefusalJournalName(f.slice(0, -6))).map((f) => f.slice(0, -6)).sort();
   for (const name of refusalNames) {
+    if (only !== undefined && name !== only) {
+      continue;
+    }
     const got = readUnder(root, "journals", name + ".jsonl");
     if (typeof got === "string" || got.length === 0) {
       continue;

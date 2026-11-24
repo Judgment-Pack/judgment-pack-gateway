@@ -568,8 +568,9 @@ func isKnownJournalFile(name string) bool {
 // journals/, a later release's journal or one put there, is journal-unknown,
 // by its name, and fails the verdict: a journal this release cannot judge is
 // never passed over as though it held. held and evidence are what
-// --require-journal reads.
-func (r *report) judgeJournals(storeRoot string, registry []byte, walk *registryWalk) error {
+// --require-journal reads. A verdict by scope names its scope's refusal
+// journal as only.
+func (r *report) judgeJournals(storeRoot string, registry []byte, walk *registryWalk, only string) error {
 	if err := r.judgeUnknownJournals(storeRoot); err != nil {
 		return err
 	}
@@ -577,7 +578,7 @@ func (r *report) judgeJournals(storeRoot string, registry []byte, walk *registry
 		return err
 	}
 	// the refusal journals (ADR-0059 §8), each judged alone
-	return r.judgeRefusalJournals(storeRoot, walk.keys)
+	return r.judgeRefusalJournals(storeRoot, walk.keys, only)
 }
 
 // judgeOperatorJournalOf is judgeJournals on the operator journal.

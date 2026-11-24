@@ -497,9 +497,9 @@ first (the process contract, below), and states `cut` in `expected`, `{"scope", 
 "unattributed"}`, which the runner compares whole; a vector without `scope` expects no `cut`. Over
 `s1` of `scope-a` and `s2` of `scope-b`, each sealed by a seal of version 3, and `s3` of no scope
 sealed in §3's form, the cut by `scope-a` is `s1`, by `scope-b` `s2`, and by `scope-c` none, each
-`ok` and reporting the findings of its sessions alone. `v3-cut-a-refusal-journals-of-others` adds three refusal journals to
-that store, `scope-a`'s that holds, `scope-b`'s with a forged entry and `scope-c`'s with a torn tail:
-the verdict by `scope-a` reports `scope-a`'s `journal-from` alone and is `ok`, since a refusal
+`ok` and reporting the findings of its sessions alone. `v3-cut-a-refusal-journals-of-others` adds four refusal journals to
+that store, `scope-a`'s that holds, `scope-b`'s with a forged entry, `scope-c`'s with a torn tail and
+that of the sources of no scope (`refusal-` of `unscoped`, `s3`'s) that holds: the verdict by `scope-a` reports `scope-a`'s `journal-from` alone and is `ok`, since a refusal
 journal's finding or observation stands in the verdict of the scope it names alone (ADR-0059 §8). Sessions sealed by seals of version 2 are
 cut by the scope those name. A session no seal closes whose receipts carry another scope and a
 salt is of another, its `session-open` observation not reported; one whose receipts carry no salt

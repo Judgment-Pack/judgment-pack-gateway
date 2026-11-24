@@ -31,9 +31,14 @@ func delegationJournalHarness(t *testing.T) (*delegationHarness, *refusalJournal
 }
 
 // journaledCalls is each journal's entries as "route reason tool digest",
-// "-" for a member the entry does not have.
+// "-" for a member the entry does not have. An entry is handed off after
+// its answer is flushed, so the client can have the answer before the
+// handler has queued the entry: the server is closed first, which waits
+// for every handler to return, and the writer is stopped after, which
+// writes every entry queued.
 func journaledCalls(t *testing.T, h *delegationHarness, j *refusalJournals) []string {
 	t.Helper()
+	h.server.Close()
 	j.stop()
 	var got []string
 	for key := range limitScopeKeys(h.g.sources) {

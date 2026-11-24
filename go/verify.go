@@ -898,7 +898,11 @@ func verifyAgainstPinIn(storeRoot, registryPath, authority, decisionRecords stri
 
 	// SPEC.md §4 step 9 (ADR-0056 §6): each journal the store holds, at
 	// most one finding, naming no session, as the walk's finding names none.
-	if err := rep.judgeJournals(storeRoot, registryData, walk); err != nil {
+	only := ""
+	if cut != nil {
+		only = refusalJournalName(limitScopeKey(cut.Scope))
+	}
+	if err := rep.judgeJournals(storeRoot, registryData, walk, only); err != nil {
 		return nil, err
 	}
 
