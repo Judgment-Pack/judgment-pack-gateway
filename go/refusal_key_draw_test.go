@@ -37,11 +37,27 @@ func TestAKeyDrawEndedPartWayLeavesNoShortKey(t *testing.T) {
 
 	other := refusalJournalName("another-scope")
 	leftover := "." + name + ".key.4242.0123456789ab.tmp"
-	kept := []string{"." + other + ".key.4242.0123456789ab.tmp", "." + name + ".key.4242.0123456789AB.tmp", name + ".key.4242.0123456789ab.tmp"}
+	kept := []string{"." + other + ".key.4242.0123456789ab.tmp", name + ".key.4242.0123456789ab.tmp"}
 	for _, n := range append([]string{leftover}, kept...) {
 		if err := os.WriteFile(filepath.Join(root, n), []byte("ab"), 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// uppercase hexadecimal is not the exact form; where the filesystem
+	// folds case (as on Windows and macOS by default) that name is the
+	// leftover itself, so the case is made only where the two are two files
+	upper := "." + name + ".key.4242.0123456789AB.tmp"
+	if err := os.WriteFile(filepath.Join(root, upper), []byte("AB"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if a, err := os.Stat(filepath.Join(root, leftover)); err != nil {
+		t.Fatal(err)
+	} else if b, err := os.Stat(filepath.Join(root, upper)); err != nil {
+		t.Fatal(err)
+	} else if !os.SameFile(a, b) {
+		kept = append(kept, upper)
+	} else if err := os.WriteFile(filepath.Join(root, leftover), []byte("ab"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	linked := "." + name + ".key.4243.0123456789ab.tmp"
 	if err := os.Symlink(filepath.Join(root, kept[0]), filepath.Join(root, linked)); err != nil {
