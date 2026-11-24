@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -284,6 +285,15 @@ func newRefusalJournals(cfg *refusalJournalConfig, keys map[string]bool, store r
 		sorted = append(sorted, key)
 	}
 	sort.Strings(sorted)
+	if fs, ok := store.(interface{ removeStagedKeys(names []string) error }); ok {
+		names := make([]string, 0, len(sorted))
+		for _, key := range sorted {
+			names = append(names, refusalJournalName(key))
+		}
+		if err := fs.removeStagedKeys(names); err != nil {
+			return nil, fmt.Errorf("refusal journal: a key's staged file could not be removed: %v", err)
+		}
+	}
 	now := j.clock()
 	for _, key := range sorted {
 		s := &refusalScope{key: key, name: refusalJournalName(key), queue: make(chan *vObject, refusalQueueBound), since: now}
@@ -731,7 +741,7 @@ func (f refusalFS) key(name string) ([]byte, bool, error) {
 	if _, err := rand.Read(k); err != nil {
 		return nil, false, err
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	err := f.drawKey(name, path, []byte(hex.EncodeToString(k)+"\n"))
 	if errors.Is(err, os.ErrExist) {
 		k, err := read()
 		return k, false, err
@@ -739,18 +749,88 @@ func (f refusalFS) key(name string) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	_, err = file.WriteString(hex.EncodeToString(k) + "\n")
+	return k, false, nil
+}
+
+// stagedKeyForm is the name a key is drawn under before it is linked into
+// place (ADR-0059 §8, as built 2026-11-24): in the store's root, outside
+// journals/, whose names both readers judge, a dot, the journal's name,
+// .key, the process's identifier and twelve lowercase hexadecimal digits,
+// then .tmp. A start ended mid-draw leaves it, and never a short key.
+var stagedKeyForm = regexp.MustCompile(`^\.(refusal-[a-p]{24})\.key\.[0-9]{1,10}\.[0-9a-f]{12}\.tmp$`)
+
+// keyDrawCut, where a test sets it, runs once a drawn key's staged file is
+// synced and before it is linked into place: a test's way of ending a draw
+// there.
+var keyDrawCut func() error
+
+// drawKey puts text at path, the journal's key file: written to a staged
+// file of stagedKeyForm, synced, and linked to path, which fails where a
+// key is there and never overwrites it (os.ErrExist); the staged file is
+// then removed. A draw ended at any step leaves no file at path, or the
+// whole key.
+func (f refusalFS) drawKey(name, path string, text []byte) error {
+	var suffix [6]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return err
+	}
+	staged := filepath.Join(f.root, fmt.Sprintf(".%s.key.%d.%s.tmp", name, os.Getpid(), hex.EncodeToString(suffix[:])))
+	file, err := os.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(staged)
+	_, err = file.Write(text)
 	if err == nil {
 		err = file.Sync()
 	}
 	if cerr := file.Close(); err == nil {
 		err = cerr
 	}
+	if err == nil && keyDrawCut != nil {
+		err = keyDrawCut()
+	}
 	if err != nil {
-		return nil, false, err
+		return err
+	}
+	if err := os.Link(staged, path); err != nil {
+		return err
 	}
 	syncDir(f.dir())
-	return k, false, nil
+	return nil
+}
+
+// removeStagedKeys removes, before any key is read, the staged files a
+// start ended mid-draw left in the store's root for these journals' keys:
+// only a regular file of stagedKeyForm for one of them, never a link or
+// anything else, and never another journal's.
+func (f refusalFS) removeStagedKeys(names []string) error {
+	entries, err := os.ReadDir(f.root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	own := map[string]bool{}
+	for _, name := range names {
+		own[name] = true
+	}
+	removed := false
+	for _, e := range entries {
+		m := stagedKeyForm.FindStringSubmatch(e.Name())
+		if m == nil || !own[m[1]] || !e.Type().IsRegular() {
+			continue
+		}
+		if err := os.Remove(filepath.Join(f.root, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		removed = true
+	}
+	if removed {
+		syncDir(f.root)
+	}
+	return nil
 }
 
 // foundAtStart is whether the journal's file is there as the gateway
