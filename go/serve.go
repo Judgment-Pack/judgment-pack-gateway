@@ -2877,6 +2877,25 @@ func (g *gatewayService) routes() http.Handler {
 		writeJSON(w, http.StatusOK, out)
 	})
 
+	// writeActRefusal answers a refusal of /act's ladder, wherever it is
+	// made: as a bad request naming its step, but for the steps below.
+	writeActRefusal := func(w http.ResponseWriter, refusal actRefusal) {
+		// The ladder's first step is who is asking: with no identity
+		// configured nobody is, and the answer is the one a missing token
+		// gets.
+		status := http.StatusBadRequest
+		switch refusal.step {
+		case "requester":
+			status = http.StatusUnauthorized
+			w.Header().Set("WWW-Authenticate", "Bearer")
+		case writeRequestersStep:
+			// Authenticated, and not one the tool's list names: asking
+			// again, however the request is put, gets the same answer.
+			status = http.StatusForbidden
+		}
+		writeJSON(w, status, map[string]any{"error": refusal.reason, "refusedAt": refusal.step})
+	}
+
 	// An action (docs/design/executor.md): the same boundary as /acquire,
 	// with an authenticated requester and a judgment that must exist before
 	// any executor runs. A refusal names the step of the ladder it fell at.
@@ -2980,8 +2999,25 @@ func (g *gatewayService) routes() http.Handler {
 					return
 				}
 			} else {
-				sender, refusal := g.delegation.senderFor(who, scope)
+				// Who the token is, from the configuration alone; then a
+				// scope identifier it names is held to the issuing host's
+				// scopeIds, the subject's entry and its own reach, before
+				// the subject's standing is read: one it may not name is
+				// answered as step 8 answers a scope that exists nowhere
+				// (SPEC.md §11.8, "A scoped delegated action").
+				sender, refusal := g.delegation.senderOf(who, scope)
 				if refusal != nil {
+					refused(w, refusal, "action-key")
+					return
+				}
+				if raw, named := body["scope"]; named {
+					var refusal actRefusal
+					if err := g.senderScopeHeld(raw, who, sender); errors.As(err, &refusal) {
+						writeActRefusal(w, refusal)
+						return
+					}
+				}
+				if refusal := g.delegation.senderStanding(sender); refusal != nil {
 					refused(w, refusal, "action-key")
 					return
 				}
@@ -3014,21 +3050,7 @@ func (g *gatewayService) routes() http.Handler {
 			}
 			var refusal actRefusal
 			if errors.As(err, &refusal) {
-				// The ladder's first step is who is asking: with no identity
-				// configured nobody is, and the answer is the one a missing
-				// token gets.
-				status := http.StatusBadRequest
-				switch refusal.step {
-				case "requester":
-					status = http.StatusUnauthorized
-					w.Header().Set("WWW-Authenticate", "Bearer")
-				case writeRequestersStep:
-					// Authenticated, and not one the tool's list names:
-					// asking again, however the request is put, gets the
-					// same answer.
-					status = http.StatusForbidden
-				}
-				writeJSON(w, status, map[string]any{"error": refusal.reason, "refusedAt": refusal.step})
+				writeActRefusal(w, refusal)
 				return
 			}
 			fail(w, err)
@@ -3282,7 +3304,7 @@ func (g *gatewayService) routes() http.Handler {
 			in.reach = &reach
 		}
 		if g.delegation != nil {
-			in.delegation = &delegationPosture{bearerReadOnly: g.delegation.bearerReadOnly, readVersions: g.delegation.readVersions()}
+			in.delegation = &delegationPosture{bearerReadOnly: g.delegation.bearerReadOnly, readVersions: g.delegation.readVersions(), scopeBinding: g.delegation.bindsSomeScope()}
 		}
 		if g.limits != nil {
 			// the count is of no scope, and every caller reads it

@@ -46,6 +46,10 @@ const (
 	protectionDelegationNarrowing = "delegation-narrowing"
 	protectionDelegationSender    = "delegation-sender-constraint"
 	protectionDelegationGrants    = "delegation-grants"
+	// The line a delegation adds where an issuing host may bind scope
+	// identifiers and some write source is fixed to one: a reservation
+	// sender reaching a scoped delegated key (SPEC.md §11.8).
+	protectionDelegationScopedReservation = "delegation-scoped-reservation"
 	// The line a configuration that gives some platform writeRequesters
 	// adds (write_requesters.go); one that gives none reports no such line.
 	protectionWriteRequesters = "write-requesters"
@@ -192,6 +196,8 @@ type delegationPosture struct {
 	// readVersions is each issuing host's admission readVersion, from
 	// admissionReadV2Version; empty below it (ADR-0058 decision 11).
 	readVersions map[string]string
+	// scopeBinding is whether some issuing host names scopeIds.
+	scopeBinding bool
 }
 
 // delegationLines are the lines of SPEC.md §11.9, the grants line judged
@@ -214,6 +220,10 @@ func delegationLines(d *delegationPosture, sources map[string]sourceSpec, cut bo
 	}
 	if len(d.readVersions) > 0 {
 		lines = append(lines, delegationReadVersionLine(d.readVersions, cut))
+	}
+	if d.scopeBinding && scopedWriteIn(sources) {
+		lines = append(lines, postureLine{protectionDelegationScopedReservation, postureEnforced,
+			"a reservation sender other than the run's actor names a delegated key's scope identifier only where the issuing host's scopeIds lists it, the subject's caller entry grants it and the sender's own token reaches it, an operator's included; it is then answered with evidence and read-back in that scope, never a dispatch, and otherwise refused as a scope identifier that exists nowhere"})
 	}
 	return lines
 }
@@ -615,7 +625,7 @@ func postureOfConfig(path string, account func(string) (int, string, error)) (po
 		in.callerScopes = callerScopesMode(&identityConfig{callers: cfg.identity.callers})
 	}
 	if cfg.delegation != nil {
-		in.delegation = &delegationPosture{bearerReadOnly: cfg.delegation.bearerReadOnly, readVersions: cfg.delegation.readVersions()}
+		in.delegation = &delegationPosture{bearerReadOnly: cfg.delegation.bearerReadOnly, readVersions: cfg.delegation.readVersions(), scopeBinding: cfg.delegation.bindsSomeScope()}
 	}
 	return in, nil
 }
