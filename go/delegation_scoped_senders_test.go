@@ -391,3 +391,90 @@ func TestDelegationScopedReservationPostureLine(t *testing.T) {
 		}
 	}
 }
+
+// Under the request limits (gateway #618 review): a reservation sender whose
+// token reaches several scopes is charged at step 8a, as the delegated
+// sender it is, to the scope it names and was admitted to; never before its
+// scope is held. A scope that exists nowhere, and one that exists but the
+// sender does not reach, are answered with the scope step's sentence and
+// move no scope's tally. A sender whose token reaches one scope alone is
+// charged to that scope at step 3a, before its body is read, whatever it
+// names, as any caller of one scope is.
+func TestAReservationSenderUnderLimitsIsChargedToTheScopeItNames(t *testing.T) {
+	const scopeThird = "équipe-c"
+	key := delegationKey(9)
+	b, _ := newScopedSenderHarness(t, key)
+	write, live := b.g.sources["tickets-a/write"], b.g.sources["tickets-a/live"]
+	write.scope, live.scope = scopeThird, scopeThird
+	b.g.sources["tickets-c/write"], b.g.sources["tickets-c/live"] = write, live
+	one := rateOf(60, 1)
+	b.server = limitsOn(t, b.g, &limitsConfig{beforeScope: 64, scopes: map[string]limitEntry{
+		testScope:      {scope: one.scope, perCaller: &limitValues{requestsPerMinute: 60, burst: 1}},
+		scopeOtherID:   one,
+		scopeThird:     one,
+		unscopedMarker: one,
+	}})
+	l := b.g.limiter
+	states := func() map[string]string {
+		out := map[string]string{}
+		for _, s := range []string{testScope, scopeOtherID, scopeThird, unscopedMarker} {
+			out[s] = scopeState(l, s)
+		}
+		return out
+	}
+	moved := func(before map[string]string) []string {
+		var out []string
+		for s, was := range before {
+			if scopeState(l, s) != was {
+				out = append(out, s)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	reservation := b.reservationOf(testSub(), rootAgent)
+	both := scopedToken(t, b.delegationHarness, testOperator, testScope, scopeOtherID)
+
+	before := states()
+	nowhere := postSenderRaw(t, b.delegationHarness, b.body("s-op", "tickets-a", jsonText(t, scopeNowhere), key, reservation), both)
+	unreached := postSenderRaw(t, b.delegationHarness, b.body("s-op", "tickets-a", jsonText(t, scopeThird), key, reservation), both)
+	for name, got := range map[string]senderAnswer{"a scope that exists nowhere": nowhere, "a scope the sender does not reach": unreached} {
+		if got.status != http.StatusBadRequest || !strings.Contains(got.body, `"refusedAt":"scope-identifier"`) || !strings.Contains(got.body, scopeRefusal) {
+			t.Fatalf("%s: %d %s, want the scope step's sentence", name, got.status, got.body)
+		}
+	}
+	if !unreached.same(nowhere) {
+		t.Fatalf("a scope not reached is answered unlike one that exists nowhere:\n%s\n%s", unreached.body, nowhere.body)
+	}
+	if m := moved(before); len(m) != 0 {
+		t.Fatalf("a refused scope moved the tally of %v", m)
+	}
+
+	before = states()
+	admitted := postSenderRaw(t, b.delegationHarness, b.body("s-op", "tickets-a", jsonText(t, testScope), key, reservation), both)
+	if admitted.status != http.StatusOK {
+		t.Fatalf("the operator naming the action's scope: %d %s", admitted.status, admitted.body)
+	}
+	if m := moved(before); len(m) != 1 || m[0] != testScope {
+		t.Fatalf("the admitted request moved %v, want the scope it names alone", m)
+	}
+	callers := l.scopes[testScope].callers
+	if _, ok := callers[limitCallerKeyOf("delegated", testIssuerURL, testOperator)]; !ok || len(callers) != 1 {
+		t.Fatalf("the scope's callers: %v, want the operator as a delegated sender alone", callers)
+	}
+	again := postSenderRaw(t, b.delegationHarness, b.body("s-op", "tickets-a", jsonText(t, testScope), key, reservation), both)
+	if again.status != http.StatusTooManyRequests || !strings.Contains(again.body, `"refusedAt":"limit"`) {
+		t.Fatalf("the next request at the limit: %d %s", again.status, again.body)
+	}
+
+	before = states()
+	onlyOther := scopedToken(t, b.delegationHarness, testOperator, scopeOtherID)
+	got := postSenderRaw(t, b.delegationHarness, b.body("s-op", "tickets-a", jsonText(t, testScope), key, reservation), onlyOther)
+	if got.status != http.StatusBadRequest || !strings.Contains(got.body, scopeRefusal) {
+		t.Fatalf("a sender of one other scope naming the action's: %d %s", got.status, got.body)
+	}
+	if m := moved(before); len(m) != 1 || m[0] != scopeOtherID {
+		t.Fatalf("a sender of one scope moved %v, want its own scope alone (step 3a)", m)
+	}
+	assertLimitNothingHeld(t, l)
+}

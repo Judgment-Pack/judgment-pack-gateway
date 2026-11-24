@@ -4948,7 +4948,13 @@ subject. An operator whose token does not reach it is granted it in its caller e
 are held once the table has said, from the configuration alone, who the token is, and before the
 subject's standing is read. Where any fails, the request is answered exactly as one naming a scope
 identifier that exists nowhere: `400`, `refusedAt: "scope-identifier"`, with `/acquire`'s sentence.
-Nothing of the standing, the issuing host, the session, the key or the journal is read. Admitted, the
+Nothing of the standing, the issuing host, the session, the key or the journal is read. So a sender
+learns nothing of a scope it does not reach. Where it does reach the scope (c), the issuing host's
+requester or an operator can still tell from the answer whether (a) and (b) hold, that is whether
+the subject's entry grants the scope. That is by design: the sender already reaches the scope, and
+learns only whether the subject's entry grants it too. Under the request limits a sender whose
+token reaches several scopes is charged at step 8a, as a delegated sender, to the scope it is
+admitted to; one whose token reaches one scope alone is charged to that scope at step 3a. Admitted, the
 sender reaches that identifier's sources alone (§6), and the key's namespace is the actor's, derived
 as before. The table holds as written within that one scope: evidence and read-back only, never a
 dispatch or a reservation; `action-key-actor-only`, `action-key-scope-conflict` and
