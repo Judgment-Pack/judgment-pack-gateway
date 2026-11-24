@@ -20,7 +20,7 @@ deciders: maintainer
 >   of live rows of the start lease. The start reads N beside its lease, or fails; N is read again
 >   every 10 seconds and never on a request.
 > - **Database unreachable or too slow:** each instance counts the rate alone too, at ceil(limit/N),
->   from one full bucket made at the move. `/posture` says the shared count is unavailable and why.
+>   from its own bucket, which carries over from one spell alone to the next. `/posture` says the shared count is unavailable and why.
 >   A probe that leases every scope's batch in time returns the instance to the shared count.
 > - **Without the member, and at engine version 50 and below,** nothing changes, byte for byte, and
 >   the `/posture` line is included in that. The gateway-wide cap (`beforeScope`) stays each
@@ -120,15 +120,17 @@ Write N for the live instances, B for the burst, T for the interval, and b for t
   scope's batch is spent and its refill has waited longer than twice the bound (4 seconds) since
   it was handed over, the request that finds it so moves the instance to counting alone, as an
   unreachable database does. A wait for the bucket's room is not counted.
-- **While unreachable,** each instance counts the scope's rate alone, from a full bucket at
+- **While unreachable,** each instance counts the scope's rate alone, from its own bucket at
   ⌈requestsPerMinute/N⌉ and ⌈burst/N⌉. In flight and per caller stay at ⌈limit/N⌉, with N the last
   count. A batch the instance still holds is kept for the shared count's return and is not spent
   meanwhile.
-- **One bucket per move.** The scopes' own buckets are made full once, as the instance moves from
-  the shared count to counting alone, and at no other time. A failure while it already counts
-  alone, such as a failed probe, leaves them as they are. So each move adds at most one ⌈B/N⌉ per
-  instance to the bounds of section 3, and a database whose reads succeed while its writes fail
-  adds no more than that.
+- **The bucket carries over.** No move makes a scope's own bucket full. It is not touched while the
+  count is shared, so it starts the first spell alone full (it was never spent), starts a spell
+  after a long shared one full (it refilled at its own rate meanwhile), and starts a spell soon
+  after the last with what that spell left. So, counted alone, an instance admits at most
+  ⌈B/N⌉ + ⌈W/T_N⌉ over any window W, however often it moves (T_N the interval of ⌈rpm/N⌉): this
+  is the accepted fallback start burst, once, not once per move. A failed probe, a count that
+  fails and a count of no live instance move nothing.
 - **`/posture`** says the shared count is unavailable, and whether the database failed or did not
   answer, or a refill waited too long (section 5).
 - **Recovery.** A probe every second (`sharedProbeInterval`) counts the instances and leases each

@@ -3230,8 +3230,8 @@ configuration may carry a top-level `limits` member. Below that version it is re
     in flight in all.
   - *The database unreachable* (a refill failed other than by a held row, or got no answer within
     2 seconds), or a scope's refill waiting more than 4 seconds with
-    its batch spent: each instance counts the rate alone at ceil(limit/N), from one full bucket
-    made at the move, `/posture` says the shared count is unavailable and why, and a probe every
+    its batch spent: each instance counts the rate alone at ceil(limit/N), from its own bucket
+    carried over from its last spell alone, `/posture` says the shared count is unavailable and why, and a probe every
     second that leases every scope's batch in time returns it.
   - *`beforeScope`* stays each instance's own.
   - *The start line* ends `counted together by the instances of this database (limits.shared)`,

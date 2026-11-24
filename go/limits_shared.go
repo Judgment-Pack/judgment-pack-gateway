@@ -35,8 +35,8 @@ package main
 // each instance then counts the scope's rate alone too, at ceil(limit/N),
 // and /posture says so. So does a scope whose batch is spent and whose
 // refill has waited longer than twice sharedRefillBound, as one refill
-// serves every scope. The scopes' own buckets are made full once, as the
-// instance leaves the shared count, and at no other time. A probe every
+// serves every scope. The scopes' own buckets carry over from one spell
+// alone to the next: no move makes them full. A probe every
 // sharedProbeInterval counts the instances and leases each limited scope's
 // batch; it returns the instance to the shared count only where every
 // lease succeeds, and all within twice sharedRefillBound.
@@ -421,10 +421,11 @@ func (c *sharedCount) run(ctx context.Context) {
 }
 
 // recount counts the live instances again and splits the values by them;
-// a count that fails keeps the last N and moves nothing: whether the
-// database answers is for the refills to say.
+// a count that fails, or counts no live instance (this one holds its
+// lease), keeps the last N and moves nothing: whether the database answers
+// is for the refills to say.
 func (c *sharedCount) recount() {
-	if n, err := c.rates.liveInstances(); err == nil {
+	if n, err := c.rates.liveInstances(); err == nil && n >= 1 {
 		c.setLive(n)
 	}
 }
@@ -443,23 +444,18 @@ func (c *sharedCount) probe() {
 func (c *sharedCount) unreachable(err error) { c.fallback(err.Error(), false) }
 
 // fallback marks the shared count unavailable, for why: each scope's rate
-// is counted by this instance alone, at ceil(limit/N). Only the move from
-// the shared count makes the scopes' own buckets full, once; a fallback
-// while the count is already unavailable, a failed probe's, leaves them as
-// they are. slow is whether a refill took too long, rather than failed. A
-// request that finds a refill late calls it as the refill's goroutine
-// does: the swap makes one of them the move.
+// is counted by this instance alone, at ceil(limit/N), from its own bucket
+// as the last spell alone left it. That bucket is not touched while the
+// count is shared, so it has refilled by the time shared counting has
+// lasted the burst's time, and a count that moves back and forth faster
+// keeps what it spent: no move makes a bucket full. slow is whether a
+// refill took too long, rather than failed. A request that finds a refill
+// late calls it as the refill's goroutine does; the swap makes one of
+// them the move.
 func (c *sharedCount) fallback(why string, slow bool) {
 	c.failed.Store(why)
 	c.slow.Store(slow)
-	if c.available.CompareAndSwap(true, false) {
-		// the scope's own bucket is not read while the count is shared;
-		// one a request reads before it is made full here is fuller
-		// than none, never more
-		for _, sh := range c.scopes {
-			sh.s.tat.Store(0)
-		}
-	}
+	c.available.CompareAndSwap(true, false)
 }
 
 // refill tops the scope's batch up to b, by one lease, where it is at half

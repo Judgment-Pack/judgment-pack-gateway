@@ -479,8 +479,8 @@ records itself as the session's holder when it admits the call, before the sourc
   after (a later count that fails keeps the last N), at most cap + N − 1 in all. Where a refill
   fails other than by a held row, or
   gets no answer within 2 seconds, or a scope's refill waits more than 4 seconds with its batch
-  spent, each instance counts the rate alone at ceil(limit/N), from one full bucket made at the
-  move, until a probe, tried every second, leases every scope's batch in time, and `/posture` says
+  spent, each instance counts the rate alone at ceil(limit/N), from its own bucket carried over from
+  its last spell alone, until a probe, tried every second, leases every scope's batch in time, and `/posture` says
   the shared count is unavailable and why. The gateway-wide cap (`beforeScope`) stays each instance's own. A refill is a
   write fenced on the instance's start lease.
 

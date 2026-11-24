@@ -277,6 +277,47 @@ func TestACountThatFailsBesideLeasesThatSucceedKeepsTheSharedCount(t *testing.T)
 	if got := sharedPosture(l, entries); !strings.Contains(got, "counted together") {
 		t.Fatalf("posture after failed counts: %s", got)
 	}
+	// a count that answers no live instance is not a count: this one holds
+	// its lease
+	rates.set(func(f *fakeSharedRates) { f.liveErr = nil; f.live = 0 })
+	l.shared.recount()
+	if !l.shared.available.Load() || l.shared.live.Load() != 2 {
+		t.Fatalf("after a count of none: available %v, N %d; want N=2 kept", l.shared.available.Load(), l.shared.live.Load())
+	}
+}
+
+// A count that moves back and forth between shared and alone, once a
+// second, admits while alone no more than one bucket and the rate alone
+// over the whole time: each move carries the bucket over, so the burst is
+// given once, not once per move.
+func TestAnInstanceMovingBackAndForthGetsOneBucketNotOnePerMove(t *testing.T) {
+	clock := &fakeLimitClock{}
+	entries := map[string]limitEntry{"scope-a": rateOf(600, 100)}
+	l := sharedLimiter(t, clock.clock(), entries)
+	l.shared.probeEvery = 5 * time.Millisecond
+	rates := &fakeSharedRates{live: 2}
+	if line := l.shareOn(rates, 2); !strings.Contains(line, "counted together by the 2 live instances") {
+		t.Fatalf("start line: %s", line)
+	}
+	alone, moves := 0, 20
+	for range moves {
+		rates.set(func(f *fakeSharedRates) { f.leaseErr = errors.New("the lease's write was refused") })
+		if !sharedWaitUntil(2*time.Second, func() bool { chargeOnce(l, "scope-a"); return !l.shared.available.Load() }) {
+			t.Fatal("the shared count is still available with its lease failing")
+		}
+		alone += chargeMany(l, "scope-a", 200)
+		rates.set(func(f *fakeSharedRates) { f.leaseErr = nil })
+		if !sharedWaitUntil(2*time.Second, func() bool { return l.shared.available.Load() }) {
+			t.Fatal("the shared count did not return")
+		}
+		clock.advance(time.Second)
+	}
+	// alone: ceil(600/2) a minute, one each 200 ms, from ceil(100/2) once;
+	// the last spell alone is (moves-1) seconds after the first
+	bound := 50 + int(time.Duration(moves-1)*time.Second/(200*time.Millisecond)) + 1
+	if alone > bound {
+		t.Fatalf("%d admitted alone over %d moves, above %d: a move made the bucket full", alone, moves, bound)
+	}
 }
 
 // The start's count of the instances is N from the start: where the
@@ -305,7 +346,7 @@ func TestASharedStartThatCannotLeaseSplitsByTheStartsCount(t *testing.T) {
 // One refill serves every scope, so a database that answers each lease
 // slowly, though within the bound, leaves a scope with its batch spent
 // waiting for the others' leases. Once that wait passes twice the bound,
-// the instance counts alone, from its own buckets made full once, and
+// the instance counts alone, from its own buckets as they were, and
 // /posture says why; probes that still lease slowly give it no fresh
 // bucket, and a probe that leases every scope in time returns it.
 func TestASlowRefillFallsBackToLimitOverNAndReturns(t *testing.T) {
