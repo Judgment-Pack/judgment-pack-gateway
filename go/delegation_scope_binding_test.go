@@ -21,6 +21,15 @@ import (
 // made tables 1 and 2, independent of this repository, and frozen.
 const specScopeBindingSHA256 = "04559c4a04d3f64f059beb47f54790382825b0eb9a5f6c13173762470b54a142"
 
+// specScopeBindingES256SHA256 is the SHA-256 of
+// testdata/delegation/spec-scope-binding-es256.json, as the spec repository's
+// conformance/delegation/README.md records it for its
+// conformance/delegation/scope-binding-es256.json, of which this file is a
+// byte-for-byte copy: the ES256 counterparts of table 3's bound-changed and
+// bound-unbound-child, made once by a second generator independent of this
+// repository, and frozen.
+const specScopeBindingES256SHA256 = "d6c2a44f6d06b772d65526bbb590db3a95bc39998f38e4f05ab93f35afb30d2f"
+
 // agentScopeBindingSHA256 is the SHA-256 of testdata/delegation/agent-scope-binding.json,
 // a byte-for-byte copy of the agent library's contract/vectors/principal/scope-binding.json
 // (judgment-pack-agent, commit 86f6cfa0b040a0d49faf1b1504887207d1015b35):
@@ -49,6 +58,33 @@ func TestDelegationScopeBindingCasesAreTheFrozenBytes(t *testing.T) {
 	readFrozen(t, "../testdata/delegation/spec-scope-binding.json", specScopeBindingSHA256)
 	readFrozen(t, "../testdata/delegation/agent-scope-binding.json", agentScopeBindingSHA256)
 	readFrozen(t, "../testdata/delegation/statements.json", ed25519StatementsSHA256)
+	readFrozen(t, "../testdata/delegation/spec-scope-binding-es256.json", specScopeBindingES256SHA256)
+}
+
+// The ES256 counterparts of table 3's bound-changed and bound-unbound-child:
+// each chain's ES256 signatures verify under the pinned P-256 key, and each
+// is refused widened at link 1, as its Ed25519 case is.
+func TestDelegationScopeBindingES256Cases(t *testing.T) {
+	raw := readFrozen(t, "../testdata/delegation/spec-scope-binding-es256.json", specScopeBindingES256SHA256)
+	var doc struct {
+		Keys       map[string][]json.RawMessage `json:"keys"`
+		Statements []bindingStatement           `json:"statements"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	keys := pinDelegationKeys(t, doc.Keys)
+	var names []string
+	for _, s := range doc.Statements {
+		names = append(names, s.Name)
+		if s.Expect != refusalWidened || s.Link == nil || *s.Link != 1 || !strings.Contains(string(s.Chain), `"alg":"ES256"`) && !strings.Contains(string(s.Chain), `"alg": "ES256"`) {
+			t.Fatalf("%s: not an ES256 case refused widened at link 1", s.Name)
+		}
+		checkStatement(t, s, keys)
+	}
+	if !slices.Equal(names, []string{"es256-bound-changed", "es256-bound-unbound-child"}) {
+		t.Fatalf("the cases: %v", names)
+	}
 }
 
 type bindingStatement struct {
