@@ -52,7 +52,16 @@ func (g *gatewayService) limitedHandler(next http.Handler) http.Handler {
 			writeLimitRefusal(w, refused, "")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), limitPassKey{}, pass)))
+		r = r.WithContext(context.WithValue(r.Context(), limitPassKey{}, pass))
+		if g.refusals == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// the answer is flushed before its refusal is handed off, and the
+		// hand-off is made before the pass releases the scope's slots
+		answer := &refusalAnswer{ResponseWriter: w, j: g.refusals, pass: pass, route: r.URL.Path}
+		defer answer.finish()
+		next.ServeHTTP(answer, r)
 	})
 }
 
@@ -149,7 +158,12 @@ func (g *gatewayService) reachedScopeKeys(reach scopeReach) []string {
 // chargeRequest charges the request to the scope keys given, all or
 // nothing, as the caller it is authenticated as.
 func chargeRequest(r *http.Request, who *caller, keys ...string) error {
-	return limitPassOf(r).charge(limitCallerOfRequest(who), keys...)
+	p := limitPassOf(r)
+	err := p.charge(limitCallerOfRequest(who), keys...)
+	if err == nil {
+		p.who = who
+	}
+	return err
 }
 
 // actScopeCharge is /act's step 8a for a caller of several scopes: the

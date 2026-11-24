@@ -241,7 +241,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 234 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 248 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). Ten of them,
@@ -255,7 +255,13 @@ the registry no longer holds (`journal-entry-mismatch`, at ordinal 1); a staged 
 never committed (`journal-entry-missing`); a torn last piece of the removal file that loads as no
 record, the observation `journal-torn-tail` beside `journal-from` and no finding; the same piece
 when it loads as a record, `journal-entry-missing`; and a store with no journal under the option,
-`journal-missing`. They cover: a valid sealed version 3 session; an action receipt whose
+`journal-missing`. The ten `v3-journal-refusal-*` vectors are the refusal journals' (ADR-0059
+§8): each is `v3-journal-holds` with `journals/refusal-<name>.jsonl` beside its operator journal,
+the journal of the synthetic scope `corpus-a`: one that holds (`journal-from`, with its `entries`);
+one closed by its tally with `full: true`; one whose entries name the tool their route resolved, the first with its pinned `descriptorDigest`; an entry naming a `descriptorDigest` and no `tool` (`journal-entry-forged`, at ordinal 1); an entry forged; an entry of another scope's journal; an
+operator body in a refusal journal (each `journal-entry-forged`, at ordinal 1); a `previous` that
+is not the line before it (`journal-order`); a torn last piece (`journal-torn-tail`, with its
+`bytes`); and the journal's name under the option with no journal (`journal-missing`). They cover: a valid sealed version 3 session; an action receipt whose
 citation and decision record both resolve; `citation-unresolved` for a wrong
 signature; `malformed` for the right signature cited in another case, since a
 cited signature has the form §1.2a gives it; `decision-record-mismatch`,
@@ -346,6 +352,14 @@ carries no `reconciliation`. A verifier written before the members (v0.23.0, in 
 TypeScript) answers `ok` for every one of them but the tampered member, and reads `caller` as
 naming the subject: that is the compatibility §11.7 states, and these vectors hold the readers
 that know the members to more.
+
+Two, `v3-call-ref-valid` and `v3-call-ref-absent`, are a call reference's (`SPEC.md` §1.2a,
+`callRef`; ADR-0060), made from `v3-scope-valid`'s session without its scope by a signer that, like
+every generator of this corpus, is not kept here, and checked to reproduce that vector's first
+receipt byte for byte: a sealed session of two acquisitions, each carrying its own `callRef`, and
+the same session without it. Both are `ok`. The member is optional and signed: a verifier of its
+release holds it to 64 lowercase hexadecimal characters, one written before it tolerates it, and
+the signature, over every member, verifies either way.
 
 Seventeen are of the `scope` member (§1.2a; `docs/adr/0026-a-scope-identifier-fixed-on-a-platform.md`;
 issue #420), each named `v3-scope-*` and signed with its members by a signer that shares no code
@@ -475,7 +489,7 @@ seal of version 3 and removed is observed `session-removed` where its session-re
 carries the salt (ten members), and is `sealed-session-missing` where the record carries none or
 another. By §3, a verifier that knows no version 3 loads none of these seals.
 
-Fifteen are of a verdict by scope (§4, "A verdict by scope";
+Sixteen are of a verdict by scope (§4, "A verdict by scope";
 `docs/adr/0042-a-seal-names-its-scope-over-a-salt-the-registry-does-not-hold.md`, decisions 6
 to 9), named `v3-cut-*` and signed by a second signer written for them as the first was and not
 kept here. Each gives `"scope"` beside `registry`, which the runner passes as `--scope <identifier>`
@@ -483,7 +497,10 @@ first (the process contract, below), and states `cut` in `expected`, `{"scope", 
 "unattributed"}`, which the runner compares whole; a vector without `scope` expects no `cut`. Over
 `s1` of `scope-a` and `s2` of `scope-b`, each sealed by a seal of version 3, and `s3` of no scope
 sealed in §3's form, the cut by `scope-a` is `s1`, by `scope-b` `s2`, and by `scope-c` none, each
-`ok` and reporting the findings of its sessions alone. Sessions sealed by seals of version 2 are
+`ok` and reporting the findings of its sessions alone. `v3-cut-a-refusal-journals-of-others` adds three refusal journals to
+that store, `scope-a`'s that holds, `scope-b`'s with a forged entry and `scope-c`'s with a torn tail:
+the verdict by `scope-a` reports `scope-a`'s `journal-from` alone and is `ok`, since a refusal
+journal's finding or observation stands in the verdict of the scope it names alone (ADR-0059 §8). Sessions sealed by seals of version 2 are
 cut by the scope those name. A session no seal closes whose receipts carry another scope and a
 salt is of another, its `session-open` observation not reported; one whose receipts carry no salt
 is named unattributed, its findings reported, and the verdict is not `ok`; so is a session sealed

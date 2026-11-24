@@ -182,9 +182,10 @@ func TestUndelegatedReceiptsAreByteIdentical(t *testing.T) {
 	// longer verifies. A salt out of form is refused before it is rebuilt.
 	// And forty-three of the v3-cut-* vectors (a verdict by scope, ADR-0042
 	// decisions 6 to 9). And seven of the scoped action and read-back
-	// vectors (ADR-0054 decision 1).
-	if scoped != 140 {
-		t.Fatalf("%d receipts holding a scope rebuilt, want 140", scoped)
+	// vectors (ADR-0054 decision 1). And the four of
+	// v3-cut-a-refusal-journals-of-others' two scoped sessions (ADR-0059 §8).
+	if scoped != 144 {
+		t.Fatalf("%d receipts holding a scope rebuilt, want 144", scoped)
 	}
 }
 

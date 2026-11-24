@@ -2761,12 +2761,11 @@ With `seals: true`:
   `gateway verify` reads. The PostgreSQL kind needs no migration for it: the run-time role's
   grants on `gateway.documents` cover it.
 
-## Delivery version "3" at the receipt sink (ADR-0059; engine version 50, a placeholder)
+## Delivery version "3" at the receipt sink (ADR-0059; engine version 50)
 
 Version 50 (`sinkDeliveryV3Version` in `go/sink_delivery_v3.go`) adds `receiptSink`'s optional
-`deliveryVersion` and `refusalEntries` members (ADR-0059, section 9). The number is a placeholder,
-assigned at merge: ADR-0059 gives the member version 48, which the refusal journal takes, and 49
-is expected for the call reference.
+`deliveryVersion` and `refusalEntries` members (ADR-0059, section 9). ADR-0059 gives the member
+version 48, which the refusal journal takes; the call reference takes 49.
 
 ```json
 "receiptSink": {"url": "https://audit-log.example/receipts", "deliveryVersion": "3"}
@@ -3213,6 +3212,59 @@ configuration may carry a top-level `limits` member. Below that version it is re
   instances is gateway #593.
 - Without the member nothing is counted, and every answer, start line and posture report is as
   before, byte for byte. The limits are read at start; a `SIGHUP` does not change them.
+
+## The refusal journal (ADR-0059; engine version 48)
+
+Engine version 46 (`refusalJournalVersion` in `go/engine.go`; its number is taken in merge order,
+expected 48) adds one optional member:
+
+```json
+"refusalJournal": {"maxBytesPerScope": 67108864}
+```
+
+Where it is given, each refused request that `limits` charged to a scope, and whose charge took
+that scope's hold, is signed into that scope's refusal journal, `journals/refusal-<name>.jsonl`
+(`gateway journal name --scope <key>` prints the name), after its answer is written and flushed.
+The answer is the one the gateway gives without the member. An entry holds the route, the refusal's
+code, its status, the caller and a salted commitment to the request body; never the body.
+`gateway journal open --config <file> --journal <name> --ordinal <n> --route <route> --body <file>`
+answers whether a body is the one an entry commits to, read-only, as the configuration's login.
+
+- `maxBytesPerScope` is an integer from 1048576 to 1073741824, 64 MiB by default. Refusal entries
+  stop at the cap less its sixteenth; the rest takes the tallies, and the last is a tally with
+  `full: true`, after which the journal takes nothing.
+- A tally a minute counts each scope's limit refusals, and the records not written: `queue-full`,
+  `write-failed` and `journal-full`. stderr gives one line a minute of the records not written.
+- The load refuses the member below its version, a configuration with no `identity`, and one in
+  which some scope has no `requestsPerMinute` in `limits`.
+- The key each journal's commitments are made under is drawn when the gateway starts: on the
+  filesystem kind `journals/<name>.key`, 0600; on the PostgreSQL kind a row of `gateway.secrets`.
+  No export carries it. On the PostgreSQL kind the journal is rows of `gateway.journal_records`,
+  each inserted under the journal's two-key advisory lock; no migration and no grant is added.
+- `remove-scope` removes the scope's journal, its key and its cursor with the scope's records, and
+  names the journal's bytes and digest in its operator journal entry.
+
+## A call reference passed to a binding (ADR-0060; engine version 49)
+
+From `callReferenceVersion` a platform may set `callReference`, a boolean, `false` when absent:
+the operator's opt-in for that platform's binding alone. With it, every call through the
+platform's live or write operation -- an `/acquire`, an `/act` this request dispatches, and the
+read-back of an action, in the session its receipt names (the action's for the read-back an
+uncertain action makes at once, the reconciling request's for a later one) -- draws `callRef`, 32 bytes from the
+operating system's random source as 64 lowercase hex characters, once the session the receipt
+names is known and before the binding is called. A failed draw refuses the call before the source
+starts. The gateway hands adapter-mcp the reference and the session identifier in
+`ADAPTER_MCP_CALL_REF` and `ADAPTER_MCP_SESSION_ID` for that call alone; the adapter takes both
+out of its environment before it starts a server, and the `tools/call` request's `params._meta`
+carries exactly `{"judgment-pack/callRef": ..., "judgment-pack/sessionId": ...}`. The version 3
+receipt carries the same `callRef` in its core, signed. A dry run carries none.
+
+Refused: the member below its version, by name; a value that is not a boolean; a platform's
+`environment` that sets either variable; and, at start, an opt-in on
+an operation that is not an MCP server, naming the platform, the source and its binding. A platform without the
+member is unchanged: its adapter's stdin and environment, its server's request and its receipts
+are what they were, byte for byte. An action attempt another request claimed is dispatched by
+that request; its uncertain receipt carries no `callRef`. connect raises no file to this version.
 
 ## Keyed actions (engine version 14 and later)
 

@@ -19,13 +19,10 @@ import (
 )
 
 // sinkDeliveryV3Version is the engine configuration version that admits
-// receiptSink.deliveryVersion and receiptSink.refusalEntries. Its number is a
-// placeholder, assigned at merge: ADR-0059 section 9 gives the member the
-// refusal journal's version, 48, which the journal's own change takes, and 49
-// is expected for the call reference, so this change reads 50 until the
-// merge order fixes it. engine.go lists it in engineVersions, so a merge that
-// keeps another change's number without renumbering one of them does not
-// compile.
+// receiptSink.deliveryVersion and receiptSink.refusalEntries. ADR-0059
+// section 9 gives the member the refusal journal's version, 48, which the
+// journal's own change takes; the call reference takes 49, so this is 50.
+// engine.go lists it in engineVersions.
 const sinkDeliveryV3Version = "50"
 
 const (

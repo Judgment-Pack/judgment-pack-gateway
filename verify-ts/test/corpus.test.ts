@@ -406,3 +406,53 @@ test("every key-history vector, on its verdict and its class", () => {
     }
   }
 });
+
+// The operator journal's own name, held by a link or a directory, is not
+// read as no journal: it is journal-unknown, by its name, as in Go.
+test("an operator journal that is not a regular file is journal-unknown", () => {
+  const v = storeVectors().find((s) => s.name === "v3-journal-unknown")!;
+  for (const make of ["directory", "link"]) {
+    const { root, registry, decisionRecords } = materialize(v);
+    const file = path.join(root, "journals", "operator.jsonl");
+    fs.rmSync(file);
+    if (make === "directory") {
+      fs.mkdirSync(file);
+    } else {
+      fs.writeFileSync(path.join(root, "journals", "elsewhere"), "");
+      fs.symlinkSync("elsewhere", file);
+    }
+    const verdict = JSON.parse(verdictText(verifyStore(root, registry, v.authority, decisionRecords, publicKey)));
+    assert.equal(verdict.ok, false, make);
+    assert.ok(verdict.findings.some((f: Record<string, unknown>) => f.status === "journal-unknown" && f.file === "operator.jsonl"), make);
+  }
+});
+
+// Only a refusal journal's exact name, with .jsonl or .key, is a file this
+// verifier reads; each near miss is journal-unknown, by its name, as in Go.
+test("a near miss of a refusal journal's name is journal-unknown", () => {
+  const v = storeVectors().find((s) => s.name === "v3-journal-refusal-holds")!;
+  const { root, registry, decisionRecords } = materialize(v);
+  const dir = path.join(root, "journals");
+  const name = fs.readdirSync(dir).find((f) => /^refusal-[a-p]{24}\.jsonl$/.test(f))!.slice(0, -".jsonl".length);
+  const stem = name.slice("refusal-".length);
+  fs.writeFileSync(path.join(dir, name + ".key"), "ab".repeat(32) + "\n");
+  const misses = [
+    "refusal-" + stem.slice(0, 23) + ".jsonl",
+    "refusal-" + stem + "a.jsonl",
+    "refusal-" + "q".repeat(24) + ".jsonl",
+    "refusal-" + stem.toUpperCase() + ".jsonl",
+    name + ".jsonl.bak",
+    name + ".KEY",
+    name + ".pending",
+    name,
+    "refusal-anything.jsonl",
+    "refusal-.jsonl",
+  ];
+  for (const m of misses) {
+    fs.writeFileSync(path.join(dir, m), "{}\n");
+  }
+  const verdict = JSON.parse(verdictText(verifyStore(root, registry, v.authority, decisionRecords, publicKey)));
+  const unknown = verdict.findings.filter((f: Record<string, unknown>) => f.status === "journal-unknown").map((f: Record<string, unknown>) => f.file).sort();
+  assert.deepEqual(unknown, [...misses].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))));
+  assert.equal(verdict.ok, false);
+});

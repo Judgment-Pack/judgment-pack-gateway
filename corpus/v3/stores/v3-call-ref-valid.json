@@ -1,0 +1,26 @@
+{
+  "name": "v3-call-ref-valid",
+  "note": "A sealed session of two acquisitions, each carrying callRef (SPEC.md §1.2a, callRef; ADR-0060), the per-call reference the gateway sent the binding in the tools/call request's _meta: 64 lowercase hexadecimal characters, one per call, signed with the receipt. Both are ok. A verifier that knows the member holds it to its form; one that does not tolerates it, and the signature, over every member, verifies either way. v3-call-ref-absent is the same session without it.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+    "receipts/s2/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"callRef\":\"06a90f18d9dda8dd9bef175ca6e4aae6ae5c6a1c5657c336b8bdba727c9de045\",\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"363a00f06921bcec9825a2e9c075c6aa70eb16860e675503b7c76d6c824dcf396a8484c263d9ec01ee2852eef657d44d8be606c64fba4dc9d75c10a73552470b\",\"source\":\"corpus\"}\n",
+    "receipts/s2/1.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"callRef\":\"144194ebd6c1bbf218a9ebc1b3baf16b6660325a37c43f4acb8bc88d8d352677\",\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":\"363a00f06921bcec9825a2e9c075c6aa70eb16860e675503b7c76d6c824dcf396a8484c263d9ec01ee2852eef657d44d8be606c64fba4dc9d75c10a73552470b\",\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"726d0f3d1c13adc041379031039564132f6aa3a8a5087bfb533f80345637d6745f0fce311657d033bd5c730aedfec833ddb686e913cdefbdde471da7f9936601\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"s2\",\"signature\":\"33c22c1d588cff03e38a83679fa9dbfb62f2a2e086ae1c33b4496dfe12dad8c88f72930916e54d2a8a16c5a5803e4d0366d1dd5fc1667909fa702aa80ed8e503\"}\n",
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s2",
+        "status": "ok"
+      },
+      {
+        "callIndex": 1,
+        "sessionId": "s2",
+        "status": "ok"
+      }
+    ]
+  }
+}
