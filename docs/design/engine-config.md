@@ -2929,7 +2929,10 @@ id, so the call can be traced to the acknowledgments it acted on.
 **Retiring one scope identifier.** `gateway export --scope <id>`, kept where exports are kept,
 and verified with `gateway verify --scope <id>` on the restored copy; then
 `gateway remove-scope --scope <id> --by <label>` (or `gateway store remove-scope`), the gateway
-stopped.
+stopped. The scope's refusal journal goes with it, its key and its cursor too, and so it does where
+the scope holds no session, as one whose callers were only ever refused: the command writes an
+operator journal entry naming the journal, and says what it removed. An export by scope carries no
+refusal journal, and a full export carries them without their keys.
 
 **Upgrading.** A file of version 37 or earlier loads as before. To retain, raise
 `engineVersion` to `"38"` and add the member. A gateway older than this one refuses a

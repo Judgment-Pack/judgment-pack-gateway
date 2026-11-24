@@ -11,10 +11,11 @@ import (
 	"time"
 )
 
-// A remove-scope run cut off after the scope's journal went and before its
-// key did is completed at the next start, before any key is read (ADR-0059
-// §8, as built): the first refusal after the start makes the journal under
-// a key drawn then, never under the old one, and the start says so.
+// A remove-scope run cut off after the scope's key went and before its
+// journal did, the journal going last, is completed at the next start,
+// before any key is read (ADR-0059 §8, as built): the first refusal after
+// the start makes the journal under a key drawn then, never under the old
+// one, and the start says so.
 func TestARestartCompletesACutOffRemovalBeforeAnyKeyIsRead(t *testing.T) {
 	h := limitsSetup(t, refusalLimits())
 	dir := filepath.Join(h.g.storeRoot, journalsDir)
@@ -36,8 +37,8 @@ func TestARestartCompletesACutOffRemovalBeforeAnyKeyIsRead(t *testing.T) {
 		t.Fatalf("the first run's journal: %v", err)
 	}
 
-	// the remove-scope run: its operator entry names the journal, the
-	// journal goes, and the run is cut off before the key does
+	// the remove-scope run: its operator entry names the journal, the key
+	// goes, and the run is cut off before the journal does
 	body := removalBody("remove-scope", "operator-1", callerScopeA)
 	body.set("registryFrom", vInt(0))
 	body.set("removalFrom", vInt(0))
@@ -51,7 +52,7 @@ func TestARestartCompletesACutOffRemovalBeforeAnyKeyIsRead(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, operatorJournal+".jsonl"), line, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(dir, name+".jsonl")); err != nil {
+	if err := os.Remove(filepath.Join(dir, name+".key")); err != nil {
 		t.Fatal(err)
 	}
 

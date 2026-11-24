@@ -983,6 +983,25 @@ func journaledAppendRemovals(j *operatorJournalCall, storeRoot string, torn bool
 	return j.removePending()
 }
 
+// refusalRemovalEntry is remove-scope's entry where the scope holds no
+// record and its refusal journal goes (ADR-0059 §8, as built 2026-11-24):
+// the removal kind's members naming no removal record, removalBytes 0 and
+// the digest of no bytes, beside the journal's two, which body carries. No
+// record is appended, so nothing is staged: the entry, appended and synced
+// before the journal goes, is the call's one write. A nil call appends none.
+func (j *operatorJournalCall) refusalRemovalEntry(body *vObject) error {
+	if j == nil {
+		return nil
+	}
+	body.set("removalBytes", vInt(0))
+	body.set("removalDigest", vString(journalDigest(nil)))
+	line, err := j.entry(body)
+	if err != nil {
+		return err
+	}
+	return j.appendEntry(line)
+}
+
 // commitSeals is a seal kind's entry, written after the call's last seal is
 // appended and synced: the command seals no entry names yet, those an
 // interrupted call left first, then the call's own. A call that sealed

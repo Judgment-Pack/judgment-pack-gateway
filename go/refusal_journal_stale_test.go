@@ -82,7 +82,7 @@ func TestThePostgresKindDropsAStaleWritersEntriesAfterARemoval(t *testing.T) {
 		pg_catalog.set_config('gateway.scope', $2, true)`, db.roles.owner, pgNoScope); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pgRemoveRefusalJournal(pgTx{c}, callerScopeA); err != nil {
+	if _, err := pgRemoveRefusalJournal(pgTx{c}, callerScopeA, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.exec("COMMIT"); err != nil {

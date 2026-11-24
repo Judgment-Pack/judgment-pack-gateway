@@ -87,7 +87,7 @@ func TestThePostgresKindKeepsOneRefusalJournalUnderItsLock(t *testing.T) {
 		pg_catalog.set_config('gateway.scope', $2, true)`, db.roles.owner, pgNoScope); err != nil {
 		t.Fatal(err)
 	}
-	removed, err := pgRemoveRefusalJournal(pgTx{c}, callerScopeA)
+	removed, err := pgRemoveRefusalJournal(pgTx{c}, callerScopeA, true)
 	if err != nil {
 		t.Fatal(err)
 	}

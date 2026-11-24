@@ -20,11 +20,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -284,9 +286,29 @@ func newRefusalJournals(cfg *refusalJournalConfig, keys map[string]bool, store r
 		sorted = append(sorted, key)
 	}
 	sort.Strings(sorted)
+	if fs, ok := store.(interface{ removeStagedKeys(names []string) error }); ok {
+		names := make([]string, 0, len(sorted))
+		for _, key := range sorted {
+			names = append(names, refusalJournalName(key))
+		}
+		if err := fs.removeStagedKeys(names); err != nil {
+			return nil, fmt.Errorf("refusal journal: a key's staged file could not be removed: %v", err)
+		}
+	}
 	now := j.clock()
 	for _, key := range sorted {
 		s := &refusalScope{key: key, name: refusalJournalName(key), queue: make(chan *vObject, refusalQueueBound), since: now}
+		if fs, ok := store.(interface {
+			redrawShortKey(name string) (bool, error)
+		}); ok {
+			redrawn, err := fs.redrawShortKey(s.name)
+			if err != nil {
+				return nil, fmt.Errorf("refusal journal: the key of journal %s could not be read or made: %v", s.name, err)
+			}
+			if redrawn {
+				fmt.Fprintf(stderr, "refusal journal: journal %s: its key file is not a whole key and no entry is beside it, as a draw ended part way leaves it; the key is drawn again\n", s.name)
+			}
+		}
 		secret, missing, err := store.key(s.name)
 		if err != nil {
 			return nil, fmt.Errorf("refusal journal: the key of journal %s could not be read or made: %v", s.name, err)
@@ -731,7 +753,7 @@ func (f refusalFS) key(name string) ([]byte, bool, error) {
 	if _, err := rand.Read(k); err != nil {
 		return nil, false, err
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	err := f.drawKey(name, path, []byte(hex.EncodeToString(k)+"\n"))
 	if errors.Is(err, os.ErrExist) {
 		k, err := read()
 		return k, false, err
@@ -739,7 +761,90 @@ func (f refusalFS) key(name string) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	_, err = file.WriteString(hex.EncodeToString(k) + "\n")
+	return k, false, nil
+}
+
+// stagedKeyForm is the name a key is drawn under before it is linked into
+// place (ADR-0059 §8, as built 2026-11-24): in the store's root, outside
+// journals/, whose names both readers judge, a dot, the journal's name,
+// .key, the process's identifier and twelve lowercase hexadecimal digits,
+// then .tmp. A start ended mid-draw leaves it, and never a short key.
+var stagedKeyForm = regexp.MustCompile(`^\.(refusal-[a-p]{24})\.key\.[0-9]{1,10}\.[0-9a-f]{12}\.tmp$`)
+
+// keyDrawCut, where a test sets it, runs once a drawn key's staged file is
+// synced and before it is linked into place: a test's way of ending a draw
+// there.
+var keyDrawCut func() error
+
+// drawKey puts text at path, the journal's key file: written to a staged
+// file of stagedKeyForm, synced, and linked to path, which fails where a
+// key is there and never overwrites it (os.ErrExist); the staged file is
+// then removed. A draw ended at any step leaves no file at path, or the
+// whole key.
+func (f refusalFS) drawKey(name, path string, text []byte) error {
+	var suffix [6]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return err
+	}
+	staged := filepath.Join(f.root, fmt.Sprintf(".%s.key.%d.%s.tmp", name, os.Getpid(), hex.EncodeToString(suffix[:])))
+	file, err := os.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(staged)
+	_, err = file.Write(text)
+	if err == nil {
+		err = file.Sync()
+	}
+	if cerr := file.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil && keyDrawCut != nil {
+		err = keyDrawCut()
+	}
+	if err != nil {
+		return err
+	}
+	if err := keyLink(staged, path); err != nil {
+		if !linkUnsupported(err) {
+			return err
+		}
+		// a store whose journals/ is on another filesystem, or one that
+		// links no file: the staged file goes, and the key is drawn in
+		// place, as before; a draw ended there leaves a short key, which
+		// the next start draws again where no entry is beside it
+		// (redrawShortKey)
+		os.Remove(staged)
+		return drawKeyInPlace(path, text)
+	}
+	syncDir(f.dir())
+	return nil
+}
+
+// keyLink links a staged key into place; a test's seam for a store that
+// links no file.
+var keyLink = os.Link
+
+// linkUnsupported is whether a link failed because the store cannot link
+// the staged file to the key's path: another filesystem, links refused, or
+// no links at all. Any other failure refuses the draw.
+func linkUnsupported(err error) bool {
+	for _, cause := range []error{syscall.EXDEV, syscall.EPERM, syscall.ENOTSUP, syscall.EOPNOTSUPP, errors.ErrUnsupported} {
+		if errors.Is(err, cause) {
+			return true
+		}
+	}
+	return false
+}
+
+// drawKeyInPlace makes the key file at path under O_EXCL, writes text and
+// syncs it: drawKey's fallback where the store links no file.
+func drawKeyInPlace(path string, text []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(text)
 	if err == nil {
 		err = file.Sync()
 	}
@@ -747,10 +852,84 @@ func (f refusalFS) key(name string) ([]byte, bool, error) {
 		err = cerr
 	}
 	if err != nil {
-		return nil, false, err
+		return err
+	}
+	syncDir(filepath.Dir(path))
+	return nil
+}
+
+// refusalKeyFileBound is the most a key file is read for: its full form is
+// 64 hexadecimal digits and a line feed.
+const refusalKeyFileBound = 4096
+
+// refusalKeyDecodes is whether a key file's bytes are a key as the start
+// reads one (refusalFS.key): 32 bytes in hexadecimal, a line feed after
+// them or none.
+func refusalKeyDecodes(raw []byte) bool {
+	k, err := hex.DecodeString(strings.TrimSuffix(string(raw), "\n"))
+	return err == nil && len(k) == 32
+}
+
+// redrawShortKey removes a key file that does not decode as a key where the
+// journal beside it is absent or empty: what a draw in place ended part
+// way leaves, and never a key an entry was made under. A whole key, with
+// its line feed or without, is left. It answers whether it removed one, so
+// the key is drawn again. A key file that does not decode beside a journal
+// holding entries, or one that cannot be looked at, is left, and reading
+// it refuses the start, as before.
+func (f refusalFS) redrawShortKey(name string) (bool, error) {
+	path := filepath.Join(f.dir(), name+".key")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false, nil
+	}
+	if info.Size() <= refusalKeyFileBound {
+		raw, err := os.ReadFile(path)
+		if err != nil || refusalKeyDecodes(raw) {
+			return false, nil
+		}
+	}
+	if journal, err := os.Lstat(filepath.Join(f.dir(), name+".jsonl")); err == nil && journal.Size() > 0 || err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err := os.Remove(path); err != nil {
+		return false, err
 	}
 	syncDir(f.dir())
-	return k, false, nil
+	return true, nil
+}
+
+// removeStagedKeys removes, before any key is read, the staged files a
+// start ended mid-draw left in the store's root for these journals' keys:
+// only a regular file of stagedKeyForm for one of them, never a link or
+// anything else, and never another journal's.
+func (f refusalFS) removeStagedKeys(names []string) error {
+	entries, err := os.ReadDir(f.root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	own := map[string]bool{}
+	for _, name := range names {
+		own[name] = true
+	}
+	removed := false
+	for _, e := range entries {
+		m := stagedKeyForm.FindStringSubmatch(e.Name())
+		if m == nil || !own[m[1]] || !e.Type().IsRegular() {
+			continue
+		}
+		if err := os.Remove(filepath.Join(f.root, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		removed = true
+	}
+	if removed {
+		syncDir(f.root)
+	}
+	return nil
 }
 
 // foundAtStart is whether the journal's file is there as the gateway

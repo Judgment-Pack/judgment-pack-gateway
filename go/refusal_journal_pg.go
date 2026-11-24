@@ -191,8 +191,11 @@ func (p *refusalPG) close() {
 
 // pgRemoveRefusalJournal removes a scope's refusal journal, its key and its
 // forwarding cursor in the owner's transaction tx, under the journal's lock,
-// and answers the bytes an export would have written of it.
-func pgRemoveRefusalJournal(tx pgTx, scopeKey string) ([]byte, error) {
+// and answers the bytes an export would have written of it. Without withKey
+// a journal holding no entry is left as it is, its key and cursor with it:
+// remove-scope of a scope that holds no record removes only a journal that
+// holds entries.
+func pgRemoveRefusalJournal(tx pgTx, scopeKey string, withKey bool) ([]byte, error) {
 	name := refusalJournalName(scopeKey)
 	if _, err := tx.exec(pgRefusalLock, pgRefusalJournalLockClass, refusalLockKey(name)); err != nil {
 		return nil, err
@@ -200,6 +203,9 @@ func pgRemoveRefusalJournal(tx pgTx, scopeKey string) ([]byte, error) {
 	data, err := pgJournalFile(tx, name)
 	if err != nil {
 		return nil, err
+	}
+	if len(data) == 0 && !withKey {
+		return nil, nil
 	}
 	// the rows go last first, since each names the one before it
 	if _, err := tx.exec(`DELETE FROM gateway.journal_records WHERE journal = $1`, name); err != nil {
