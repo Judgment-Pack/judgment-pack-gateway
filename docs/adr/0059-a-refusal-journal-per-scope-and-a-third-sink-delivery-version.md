@@ -991,6 +991,38 @@ forwarding, follow it. Where R2 departs from the text above:
   not changed reads that one line and no entry byte past it. The source keeps one line for each
   journal, whatever the journal's length, and drops it once the file is gone. The durable bound and
   the torn tail's rule are as before.
+- **2026-11-24, a staged key file of any journal's name is removed (gateway #611).** The start
+  removes, before any key is read, every staged key file of the exact form in the store's root,
+  whatever journal it names, so the leftover of a scope no longer configured goes too. It removes a
+  regular file alone, never a link, a directory or a near miss (another prefix, uppercase
+  hexadecimal, another length), and only one last written `stagedKeyAge` (five minutes) ago or
+  longer: several gateway processes may serve one store, each under its own registry, so a younger
+  file may be another start's draw under way, between its write and its link.
+  `remove-scope` of a scope also removes its journal's staged files and says so in one stderr line.
+  A staged file holds a key no entry was made under, so nothing it removes was ever used.
+- **2026-11-24, remove-scope and journal reset take the store alone (gateway #611).** Each gateway
+  process serving a filesystem store holds the store's directory lock shared (`holdServedStore`),
+  under its own registry, so the registry a command's configuration names does not exclude a
+  gateway serving the same store under another. `remove-scope` and `journal reset` take the
+  store's lock exclusive (`holdStoreAlone`), as `journal compact` does, after the registry, and
+  refuse with `store-served` while any gateway process serves the store, before anything is read
+  or removed. Where the platform keeps no such lock, nothing is held, as with the registry.
+- **2026-11-24, a way out for the journal of the sources of no scope (gateway #611).** Where the
+  `unscoped` journal's key is lost, as after a restore from a full export, `gateway journal reset
+  --config <file> --unscoped --by <label>` (filesystem) and `gateway store journal-reset --unscoped`
+  (PostgreSQL) take that journal alone: its name is `refusalJournalName("unscoped")` by
+  construction, and any scope argument is a usage error (exit 2). They run on remove-scope's rails:
+  the gateway stopped (the registry's hold; the start lease), the journal held under its lock, a
+  signed operator entry of the new kind `refusal-journal-reset` (`by`, `refusalJournalBytes`,
+  `refusalJournalDigest`, both required, beside the envelope's `registryFrom` and `removalFrom`)
+  written before anything is removed, then the key, the cursor and the journal, in that order. No
+  receipt, session, removal record or other journal is touched. An absent or empty journal is left
+  and no entry is written. A filesystem run cut off after its entry is completed by a second run,
+  or by the next start where a source of no scope is configured: the completion rule reads the last
+  `refusal-journal-reset` entry for `unscoped` as it reads a scope's last `remove-scope` entry. On
+  the PostgreSQL kind the entry and the removal are one transaction. A store whose configuration is
+  below `operatorJournalVersion` and holds no operator journal is refused, since the entry is the
+  reset's one trace.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on

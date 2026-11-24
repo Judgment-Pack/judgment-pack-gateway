@@ -2387,6 +2387,9 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 		// remove-scope's entry naming the refusal journal it removed
 		// (ADR-0059 §8, as built 2026-11-24)
 		"v3-journal-remove-scope-refusal-journal", "v3-journal-remove-scope-refusal-half",
+		// gateway journal reset --unscoped's entry naming the journal of the
+		// sources of no scope it removed (gateway #611)
+		"v3-journal-refusal-journal-reset", "v3-journal-refusal-journal-reset-half", "v3-journal-refusal-journal-reset-extra-member",
 	}
 	retentionStating = append(retentionStating, journal...)
 	retentionObserving = append(retentionObserving, journal...)
@@ -2472,8 +2475,8 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 			if err != nil {
 				t.Fatalf("no run: %v", err)
 			}
-			if count != 325 {
-				t.Fatalf("%d store vectors read, want 325", count)
+			if count != 328 {
+				t.Fatalf("%d store vectors read, want 328", count)
 			}
 			disagreeing := map[string]bool{}
 			for _, failure := range failures {
@@ -2656,7 +2659,7 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 	// observes in.
 	if got, want := []int{len(stores), len(okTrue), len(withFindings), len(withWitnesses), len(withRotations), len(stating),
 		len(witnesses), len(refusals), len(readings), len(okReadings), len(withHead)},
-		[]int{325, 83, 322, 3, 23, 66, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
+		[]int{328, 84, 325, 3, 23, 69, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
 		t.Fatalf("the corpus's vectors, by what their answers give: %v, want %v", got, want)
 	}
 	for name := range stating {

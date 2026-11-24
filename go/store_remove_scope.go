@@ -250,42 +250,56 @@ func (h pgScopeRows) none() bool {
 	return len(h.series) == 0 && h.entries == 0 && h.blobs == 0 && h.documents == 0
 }
 
-// removeScopeRows is the command's transaction. Out carries the records
-// only once the transaction committed them.
-func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, stamp func() string) (out removalOutcome, err error) {
-	roles := o.roles
+// pgOwnerRemoval is a removal's transaction on this kind, begun: the
+// migration login acting as the owner, under the migration's lock and the
+// start lease, at the schema's version, with gateway.scope 'none'; the
+// registry's walk, the removal records as an export writes them and the
+// ordinal the next takes, and the operator journal's hold, read in it.
+// store remove-scope and store journal-reset run in it.
+type pgOwnerRemoval struct {
+	c       *pgConn
+	tx      pgTx
+	walk    *registryWalk
+	journal *pgOperatorJournalCall
+	next    int64
+}
+
+// beginPgOwnerRemoval begins the transaction; what is the command's verb
+// in the start lease's refusal ("stop the gateway, then <what>"). The
+// caller closes r.c.
+func beginPgOwnerRemoval(dsn pgDSN, roles pgRoles, timeout time.Duration, priv *signingKey, engineVersion, what string, stamp func() string) (*pgOwnerRemoval, error) {
 	if !pgRoleName(roles.owner) || !pgRoleName(roles.runtime) {
-		return out, errors.New("store: a role's name is 1 to 63 bytes with no NUL and no double quote")
+		return nil, errors.New("store: a role's name is 1 to 63 bytes with no NUL and no double quote")
 	}
 	if roles.owner == roles.runtime {
-		return out, errors.New("store: the owner role and the run-time role are two roles")
+		return nil, errors.New("store: the owner role and the run-time role are two roles")
 	}
-	deadline := time.Now().Add(o.timeout)
+	deadline := time.Now().Add(timeout)
 	c, err := pgConnect(dsn, deadline)
 	if err != nil {
-		return out, err
+		return nil, err
 	}
-	defer c.close()
+	begun := false
+	defer func() {
+		if !begun {
+			c.close()
+		}
+	}()
+	r := &pgOwnerRemoval{c: c, tx: pgTx{c}}
 	if err := c.conn.SetDeadline(deadline); err != nil {
-		return out, pgTransport(err)
+		return nil, pgTransport(err)
 	}
 	if _, err := c.exec(`SELECT pg_catalog.set_config('search_path', 'pg_catalog', false)`); err != nil {
-		return out, err
+		return nil, err
 	}
 	if err := pgServerHolds(c); err != nil {
-		return out, err
+		return nil, err
 	}
 	if err := pgMigrationRolesHold(c, roles); err != nil {
-		return out, err
-	}
-	failed := func(err error) (removalOutcome, error) {
-		if !c.broken {
-			c.exec("ROLLBACK")
-		}
-		return removalOutcome{}, fmt.Errorf("%v; nothing was removed", err)
+		return nil, err
 	}
 	if _, err := c.exec("BEGIN ISOLATION LEVEL READ COMMITTED READ WRITE"); err != nil {
-		return out, err
+		return nil, err
 	}
 	// Row security stays forced on the owner: a statement reads and
 	// changes the rows of the scope gateway.scope names alone.
@@ -293,55 +307,94 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 		pg_catalog.set_config('search_path', 'pg_catalog', true),
 		pg_catalog.set_config('gateway.scope', $2, true),
 		pg_catalog.pg_advisory_xact_lock($3)`, roles.owner, pgNoScope, int64(pgMigrationLock)); err != nil {
-		return failed(err)
+		return nil, r.fail(err)
 	}
 	set := pgShippedMigrations()
 	recorded, err := pgAppliedMigrations(c, roles.owner)
 	if err != nil {
-		return failed(err)
+		return nil, r.fail(err)
 	}
 	if err := pgRecordedMatch(recorded, set); err != nil {
-		return failed(err)
+		return nil, r.fail(err)
 	}
 	if len(recorded) != len(set.versions) {
-		return failed(fmt.Errorf("store: the database's schema is at version %d and this gateway's is %d; gateway store migrate raises it first", len(recorded), len(set.versions)))
+		return nil, r.fail(fmt.Errorf("store: the database's schema is at version %d and this gateway's is %d; gateway store migrate raises it first", len(recorded), len(set.versions)))
 	}
 	// the lease's lock and every row of the lease, to the commit: no start
 	// takes a row meanwhile, and the removal is refused while an instance
 	// serves (ADR-0034, option 1; ADR-0035, option C)
-	if err := pgHoldEveryInstance(c, "remove"); err != nil {
-		return failed(err)
+	if err := pgHoldEveryInstance(c, what); err != nil {
+		return nil, r.fail(err)
 	}
 	if err := pgRefuseRotated(c); err != nil {
-		return failed(err)
+		return nil, r.fail(err)
 	}
-
-	tx := pgTx{c}
-	data, present, err := pgLog{name: "registry"}.readTx(tx, 0)
+	data, present, err := pgLog{name: "registry"}.readTx(r.tx, 0)
 	if err != nil {
-		return failed(err)
+		return nil, r.fail(err)
 	}
 	if !present {
-		return failed(errors.New("the registry is not there; a gateway makes it when it starts, and its walk names the key the records are signed under"))
+		return nil, r.fail(errors.New("the registry is not there; a gateway makes it when it starts, and its walk names the key the records are signed under"))
 	}
-	walk, err := engineWalk(data, priv.held())
-	if err != nil {
-		return failed(err)
+	if r.walk, err = engineWalk(data, priv.held()); err != nil {
+		return nil, r.fail(err)
 	}
 	// the seed signs here: a registry holding records under a key the walk
 	// did not reach, a key service's among them, is refused (ADR-0050)
-	if err := heldUnderAnotherKey(data, walk.keys, priv.public, nil); err != nil {
-		return failed(err)
+	if err := heldUnderAnotherKey(data, r.walk.keys, priv.public, nil); err != nil {
+		return nil, r.fail(err)
 	}
-	file, next, err := pgRemovalFile(tx)
+	file, next, err := pgRemovalFile(r.tx)
 	if err != nil {
-		return failed(err)
+		return nil, r.fail(err)
 	}
+	r.next = next
 	// the operator journal, read in the transaction that inserts its entry
 	// with the records (ADR-0056 §5)
-	journal, err := beginPgOperatorJournal(tx, o.engineVersion, priv, walk.keys, data, file, stamp)
+	if r.journal, err = beginPgOperatorJournal(r.tx, engineVersion, priv, r.walk.keys, data, file, stamp); err != nil {
+		return nil, r.fail(err)
+	}
+	begun = true
+	return r, nil
+}
+
+// fail rolls the transaction back, where the connection still carries one,
+// and says nothing was removed.
+func (r *pgOwnerRemoval) fail(err error) error {
+	if !r.c.broken {
+		r.c.exec("ROLLBACK")
+	}
+	return fmt.Errorf("%v; nothing was removed", err)
+}
+
+// commit runs journalCutOff where a test set it, and commits.
+func (r *pgOwnerRemoval) commit() error {
+	if journalCutOff != nil {
+		if err := journalCutOff(); err != nil {
+			return r.fail(err)
+		}
+	}
+	done, err := r.c.exec("COMMIT")
 	if err != nil {
-		return failed(err)
+		return fmt.Errorf("the commit's answer did not arrive, so whether the removal was made is not known: %v; a second run removes what is left", err)
+	}
+	if done.tag != "COMMIT" {
+		return errors.New("the database rolled the removal back; nothing was removed")
+	}
+	return nil
+}
+
+// removeScopeRows is the command's transaction. Out carries the records
+// only once the transaction committed them.
+func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, stamp func() string) (out removalOutcome, err error) {
+	r, err := beginPgOwnerRemoval(dsn, o.roles, o.timeout, priv, o.engineVersion, "remove", stamp)
+	if err != nil {
+		return out, err
+	}
+	defer r.c.close()
+	c, tx, walk, journal, next := r.c, r.tx, r.walk, r.journal, r.next
+	failed := func(err error) (removalOutcome, error) {
+		return removalOutcome{}, r.fail(err)
 	}
 
 	row := pgRowScope(o.scope)
@@ -461,17 +514,8 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 	case held.none():
 		notes = append(notes, "no row of the scope identifier is in the store; nothing was removed")
 	}
-	if journalCutOff != nil {
-		if err := journalCutOff(); err != nil {
-			return failed(err)
-		}
-	}
-	done, err := c.exec("COMMIT")
-	if err != nil {
-		return removalOutcome{}, fmt.Errorf("the commit's answer did not arrive, so whether the removal was made is not known: %v; a second run removes what is left", err)
-	}
-	if done.tag != "COMMIT" {
-		return removalOutcome{}, errors.New("the database rolled the removal back; nothing was removed")
+	if err := r.commit(); err != nil {
+		return removalOutcome{}, err
 	}
 	out.notes = notes
 	return out, nil

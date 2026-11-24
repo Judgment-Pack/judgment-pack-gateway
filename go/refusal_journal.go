@@ -286,12 +286,12 @@ func newRefusalJournals(cfg *refusalJournalConfig, keys map[string]bool, store r
 		sorted = append(sorted, key)
 	}
 	sort.Strings(sorted)
-	if fs, ok := store.(interface{ removeStagedKeys(names []string) error }); ok {
-		names := make([]string, 0, len(sorted))
-		for _, key := range sorted {
-			names = append(names, refusalJournalName(key))
-		}
-		if err := fs.removeStagedKeys(names); err != nil {
+	// every journal's leftovers, a scope's no longer configured among them
+	// (gateway #611)
+	if fs, ok := store.(interface {
+		removeStagedKeys(only string) (int, error)
+	}); ok {
+		if _, err := fs.removeStagedKeys(""); err != nil {
 			return nil, fmt.Errorf("refusal journal: a key's staged file could not be removed: %v", err)
 		}
 	}
@@ -764,12 +764,18 @@ func (f refusalFS) key(name string) ([]byte, bool, error) {
 	return k, false, nil
 }
 
+// stagedKeyAge is how long a staged key file stands before a sweep takes it
+// for a leftover. A draw writes, syncs and links its file within moments;
+// five minutes is far past any draw under way.
+const stagedKeyAge = 5 * time.Minute
+
 // stagedKeyForm is the name a key is drawn under before it is linked into
 // place (ADR-0059 §8, as built 2026-11-24): in the store's root, outside
 // journals/, whose names both readers judge, a dot, the journal's name,
 // .key, the process's identifier and twelve lowercase hexadecimal digits,
-// then .tmp. A start ended mid-draw leaves it, and never a short key.
-var stagedKeyForm = regexp.MustCompile(`^\.(refusal-[a-p]{24})\.key\.[0-9]{1,10}\.[0-9a-f]{12}\.tmp$`)
+// then .tmp. A start ended mid-draw leaves it, and never a short key. The
+// first group is the journal's name, the second the process's identifier.
+var stagedKeyForm = regexp.MustCompile(`^\.(refusal-[a-p]{24})\.key\.([0-9]{1,10})\.[0-9a-f]{12}\.tmp$`)
 
 // keyDrawCut, where a test sets it, runs once a drawn key's staged file is
 // synced and before it is linked into place: a test's way of ending a draw
@@ -899,37 +905,40 @@ func (f refusalFS) redrawShortKey(name string) (bool, error) {
 	return true, nil
 }
 
-// removeStagedKeys removes, before any key is read, the staged files a
-// start ended mid-draw left in the store's root for these journals' keys:
-// only a regular file of stagedKeyForm for one of them, never a link or
-// anything else, and never another journal's.
-func (f refusalFS) removeStagedKeys(names []string) error {
+// removeStagedKeys removes the staged files a start ended mid-draw left in
+// the store's root: before any key is read, every journal's, a scope's no
+// longer configured among them; and, from remove-scope, the scope's own
+// (only, its journal's name). Only a regular file of exactly
+// stagedKeyForm, never a link, a directory or a near miss, and only one
+// last written stagedKeyAge ago or longer: several gateway processes may
+// serve one store, and a younger file may be another's draw under way,
+// between its write and its link. It answers how many it removed.
+func (f refusalFS) removeStagedKeys(only string) (int, error) {
 	entries, err := os.ReadDir(f.root)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return 0, nil
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
-	own := map[string]bool{}
-	for _, name := range names {
-		own[name] = true
-	}
-	removed := false
+	removed := 0
 	for _, e := range entries {
 		m := stagedKeyForm.FindStringSubmatch(e.Name())
-		if m == nil || !own[m[1]] || !e.Type().IsRegular() {
+		if m == nil || only != "" && m[1] != only || !e.Type().IsRegular() {
 			continue
 		}
-		if err := os.Remove(filepath.Join(f.root, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
+		if info, err := e.Info(); err != nil || time.Since(info.ModTime()) < stagedKeyAge {
+			continue // gone since, or perhaps a draw under way
 		}
-		removed = true
+		if err := os.Remove(filepath.Join(f.root, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return removed, err
+		}
+		removed++
 	}
-	if removed {
+	if removed > 0 {
 		syncDir(f.root)
 	}
-	return nil
+	return removed, nil
 }
 
 // foundAtStart is whether the journal's file is there as the gateway
@@ -1417,18 +1426,18 @@ func refusalStartLine(scopes int) string {
 
 // completeCutOffRefusalRemovals completes, before any key is read, each
 // removal of a configured scope's refusal journal that a remove-scope run
-// was cut off in, on the filesystem kind (ADR-0059 §8, as built): a key
+// was cut off in, and the reset of the sources of no scope's journal a
+// gateway journal reset --unscoped run was cut off in where a source of no
+// scope is configured, on the filesystem kind (ADR-0059 §8, as built): a key
 // left beside a journal that run took would otherwise make the journal
 // again under the old key, with no word. Each completion is one stderr line.
 // A journal holding bytes the entry does not name is the scope's since the
 // removal, under its new key, and is left with no line.
 func (g *gatewayService) completeCutOffRefusalRemovals(stderr io.Writer) error {
-	scopes := map[string]bool{}
-	for _, spec := range g.sources {
-		if spec.scope != "" {
-			scopes[spec.scope] = true
-		}
-	}
+	// the scope keys the start journals: each scope identifier, and
+	// unscopedMarker where a source has none, whose journal a cut-off
+	// gateway journal reset --unscoped run leaves (gateway #611)
+	scopes := limitScopeKeys(g.sources)
 	if len(scopes) == 0 {
 		return nil
 	}
@@ -1447,8 +1456,11 @@ func (g *gatewayService) completeCutOffRefusalRemovals(stderr io.Writer) error {
 			return fmt.Errorf("refusal journal: journal %s: %v", refusalJournalName(scope), err)
 		}
 		for _, note := range out.notes {
-			if note == refusalRemovalCompletedNote {
+			switch note {
+			case refusalRemovalCompletedNote:
 				fmt.Fprintf(stderr, "refusal journal: journal %s: a remove-scope run was cut off; %s\n", refusalJournalName(scope), note)
+			case refusalResetCompletedNote:
+				fmt.Fprintf(stderr, "refusal journal: journal %s: a journal reset run was cut off; %s\n", refusalJournalName(scope), note)
 			}
 		}
 	}

@@ -80,6 +80,35 @@ func holdServedStore(storeRoot string) (*servedStoreHold, error) {
 	return h, h.take()
 }
 
+// errStoreServed refuses a command that removes from the store while a
+// gateway process serves it, under whatever registry.
+var errStoreServed = errors.New("store-served")
+
+// holdStoreAlone takes the store's directory lock exclusive, as gateway
+// journal compact does, for a command that removes from the store: every
+// gateway process serving it holds the lock shared (holdServedStore), each
+// under its own registry, so a command holding only its own configuration's
+// registry would not see a gateway serving the store under another. Where
+// the platform keeps no such lock, or the store is not a directory, which
+// the command then refuses for itself, nothing is held.
+func holdStoreAlone(storeRoot, then string) (io.Closer, error) {
+	if !actionJournalSupported {
+		return io.NopCloser(nil), nil
+	}
+	store, err := resolvedDirectory(storeRoot)
+	if err != nil {
+		return io.NopCloser(nil), nil
+	}
+	lock, err := lockDirectory(store, true)
+	if errors.Is(err, errDirectoryHeld) {
+		return nil, fmt.Errorf("%w: a gateway process is serving the store %s, under this registry or another, or a journal compaction holds it: stop every gateway process that serves it, then %s", errStoreServed, store, then)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("the store %s could not be locked against a gateway process: %v; nothing was removed", store, err)
+	}
+	return lock, nil
+}
+
 // made holds the store the service has just made, where it was not there when
 // the hold was taken.
 func (h *servedStoreHold) made() error {
@@ -115,6 +144,9 @@ func cmdJournal(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(args) > 0 && args[0] == "open" {
 		return cmdJournalOpen(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "reset" {
+		return cmdJournalReset(args[1:], stdout, stderr)
 	}
 	if len(args) == 0 || args[0] != "compact" {
 		fmt.Fprintln(stderr, journalUsage)

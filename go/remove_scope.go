@@ -55,8 +55,11 @@ another scope identifier, of none, or one that does not verify, a session
 holding anything but its receipt files, a linked artifacts, receipts or
 session directory, and a receipt left in the store that cites one the call
 would remove, refuse the whole call, by name, and nothing is removed. --by is a label, recorded and
-not checked. Prints each record appended, as its line. On the PostgreSQL
-kind, gateway store remove-scope removes a scope identifier's rows.`
+not checked. Prints each record appended, as its line. A gateway serving
+the store, under this registry or another, refuses it where the platform
+locks the registry and the store (store-served); on Windows nothing is
+locked, so stop the gateway first. On the PostgreSQL kind, gateway store
+remove-scope removes a scope identifier's rows.`
 
 // removeScopeOptions is the command line.
 type removeScopeOptions struct {
@@ -212,6 +215,11 @@ func removeScope(o removeScopeOptions, stamp func() string) (out removalOutcome,
 		return out, false, err
 	}
 	defer hold.Close()
+	alone, err := holdStoreAlone(o.store, "remove")
+	if err != nil {
+		return out, false, err
+	}
+	defer alone.Close()
 	unlocked = !registryLocked
 	data, present, err := readRegistryBytes(o.registry)
 	if err != nil {
@@ -231,7 +239,25 @@ func removeScope(o removeScopeOptions, stamp func() string) (out removalOutcome,
 		return out, unlocked, err
 	}
 	out, err = removeScopeFrom(o.store, o.authority, key, walk, o, stamp)
+	if err == nil && len(out.refused) == 0 {
+		err = removeStagedKeysOf(o.store, o.scope, &out)
+	}
 	return out, unlocked, err
+}
+
+// removeStagedKeysOf removes the staged key files a start ended mid-draw
+// left in the store's root for the scope's refusal journal (gateway #611):
+// a key no entry was made under, which a start no longer configured with
+// the scope would leave there.
+func removeStagedKeysOf(storeRoot, scope string, out *removalOutcome) error {
+	n, err := (refusalFS{root: storeRoot}).removeStagedKeys(refusalJournalName(limitScopeKey(scope)))
+	if err != nil {
+		return fmt.Errorf("a staged key file of the scope's refusal journal could not be removed: %v", err)
+	}
+	if n > 0 {
+		out.notes = append(out.notes, fmt.Sprintf("%d staged key file(s) of the scope's refusal journal, which a start ended mid-draw left, are removed", n))
+	}
+	return nil
 }
 
 // passesSignedOrders is whether a receipt's ladder status is past order 6
@@ -768,16 +794,24 @@ func payloadOwner(receipts []*storedReceipt, digest string) string {
 }
 
 // refusalRemovalCompletedNote is completeClaimedRefusalRemoval's note where
-// it removed what a cut-off run left.
-const refusalRemovalCompletedNote = "the scope's refusal journal, which the operator journal's remove-scope entry names, its key and its cursor are removed now"
+// it removed what a cut-off remove-scope run left, and
+// refusalResetCompletedNote where it removed what a cut-off journal reset
+// run left.
+const (
+	refusalRemovalCompletedNote = "the scope's refusal journal, which the operator journal's remove-scope entry names, its key and its cursor are removed now"
+	refusalResetCompletedNote   = "the refusal journal of the sources of no scope, which the operator journal's refusal-journal-reset entry names, its key and its cursor are removed now"
+)
 
-// refusalClaim is what the operator journal's last remove-scope entry of a
-// scope names of its refusal journal: claimed where it names one, by the
-// length and digest of the bytes removed (ADR-0059 §8).
+// refusalClaim is what the operator journal's last entry that takes a
+// scope key's refusal journal names of it: claimed where it names one, by
+// the length and digest of the bytes removed (ADR-0059 §8), and kind the
+// entry's: remove-scope of a scope identifier, or refusal-journal-reset of
+// the sources of no scope (unscopedMarker), which remove-scope refuses.
 type refusalClaim struct {
 	claimed bool
 	bytes   int64
 	digest  string
+	kind    string
 }
 
 // names is whether data is the journal the claim names, byte for byte.
@@ -785,9 +819,11 @@ func (c refusalClaim) names(data []byte) bool {
 	return c.claimed && int64(len(data)) == c.bytes && journalDigest(data) == c.digest
 }
 
-// lastRefusalClaim reads the operator journal's last remove-scope entry of
-// the scope that loads under keys, and what it names of the scope's refusal
-// journal; no such entry, or no operator journal, claims nothing.
+// lastRefusalClaim reads the operator journal's last entry that takes the
+// scope key's refusal journal and loads under keys -- a remove-scope entry
+// of the scope, or, for unscopedMarker, a refusal-journal-reset entry --
+// and what it names of the journal; no such entry, or no operator journal,
+// claims nothing.
 func lastRefusalClaim(storeRoot, scope string, keys []reachedKey) (refusalClaim, error) {
 	var c refusalClaim
 	data, there, err := readJournalPath(storeRoot, operatorJournal+".jsonl")
@@ -815,12 +851,20 @@ func lastRefusalClaim(storeRoot, scope string, keys []reachedKey) (refusalClaim,
 		if body == nil {
 			continue
 		}
-		if kind, _ := memberString(body, "kind"); kind != "remove-scope" {
+		kind, _ := memberString(body, "kind")
+		switch kind {
+		case "remove-scope":
+			if named, _ := memberString(body, "scope"); named != scope {
+				continue
+			}
+		case refusalJournalResetKind:
+			if scope != unscopedMarker {
+				continue
+			}
+		default:
 			continue
 		}
-		if named, _ := memberString(body, "scope"); named != scope {
-			continue
-		}
+		c.kind = kind
 		c.digest, c.claimed = memberString(body, "refusalJournalDigest")
 		c.bytes, _ = recordCount(body, "refusalJournalBytes")
 	}
@@ -855,14 +899,18 @@ func (r *refusalRemoval) completeClaimed(claim refusalClaim, out *removalOutcome
 	if len(r.data) == 0 {
 		return nil
 	}
+	what, completed := "the scope's refusal journal", refusalRemovalCompletedNote
+	if claim.kind == refusalJournalResetKind {
+		what, completed = unscopedRefusalJournal, refusalResetCompletedNote
+	}
 	if !claim.names(r.data) {
-		out.notes = append(out.notes, fmt.Sprintf("the scope's refusal journal, %d bytes, is not the one the operator journal's remove-scope entry names; it stands", len(r.data)))
+		out.notes = append(out.notes, fmt.Sprintf("%s, %d bytes, is not the one the operator journal's %s entry names; it stands", what, len(r.data), claim.kind))
 		return nil
 	}
 	if err := r.remove(); err != nil {
 		return err
 	}
-	out.notes = append(out.notes, refusalRemovalCompletedNote)
+	out.notes = append(out.notes, completed)
 	return nil
 }
 
@@ -877,11 +925,27 @@ func (r *refusalRemoval) completeClaimed(claim refusalClaim, out *removalOutcome
 // after a record path's entry. A key beside no journal, or an empty one,
 // stays, as before.
 func removeRefusalJournalAlone(storeRoot string, o removeScopeOptions, keys []reachedKey, out *removalOutcome) error {
-	claim, err := lastRefusalClaim(storeRoot, o.scope, keys)
+	return removeRefusalJournalUnder(storeRoot, o.scope, keys, out, "the scope's refusal journal", func(data []byte) error {
+		body := removalBody("remove-scope", o.by, o.scope)
+		describeRefusalRemoval(body, data)
+		return o.journal.refusalRemovalEntry(body)
+	})
+}
+
+// removeRefusalJournalUnder is the work of removeRefusalJournalAlone and of
+// gateway journal reset --unscoped on the refusal journal of the scope key
+// (a scope identifier, or unscopedMarker), what naming it in the notes: a
+// removal or reset a run was cut off in is completed; and a journal holding
+// entries no such entry names is removed with its key and its cursor,
+// under its lock, after entry, given the journal's bytes, has written the
+// operator entry that names them. A journal absent or empty is left, with
+// its key, and nothing is written.
+func removeRefusalJournalUnder(storeRoot, scope string, keys []reachedKey, out *removalOutcome, what string, entry func(data []byte) error) error {
+	claim, err := lastRefusalClaim(storeRoot, scope, keys)
 	if err != nil {
 		return err
 	}
-	r, err := holdRefusalRemoval(storeRoot, o.scope)
+	r, err := holdRefusalRemoval(storeRoot, scope)
 	if err != nil {
 		return fmt.Errorf("%v, and nothing else was removed", err)
 	}
@@ -889,14 +953,12 @@ func removeRefusalJournalAlone(storeRoot string, o removeScopeOptions, keys []re
 	if len(r.data) == 0 || claim.names(r.data) {
 		return r.completeClaimed(claim, out)
 	}
-	body := removalBody("remove-scope", o.by, o.scope)
-	describeRefusalRemoval(body, r.data)
-	if err := o.journal.refusalRemovalEntry(body); err != nil {
-		return fmt.Errorf("%v; the scope's refusal journal was not removed", err)
+	if err := entry(r.data); err != nil {
+		return fmt.Errorf("%v; %s was not removed", err, what)
 	}
 	if err := r.remove(); err != nil {
 		return err
 	}
-	out.notes = append(out.notes, fmt.Sprintf("the scope's refusal journal, %d bytes, its key and its cursor are removed", len(r.data)))
+	out.notes = append(out.notes, fmt.Sprintf("%s, %d bytes, its key and its cursor are removed", what, len(r.data)))
 	return nil
 }
