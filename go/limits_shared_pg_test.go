@@ -405,19 +405,19 @@ func TestAPostgresSharedStartWithItsConnectionRefusedSplitsByTheLeaseRows(t *tes
 	}
 }
 
-// A store at schema version 10 migrates to 11, the shared rates' table
+// A store at schema version 10 migrates to 11 and every version after it, the shared rates' table
 // made empty beside its rows; the kind opens on it, its row security held.
 func TestAPostgresStoreAtSchemaTenMigratesToTheSharedRates(t *testing.T) {
 	db := newPgTestDB(t)
 	set := pgShippedMigrations()
-	if len(set.versions) != 11 || set.versions[10].name != "0011_limit_rates.sql" {
+	if len(set.versions) < 11 || set.versions[10].name != "0011_limit_rates.sql" {
 		t.Fatalf("the shipped schema has %d versions: the test names version 11 as the shared rates'", len(set.versions))
 	}
 	older := pgMigrationSet{versions: set.versions[:10], grants: pgGrantsOfVersion(t, set.grants, 10)}
 	if applied, err := migratePostgres(db.migrator, older, db.roles, time.Minute); err != nil || len(applied) != 10 {
 		t.Fatalf("schema version 10: %v %v", applied, err)
 	}
-	if applied, err := migratePostgres(db.migrator, set, db.roles, time.Minute); err != nil || !slices.Equal(applied, []int{11}) {
+	if applied, err := migratePostgres(db.migrator, set, db.roles, time.Minute); err != nil || !slices.Equal(applied, pgShippedFrom(11)) {
 		t.Fatalf("10 to 11: %v %v", applied, err)
 	}
 	kind := db.open(t, nil)

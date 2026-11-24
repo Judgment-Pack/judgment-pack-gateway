@@ -975,6 +975,13 @@ func startOnKind(cfg engineConfig, seed []byte, sources map[string]sourceSpec, i
 	// the lease records whether the instance reads sessions by label: the
 	// instances on one database read them one way (admitBeside, ADR-0051)
 	kind.instance.labels = versionAtLeast(cfg.version, labelsVersion)
+	// and the version of the key history it answers: the instances on one
+	// database answer one (admitBeside, ADR-0062); a read of the carried
+	// history that fails fails the start
+	if kind.instance.keyHistory, err = kind.servedKeyHistory(cfg.keyHistoryVersion); err != nil {
+		kind.close()
+		return nil, err
+	}
 	holder, err := newStartLeaseHolder()
 	if err != nil {
 		kind.close()

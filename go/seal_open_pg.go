@@ -416,6 +416,10 @@ func sealOpenPostgresHeld(o sealOpenOptions, stamp func() string, said io.Writer
 	}
 	kind.instance = instanceForKey(&spec, sig.publicKey(), o.authority)
 	kind.instance.labels = o.labels
+	if kind.instance.keyHistory, err = kind.servedKeyHistory(o.keyHistoryVersion); err != nil {
+		kind.close()
+		return nil, nil, err
+	}
 	if c.alone {
 		kind.instance.several = false
 	}

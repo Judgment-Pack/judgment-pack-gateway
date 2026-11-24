@@ -168,6 +168,31 @@ func registryKeyHistory(data []byte, own heldKey, carried []byte, present bool) 
 	return made.entries, err
 }
 
+// servedKeyHistoryVersion is the version of the key history a gateway
+// answers (ADR-0055 §4): "2" where configured is "2" or the carried history
+// is of version "2", and otherwise "1".
+func servedKeyHistoryVersion(configured string, carried []byte, present bool) string {
+	if configured == keyHistoryVersion2 || present && carriedHistoryVersion(carried) == keyHistoryVersion2 {
+		return keyHistoryVersion2
+	}
+	return keyHistoryVersion
+}
+
+// servedKeyHistory is the version of the key history an instance on the
+// kind answers under configured, the history carried into the database
+// read: what its row of the start lease records (ADR-0062). A read that
+// fails fails the start.
+func (k *pgKind) servedKeyHistory(configured string) (string, error) {
+	if configured == keyHistoryVersion2 {
+		return keyHistoryVersion2, nil
+	}
+	carried, present, err := k.carriedKeyHistory()
+	if err != nil {
+		return "", err
+	}
+	return servedKeyHistoryVersion(configured, carried, present), nil
+}
+
 // carriedHistoryVersion is the version of a carried history: "2" where it
 // says so, and otherwise "1", whose check refuses whatever it is not.
 func carriedHistoryVersion(carried []byte) string {
@@ -229,10 +254,7 @@ func registryKeyHistoryOf(data []byte, own heldKey, carried []byte, present bool
 		return keyHistoryMade{}, fmt.Errorf("the registry's rotations end at key %s, not this gateway's key %s", w.current().keyID, own.keyID())
 	}
 	entries := historyOfWalk(w.keys)
-	version := keyHistoryVersion
-	if configured == keyHistoryVersion2 || present && carriedHistoryVersion(carried) == keyHistoryVersion2 {
-		version = keyHistoryVersion2
-	}
+	version := servedKeyHistoryVersion(configured, carried, present)
 	switch {
 	case w.continuation == nil && !present:
 		if version == keyHistoryVersion2 {

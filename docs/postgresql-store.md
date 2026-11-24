@@ -196,7 +196,7 @@ scope it removes, as the owner, in its own transaction. A scope that holds no ro
 removed too where the journal holds entries, under an operator entry naming no removal record
 (`removalBytes` 0) and the journal by `refusalJournalBytes` and `refusalJournalDigest`. A key beside
 no entry stays, and a scope holding neither is left as it was (ADR-0059, as built 2026-11-24). The refusal journals need no migration past
-0010. Schema version 11 (below) is the last of this release.
+0010. Schema version 12 (below) is the last of this release.
 
 An entry's lengths are of the bytes an export writes. `gateway export` writes the rows, in ordinal
 order, each line and its `0x0A`, as `store/journals/operator.jsonl`, the path of the filesystem
@@ -216,6 +216,12 @@ the database's clock. Row security is forced under the scope policy. The run-tim
 insert and update its scope's row, and never delete one. Migration 0011 is one-way as 0010 is: a
 v0.40.0 gateway refuses a database at schema version 11. Stop every instance and back the database
 up before `gateway store migrate` applies it.
+
+Schema version 12 (migration 0012, [ADR-0062](adr/0062-postgresql-instances-of-one-database-answer-one-key-history-version.md))
+adds `key_history` to `gateway.start_lease`: the version of the key history the row's instance
+answers, `"1"` or `"2"`, default `"1"`. The instances serving one database at once answer one
+version ("Several instances on one database"). A row from before reads `"1"`. The grants are
+unchanged.
 
 ## One instance per database
 
@@ -406,7 +412,10 @@ records itself as the session's holder when it admits the call, before the sourc
 - **One seed, one authority, one engine version's reading of sessions, one set of sources** on
   every instance. A start in this mode is refused, `instance-mismatch`, where an instance whose
   lease is live signs under another key id, names another authority, or reads the session a
-  request names otherwise: by label from engine version 39, by id before it ("Session labels"); it is refused, `start-lease-held`, beside a live instance of the
+  request names otherwise: by label from engine version 39, by id before it ("Session labels"),
+  or answers another version of the key history (`"2"` where its configuration sets
+  `keyHistoryVersion: "2"` or the carried history is of version `"2"`, `"1"` otherwise; schema
+  version 12, [ADR-0062](adr/0062-postgresql-instances-of-one-database-answer-one-key-history-version.md)); it is refused, `start-lease-held`, beside a live instance of the
   one-instance mode, and an instance of the one-instance mode is refused beside one of this mode.
   The comparison is with live instances alone: once every instance has stopped and its lease has
   run out, a start is compared with none, as in the one-instance mode. A key changed then is still
