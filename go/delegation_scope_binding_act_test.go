@@ -243,13 +243,14 @@ func TestADelegatedScopedActionReadsBackInItsScope(t *testing.T) {
 	}
 }
 
-// A sender other than the actor reaches no scope identifier, so it cannot
-// reconcile a scoped delegated action by its key (SPEC.md §11.8): naming the
-// scope, or naming none on the scoped platform, is refused at the scope step
-// with its one sentence. Either way the answer is a refusal, never an
-// unscoped answer about the scoped key, and nothing is sent again. The
-// delegated caller reconciles it under its bound chain.
-func TestAReservationSenderCannotReconcileAScopedDelegatedKey(t *testing.T) {
+// A sender other than the actor whose own token does not reach the scope
+// identifier -- a claimless token, which reaches the sources of none at most
+// -- cannot reconcile a scoped delegated action by its key (SPEC.md §11.8,
+// condition (c)): naming the scope, or naming none on the scoped platform, is
+// refused at the scope step with its one sentence. Either way the answer is a
+// refusal, never an unscoped answer about the scoped key, and nothing is sent
+// again. The delegated caller reconciles it under its bound chain.
+func TestAReservationSenderWhoseTokenDoesNotReachTheScopeIsRefused(t *testing.T) {
 	b := newBoundActHarness(t)
 	cred := b.credential(t, boundChain(t, testScope, strings.Repeat("31", 16)))
 	key := delegationKey(1)
