@@ -324,6 +324,9 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 		if err := removeScopedActionJournal(storeRoot, o.scope, &out); err != nil {
 			return out, err
 		}
+		if err := completeClaimedRefusalRemoval(storeRoot, o.scope, keys, &out); err != nil {
+			return out, err
+		}
 		if len(plan.labels) == 0 {
 			nothing := "nothing was removed"
 			if len(out.notes) > noted {
@@ -378,8 +381,18 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 		lines = append(lines, line...)
 		out.appended = append(out.appended, record)
 	}
+	// the scope's refusal journal, held from the read of its bytes to its
+	// removal, and named in the entry (ADR-0059 §8)
+	var refusal *refusalRemoval
 	if len(lines) > 0 {
-		if err := journaledAppendRemovals(o.journal, storeRoot, torn, lines, removalBody("remove-scope", o.by, o.scope)); err != nil {
+		var err error
+		if refusal, err = holdRefusalRemoval(storeRoot, o.scope); err != nil {
+			return out, fmt.Errorf("%v, and nothing was removed", err)
+		}
+		defer refusal.release()
+		body := removalBody("remove-scope", o.by, o.scope)
+		describeRefusalRemoval(body, refusal.data)
+		if err := journaledAppendRemovals(o.journal, storeRoot, torn, lines, body); err != nil {
 			appended := out.appended
 			out.appended = nil
 			return out, fmt.Errorf("%v; the %d record(s) may be in the file, and nothing was removed; a second run completes it", err, len(appended))
@@ -390,6 +403,16 @@ func removeScopeFrom(storeRoot, authority string, priv *signingKey, walk *regist
 		return out, err
 	}
 	if err := removeScopedActionJournal(storeRoot, o.scope, &out); err != nil {
+		return out, err
+	}
+	if refusal != nil {
+		if err := refusal.remove(); err != nil {
+			return out, err
+		}
+		if len(refusal.data) > 0 {
+			out.notes = append(out.notes, fmt.Sprintf("the scope's refusal journal, %d bytes, its key and its cursor are removed", len(refusal.data)))
+		}
+	} else if err := completeClaimedRefusalRemoval(storeRoot, o.scope, keys, &out); err != nil {
 		return out, err
 	}
 	for _, session := range plan.empty {
@@ -733,4 +756,75 @@ func payloadOwner(receipts []*storedReceipt, digest string) string {
 		}
 	}
 	return ""
+}
+
+// completeClaimedRefusalRemoval completes a removal a run was cut off in,
+// after its operator entry and before the refusal journal went (ADR-0059
+// §8): where the operator journal's last remove-scope entry of the scope
+// names a refusal journal, and the journal there is the bytes it names or
+// is gone, the journal, its key and its cursor are removed now. A journal
+// holding other bytes is the scope's since, which no entry names: it
+// stands, and the call says so.
+func completeClaimedRefusalRemoval(storeRoot, scope string, keys []reachedKey, out *removalOutcome) error {
+	data, there, err := readJournalPath(storeRoot, operatorJournal+".jsonl")
+	if err != nil {
+		return fmt.Errorf("the operator journal could not be read: %v", err)
+	}
+	if !there {
+		return nil
+	}
+	lines, _ := journalLines(data)
+	claimed, claimedBytes, claimedDigest := false, int64(0), ""
+	for _, line := range lines {
+		if _, ok := loadJournalEntry(line, operatorJournal, keys); !ok {
+			continue
+		}
+		v, err := parseRecordJSON(line)
+		if err != nil {
+			continue
+		}
+		entry, _ := v.(*vObject)
+		if entry == nil {
+			continue
+		}
+		raw, _ := entry.get("body")
+		body, _ := raw.(*vObject)
+		if body == nil {
+			continue
+		}
+		if kind, _ := memberString(body, "kind"); kind != "remove-scope" {
+			continue
+		}
+		if named, _ := memberString(body, "scope"); named != scope {
+			continue
+		}
+		claimedDigest, claimed = memberString(body, "refusalJournalDigest")
+		claimedBytes, _ = recordCount(body, "refusalJournalBytes")
+	}
+	if !claimed {
+		return nil
+	}
+	r, err := holdRefusalRemoval(storeRoot, scope)
+	if err != nil {
+		return err
+	}
+	defer r.release()
+	if len(r.data) > 0 && (int64(len(r.data)) != claimedBytes || journalDigest(r.data) != claimedDigest) {
+		out.notes = append(out.notes, fmt.Sprintf("the scope's refusal journal, %d bytes, is not the one the operator journal's remove-scope entry names; it stands", len(r.data)))
+		return nil
+	}
+	left := false
+	for _, suffix := range []string{".jsonl", ".key", ".forwarded"} {
+		if _, err := os.Lstat(filepath.Join(r.dir, r.name+suffix)); err == nil {
+			left = true
+		}
+	}
+	if !left {
+		return nil
+	}
+	if err := r.remove(); err != nil {
+		return err
+	}
+	out.notes = append(out.notes, "the scope's refusal journal, which the operator journal's remove-scope entry names, its key and its cursor are removed now")
+	return nil
 }

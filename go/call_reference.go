@@ -14,7 +14,7 @@ import (
 // reference-passed-to-a-binding-and-signed-into-the-receipt.md). Its number
 // is a placeholder, assigned at merge: 49 expected, after the refusal
 // journal's (48), which merges first. engine.go lists it in engineVersions.
-const callReferenceVersion = "48"
+const callReferenceVersion = "49"
 
 // The names a call reference travels under. The gateway hands adapter-mcp the
 // reference and the session identifier in its environment, for that call

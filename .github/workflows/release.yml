@@ -229,7 +229,7 @@ jobs:
         with:
           # Release binaries use one reviewed toolchain, named exactly. The
           # go directive in each go.mod remains the floor CI tests.
-          go-version: 1.26.5
+          go-version: 1.26.11
           cache-dependency-path: adapters/go.sum
 
       # Held by CI already, and again here, on the commit being packaged and

@@ -313,6 +313,8 @@ func readPinnedSnapshots(configPath string, cfg engineConfig) ([]exportPin, erro
 
 // errStagedJournalEntry is export's refusal of a store holding a staged
 // operator journal entry (ADR-0056, Amendment C).
+var errUnknownJournal = errors.New("the store's journals/ holds a file this release does not read (journal-unknown)")
+
 var errStagedJournalEntry = errors.New("a staged operator journal entry is not yet committed: rerun the command that staged it, then export")
 
 // readObservationJournal reads a journal the custody exported: a regular
@@ -549,6 +551,14 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 	// finding the store gives (journal-entry-missing); refused, whatever the
 	// scope, until the command that staged it is rerun
 	if in.storeRoot != "" {
+		// a journal this release does not read is refused by its name, never
+		// left out: the restored copy would lose it, and with it the finding
+		// the store gives (journal-unknown)
+		if names, err := unknownJournalFiles(in.storeRoot); err != nil {
+			return nil, err
+		} else if len(names) > 0 {
+			return nil, fmt.Errorf("%w: %s", errUnknownJournal, strings.Join(names, ", "))
+		}
 		if _, there, err := readJournalPath(in.storeRoot, operatorJournal+".pending"); err != nil {
 			return nil, err
 		} else if there {
@@ -573,6 +583,24 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 			if err := w.put("store/"+journalsDir+"/"+operatorJournal+".jsonl", journal); err != nil {
 				return nil, err
 			}
+		}
+		// the refusal journals, whole, with no key and no cursor (ADR-0059
+		// §8); an export by scope takes none
+		refusals := cut.refusalJournals
+		if in.storeRoot != "" {
+			files, err := refusalJournalFilesIn(in.storeRoot)
+			if err != nil {
+				return nil, err
+			}
+			if len(files) > 0 && len(refusals) > 0 {
+				return nil, errors.New("refusal journals: the kind keeps them, and the store directory named beside it holds some; the export takes neither for the other")
+			}
+			if len(files) > 0 {
+				refusals = files
+			}
+		}
+		if err := putRefusalJournals(refusals, w.put); err != nil {
+			return nil, err
 		}
 	}
 	// the decision records, read after the cut, as verification walks them
@@ -911,8 +939,12 @@ func exportPathWritten(p string) bool {
 	case len(parts) == 2 && parts[0] == "store" && parts[1] == removalsFile:
 		return true
 	case len(parts) == 3 && parts[0] == "store" && parts[1] == journalsDir:
+		// the journals this release writes, and no other: an export holding
+		// a journal this release cannot judge is refused, by its path. A
+		// refusal journal travels by its exact name, without its key
+		// (ADR-0059 §8).
 		name, ok := strings.CutSuffix(parts[2], ".jsonl")
-		return ok && isJournalName(name)
+		return ok && (name == operatorJournal || isRefusalJournalName(name))
 	case len(parts) >= 2 && parts[0] == "decision-records":
 		return true
 	case len(parts) == 2 && parts[0] == "descriptors":

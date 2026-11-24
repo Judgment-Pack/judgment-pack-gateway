@@ -111,6 +111,9 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 	if !contains(spec.tools, tool) {
 		return nil, actRefusal{"tool", fmt.Sprintf("tool %q is not one the platform's write binding names", requestText(tool))}
 	}
+	if keyMembers.resolved != nil {
+		keyMembers.resolved(tool, spec.versions)
+	}
 	// Who may ask for a write through this tool (writeRequesters,
 	// engineVersion 18): held to the requester the receipt would name, as
 	// soon as the tool is known and before anything else of the request is

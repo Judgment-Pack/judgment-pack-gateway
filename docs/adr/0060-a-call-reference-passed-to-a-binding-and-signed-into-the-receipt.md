@@ -15,8 +15,8 @@ deciders: maintainer
 >   inside its signed bytes.
 > - **Opt-in per binding:** `callReference: true` on the binding, off by default. An off binding
 >   gets byte-for-byte the request it gets today, and its receipt carries no `callRef`.
-> - **Engine version:** the engine version after the refusal journal's (expected 49), assigned at
->   merge as usual. `callReference: true` is refused at configuration load below it, or where the
+> - **Engine version:** 49, the engine version after the refusal journal's (48), assigned at
+>   merge. `callReference: true` is refused at configuration load below it, or where the
 >   receipt version is below 3. A verifier that does not know `callRef` refuses a receipt carrying it.
 
 ## Context and problem statement

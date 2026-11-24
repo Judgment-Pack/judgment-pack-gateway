@@ -2377,7 +2377,13 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 	journal := []string{
 		"v3-journal-command-seal-missing", "v3-journal-entry-forged", "v3-journal-holds", "v3-journal-missing",
 		"v3-journal-order-head", "v3-journal-order-middle", "v3-journal-range-mismatch",
-		"v3-journal-staged-entry", "v3-journal-torn-tail", "v3-journal-torn-tail-loads",
+		"v3-journal-staged-entry", "v3-journal-torn-tail", "v3-journal-torn-tail-loads", "v3-journal-unknown",
+		// the refusal journal vectors (ADR-0059 §8), each beside the
+		// operator journal of v3-journal-holds
+		"v3-journal-refusal-forged", "v3-journal-refusal-holds", "v3-journal-refusal-kind-crossed",
+		"v3-journal-refusal-missing", "v3-journal-refusal-order-middle", "v3-journal-refusal-scope-mismatch",
+		"v3-journal-refusal-tally-full", "v3-journal-refusal-torn-tail",
+		"v3-journal-refusal-tool-holds", "v3-journal-refusal-digest-without-tool",
 	}
 	retentionStating = append(retentionStating, journal...)
 	retentionObserving = append(retentionObserving, journal...)
@@ -2463,8 +2469,8 @@ func TestCorpusCatchesAVerifierThatReportsNoObservationsOrIgnoresTheOption(t *te
 			if err != nil {
 				t.Fatalf("no run: %v", err)
 			}
-			if count != 311 {
-				t.Fatalf("%d store vectors read, want 311", count)
+			if count != 323 {
+				t.Fatalf("%d store vectors read, want 323", count)
 			}
 			disagreeing := map[string]bool{}
 			for _, failure := range failures {
@@ -2647,7 +2653,7 @@ func TestCorpusReadsAnAnswersMembersByTheirExactNames(t *testing.T) {
 	// observes in.
 	if got, want := []int{len(stores), len(okTrue), len(withFindings), len(withWitnesses), len(withRotations), len(stating),
 		len(witnesses), len(refusals), len(readings), len(okReadings), len(withHead)},
-		[]int{311, 77, 308, 3, 23, 52, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
+		[]int{323, 82, 320, 3, 23, 64, 54, 9, 45, 14, 8}; !slices.Equal(got, want) {
 		t.Fatalf("the corpus's vectors, by what their answers give: %v, want %v", got, want)
 	}
 	for name := range stating {

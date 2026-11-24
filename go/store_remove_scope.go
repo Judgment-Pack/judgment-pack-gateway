@@ -423,8 +423,16 @@ func removeScopeRows(dsn pgDSN, o storeRemoveScopeOptions, priv *signingKey, sta
 		next++
 	}
 	if len(lines) > 0 {
+		// the scope's refusal journal, its key and its cursor, under the
+		// journal's lock, and their trace in the entry (ADR-0059 §8)
+		body := removalBody("remove-scope", o.by, o.scope)
+		removed, err := pgRemoveRefusalJournal(tx, limitScopeKey(o.scope))
+		if err != nil {
+			return failed(err)
+		}
+		describeRefusalRemoval(body, removed)
 		// the entry naming the records, in their transaction (ADR-0056 §5)
-		if err := journal.removalEntry(tx, lines, removalBody("remove-scope", o.by, o.scope)); err != nil {
+		if err := journal.removalEntry(tx, lines, body); err != nil {
 			return failed(err)
 		}
 	}

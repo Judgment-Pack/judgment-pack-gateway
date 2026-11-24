@@ -51,6 +51,10 @@ type actionKeyMembers struct {
 	// limit charges the request at step 8a (ADR-0057), where its route
 	// did not charge it at step 3a; nil charges nothing
 	limit func(requestedScope, *caller) error
+	// resolved is told the tool once step 9 holds it to the write
+	// binding's, for the refusal journal (ADR-0059's amendment); nil notes
+	// nothing
+	resolved func(tool string, versions map[string]string)
 }
 
 // parseActionKeyScope reads keyScope and reconcile at the action-key step.

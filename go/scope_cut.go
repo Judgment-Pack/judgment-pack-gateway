@@ -232,8 +232,13 @@ func cutOf(scope string, holdings map[string]*scopeHolding, seals map[string]sea
 
 // keeps is whether a verdict by scope reports a finding or an observation:
 // one naming a session the cut keeps, and one naming none -- of the
-// registry's walk, or of a decision record.
+// registry's walk, or of a decision record. A refusal journal holds one
+// scope's entries, and its finding or observation stands in that scope's
+// verdict alone (ADR-0059 §8): other scopes' verdicts are silent on it.
 func (cut *scopeCut) keeps(f finding) bool {
+	if journal, ok := f["journal"].(string); ok && isRefusalJournalName(journal) {
+		return journal == refusalJournalName(limitScopeKey(cut.Scope))
+	}
 	sessionID, named := f["sessionId"].(string)
 	return !named || cut.kept[sessionID]
 }

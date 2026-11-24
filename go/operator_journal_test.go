@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -584,6 +585,11 @@ func TestOperatorJournalExportOlderReaderRefuses(t *testing.T) {
 	if !exportPathWritten("store/journals/operator.jsonl") || exportPathWritten("store/journals/operator.txt") || exportPathWritten("store/journals/Operator.jsonl") {
 		t.Fatal("the journal paths an export writes")
 	}
+	// a journal this release does not read, though its name is a journal's
+	// name, is not a path an export writes, so a reader refuses it by path
+	if exportPathWritten("store/journals/refusal-west.jsonl") {
+		t.Fatal("an export reader takes a journal this release does not read")
+	}
 	manifest := filepath.Join(out, "manifest.json")
 	text := readFile(t, manifest)
 	unknown := strings.Replace(text, `"store/journals/operator.jsonl"`, `"store/journals/operator.txt"`, 1)
@@ -771,4 +777,34 @@ func TestOperatorJournalTornRemovalPiece(t *testing.T) {
 			t.Fatalf("after the call: %v", said)
 		}
 	})
+}
+
+// The operator journal's own name, held by a link or a directory, is not
+// read as no journal: it is named with the files this release does not read
+// (journal-unknown), and so is refused by an export too.
+func TestAnOperatorJournalThatIsNotARegularFileIsUnknown(t *testing.T) {
+	for _, make := range []string{"directory", "link"} {
+		root := t.TempDir()
+		dir := filepath.Join(root, journalsDir)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		file := filepath.Join(dir, operatorJournal+".jsonl")
+		if make == "directory" {
+			if err := os.Mkdir(file, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if err := os.WriteFile(filepath.Join(dir, "elsewhere"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("elsewhere", file); err != nil {
+				t.Skipf("no symbolic link here: %v", err)
+			}
+		}
+		names, err := unknownJournalFiles(root)
+		if err != nil || !slices.Contains(names, operatorJournal+".jsonl") {
+			t.Fatalf("%s: %v %v", make, names, err)
+		}
+	}
 }

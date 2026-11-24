@@ -509,8 +509,21 @@ func TestEveryCorpusCutExportsAndVerifiesByItsScopeAsTheStoreDoes(t *testing.T) 
 			restored := filepath.Join(t.TempDir(), "restored")
 			restoreTree(t, out, restored)
 			requireExportChecks(t, restored)
-			if got, _ := verdict(filepath.Join(restored, "store"), filepath.Join(restored, "registry")); !bytes.Equal(got, live) {
-				t.Fatalf("the restored export's verdict by scope differs from the store's:\nstore:    %s\nrestored: %s", live, got)
+			// An export by scope takes no refusal journal (ADR-0059 §8), so
+			// the restored export reads as the store does with its refusal
+			// journals left out, and holds none of them.
+			if journals, err := refusalJournalFilesIn(filepath.Join(restored, "store")); err != nil || len(journals) > 0 {
+				t.Fatalf("an export by scope took refusal journals: %d %v", len(journals), err)
+			}
+			cutWant := live
+			if kept := withoutRefusalJournals(rep); kept != nil {
+				rep = kept
+				if cutWant, err = rep.marshal(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got, _ := verdict(filepath.Join(restored, "store"), filepath.Join(restored, "registry")); !bytes.Equal(got, cutWant) {
+				t.Fatalf("the restored export's verdict by scope differs from the store's:\nstore:    %s\nrestored: %s", cutWant, got)
 			}
 			// verified whole, the export gives the same verdict, but for the cut
 			whole, err := verifySupplied(filepath.Join(restored, "store"), filepath.Join(restored, "registry"), vector.Authority, "", "", publicKey, false)
@@ -557,4 +570,36 @@ func TestTheScopeOptionsOnTheCommandLine(t *testing.T) {
 			t.Errorf("gateway export %q: exit %d, want 2", args, code)
 		}
 	}
+}
+
+// withoutRefusalJournals is a verdict with its refusal journals' findings and
+// observations left out, or nil when it names none.
+func withoutRefusalJournals(rep *report) *report {
+	isJournal := func(f finding) bool {
+		name, ok := f["journal"].(string)
+		return ok && isRefusalJournalName(name)
+	}
+	keep := func(in []finding) ([]finding, bool) {
+		var out []finding
+		dropped := false
+		for _, f := range in {
+			if isJournal(f) {
+				dropped = true
+				continue
+			}
+			out = append(out, f)
+		}
+		return out, dropped
+	}
+	findings, a := keep(rep.Findings)
+	observations, b := keep(rep.Observations)
+	if !a && !b {
+		return nil
+	}
+	out := *rep
+	if findings == nil {
+		findings = []finding{}
+	}
+	out.Findings, out.Observations = findings, observations
+	return &out
 }

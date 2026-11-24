@@ -490,6 +490,11 @@ func applyServeOptions(service *gatewayService, opts serveOptions) error {
 		return err
 	}
 	service.limits, service.limiter = opts.limits, limiter
+	if opts.refusalJournal != nil {
+		if err := service.openRefusalJournals(opts.refusalJournal, os.Stderr); err != nil {
+			return err
+		}
+	}
 	service.maxSourceOutput = opts.maxSourceOutput
 	if opts.maxRequest > 0 {
 		service.maxRequest = opts.maxRequest
@@ -630,6 +635,9 @@ func cmdServeEngine(args []string) int {
 	}
 	if line := requestLimitsStartLine(cfg.limits, sources); line != "" {
 		fmt.Fprintln(os.Stderr, "start:", line)
+	}
+	if cfg.refusalJournal != nil {
+		fmt.Fprintln(os.Stderr, "start:", refusalStartLine(len(limitScopeKeys(sources))))
 	}
 	delegation, err := loadDelegation(cfg.delegation)
 	if err != nil {
@@ -1078,6 +1086,9 @@ type serveOptions struct {
 	// limits is the configuration's limits member (ADR-0057); nil counts
 	// nothing
 	limits *limitsConfig
+	// refusalJournal is the refusalJournal member (ADR-0059); nil journals
+	// nothing
+	refusalJournal *refusalJournalConfig
 	// signer signs in place of the seed's key where it is not nil (ADR-0050)
 	signer           signer
 	requireActionKey bool
