@@ -856,6 +856,15 @@ forwarding, follow it. Where R2 departs from the text above:
   `write-failed`, until the next start. On the PostgreSQL kind each append's transaction reads the
   key row under the lock and drops the entry, counted the same way, where the row is gone or holds
   another key. Neither kind writes into a journal that no key opens.
+- **2026-11-24, a forwarding cursor's files in `journals/`.** On the filesystem kind a cursor is
+  written by staging it beside its path and renaming it into place, so a process ended between
+  the two leaves `<name>.forwarded.<pid>.<12 lowercase hex>.tmp`. Both readers know, for a refusal
+  journal's exact name alone, `<name>.forwarded` and that staging form: a regular file of either
+  name is passed over and never opened, and any other file is `journal-unknown`, as SPEC.md §4
+  step 9 has it. A near miss (another stem, upper-case hex, another length, no process identifier,
+  no `.tmp`) is `journal-unknown` too. No export carries either file. The forwarder's start
+  removes, before its first pass, the staging files of its own journals' exact names, regular
+  files alone, and never follows a link.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on

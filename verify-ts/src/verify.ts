@@ -2019,19 +2019,26 @@ export function refusalJournalName(scopeKey: string): string {
   return out;
 }
 
-// isKnownJournalFile is whether this verifier reads a file of journals/ so
-// named: the operator journal's two, and a refusal journal and its key, by
-// the refusal journal name's form (ADR-0059 §1, §8).
+// isKnownJournalFile is whether this verifier knows a file of journals/ so
+// named: the operator journal's two, and a refusal journal, its key, its
+// forwarding cursor and a cursor's staging file, by the refusal journal
+// name's form (ADR-0059 §1, §8, §9). It reads the journal alone.
 function isKnownJournalFile(name: string): boolean {
   if (name === "operator.jsonl" || name === "operator.pending") {
     return true;
   }
-  for (const suffix of [".jsonl", ".key"]) {
+  for (const suffix of [".jsonl", ".key", ".forwarded"]) {
     if (name.endsWith(suffix) && isRefusalJournalName(name.slice(0, -suffix.length))) {
       return true;
     }
   }
-  return false;
+  return isStagedCursorName(name);
+}
+
+// isStagedCursorName is the name a gateway stages a forwarding cursor under
+// before it renames it into place, as Go's stagedCursorForm.
+function isStagedCursorName(name: string): boolean {
+  return /^refusal-[a-p]{24}\.forwarded\.[0-9]{1,10}\.[0-9a-f]{12}\.tmp$/.test(name);
 }
 
 function isRefusalJournalName(s: string): boolean {

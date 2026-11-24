@@ -547,19 +547,21 @@ func judgeOperatorJournal(data []byte, pending bool, keys []reachedKey, registry
 // this release reads; isKnownJournalFile adds the refusal journals'.
 var knownJournalFiles = map[string]bool{operatorJournal + ".jsonl": true, operatorJournal + ".pending": true}
 
-// isKnownJournalFile is whether this release reads a file of journals/ so
-// named: the operator journal's two, and a refusal journal and its key, by
-// the refusal journal name's form (ADR-0059 §1, §8).
+// isKnownJournalFile is whether this release knows a file of journals/ so
+// named: the operator journal's two, and a refusal journal, its key, its
+// forwarding cursor and a cursor's staging file, by the refusal journal
+// name's form (ADR-0059 §1, §8, §9). Verify reads the journal alone.
 func isKnownJournalFile(name string) bool {
 	if knownJournalFiles[name] {
 		return true
 	}
-	for _, suffix := range []string{".jsonl", ".key"} {
+	for _, suffix := range []string{".jsonl", ".key", refusalForwardedSuffix} {
 		if stem, ok := strings.CutSuffix(name, suffix); ok && isRefusalJournalName(stem) {
 			return true
 		}
 	}
-	return false
+	_, staged := stagedCursorJournal(name)
+	return staged
 }
 
 // judgeJournals is SPEC.md §4 step 9 on a store's root: each journal it

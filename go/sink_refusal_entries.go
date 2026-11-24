@@ -150,6 +150,56 @@ type fsForwardingCursors struct {
 	mu   *sync.Mutex
 }
 
+// stagedCursorForm is the name fsWriteFile stages a cursor under before it
+// renames it into place: the cursor's name, the process's identifier and
+// twelve lowercase hexadecimal digits, then .tmp. A process ended between
+// the two leaves it in journals/.
+var stagedCursorForm = regexp.MustCompile(`^(refusal-[a-p]{24})\.forwarded\.[0-9]{1,10}\.[0-9a-f]{12}\.tmp$`)
+
+// stagedCursorJournal is the refusal journal whose cursor a file so named
+// stages, where the name is of that exact form.
+func stagedCursorJournal(name string) (string, bool) {
+	m := stagedCursorForm.FindStringSubmatch(name)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// removeStaged removes the staging files a process ended mid-write left for
+// these journals' cursors, before the owner writes any: only a regular file
+// of the exact form for one of them, never a link or anything else, and
+// never another journal's.
+func (c fsForwardingCursors) removeStaged(journals []string) error {
+	dir := filepath.Join(c.root, "journals")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	own := map[string]bool{}
+	for _, journal := range journals {
+		own[journal] = true
+	}
+	removed := false
+	for _, e := range entries {
+		journal, staged := stagedCursorJournal(e.Name())
+		if !staged || !own[journal] || !e.Type().IsRegular() {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		removed = true
+	}
+	if removed {
+		syncDir(dir)
+	}
+	return nil
+}
+
 func (c fsForwardingCursors) path(journal string) string {
 	return filepath.Join(c.root, "journals", journal+refusalForwardedSuffix)
 }
@@ -378,6 +428,23 @@ func (r *refusalEntryForwarding) forwardAll(ctx context.Context) {
 	}
 }
 
+// clearStaged removes, on the filesystem kind and before the first pass, the
+// cursor staging files a process ended mid-write left for the owner's own
+// journals; each would otherwise be in journals/ until the maintainer took
+// it away. A failure is the next start's to try again.
+func (r *refusalEntryForwarding) clearStaged() {
+	if r == nil {
+		return
+	}
+	c, onFS := r.cursors.(fsForwardingCursors)
+	if !onFS {
+		return
+	}
+	if names, err := r.source.journals(); err == nil {
+		c.removeStaged(names)
+	}
+}
+
 // run passes over every journal every refusalForwardEvery until ctx ends.
 func (r *refusalEntryForwarding) run(ctx context.Context, every time.Duration) {
 	if r == nil {
@@ -404,5 +471,6 @@ func startRefusalEntryForwarding(g *gatewayService) {
 		return
 	}
 	owner := newRefusalEntryForwarding(&receiptSinkSpec{url: f.url, deliveryV3: true, refusalEntries: true}, noRefusalEntries{}, g.forwardingCursors())
+	owner.clearStaged()
 	go owner.run(g.forwardingContext(), refusalForwardEvery)
 }

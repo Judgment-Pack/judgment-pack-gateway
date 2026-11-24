@@ -427,8 +427,9 @@ test("an operator journal that is not a regular file is journal-unknown", () => 
   }
 });
 
-// Only a refusal journal's exact name, with .jsonl or .key, is a file this
-// verifier reads; each near miss is journal-unknown, by its name, as in Go.
+// Only a refusal journal's exact name, with .jsonl, .key, .forwarded or a
+// cursor's staging form, is a file this verifier knows; each near miss is
+// journal-unknown, by its name, as in Go, and a known file is never read.
 test("a near miss of a refusal journal's name is journal-unknown", () => {
   const v = storeVectors().find((s) => s.name === "v3-journal-refusal-holds")!;
   const { root, registry, decisionRecords } = materialize(v);
@@ -436,6 +437,8 @@ test("a near miss of a refusal journal's name is journal-unknown", () => {
   const name = fs.readdirSync(dir).find((f) => /^refusal-[a-p]{24}\.jsonl$/.test(f))!.slice(0, -".jsonl".length);
   const stem = name.slice("refusal-".length);
   fs.writeFileSync(path.join(dir, name + ".key"), "ab".repeat(32) + "\n");
+  fs.writeFileSync(path.join(dir, name + ".forwarded"), "not a cursor");
+  fs.writeFileSync(path.join(dir, name + ".forwarded.4242.0123456789ab.tmp"), "not a cursor");
   const misses = [
     "refusal-" + stem.slice(0, 23) + ".jsonl",
     "refusal-" + stem + "a.jsonl",
@@ -447,6 +450,17 @@ test("a near miss of a refusal journal's name is journal-unknown", () => {
     name,
     "refusal-anything.jsonl",
     "refusal-.jsonl",
+    "refusal-" + stem.slice(0, 23) + ".forwarded.4242.0123456789ab.tmp",
+    name + ".forwarded.4242.0123456789AB.tmp",
+    name + ".forwarded.4242.0123456789a.tmp",
+    name + ".forwarded.4242.0123456789abc.tmp",
+    name + ".forwarded.12345678901.0123456789ab.tmp",
+    name + ".forwarded..0123456789ab.tmp",
+    name + ".forwarded.0123456789ab.tmp",
+    name + ".forwarded.4242.0123456789ab",
+    name + ".forwarded.4242.0123456789ab.tmp.x",
+    name + ".key.4242.0123456789ab.tmp",
+    name + ".forwarded.bak",
   ];
   for (const m of misses) {
     fs.writeFileSync(path.join(dir, m), "{}\n");
