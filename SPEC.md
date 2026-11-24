@@ -1997,6 +1997,20 @@ it. `gateway store rotate` carries the history the old store's gateway answers u
 is given, and, given by its flags, under none. A consumer learns the version from the answer's
 `keyHistoryVersion`; one written before version `"2"` refuses the answer whole.
 
+**As a command.** `gateway verify-key-history [--public-key <key> [--public-key-alg ES256]] [--require-version 2]
+<file|->` and verify-ts's `main.ts verify-key-history`, with the same arguments, hold a fetched answer, read
+from the file or from standard input for `-`, to the check above (ADR-0055, amendment of 2026-11-24). `<key>`
+is the key pinned, in lowercase hexadecimal as `verify-dry-run`'s is (§1.2c): 64 characters for Ed25519, the
+66 of a compressed point with `--public-key-alg ES256`. Without it the first entry's key is taken, and the
+check then proves only that each entry follows from the first. `--require-version` takes `2` and nothing
+else. The input is at most 16,777,216 bytes (16 MiB); one over is refused as a usage error before it is
+parsed. The command writes one line on standard output: `{"accepted":true,"version":"1","keys":N,
+"inForce":"<keyId>"}`, `version` `"1"` or `"2"`, `keys` the entries, the key at a store rotation one, and
+`inForce` the last's `keyId`; or `{"accepted":false,"refused":"<class>"}`, `<class>` one of `version`, `form`,
+`key`, `rotation`, `ordinal`, `time`, `continuation` and `carried`, as `corpus/key-history` names them. The
+two commands write the same line, byte for byte. `gateway` exits 0 for a history that holds, 1 for a
+refusal and 2 for a usage error or an input it cannot read; verify-ts, 0, 1 and 64.
+
 ## 3f. The journals
 
 A store may hold journals: append-only files of entries, each signed by the key in force, one chain

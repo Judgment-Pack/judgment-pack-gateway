@@ -44,6 +44,19 @@ of code, not a second reading of the text, and for that table not even a second 
 its answer — a refusal, findings, or what the chain says — exiting 0 whenever it
 gave one and 2 when it could not.
 
+`main.ts verify-key-history [--public-key <key> [--public-key-alg ES256]] [--require-version 2] <file|->`
+is not part of the process contract. It holds a fetched `/publickey/history` answer (`SPEC.md` §3e,
+ADR-0055), from the file or from standard input for `-`, to `checkKeyHistory`: the same command as
+`gateway verify-key-history`, writing the same line on standard output, byte for byte for every vector of
+`corpus/key-history`. `<key>` is the first key pinned, in lowercase hexadecimal (64 characters for Ed25519,
+or 66 under `--public-key-alg ES256`, the key and then its algorithm, as `verify-dry-run` takes them);
+without it the first entry's key is taken. `--require-version` takes `2` and nothing else. The input is at
+most 16,777,216 bytes (16 MiB), and one over is refused before it is parsed. The line is
+`{"accepted":true,"version":"1"|"2","keys":N,"inForce":"<keyId>"}`, or
+`{"accepted":false,"refused":"<class>"}` with one of the eight classes of ADR-0055 §9. The exit status is 0
+for a history that holds, 1 for a refusal, and 64 for a usage error, an input that cannot be read or one over
+the bound.
+
 ## How it was written, and what that makes it
 
 From `SPEC.md` and the corpus, without reading the Go implementation's source,

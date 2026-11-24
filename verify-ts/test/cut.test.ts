@@ -25,7 +25,7 @@ test("main.ts verify takes --scope first or not at all, and the verdict it write
   assert.equal(whole.status, 0, whole.stderr.toString());
   assert.ok(!whole.stdout.toString().includes('"cut"'), whole.stdout.toString());
   const usage =
-    "usage: main.ts canon | main.ts verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n";
+    "usage: main.ts canon | main.ts verify [--public-key-alg ES256] [--scope <identifier>] [--ordinary-seals-only] [--artifacts <dir>] <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts verify-key-history [--public-key <key> [--public-key-alg ES256]] [--require-version 2] <file|-> | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n";
   const notFirst = "verify: --scope goes first, before every other option; a directory so named is given as ./--scope\n";
   for (const [name, args, said] of [
     ["after the store root", [root, "--scope", "scope-a", registry, v.authority], notFirst],

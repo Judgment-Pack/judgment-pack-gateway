@@ -608,3 +608,46 @@ consumer's and the gateway's, so operators upgrade every reader before opting in
 
 This record supersedes nothing. It extends ADR-0052's key history and its carrying across a store rotation,
 and ADR-0053 §8's entries.
+
+## Amendment (2026-11-24): a command-line check for a fetched key history (#584)
+
+Decision 11 and answer 4 of the Acceptance left a command-line check for consumers to a later record. This
+amendment is that record. Until now a consumer that fetched `/publickey/history` had to call the library to
+hold a gateway to version `"2"`.
+
+1. **The command.** `gateway verify-key-history [--public-key <key> [--public-key-alg ES256]]
+   [--require-version 2] <file|->`, and verify-ts's `main.ts verify-key-history`, with the same arguments.
+   It reads the answer's bytes from the file, or from standard input for `-`, and holds them to the check
+   `checkKeyHistoryOf` and `checkKeyHistory` already make. It adds no rule to the check.
+2. **The pin.** Optional, as the library's pin is. `<key>` is given as `gateway verify-dry-run` takes its
+   key: lowercase hexadecimal, 64 characters for Ed25519, the 66 of a compressed point with
+   `--public-key-alg ES256`, and a key that does not hold its algorithm's key rule is a usage error. Without
+   a pin the first entry's key is taken, so the check proves that each entry follows from the first and not
+   that the first is the gateway's. The order is as written: the key, then its algorithm, then
+   `--require-version`, then the file.
+3. **`--require-version`.** Takes exactly `2`. Anything else is a usage error, not a refusal of the history:
+   the library's refusal of another `requireVersion` is a consumer's mistake, and the command reports it as
+   one.
+4. **The input bound.** At most 16,777,216 bytes (16 MiB), the same in both tools. The largest corpus
+   history is under 4 KiB and a key's entry is under 1 KiB, so the bound holds over ten thousand keys. An
+   input over it is refused before anything is parsed, as a usage-level refusal, never as a refusal of the
+   history: no verdict is written on standard output. The file must be a regular file; a pipe or a process
+   substitution is given as `-`.
+5. **The line.** One line of JSON on standard output, in the members and order given here, the same in both
+   tools, byte for byte, for every vector of the corpus:
+   - accepted: `{"accepted":true,"version":"1","keys":3,"inForce":"<keyId>"}`, `version` `"1"` or `"2"`
+     as the history names it, `keys` the entries (the key at a store rotation one entry), `inForce` the
+     `keyId` of the last;
+   - refused: `{"accepted":false,"refused":"<class>"}`, `<class>` one of the eight of decision 9, as the
+     corpus names them. The refusal's sentence is on standard error, and is each tool's own.
+6. **Exit codes.** `gateway`: 0 for a history that holds, 1 for a refusal, 2 for a usage error, an input
+   that cannot be read, or one over the bound. verify-ts, by its own convention: 0, 1, and 64 for those of
+   2. verify-ts also exits 2 where the check itself threw, with nothing on standard output; the gateway's
+   command does the same for a refusal that carries no class. Neither case is a pass.
+7. **What is not changed.** The check, its eight classes, the corpus, and the answer. No engine version, no
+   migration, no new member anywhere. The command reads no store and makes no request: fetching is the
+   consumer's.
+8. **Tests.** Both tools run all 29 `corpus/key-history` vectors through the command and hold its exit code
+   and its line to the line derived from the vector alone, the derivation the same in both, so the two
+   outputs are held to one line. Standard input, the usage errors, the pin and `--require-version`, and the
+   bound at and one byte over are held in each tool's own tests.
