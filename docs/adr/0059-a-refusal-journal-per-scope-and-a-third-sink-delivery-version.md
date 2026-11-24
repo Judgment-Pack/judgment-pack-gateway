@@ -995,9 +995,18 @@ forwarding, follow it. Where R2 departs from the text above:
   removes, before any key is read, every staged key file of the exact form in the store's root,
   whatever journal it names, so the leftover of a scope no longer configured goes too. It removes a
   regular file alone, never a link, a directory or a near miss (another prefix, uppercase
-  hexadecimal, another length), and never one carrying the start's own process identifier.
+  hexadecimal, another length), and only one last written `stagedKeyAge` (five minutes) ago or
+  longer: several gateway processes may serve one store, each under its own registry, so a younger
+  file may be another start's draw under way, between its write and its link.
   `remove-scope` of a scope also removes its journal's staged files and says so in one stderr line.
   A staged file holds a key no entry was made under, so nothing it removes was ever used.
+- **2026-11-24, remove-scope and journal reset take the store alone (gateway #611).** Each gateway
+  process serving a filesystem store holds the store's directory lock shared (`holdServedStore`),
+  under its own registry, so the registry a command's configuration names does not exclude a
+  gateway serving the same store under another. `remove-scope` and `journal reset` take the
+  store's lock exclusive (`holdStoreAlone`), as `journal compact` does, after the registry, and
+  refuse with `store-served` while any gateway process serves the store, before anything is read
+  or removed. Where the platform keeps no such lock, nothing is held, as with the registry.
 - **2026-11-24, a way out for the journal of the sources of no scope (gateway #611).** Where the
   `unscoped` journal's key is lost, as after a restore from a full export, `gateway journal reset
   --config <file> --unscoped --by <label>` (filesystem) and `gateway store journal-reset --unscoped`

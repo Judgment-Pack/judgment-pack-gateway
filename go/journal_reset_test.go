@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -214,5 +215,45 @@ func TestJournalResetCutOffIsCompletedByTheNextStartOrASecondRun(t *testing.T) {
 				t.Fatalf("the start after the reset: %v %q", err, said.String())
 			}
 		})
+	}
+}
+
+// A gateway process serving the store holds its directory shared
+// (holdServedStore), under its own registry, which need not be the one a
+// command's configuration names. remove-scope and journal reset each take
+// the store exclusive and refuse while one serves, before anything is
+// read or removed; once it stops, the same call removes. Where the platform
+// keeps no such lock, nothing is held, as remove-scope's registry check.
+func TestRemoveScopeAndJournalResetRefuseAStoreAGatewayServes(t *testing.T) {
+	if !actionJournalSupported {
+		t.Skip("this platform keeps no store lock")
+	}
+	g, config := journalStore(t)
+	refusedOnlyJournal(t, g, config, refusedOnly)
+	refusedOnlyJournal(t, g, config, unscopedMarker)
+	before := storeTree(t, g.storeRoot)
+	serving, err := holdServedStore(g.storeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := cmdRemoveScopeAt([]string{"--config", config, "--scope", refusedOnly, "--by", "operator-2"}, &stdout, &stderr, fixedStamp(removalStamp)); code != 1 ||
+		!strings.Contains(stderr.String(), "store-served: a gateway process is serving the store") {
+		t.Errorf("remove-scope while a gateway serves the store: exit %d, %q", code, stderr.String())
+	}
+	if code, _, stderr := runJournalReset(config); code != 1 || !strings.Contains(stderr, "store-served: a gateway process is serving the store") {
+		t.Errorf("journal reset while a gateway serves the store: exit %d, %q", code, stderr)
+	}
+	if after := storeTree(t, g.storeRoot); !reflect.DeepEqual(after, before) {
+		t.Fatal("a refused call changed the store")
+	}
+	serving.Close()
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmdRemoveScopeAt([]string{"--config", config, "--scope", refusedOnly, "--by", "operator-2"}, &stdout, &stderr, fixedStamp(removalStamp)); code != 0 {
+		t.Fatalf("remove-scope once the gateway stopped: exit %d, %q", code, stderr.String())
+	}
+	if code, _, stderr := runJournalReset(config); code != 0 {
+		t.Fatalf("journal reset once the gateway stopped: exit %d, %q", code, stderr)
 	}
 }

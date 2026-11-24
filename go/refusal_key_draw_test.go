@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A draw ended after its staged file and before the link leaves no key, so
@@ -53,7 +54,6 @@ func TestAKeyDrawEndedPartWayLeavesNoShortKey(t *testing.T) {
 	}
 	kept := []string{
 		fmt.Sprintf("%s.key.%d.0123456789ab.tmp", name, pid),
-		fmt.Sprintf(".%s.key.%d.0123456789ab.tmp", other, os.Getpid()),
 		fmt.Sprintf(".%s.key.%d.0123456789ab", name, pid),
 		fmt.Sprintf(".%s.key.%d.0123456789a.tmp", other, pid),
 		fmt.Sprintf(".operator.key.%d.0123456789ab.tmp", pid),
@@ -85,6 +85,22 @@ func TestAKeyDrawEndedPartWayLeavesNoShortKey(t *testing.T) {
 	} else if err := os.WriteFile(filepath.Join(root, leftovers[0]), []byte("ab"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// every file so far was written long ago, so only the form keeps one;
+	// a staged file of the exact form written just now, of another process
+	// or this one, may be a draw under way, and stands
+	for _, n := range append(append([]string{}, leftovers...), kept...) {
+		stagedLongAgo(t, filepath.Join(root, n))
+	}
+	if _, err := os.Stat(filepath.Join(root, upper)); err == nil {
+		stagedLongAgo(t, filepath.Join(root, upper))
+	}
+	for _, p := range []int{pid, os.Getpid()} {
+		young := fmt.Sprintf(".%s.key.%d.fedcba987654.tmp", other, p)
+		if err := os.WriteFile(filepath.Join(root, young), []byte("ab"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		kept = append(kept, young)
+	}
 	linked := fmt.Sprintf(".%s.key.%d.0123456789ab.tmp", other, next)
 	if err := os.Symlink(filepath.Join(root, kept[0]), filepath.Join(root, linked)); err != nil {
 		t.Skipf("no symbolic link here: %v", err)
@@ -112,9 +128,14 @@ func TestRemoveScopeRemovesItsScopesStagedKeyFiles(t *testing.T) {
 	pid := os.Getpid() + 1
 	mine := fmt.Sprintf(".%s.key.%d.0123456789ab.tmp", refusalJournalName("never-held"), pid)
 	theirs := fmt.Sprintf(".%s.key.%d.0123456789ab.tmp", refusalJournalName("another-scope"), pid)
-	for _, n := range []string{mine, theirs} {
+	// the scope's, written just now: another process's draw may be under way
+	young := fmt.Sprintf(".%s.key.%d.fedcba987654.tmp", refusalJournalName("never-held"), pid)
+	for _, n := range []string{mine, theirs, young} {
 		if err := os.WriteFile(filepath.Join(g.storeRoot, n), []byte("ab"), 0o600); err != nil {
 			t.Fatal(err)
+		}
+		if n != young {
+			stagedLongAgo(t, filepath.Join(g.storeRoot, n))
 		}
 	}
 	var stdout, stderr bytes.Buffer
@@ -127,5 +148,18 @@ func TestRemoveScopeRemovesItsScopesStagedKeyFiles(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(g.storeRoot, theirs)); err != nil {
 		t.Errorf("another journal's staged file went: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(g.storeRoot, young)); err != nil {
+		t.Errorf("a staged file written just now went: %v", err)
+	}
+}
+
+// stagedLongAgo sets a staged file's time past stagedKeyAge, as a leftover's
+// is, so that a sweep takes it by its form alone.
+func stagedLongAgo(t *testing.T, path string) {
+	t.Helper()
+	old := time.Now().Add(-2 * stagedKeyAge)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
 	}
 }

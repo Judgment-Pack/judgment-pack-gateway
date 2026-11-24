@@ -90,26 +90,36 @@ func TestJournalResetVectorsAreWritten(t *testing.T) {
 	if n, _ := recordCount(body, "refusalJournalBytes"); n != int64(len(removed)) {
 		t.Fatalf("the entry names %d bytes of %d", n, len(removed))
 	}
-	// the half: the same entry with refusalJournalDigest dropped, signed again
-	half := newObject()
-	for _, member := range body.names {
-		if member != "refusalJournalDigest" {
-			m, _ := body.get(member)
-			half.set(member, m)
-		}
-	}
+	// the entry's body changed, signed again by the key in force: the half
+	// drops refusalJournalDigest, the extra member adds a scope, which the
+	// kind does not carry
 	ordinal, _ := recordCount(entry, "ordinal")
 	previous, _ := memberString(entry, "previous")
 	at, _ := memberString(entry, "at")
-	halfLine, err := signedJournalEntry(key, operatorJournal, ordinal, previous, at, half)
-	if err != nil {
-		t.Fatal(err)
+	resigned := func(drop string, add map[string]value) map[string]any {
+		changed := newObject()
+		for _, member := range body.names {
+			if member != drop {
+				m, _ := body.get(member)
+				changed.set(member, m)
+			}
+		}
+		for member, v := range add {
+			changed.set(member, v)
+		}
+		line, err := signedJournalEntry(key, operatorJournal, ordinal, previous, at, changed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]any{}
+		for path, data := range files {
+			out[path] = data
+		}
+		out["journals/"+operatorJournal+".jsonl"] = string(lines[0]) + "\n" + string(line)
+		return out
 	}
-	halfFiles := map[string]any{}
-	for path, data := range files {
-		halfFiles[path] = data
-	}
-	halfFiles["journals/"+operatorJournal+".jsonl"] = string(lines[0]) + "\n" + string(halfLine)
+	halfFiles := resigned("refusalJournalDigest", nil)
+	extraFiles := resigned("", map[string]value{"scope": vString("corpus-a")})
 
 	for _, w := range []struct {
 		name, note string
@@ -120,6 +130,8 @@ func TestJournalResetVectorsAreWritten(t *testing.T) {
 			files, false},
 		{"v3-journal-refusal-journal-reset-half", "v3-journal-refusal-journal-reset with refusalJournalDigest dropped from the refusal-journal-reset entry, signed again by the key in force: both members are required in that kind, so the entry does not load: journal-entry-forged at ordinal 1.",
 			halfFiles, true},
+		{"v3-journal-refusal-journal-reset-extra-member", "v3-journal-refusal-journal-reset with a scope member added to the refusal-journal-reset entry, signed again by the key in force: the kind carries exactly by, refusalJournalBytes and refusalJournalDigest beside kind, registryFrom and removalFrom, so the entry does not load: journal-entry-forged at ordinal 1.",
+			extraFiles, true},
 	} {
 		var vec map[string]any
 		raw, err := os.ReadFile(corpusPath("v3", "stores", "v3-journal-refusal-holds.json"))

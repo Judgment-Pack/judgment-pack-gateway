@@ -45,8 +45,9 @@ and journals the refusals of the sources of no scope again. It takes no
 scope identifier, and no receipt, session, removal record or other journal:
 gateway remove-scope removes a scope identifier's. A journal that is absent
 or holds no entry is left, and no entry is written. A run cut off after its
-entry is completed by the next start or a second run. A running gateway
-refuses it where the platform locks the registry; on Windows nothing is
+entry is completed by the next start or a second run. A gateway serving
+the store, under this registry or another, refuses it where the platform
+locks the registry and the store (store-served); on Windows nothing is
 locked, so stop the gateway first. --by is a label, recorded and not
 checked. Prints what was removed. On the PostgreSQL kind, gateway store
 journal-reset --unscoped resets its rows.`
@@ -171,6 +172,11 @@ func journalReset(cfg engineConfig, by string, stamp func() string) (out removal
 		return out, false, err
 	}
 	defer hold.Close()
+	alone, err := holdStoreAlone(cfg.store, "reset")
+	if err != nil {
+		return out, false, err
+	}
+	defer alone.Close()
 	unlocked = !registryLocked
 	data, present, err := readRegistryBytes(cfg.registry)
 	if err != nil {

@@ -764,6 +764,11 @@ func (f refusalFS) key(name string) ([]byte, bool, error) {
 	return k, false, nil
 }
 
+// stagedKeyAge is how long a staged key file stands before a sweep takes it
+// for a leftover. A draw writes, syncs and links its file within moments;
+// five minutes is far past any draw under way.
+const stagedKeyAge = 5 * time.Minute
+
 // stagedKeyForm is the name a key is drawn under before it is linked into
 // place (ADR-0059 §8, as built 2026-11-24): in the store's root, outside
 // journals/, whose names both readers judge, a dot, the journal's name,
@@ -904,9 +909,10 @@ func (f refusalFS) redrawShortKey(name string) (bool, error) {
 // the store's root: before any key is read, every journal's, a scope's no
 // longer configured among them; and, from remove-scope, the scope's own
 // (only, its journal's name). Only a regular file of exactly
-// stagedKeyForm, never a link, a directory or a near miss, and never one
-// of this process's own identifier, whose draw may be under way. It
-// answers how many it removed.
+// stagedKeyForm, never a link, a directory or a near miss, and only one
+// last written stagedKeyAge ago or longer: several gateway processes may
+// serve one store, and a younger file may be another's draw under way,
+// between its write and its link. It answers how many it removed.
 func (f refusalFS) removeStagedKeys(only string) (int, error) {
 	entries, err := os.ReadDir(f.root)
 	if errors.Is(err, os.ErrNotExist) {
@@ -915,12 +921,14 @@ func (f refusalFS) removeStagedKeys(only string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	self := strconv.Itoa(os.Getpid())
 	removed := 0
 	for _, e := range entries {
 		m := stagedKeyForm.FindStringSubmatch(e.Name())
-		if m == nil || only != "" && m[1] != only || m[2] == self || !e.Type().IsRegular() {
+		if m == nil || only != "" && m[1] != only || !e.Type().IsRegular() {
 			continue
+		}
+		if info, err := e.Info(); err != nil || time.Since(info.ModTime()) < stagedKeyAge {
+			continue // gone since, or perhaps a draw under way
 		}
 		if err := os.Remove(filepath.Join(f.root, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return removed, err

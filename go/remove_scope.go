@@ -55,8 +55,11 @@ another scope identifier, of none, or one that does not verify, a session
 holding anything but its receipt files, a linked artifacts, receipts or
 session directory, and a receipt left in the store that cites one the call
 would remove, refuse the whole call, by name, and nothing is removed. --by is a label, recorded and
-not checked. Prints each record appended, as its line. On the PostgreSQL
-kind, gateway store remove-scope removes a scope identifier's rows.`
+not checked. Prints each record appended, as its line. A gateway serving
+the store, under this registry or another, refuses it where the platform
+locks the registry and the store (store-served); on Windows nothing is
+locked, so stop the gateway first. On the PostgreSQL kind, gateway store
+remove-scope removes a scope identifier's rows.`
 
 // removeScopeOptions is the command line.
 type removeScopeOptions struct {
@@ -212,6 +215,11 @@ func removeScope(o removeScopeOptions, stamp func() string) (out removalOutcome,
 		return out, false, err
 	}
 	defer hold.Close()
+	alone, err := holdStoreAlone(o.store, "remove")
+	if err != nil {
+		return out, false, err
+	}
+	defer alone.Close()
 	unlocked = !registryLocked
 	data, present, err := readRegistryBytes(o.registry)
 	if err != nil {
