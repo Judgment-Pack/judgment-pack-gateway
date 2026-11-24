@@ -362,12 +362,15 @@ func TestTheSandboxProbeIsNotHandedTheCallReference(t *testing.T) {
 		probed = append([]string(nil), s.env...)
 		return sandboxProbeReport{}, errors.New("stop after the probe")
 	}
-	base := sourceSpec{shape: "mcp", callReference: true, env: []string{"KEEP=1"}, sandbox: &sourceSandbox{helper: "/bin/sandbox-helper-that-is-never-run"}}
+	// an absolute path on every platform, naming nothing: the helper is
+	// never run, and a path that is not absolute is refused before the probe
+	helper := filepath.Join(t.TempDir(), "sandbox-helper-that-is-never-run")
+	base := sourceSpec{shape: "mcp", callReference: true, env: []string{"KEEP=1"}, sandbox: &sourceSandbox{helper: helper}}
 	run, ref, err := withCallReference(base, "s1")
 	if err != nil || ref == "" {
 		t.Fatal(ref, err)
 	}
-	if _, err := sandboxSourceCommand(context.Background(), run, "/bin/adapter-that-is-never-run", []string{"adapter"}); err == nil {
+	if _, err := sandboxSourceCommand(context.Background(), run, filepath.Join(t.TempDir(), "adapter-that-is-never-run"), []string{"adapter"}); err == nil {
 		t.Fatal("the stub probe's failure did not refuse the launch")
 	}
 	if len(probed) != 1 || probed[0] != "KEEP=1" {
