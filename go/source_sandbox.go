@@ -202,7 +202,9 @@ func sandboxSourceCommand(ctx context.Context, spec sourceSpec, path string, arg
 		return nil, fmt.Errorf("sandbox-not-enforced: source sandbox helper %s was not held at start", s.helper)
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, sandboxLaunchProbeTimeout)
-	report, err := sandboxPostureProbe(probeCtx, spec)
+	// The probe measures the source as configured: a call's reference and
+	// session identifier are for the server it starts, never for the probe.
+	report, err := sandboxPostureProbe(probeCtx, withoutCallReference(spec))
 	cancel()
 	if err != nil {
 		return nil, fmt.Errorf("sandbox-not-enforced: the source's sandbox posture could not be measured before its launch: %v", err)

@@ -36,6 +36,9 @@ type receiptInput struct {
 	// acquisition then carries artifact "not-retained"; false for a kept
 	// one, whose receipt is the one it was before the member existed.
 	notRetained bool
+	// callRef is the call reference the binding was sent (ADR-0060), "" where
+	// its platform did not opt in: a version 3 core carries it, signed.
+	callRef string
 }
 
 // buildReceipt assembles the unsigned core. keyId and signature remain the
@@ -77,6 +80,9 @@ func buildReceipt(in receiptInput) *vObject {
 			if in.scopeSalt != "" {
 				core.set("scopeSalt", vString(in.scopeSalt))
 			}
+		}
+		if in.callRef != "" {
+			core.set("callRef", vString(in.callRef))
 		}
 		if in.notRetained {
 			core.set("artifact", vString(artifactNotRetained))

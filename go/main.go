@@ -551,6 +551,9 @@ func engineStart(cfg *engineConfig, bindings map[string]binding, host engineHost
 		return nil, nil, err
 	}
 	sources := deriveSources(*cfg, bindings)
+	if err := callReferenceRefusal(sources); err != nil {
+		return nil, nil, err
+	}
 	if err := holdToolVersions(*cfg, bindings, sources); err != nil {
 		return nil, nil, err
 	}

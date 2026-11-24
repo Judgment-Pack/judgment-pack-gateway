@@ -15,8 +15,8 @@ deciders: maintainer
 >   inside its signed bytes.
 > - **Opt-in per binding:** `callReference: true` on the binding, off by default. An off binding
 >   gets byte-for-byte the request it gets today, and its receipt carries no `callRef`.
-> - **Engine version:** the engine version after the refusal journal's (expected 49), assigned at
->   merge as usual. `callReference: true` is refused at configuration load below it, or where the
+> - **Engine version:** 49, the engine version after the refusal journal's (48), assigned at
+>   merge. `callReference: true` is refused at configuration load below it, or where the
 >   receipt version is below 3. A verifier that does not know `callRef` refuses a receipt carrying it.
 
 ## Context and problem statement
@@ -105,3 +105,32 @@ already binds whatever the receipt carries.
 
 - None for this release. Whether a later release also sends a signed reference in `_meta` (option 3)
   is left to a follow-up if a binding asks to verify it without the receipt.
+
+## Amendment of 2026-11-23: the maintainer's rulings on the build's questions
+
+- **Readers (corrects the Summary's last sentence, the Readers ruling and the third
+  Consequence).** A verifier from before this release accepts a receipt carrying `callRef` and
+  ignores the member: it tolerates any signed member it does not know (SPEC.md §1.2a), and the
+  signature, over every member, still verifies. It does not check the member's form; a reader of
+  this release does, and refuses any form but 64 lowercase hex characters. No older verifier
+  refuses such a receipt, and the release notes say so.
+- **"A binding member `callReference`"** means the member of the engine configuration's
+  platform entry that names the binding (`platforms.<name>.callReference`): the operator's file,
+  gated by the engine configuration version. The binding document carries no such member.
+- **A claimed `/act` key.** An action attempt another request claimed is sent by that request:
+  this one sends nothing, so its uncertain receipt carries no `callRef`, and the binding never
+  saw a reference from it, so there is nothing to join.
+- **An opt-in on a source that is not an MCP server** is refused at start, and the refusal names
+  the platform.
+- **Receipts below version 3 (as built, 2026-11-23).** The Decision's refusal of an opt-in whose
+  receipt version is below 3 is not built: only an engine configuration's platform sets
+  `callReference`, and an engine's receipts are always version 3, so the refusal could never
+  answer. A test holds the engine's receipt version at 3 instead. `gateway serve
+  --receipt-version 2` takes no platform, so no opt-in reaches it.
+- **The transport.** The gateway hands adapter-mcp the reference and the session identifier in
+  `ADAPTER_MCP_CALL_REF` and `ADAPTER_MCP_SESSION_ID`, for that call alone; the adapter takes
+  both out of its environment before it starts the server, which learns them only from `_meta`.
+  A platform's `environment` may not set either name.
+- **A read-back** sends the session identifier its own receipt names: the action's for the
+  read-back an uncertain action makes at once, and the reconciling request's for a later one,
+  whose receipt cites the action by its session, index and signature.

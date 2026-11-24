@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,10 +25,27 @@ func TestActionKeysTarget(t *testing.T) {
 	}
 	raw, _ := os.ReadFile(modeFile)
 	mode := strings.TrimSpace(string(raw))
+	// What the call was handed (ADR-0060): its reference and session, one
+	// line per run, and its stdin by mode.
+	if path := os.Getenv("ACTION_KEYS_CALL_META"); path != "" {
+		ref, hasRef := os.LookupEnv(callRefVariable)
+		session, hasSession := os.LookupEnv(callSessionIDVariable)
+		if f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+			fmt.Fprintf(f, "%s %t %s %t %s\n", mode, hasRef, ref, hasSession, session)
+			f.Close()
+		}
+	}
+	stdin, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		os.Exit(3)
+	}
+	if path := os.Getenv("ACTION_KEYS_STDIN"); path != "" {
+		_ = os.WriteFile(path+"-"+mode, stdin, 0600)
+	}
 	var request struct {
 		Arguments map[string]any `json:"arguments"`
 	}
-	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(stdin)).Decode(&request); err != nil {
 		os.Exit(3)
 	}
 	state := os.Getenv("ACTION_KEYS_STATE")
