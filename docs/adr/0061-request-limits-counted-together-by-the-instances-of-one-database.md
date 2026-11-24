@@ -1,5 +1,5 @@
 ---
-status: proposed, 2026-11-24 (E1 to E4 decided by the maintainer on gateway #593)
+status: accepted, 2026-11-24 (E1 to E4 decided by the maintainer on gateway #593; the batch rule, the window bound and the fallback start accepted at review on gateway #621)
 date: 2026-11-24
 deciders: maintainer
 ---
@@ -61,7 +61,9 @@ rate's design before the build.
   stood ahead of the clock. The refusal's `Retry-After` comes from that answer.
 - **The batch rule.** b = ⌈requestsPerMinute / 600⌉, the requests of 100 ms of the rate, kept
   between 1 and 64 and never above the burst. A refill tops the instance's batch up to b, so an
-  instance never holds more than b of a scope.
+  instance never holds more than b of a scope. The rule is a parameter of this design, not part of
+  the configuration: a later release may change it without an engine version only where every
+  bound stated below still holds as written.
 - **The request path** (`scopeLimiter.take` in `go/limits.go`, `sharedScope.take` in
   `go/limits_shared.go`) decrements an atomic counter of leased requests. When the batch reaches
   half, it hands the scope to the refill with a flag and a send on a buffered channel that never
@@ -80,8 +82,11 @@ Write N for the live instances, B for the burst, T for the interval, and b for t
 - **The rate is never exceeded over time.** Every admitted request spends a request leased from
   the row, and the row admits what one bucket of the configured rate and burst admits. So since any
   moment at which the instances held nothing, they have admitted no more than that bucket would.
-- **Over any window of length W,** the instances admit at most B + ⌈W/T⌉ + N·b. The first two terms
+- **Over any window of length W,** the instances admit at most B + ceil(W/T) + N·b. The first two terms
   are what the bucket leases over the window. N·b is what the instances held when the window began.
+  For example, a scope of 6000 requests a minute (T = 10 ms, so b = 10) with a burst B of 50, on
+  N = 3 instances, admits at most 50 + 100 + 3·10 = 180 requests in any one second; one instance
+  counting alone admits at most 50 + 100 = 150.
 - **Burst.** The shared bucket's burst is the configured B, unchanged, and a batch is part of it.
   At one instant the instances together admit at most B + N·b: the bucket's room plus the batches
   they hold.
@@ -162,7 +167,7 @@ Write N for the live instances, B for the burst, T for the interval, and b for t
 
 `TestThePostgresInstancesUnderLimitsSharedHoldOneLimitTogether` starts two gateway services on
 one database and drives them together over 1.5 s. With the member they stay within
-B + ⌈W/T⌉ + N·b; without it they admit about twice that. The other tests are:
+B + ceil(W/T) + N·b; without it they admit about twice that. The other tests are:
 
 - `TestASharedScopeAdmitsFromItsBatchWithNoRoundTrip`: no request-path round trip.
 - `TestAPostgresScopesHeldRowAddsNoWaitToAnotherScope`: a held row.

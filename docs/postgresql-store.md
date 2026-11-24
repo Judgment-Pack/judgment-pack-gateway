@@ -471,7 +471,9 @@ records itself as the session's holder when it admits the call, before the sourc
   by one statement on a connection of the instance's own, never the pool's, at a low-water mark
   of b/2. The lease takes the row `NOWAIT`: a held row fails at once, and that scope alone is tried
   again after 50 ms. No request sends a statement or waits for a row. Over any window W the
-  instances admit at most B + ceil(W/T) + N·b, and never more than the rate over time. In flight
+  instances admit at most B + ceil(W/T) + N·b (B the burst, T the interval, N the instances), and
+  never more than the rate over time: at 6000 a minute (T = 10 ms, b = 10) with a burst of 50 on
+  three instances, at most 50 + 100 + 30 = 180 in any one second. In flight
   and per caller each instance holds ceil(limit/N), with N the live rows of `gateway.start_lease`
   counted every 10 seconds, at most cap + N − 1 in all. Where a refill or a count fails other than
   by a held row, or gets no answer within 2 seconds, each instance counts the rate alone at
