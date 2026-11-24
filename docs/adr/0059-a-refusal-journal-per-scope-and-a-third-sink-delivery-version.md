@@ -865,9 +865,14 @@ forwarding, follow it. Where R2 departs from the text above:
   off before the `.key` went, and the scope's entries are dropped, counted as `write-failed`, until
   the next start; so are they where the key is gone or another. A key that cannot be read for
   another cause drops that one entry, counted the same way. The writer reads the journal again where
-  the file is another than the one it read, or its length is not the end it holds. A `remove-scope`
-  cut off between the `.jsonl` and the `.key` therefore never has the journal made again under the
-  old key. The PostgreSQL kind is unchanged.
+  the file is another than the one it read, or its length is not the end it holds. A round that
+  made the file and wrote nothing to it takes the empty file away. A `remove-scope` cut off
+  between the `.jsonl` and the `.key` therefore never has the journal made again under the old key
+  while the gateway runs. Across a restart, too: before any key is read, the start completes the
+  removal of each configured scope whose last `remove-scope` entry in the operator journal names a
+  refusal journal that is gone or is the bytes it names, as a second `remove-scope` run would, and
+  says so on stderr. The first entry after it is made under a key drawn then. The PostgreSQL kind
+  is unchanged.
 - **2026-11-24, the key is drawn at start, and a key file is no journal.** `K_scope` is drawn, or
   read where it is already held, when the gateway starts for each scope the configuration names,
   as the K_scope paragraph above now says, not when the first entry is written. A `.key`

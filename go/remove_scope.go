@@ -758,6 +758,10 @@ func payloadOwner(receipts []*storedReceipt, digest string) string {
 	return ""
 }
 
+// refusalRemovalCompletedNote is completeClaimedRefusalRemoval's note where
+// it removed what a cut-off run left.
+const refusalRemovalCompletedNote = "the scope's refusal journal, which the operator journal's remove-scope entry names, its key and its cursor are removed now"
+
 // completeClaimedRefusalRemoval completes a removal a run was cut off in,
 // after its operator entry and before the refusal journal went (ADR-0059
 // §8): where the operator journal's last remove-scope entry of the scope
@@ -825,6 +829,6 @@ func completeClaimedRefusalRemoval(storeRoot, scope string, keys []reachedKey, o
 	if err := r.remove(); err != nil {
 		return err
 	}
-	out.notes = append(out.notes, "the scope's refusal journal, which the operator journal's remove-scope entry names, its key and its cursor are removed now")
+	out.notes = append(out.notes, refusalRemovalCompletedNote)
 	return nil
 }
