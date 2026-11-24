@@ -69,11 +69,18 @@ func (f fsRefusalEntries) journals() ([]string, error) {
 	return append([]string(nil), f.names...), nil
 }
 
-// entriesAfter reads the file without its lock, so it never holds an
-// append: the writer appends a whole line, its line feed last, and only
-// lines that end in one are entries; a torn tail is not read. Each entry's
-// at is where its line begins, which locked reads it at again. A journal
-// with no file, or an empty one, holds no entry.
+// entriesAfter reads only what the journal holds durably. It takes the
+// file's lock just long enough to read the file's size: the writer syncs a
+// line before it lets the lock go, so every byte within that size is on
+// disk, and a line still in the page cache is never forwarded. A power loss
+// then could write another entry at its ordinal, and the sink would hold two.
+// The bytes are read after the lock is let go, so it never holds an append,
+// and no further than that size. The writer appends a whole line, its line
+// feed last, and only lines that end in one are entries; a torn tail is not
+// read. Each entry's at is where its line begins, which locked reads it at
+// again. A journal with no file, or an empty one, holds no entry. Where no
+// file lock is taken (journalFilesLock false), the bound is the size at the
+// read.
 func (f fsRefusalEntries) entriesAfter(journal string, ordinal int64, limit int) ([]refusalEntryLine, error) {
 	if err := configuredJournal(f.names, journal); err != nil {
 		return nil, err
@@ -99,7 +106,14 @@ func (f fsRefusalEntries) entriesAfter(journal string, ordinal int64, limit int)
 		return nil, err
 	}
 	defer file.Close()
-	in := bufio.NewReaderSize(file, 64<<10)
+	durable, err := durableSize(file)
+	if err != nil {
+		return nil, err
+	}
+	if refusalReadAfterBound != nil {
+		refusalReadAfterBound(journal)
+	}
+	in := bufio.NewReaderSize(io.LimitReader(file, durable), 64<<10)
 	var out []refusalEntryLine
 	var at int64
 	for i := int64(0); len(out) < limit; i++ {
@@ -116,6 +130,24 @@ func (f fsRefusalEntries) entriesAfter(journal string, ordinal int64, limit int)
 		at += int64(len(line))
 	}
 	return out, nil
+}
+
+// refusalReadAfterBound, where not nil, runs once entriesAfter has its bound
+// and let the lock go, before it reads: a test seam.
+var refusalReadAfterBound func(journal string)
+
+// durableSize is the size of the journal's file under its lock, the one
+// each append round takes, which is let go before it returns.
+func durableSize(file *os.File) (int64, error) {
+	if err := lockJournalFile(file); err != nil {
+		return 0, err
+	}
+	defer unlockJournalFile(file)
+	info, err := file.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
 }
 
 // locked takes the journal file's lock, as each append round does

@@ -456,3 +456,61 @@ func TestTwoPostgresInstancesForwardRefusalEntriesPassingOverNone(t *testing.T) 
 		t.Fatalf("an entry the journal does not hold there: ran %d, %v", runs, err)
 	}
 }
+
+// An entry is forwarded only once it is durable: entriesAfter takes its
+// bound, the file's size, under the journal's lock, which the writer holds
+// until its line is synced, and reads no further. While the lock is held
+// it returns nothing; a line written after the bound is taken is not read.
+// A read not bounded by the size under the lock fails it.
+func TestTheRefusalSourceReadsOnlyWhatTheJournalHoldsDurably(t *testing.T) {
+	if !journalFilesLock {
+		t.Skip("no flock on this platform: the bound is the size at the read")
+	}
+	h := limitsSetup(t, refusalLimits())
+	j := sourceJournals(t, h, refusalFS{root: h.g.storeRoot}, callerScopeA)
+	name := refusalJournalName(callerScopeA)
+	appendRefusals(t, j, callerScopeA, 1)
+	source := fsRefusalEntries{root: h.g.storeRoot, names: refusalJournalNames(j)}
+
+	// a writer's round in progress: it holds the lock, and its line is not
+	// yet synced
+	held, err := os.Open(source.path(name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err := lockJournalFile(held); err != nil {
+		t.Fatal(err)
+	}
+	letGo := sync.OnceFunc(func() { unlockJournalFile(held) })
+	t.Cleanup(letGo)
+	read := make(chan int, 1)
+	go func() {
+		entries, err := source.entriesAfter(name, -1, 8)
+		if err != nil {
+			t.Error(err)
+		}
+		read <- len(entries)
+	}()
+	select {
+	case n := <-read:
+		t.Fatalf("entriesAfter read %d entries while a writer held the journal's lock", n)
+	case <-time.After(300 * time.Millisecond):
+	}
+	letGo()
+	if n := <-read; n != 1 {
+		t.Fatalf("%d entries once the lock was let go; want 1", n)
+	}
+
+	// a line appended after the bound is taken is not read by that pass
+	refusalReadAfterBound = func(string) { appendRefusal(j, callerScopeA) }
+	t.Cleanup(func() { refusalReadAfterBound = nil })
+	entries, err := source.entriesAfter(name, -1, 8)
+	refusalReadAfterBound = nil
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("a line written after the bound: %d entries, %v; want 1", len(entries), err)
+	}
+	if all, err := source.entriesAfter(name, -1, 8); err != nil || len(all) != 2 {
+		t.Fatalf("the next pass: %d entries, %v; want 2", len(all), err)
+	}
+}

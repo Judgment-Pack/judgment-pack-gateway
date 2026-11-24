@@ -653,6 +653,8 @@ It is journaled once, in that scope's journal, and nowhere else. A charge needs 
   - The writer forwards each entry after it is appended, in ordinal order for each journal, one
     delivery in flight gateway-wide, through an HTTP transport of its own, so it never takes a
     connection a receipt's delivery would use.
+  - The forwarder sends the journal's lines as they are, and does not verify their chain; the sink
+    verifies it.
   - A delivery that is not acknowledged is sent again later, oldest first, at most once every 5
     seconds for each journal. It never holds a request, an answer, another journal's forwarding, or
     the writer's appends.
@@ -918,6 +920,13 @@ forwarding, follow it. Where R2 departs from the text above:
   since the read, and `remove-scope` takes the cursor with it under the same lock: a cursor written
   after it would name an entry no journal holds and stop the scope's next journal at a diverged
   cursor. A journal not yet made holds no entry, and nothing of it is forwarded.
+- **2026-11-24, only a durable entry is forwarded.** On the filesystem kind the source reads a
+  journal's file no further than its size taken under the file's `flock`, which is let go before
+  the bytes are read. The writer syncs each line before it lets the lock go, so a line still in the
+  page cache is never forwarded: a power loss could otherwise put another entry at its ordinal, and
+  the sink would hold two signed entries at one ordinal that the store does not show. Where the
+  platform has no `flock`, the bound is the size at the read. On the PostgreSQL kind a row is read
+  only once its transaction has committed.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on
