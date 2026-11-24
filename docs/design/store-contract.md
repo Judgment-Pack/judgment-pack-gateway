@@ -226,6 +226,16 @@ files back into place; `--check` and `gateway verify` read the restore as they r
 (`TestEveryCorpusStoreExportsAndARestoreVerifiesByteForByte` runs every corpus store through an
 export and a restore).
 
+An export carries no refusal journal's key (ADR-0059 §8). A gateway started on a restore of a full
+export says `refusal journal: journal <name> holds entries and no key; its records are not written
+(write-failed)` for each scope whose journal holds entries, and journals none of that scope's
+refusals; the journal still verifies. Before the start, put the key back from the store the export
+was made from: `journals/<name>.key`, `0600`, on the filesystem kind, or the journal's
+`gateway.secrets` row on the PostgreSQL kind (`gateway journal name --scope <key>` prints the
+name). Where that key is gone, no one can open those entries again: keep the export, which holds
+and verifies them, and on the filesystem kind move `<name>.jsonl` out of the restored `journals/`
+before the start, so that the gateway draws a new key and the scope's journal begins again.
+
 ## What a kind must pass
 
 `go/store_conformance_test.go` runs every case on every kind in `storeKindsUnderTest`: the

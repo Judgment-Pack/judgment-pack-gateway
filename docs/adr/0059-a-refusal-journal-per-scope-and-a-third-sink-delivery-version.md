@@ -299,9 +299,8 @@ request = "sha256:" + hex(SHA-256(salt || "refusal-request:" || route || 0x0A ||
   `salt || label || value`, with a label of its own.
 - **`K_scope`** is the scope's commitment key: 32 random bytes, drawn when the gateway starts for the
   scope (as built, 2026-11-24; the decision first said when the journal's first entry is written).
-  - **Filesystem kind:** `<root>/journals/<name>.key`, created exclusively, `0600`, and synced before
-    that entry, by the store's create-once secret put (`secretSpace.putSecret`,
-    `go/store_contract.go`).
+  - **Filesystem kind:** `<root>/journals/<name>.key`, `0600`, made once and never overwritten
+    (as built, 2026-11-24: staged, synced and linked into place; see "As built").
   - **PostgreSQL kind:** a row of `gateway.secrets`, named `refusal-key.` and the lowercase
     hexadecimal SHA-256 of the journal's name, made by the same create-once put before the journal's
     first entry is inserted. Two instances that race make one key: the second put is refused, and
@@ -843,8 +842,9 @@ forwarding, follow it. Where R2 departs from the text above:
   it there would put a store write on an answer's path.
 - **`journal-from` of a refusal journal** is `{observation, journal, entries}`: the operator
   journal's `registryFrom` and `removalFrom` have no meaning in it.
-- **`remove-scope` of a scope that holds no records** removes nothing, its refusal journal
-  included, as before.
+- **`remove-scope` of a scope that holds no records** removes nothing but the scope's refusal
+  journal, its key and its cursor, where the journal holds entries (2026-11-24, below). R2 first
+  left the journal too.
 - **A refusal no handler codes** (outside section 4's lists, such as `/act`'s `storage`) is
   answered as before and not journaled.
 - **2026-11-23, the verdict by scope.** Both readers keep a refusal journal's finding or observation
@@ -872,7 +872,7 @@ forwarding, follow it. Where R2 departs from the text above:
   between the `.jsonl` and the `.key` therefore never has the journal made again under the old key
   while the gateway runs. Across a restart, too: before any key is read, the start completes the
   removal of each configured scope whose last `remove-scope` entry in the operator journal names a
-  refusal journal that is gone or is the bytes it names, as a second `remove-scope` run would, and
+  refusal journal that is the bytes it names (2026-11-24, below), as a second `remove-scope` run would, and
   says so on stderr. The first entry after it is made under a key drawn then. The PostgreSQL kind
   is unchanged.
 - **2026-11-24, the key is drawn at start, and a key file is no journal.** `K_scope` is drawn, or
@@ -933,6 +933,29 @@ forwarding, follow it. Where R2 departs from the text above:
   and counted (`write-failed`), and the next entry is written at its ordinal. Where the cut or its
   sync fails too, the scope is lost until the next start, which judges the file, and no later entry
   is written after it.
+- **2026-11-24, `remove-scope` of a scope that holds no record removes its refusal journal.** A scope
+  whose callers were only ever refused holds a journal and no session. On both kinds, where the
+  journal holds entries, `remove-scope` and `store remove-scope` remove it, its key and its cursor,
+  under the same lock as the record path (the file's `flock`; the advisory lock in the owner's
+  transaction). The operator entry is the `remove-scope` body naming no removal record:
+  `removalBytes` 0, `removalDigest` of no bytes, at `removalFrom` the removal file's length, beside
+  `refusalJournalBytes` and `refusalJournalDigest`. ADR-0056's body form is unchanged. On the
+  filesystem kind the entry is appended and synced before the journal goes, with nothing staged,
+  since no record is appended; a run cut off after it is completed as a record path's is. The
+  command says what it removed. A key beside no entry stays, and a scope holding neither is left as
+  before, with the same output.
+- **2026-11-24, the journal goes last, so a key beside none is a draw.** On the filesystem kind the
+  removal takes the key, then the cursor, then the journal. A run cut off between them leaves the
+  journal, the bytes its entry names, which the next run or start completes. A journal that is gone
+  is a removal completed, so a key or cursor beside none is never a removal's leftover: a key the
+  start drew since stays across restarts, with no line on stderr. The start and a second run
+  complete a removal only where the journal is the bytes the entry names.
+- **2026-11-24, a key is drawn whole or not at all.** On the filesystem kind `K_scope` is written to
+  `<root>/.<name>.key.<pid>.<12 lowercase hex>.tmp`, in the store's root and outside `journals/`, so
+  neither reader's name rules change. It is synced there and then linked to `journals/<name>.key`. The
+  link never overwrites a key; where one is there it is read. A start ended mid-draw leaves the
+  staged file and no short `.key`. The next start removes, before any key is read, the staged files
+  of its own journals' exact names, regular files only, and never follows a link.
 
 Each runs its touched tests alone, and CI does the full run. At most ten mutants run in each, each
 in a scratch copy and each made to fail a named test. A security-focused review (Opus) is made on

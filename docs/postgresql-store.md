@@ -192,7 +192,10 @@ The refusal journals (ADR-0059) are rows of the same table, one journal per conf
 under its `refusal-` name (24 letters after it, within the table's CHECK on a name of 1 to 32
 characters). Each journal's key is kept in `gateway.secrets`, and its forwarding cursor in
 `gateway.documents`, a document of no scope. `gateway store remove-scope` deletes all three for the
-scope it removes, as the owner, in its own transaction. The refusal journals need no migration past
+scope it removes, as the owner, in its own transaction. A scope that holds no row has its journal
+removed too where the journal holds entries, under an operator entry naming no removal record
+(`removalBytes` 0) and the journal by `refusalJournalBytes` and `refusalJournalDigest`. A key beside
+no entry stays, and a scope holding neither is left as it was (ADR-0059, as built 2026-11-24). The refusal journals need no migration past
 0010, which is the last schema version of this release.
 
 An entry's lengths are of the bytes an export writes. `gateway export` writes the rows, in ordinal
