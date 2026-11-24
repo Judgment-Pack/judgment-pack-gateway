@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -86,8 +87,12 @@ func TestRefusalJournalNamesTheResolvedToolAndItsPinnedDigest(t *testing.T) {
 	expect("/act", h.actBody("s-r3", delegationKey(62), ""), http.StatusForbidden)
 	h.host.setAnswer(nil)
 
-	got := strings.Join(journaledCalls(t, h, j), "\n")
-	want := strings.Join([]string{
+	// an entry is handed off after its answer is flushed, so a later
+	// request's entry may be queued first: the entries, not their order
+	calls := journaledCalls(t, h, j)
+	slices.Sort(calls)
+	got := strings.Join(calls, "\n")
+	wantCalls := []string{
 		"/acquire body - -",
 		"/act platform - -",
 		"/acquire delegation query -",
@@ -95,7 +100,9 @@ func TestRefusalJournalNamesTheResolvedToolAndItsPinnedDigest(t *testing.T) {
 		"/acquire delegation - -",
 		"/acquire delegation query " + testToolDigest,
 		"/act delegation query " + testWriteDigest,
-	}, "\n")
+	}
+	slices.Sort(wantCalls)
+	want := strings.Join(wantCalls, "\n")
 	if got != want {
 		t.Fatalf("journaled:\n%s\nwant\n%s", got, want)
 	}

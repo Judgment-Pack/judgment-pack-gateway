@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -211,6 +212,10 @@ func TestRefusalJournalLeavesEveryAnswerAsItWas(t *testing.T) {
 			}
 			got = append(got, route+" "+reason)
 		}
+		// an entry is handed off after its answer is flushed, so a later
+		// request's entry may be queued first: the entries, not their order
+		slices.Sort(got)
+		slices.Sort(want[key])
 		if strings.Join(got, "|") != strings.Join(want[key], "|") {
 			t.Errorf("journal of %s:\n got %v\nwant %v", key, got, want[key])
 		}
