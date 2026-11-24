@@ -208,7 +208,7 @@ func pgRemoveRefusalJournal(tx pgTx, scopeKey string) ([]byte, error) {
 	if _, err := tx.exec(`DELETE FROM gateway.secrets WHERE name = $1`, refusalKeyName(name)); err != nil {
 		return nil, err
 	}
-	if _, err := tx.exec(`DELETE FROM gateway.documents WHERE scope = $1 AND name = $2`, pgNoScope, "refusal-forwarded."+journalDigest([]byte(name))); err != nil {
+	if _, err := tx.exec(`DELETE FROM gateway.documents WHERE scope = $1 AND name = $2`, pgNoScope, pgForwardingCursorName(name)); err != nil {
 		return nil, err
 	}
 	return data, nil
