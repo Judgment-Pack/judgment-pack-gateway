@@ -11,9 +11,9 @@ import (
 // callReferenceVersion is the engine configuration version from which a
 // platform may set callReference: true, the operator's opt-in for that
 // platform's binding to receive a per-call reference (docs/adr/0060-a-call-
-// reference-passed-to-a-binding-and-signed-into-the-receipt.md). Its number
-// is a placeholder, assigned at merge: 49 expected, after the refusal
-// journal's (48), which merges first. engine.go lists it in engineVersions.
+// reference-passed-to-a-binding-and-signed-into-the-receipt.md). Engine
+// version 49, after the refusal journal's 48. engine.go lists it in
+// engineVersions.
 const callReferenceVersion = "49"
 
 // The names a call reference travels under. The gateway hands adapter-mcp the
