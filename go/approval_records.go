@@ -17,6 +17,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -95,8 +96,13 @@ func resolveApprovals(dir string, approvals value) error {
 			return actRefusal{"approvals", fmt.Sprintf("approvals[%d] cannot name an approval record: its kind and its id are %s", i, approvalSegmentRule)}
 		}
 	}
+	r, err := openApprovalRoot(dir)
+	if err != nil {
+		return actRefusal{"approvals", approvalUnresolved}
+	}
+	defer r.close()
 	for _, c := range list {
-		if !approvalRecordResolves(dir, c) {
+		if !r.resolves(c) {
 			return actRefusal{"approvals", approvalUnresolved}
 		}
 	}
@@ -120,33 +126,62 @@ func approvalList(v value) []approvalCitation {
 	return out
 }
 
-// approvalRecordResolves reports whether <dir>/<kind>/<id> is a regular
-// file whose bytes, at most maxApprovalRecordBytes of them, hash to the
-// citation's digest. No link is followed at any level: the directory, the
-// kind's directory and the record are each looked at without following
-// one, the record is opened without following one (approvalOpenFlags), and
-// the file opened must be the file looked at, so a record replaced between
-// the look and the read does not resolve. The kind's directory and the
-// record must each be listed under the name cited, byte for byte, so a
+// approvalRoot is one request's view of an approval-record directory: the
+// directory opened as an os.Root, so that nothing it resolves leads outside
+// it, even where a level is swapped for a link after it was looked at, and
+// the listings it read, each read once for the request whatever the number
+// of its citations.
+type approvalRoot struct {
+	dir      string
+	root     *os.Root
+	listings map[string]map[string]bool
+}
+
+// openApprovalRoot opens dir as the request's approval root. dir must be a
+// directory and not a link, and the root opened must be the directory
+// looked at.
+func openApprovalRoot(dir string) (*approvalRoot, error) {
+	seen, err := os.Lstat(dir)
+	if err != nil || !seen.IsDir() {
+		return nil, errors.New("the approval-record directory is not a directory")
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := root.Stat(".")
+	if err != nil || !os.SameFile(seen, opened) {
+		root.Close()
+		return nil, errors.New("the approval-record directory was replaced")
+	}
+	return &approvalRoot{dir: dir, root: root, listings: map[string]map[string]bool{}}, nil
+}
+
+func (r *approvalRoot) close() { r.root.Close() }
+
+// resolves reports whether <kind>/<id> under the root is a regular file
+// whose bytes, at most maxApprovalRecordBytes of them, hash to the
+// citation's digest. No link is followed at any level: the kind's
+// directory and the record are each looked at without following one, the
+// record is opened through the root without following one
+// (approvalOpenFlags), which refuses any path leading outside the root,
+// and the file opened must be the file looked at, so a record replaced
+// between the look and the read does not resolve. The kind's directory and
+// the record must each be listed under the name cited, byte for byte, so a
 // file system that folds case does not resolve a citation of ABC by a
 // record stored as abc.
-func approvalRecordResolves(dir string, c approvalCitation) bool {
-	for _, level := range []string{dir, filepath.Join(dir, c.kind)} {
-		info, err := os.Lstat(level)
-		if err != nil || !info.IsDir() {
-			return false
-		}
-	}
-	if !approvalNameListed(dir, c.kind) {
+func (r *approvalRoot) resolves(c approvalCitation) bool {
+	info, err := r.root.Lstat(c.kind)
+	if err != nil || !info.IsDir() || !r.listed(".", c.kind) {
 		return false
 	}
-	path := filepath.Join(dir, c.kind, c.id)
-	seen, err := os.Lstat(path)
-	if err != nil || !seen.Mode().IsRegular() || !approvalNameListed(filepath.Join(dir, c.kind), c.id) {
+	name := c.kind + "/" + c.id
+	seen, err := r.root.Lstat(name)
+	if err != nil || !seen.Mode().IsRegular() || !r.listed(c.kind, c.id) {
 		return false
 	}
-	approvalRecordStatted(path)
-	f, err := os.OpenFile(path, approvalOpenFlags, 0)
+	approvalRecordStatted(filepath.Join(r.dir, c.kind, c.id))
+	f, err := r.root.OpenFile(name, approvalOpenFlags, 0)
 	if err != nil {
 		return false
 	}
@@ -163,25 +198,35 @@ func approvalRecordResolves(dir string, c approvalCitation) bool {
 	return c.digest == "sha256:"+hex.EncodeToString(sum[:])
 }
 
-// approvalNameListed reports whether dir lists an entry named exactly
-// name, byte for byte. A look by name may succeed by another name where the
-// file system folds case or normalizes names; the listing gives the names
-// as stored. It reads the listing in pieces, stopping at the name.
-func approvalNameListed(dir, name string) bool {
-	d, err := os.Open(dir)
+// listed reports whether the root's directory at level lists an entry
+// named exactly name, byte for byte. A look by name may succeed by another
+// name where the file system folds case or normalizes names; the listing
+// gives the names as stored. Each level is listed once for the request.
+func (r *approvalRoot) listed(level, name string) bool {
+	names, read := r.listings[level]
+	if !read {
+		names = approvalListing(r.root, level)
+		r.listings[level] = names
+	}
+	return names[name]
+}
+
+// approvalListing is the names the root's directory at level lists, or
+// none where it does not open as a directory.
+func approvalListing(root *os.Root, level string) map[string]bool {
+	names := map[string]bool{}
+	d, err := root.Open(level)
 	if err != nil {
-		return false
+		return names
 	}
 	defer d.Close()
 	for {
-		names, err := d.Readdirnames(256)
-		for _, n := range names {
-			if n == name {
-				return true
-			}
+		piece, err := d.Readdirnames(256)
+		for _, n := range piece {
+			names[n] = true
 		}
 		if err != nil {
-			return false
+			return names
 		}
 	}
 }

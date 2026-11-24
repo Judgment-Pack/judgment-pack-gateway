@@ -1,5 +1,5 @@
 ---
-status: proposed, 2026-11-24 (option K decided by the maintainer on gateway #581; the directory, the refusal, the scope rule, the byte-identity rule and the unchanged key settled before the build; the mark's form, the segment rule and the bound chosen here)
+status: accepted, 2026-11-24 (accepted at review on gateway #625; option K decided by the maintainer on gateway #581; the directory, the refusal, the scope rule, the byte-identity rule and the unchanged key settled before the build; the mark's form, the segment rule and the bound chosen here)
 date: 2026-11-24
 deciders: maintainer
 ---
@@ -83,14 +83,18 @@ the rule is
 refused `400` at `approvals` with a sentence that states the rule and names the citation's index.
 That sentence is decided by the request alone, before any file is looked at.
 
-Then each record is resolved:
+Then the directory is opened once for the request as an `os.Root` (Go 1.24 and later): `Lstat` of
+the directory must show a directory, not a link, and the root opened must be that directory
+(`os.SameFile`). Every look, listing and open below is made through the root, which refuses any path
+that leads outside it, a link swapped in at any level included. Each record is resolved:
 
-1. `Lstat` of the directory and of `<dir>/<kind>`: each must be a directory, not a link.
-2. `Lstat` of `<dir>/<kind>/<id>`: a regular file, not a link. The directory's listing must hold
+1. `Lstat` of `<kind>`: a directory, not a link.
+2. `Lstat` of `<kind>/<id>`: a regular file, not a link. The directory's listing must hold
    `<kind>`, and `<dir>/<kind>`'s listing must hold `<id>`, each byte for byte, because a look by
    name succeeds by another case of the name on a filesystem that folds case. A citation of `CHG-1`
-   is then not resolved by a record stored as `chg-1`.
-3. The record is opened with `O_NOFOLLOW` and `O_NONBLOCK`. The descriptor's `fstat` must show a
+   is then not resolved by a record stored as `chg-1`. Each listing is read once for the request
+   and shared by its citations.
+3. The record is opened through the root with `O_NOFOLLOW` and `O_NONBLOCK`. The descriptor's `fstat` must show a
    regular file, and it must be the file of step 2 (`os.SameFile`: the same device and inode).
 4. At most 1 MiB + 1 byte is read. More than 1 MiB does not resolve, and the read stops there, so no
    file is read whole to learn that it is too long.
@@ -141,8 +145,9 @@ of a claim.
 
 A dry-run runs the write's ladder through the decision record, so it resolves the citations as the
 write does. A citation that does not resolve refuses it with the same sentence. One whose citations
-resolve carries `approvalsResolved: true` in its dry-run receipt's `action`, which `verify-dry-run`
-accepts.
+resolve carries `approvalsResolved: true` in its dry-run receipt's `action`, which this release's
+`verify-dry-run` accepts. A v0.40.0 `verify-dry-run` finds such a dry-run receipt malformed; it accepts
+the action receipt.
 
 ### 6. The action key and identity
 
@@ -159,16 +164,15 @@ and is never `action-key-conflict`.
 - **Bad:** one more directory per scope for an operator who wants resolution. A scoped write must
   name one once the gateway names one.
 - **Bad:** ids with a code point at or above U+0300 cannot be resolved, even in NFC.
-- **Bad:** each resolution lists the directory and the kind's directory, read in pieces and
-  stopping at the name, so its cost grows with the number of records of a kind.
+- **Bad:** a request lists the directory and each cited kind's directory, once each, whatever the
+  number of its citations (at most 8), so its cost grows with the number of records of a kind. A
+  listing kept between requests is not built.
 
 ## What is not established
 
-- The intermediate level `<dir>/<kind>` is looked at with `Lstat` and then opened through. Someone
-  who can write in the directory could swap it for a link and back between the look and the open.
-  The start's ownership check limits that to root, the signer and the directory's owner. Opening
-  each level relative to the one above would close it; the standard library has no portable call
-  for that.
+- A level swapped for another directory inside the root between the look and the open is opened
+  through, and the record there is then held to be the file looked at (step 3). A level swapped for a
+  link leading outside the root is refused by the root.
 - The directory's ownership is checked at start, not on each request, as for decision records.
 
 ## Tests

@@ -455,3 +455,37 @@ func TestACitationInAnotherCaseIsNotResolvedWhereTheFileSystemFoldsCase(t *testi
 		t.Fatalf("an id in another case: %d %s", code, data)
 	}
 }
+
+// A kind's directory swapped for a link to a directory outside the
+// approval-record directory, after the record was looked at, does not
+// resolve, even where the file there is the very file looked at (a hard
+// link to it): the record is opened through the directory's root, which
+// refuses a path leading outside it.
+func TestAKindDirectorySwappedForALinkOutsideDoesNotResolve(t *testing.T) {
+	h := approvalSetup(t)
+	data := []byte("approved\n")
+	cite := putRecord(t, h.gateway, approvalSingle, "change-1", data)
+	outside := filepath.Join(h.root, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(h.gateway, approvalSingle, "change-1"), filepath.Join(outside, "change-1")); err != nil {
+		t.Fatal(err)
+	}
+	kindDir := filepath.Join(h.gateway, approvalSingle)
+	swapped := 0
+	approvalRecordStatted = func(string) {
+		swapped++
+		if err := os.Rename(kindDir, kindDir+"-moved"); err != nil {
+			t.Error(err)
+		}
+		if err := os.Symlink(outside, kindDir); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { approvalRecordStatted = func(string) {} })
+	code, body := rawAct(t, h, h.unscoped(strings.Repeat("1", 64), cite), h.tokenA)
+	if swapped != 1 || code != http.StatusBadRequest || !bytes.Equal(bytes.TrimSpace(body), unresolvedBody) {
+		t.Fatalf("swapped %d: %d %s", swapped, code, body)
+	}
+}

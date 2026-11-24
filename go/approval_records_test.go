@@ -128,17 +128,30 @@ func TestTheApprovalRecordDirectoriesArePlacedAsDecisionRecordsAre(t *testing.T)
 
 // A name is listed only as it is stored, byte for byte: a look by another
 // case of it, which a file system that folds case answers, is not the name.
+// A level is listed once for the request.
 func TestAnApprovalNameIsListedByItsExactBytes(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "change-a"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	r, err := openApprovalRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.close()
 	for name, want := range map[string]bool{"change-a": true, "Change-a": false, "CHANGE-A": false, "change-": false, "change-a ": false} {
-		if got := approvalNameListed(dir, name); got != want {
+		if got := r.listed(".", name); got != want {
 			t.Fatalf("%q listed: %v, want %v", name, got, want)
 		}
 	}
-	if approvalNameListed(filepath.Join(dir, "absent"), "change-a") {
+	if r.listed("absent", "change-a") {
 		t.Fatal("a directory that is not there lists a name")
+	}
+	// a name made after the level was listed is not seen by the request
+	if err := os.WriteFile(filepath.Join(dir, "change-b"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r.listed(".", "change-b") || len(r.listings) != 2 {
+		t.Fatalf("the level was listed again: %v", r.listings)
 	}
 }
