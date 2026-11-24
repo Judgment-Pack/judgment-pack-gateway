@@ -3143,8 +3143,9 @@ chooses. The gateway only reads it; nothing is synchronized or fetched.
   directory on the way to it are owned by root, the signer or its owner, and writable by nobody else.
 - **A record** is the file `<dir>/<kind>/<id>` of a citation, `kind` being `single` or `standing`;
   its digest is the SHA-256 of the file's bytes, and it is at most 1 MiB. Name each file by the id
-  the requester will cite, using code points below U+0300 alone, with no `/` or `\`, and not `.` or
-  `..`. No link is followed at any level.
+  the requester will cite, in the case it will be cited (the name is matched byte for byte, on a
+  filesystem that folds case too), using code points below U+0300 alone (ids outside that range are
+  refused), with no `/` or `\`, and not `.` or `..`. No link is followed at any level.
 - **What `/act` does** (SPEC.md §6, "Resolved approvals"): every citation of an action of the
   directory's scope resolves there before anything is sent, or the action is refused `400` at
   `approvals` with one sentence that names no directory and no path. The receipt marks a resolved

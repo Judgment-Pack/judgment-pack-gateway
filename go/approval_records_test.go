@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -121,5 +123,22 @@ func TestTheApprovalRecordDirectoriesArePlacedAsDecisionRecordsAre(t *testing.T)
 	}
 	if err := approvalRecordsApart("", platforms("/approvals/a", ""), nestedAsSpelled); err != nil {
 		t.Fatalf("no gateway directory, one scope without one: %v", err)
+	}
+}
+
+// A name is listed only as it is stored, byte for byte: a look by another
+// case of it, which a file system that folds case answers, is not the name.
+func TestAnApprovalNameIsListedByItsExactBytes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "change-a"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{"change-a": true, "Change-a": false, "CHANGE-A": false, "change-": false, "change-a ": false} {
+		if got := approvalNameListed(dir, name); got != want {
+			t.Fatalf("%q listed: %v, want %v", name, got, want)
+		}
+	}
+	if approvalNameListed(filepath.Join(dir, "absent"), "change-a") {
+		t.Fatal("a directory that is not there lists a name")
 	}
 }

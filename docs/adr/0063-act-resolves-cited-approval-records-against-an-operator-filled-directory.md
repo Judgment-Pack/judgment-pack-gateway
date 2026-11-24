@@ -77,21 +77,26 @@ No code point below U+0300 decomposes, combines or is reordered under NFC. Such 
 therefore in NFC, and no other spelling of it names the same file on a filesystem that normalizes
 names. Telling an NFC segment with higher code points from a non-NFC one needs the Unicode
 normalization tables, which the module does not carry (it has no dependency). So every code point at
-or above U+0300 is refused, whether or not the segment is in NFC. A citation outside the rule is
+or above U+0300 is refused, whether or not the segment is in NFC: ids outside that range are
+refused, and gateway #624 records the choices for accepting every NFC segment. A citation outside
+the rule is
 refused `400` at `approvals` with a sentence that states the rule and names the citation's index.
 That sentence is decided by the request alone, before any file is looked at.
 
 Then each record is resolved:
 
 1. `Lstat` of the directory and of `<dir>/<kind>`: each must be a directory, not a link.
-2. `Lstat` of `<dir>/<kind>/<id>`: a regular file, not a link.
+2. `Lstat` of `<dir>/<kind>/<id>`: a regular file, not a link. The directory's listing must hold
+   `<kind>`, and `<dir>/<kind>`'s listing must hold `<id>`, each byte for byte, because a look by
+   name succeeds by another case of the name on a filesystem that folds case. A citation of `CHG-1`
+   is then not resolved by a record stored as `chg-1`.
 3. The record is opened with `O_NOFOLLOW` and `O_NONBLOCK`. The descriptor's `fstat` must show a
    regular file, and it must be the file of step 2 (`os.SameFile`: the same device and inode).
 4. At most 1 MiB + 1 byte is read. More than 1 MiB does not resolve, and the read stops there, so no
    file is read whole to learn that it is too long.
 5. `"sha256:"` and the hex SHA-256 of the bytes read must equal the citation's `digest`.
 
-A record that is missing, not a regular file, a link at any level, longer than the bound, replaced
+A record that is missing, listed under another spelling of its name, not a regular file, a link at any level, longer than the bound, replaced
 between steps 2 and 3, or of another digest does not resolve. Each is answered with the one sentence:
 
 > a cited approval record does not resolve: every citation names a record this gateway holds, by its
@@ -154,8 +159,8 @@ and is never `action-key-conflict`.
 - **Bad:** one more directory per scope for an operator who wants resolution. A scoped write must
   name one once the gateway names one.
 - **Bad:** ids with a code point at or above U+0300 cannot be resolved, even in NFC.
-- **Bad:** a filesystem that does not tell case apart resolves `CHG-1` and `chg-1` to one file. Both
-  then carry one digest, so the mark still states a file with that digest.
+- **Bad:** each resolution lists the directory and the kind's directory, read in pieces and
+  stopping at the name, so its cost grows with the number of records of a kind.
 
 ## What is not established
 

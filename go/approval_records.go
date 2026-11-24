@@ -126,7 +126,10 @@ func approvalList(v value) []approvalCitation {
 // kind's directory and the record are each looked at without following
 // one, the record is opened without following one (approvalOpenFlags), and
 // the file opened must be the file looked at, so a record replaced between
-// the look and the read does not resolve.
+// the look and the read does not resolve. The kind's directory and the
+// record must each be listed under the name cited, byte for byte, so a
+// file system that folds case does not resolve a citation of ABC by a
+// record stored as abc.
 func approvalRecordResolves(dir string, c approvalCitation) bool {
 	for _, level := range []string{dir, filepath.Join(dir, c.kind)} {
 		info, err := os.Lstat(level)
@@ -134,9 +137,12 @@ func approvalRecordResolves(dir string, c approvalCitation) bool {
 			return false
 		}
 	}
+	if !approvalNameListed(dir, c.kind) {
+		return false
+	}
 	path := filepath.Join(dir, c.kind, c.id)
 	seen, err := os.Lstat(path)
-	if err != nil || !seen.Mode().IsRegular() {
+	if err != nil || !seen.Mode().IsRegular() || !approvalNameListed(filepath.Join(dir, c.kind), c.id) {
 		return false
 	}
 	approvalRecordStatted(path)
@@ -155,6 +161,29 @@ func approvalRecordResolves(dir string, c approvalCitation) bool {
 	}
 	sum := sha256.Sum256(data)
 	return c.digest == "sha256:"+hex.EncodeToString(sum[:])
+}
+
+// approvalNameListed reports whether dir lists an entry named exactly
+// name, byte for byte. A look by name may succeed by another name where the
+// file system folds case or normalizes names; the listing gives the names
+// as stored. It reads the listing in pieces, stopping at the name.
+func approvalNameListed(dir, name string) bool {
+	d, err := os.Open(dir)
+	if err != nil {
+		return false
+	}
+	defer d.Close()
+	for {
+		names, err := d.Readdirnames(256)
+		for _, n := range names {
+			if n == name {
+				return true
+			}
+		}
+		if err != nil {
+			return false
+		}
+	}
 }
 
 // parsePlatformApprovalRecords reads a platform's approvalRecords

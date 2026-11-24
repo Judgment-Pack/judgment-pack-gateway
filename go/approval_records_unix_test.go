@@ -432,3 +432,26 @@ func TestTheApprovalRecordDirectoryIsHeldAtStart(t *testing.T) {
 		}
 	}
 }
+
+// Where the file system folds case, a citation of a kind or an id in
+// another case than the record's is not resolved by it: it is the one
+// refusal, as a missing record is. Elsewhere the look by the other case
+// already fails, and the test says so and skips.
+func TestACitationInAnotherCaseIsNotResolvedWhereTheFileSystemFoldsCase(t *testing.T) {
+	h := approvalSetup(t)
+	stored := putRecord(t, h.gateway, approvalSingle, "change-a", []byte(`{"approved":true}`))
+	if _, err := os.Lstat(filepath.Join(h.gateway, approvalSingle, "CHANGE-A")); err != nil {
+		t.Skip("this file system does not fold case")
+	}
+	if code, data := rawAct(t, h, h.unscoped(strings.Repeat("3", 64), stored), h.tokenA); code != http.StatusOK {
+		t.Fatalf("the record by its own name: %d %s", code, data)
+	}
+	upper := strings.Replace(stored, `"change-a"`, `"CHANGE-A"`, 1)
+	if upper == stored {
+		t.Fatalf("the citation names no id to change: %s", stored)
+	}
+	code, data := rawAct(t, h, h.unscoped(strings.Repeat("4", 64), upper), h.tokenA)
+	if code == http.StatusOK || !strings.Contains(string(data), approvalUnresolved) {
+		t.Fatalf("an id in another case: %d %s", code, data)
+	}
+}
