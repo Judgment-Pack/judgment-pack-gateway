@@ -21,6 +21,15 @@ import (
 // tool, the annotations its server gave at capture.
 func servedOwnerServer(t *testing.T, platforms map[string]binding, hints map[string]map[string]bool) (*mcpServer, error) {
 	t.Helper()
+	return servedOwnerServerAt(t, platforms, hints, "", nil)
+}
+
+// servedOwnerServerAt is servedOwnerServer under the given engine version;
+// where digests is not nil each snapshot is a V3 one, whose every tool
+// holds the digest digests names for it: the snapshot of an operation
+// whose source the operator supplies, which is what a V3 snapshot binds.
+func servedOwnerServerAt(t *testing.T, platforms map[string]binding, hints map[string]map[string]bool, version string, digests map[string]string) (*mcpServer, error) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "engine.json")
 	if err := os.WriteFile(path, []byte("{}"), 0o640); err != nil {
 		t.Fatal(err)
@@ -28,7 +37,7 @@ func servedOwnerServer(t *testing.T, platforms map[string]binding, hints map[str
 	if err := os.MkdirAll(path+".descriptors", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := engineConfig{listen: "127.0.0.1:8787", configPath: path, mcp: &mcpConfig{listen: "127.0.0.1:8788", sessions: 1, idleSeconds: 60, concurrency: 1, callsPerMinute: 1}}
+	cfg := engineConfig{version: version, listen: "127.0.0.1:8787", configPath: path, mcp: &mcpConfig{listen: "127.0.0.1:8788", sessions: 1, idleSeconds: 60, concurrency: 1, callsPerMinute: 1}}
 	names := make([]string, 0, len(platforms))
 	for name := range platforms {
 		names = append(names, name)
@@ -41,6 +50,9 @@ func servedOwnerServer(t *testing.T, platforms map[string]binding, hints map[str
 		for _, tool := range b.live.tools {
 			entry := newObject()
 			entry.set("taxonomy", taxonomyAsValue(b.live.taxonomies[tool]))
+			if digests != nil {
+				entry.set("descriptorDigest", vString(digests[tool]))
+			}
 			if given, ok := hints[tool]; ok {
 				annotations := newObject()
 				for key, v := range given {
@@ -60,7 +72,11 @@ func servedOwnerServer(t *testing.T, platforms map[string]binding, hints map[str
 		snap.set("platform", vString(name))
 		snap.set("policy", vInt(1))
 		snap.set("server", server)
-		snap.set("snapshotVersion", vString("2"))
+		if digests != nil {
+			snap.set("snapshotVersion", vString("3"))
+		} else {
+			snap.set("snapshotVersion", vString("2"))
+		}
 		snap.set("tools", tools)
 		raw := canon(snap)
 		pin := digestOf(string(raw))
@@ -135,6 +151,67 @@ func TestServedListingMatchesTheHandwrittenVector(t *testing.T) {
 	if !reflect.DeepEqual(got, vector.Tools) {
 		have, _ := json.MarshalIndent(got, "", "  ")
 		t.Fatalf("the served listing differs from testdata/tool-taxonomy/served-listing.json:\n%s", have)
+	}
+}
+
+// readListingVector reads a handwritten listing vector's tools.
+func readListingVector(t *testing.T, name string) []servedEntry {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "testdata", "tool-taxonomy", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vector struct {
+		Tools []servedEntry `json:"tools"`
+	}
+	if err := json.Unmarshal(data, &vector); err != nil {
+		t.Fatal(err)
+	}
+	return vector.Tools
+}
+
+// At admissionReadV2Version the served listing is the second handwritten
+// vector (ADR-0058 decision 7): each tool of the live operation names its
+// snapshot entry's descriptorDigest and, where the binding labels it, its
+// versionLabel; the seal tool names neither. Below that version the same
+// snapshot, its digests and all, serves the first vector unchanged.
+func TestServedListingAtAdmissionReadV2MatchesItsVector(t *testing.T) {
+	owners := map[string]ToolTaxonomy{
+		"search": {Operation: "discover", Effect: "read-external"},
+		"read":   {Operation: "read", Effect: "read-external"},
+		"verify": {Operation: "check", Effect: "read-external", CheckKind: "test", Experimental: true},
+		"update": {Operation: "act", Effect: "act"},
+	}
+	digests := map[string]string{
+		"read":   "sha256:" + strings.Repeat("a", 64),
+		"search": "sha256:" + strings.Repeat("b", 64),
+		"update": "sha256:" + strings.Repeat("c", 64),
+		"verify": "sha256:" + strings.Repeat("d", 64),
+	}
+	// A V3 snapshot, the one holding descriptorDigest, describes an
+	// operation whose source the operator supplies.
+	supplied := func() binding {
+		b := ownedLive("tickets", owners)
+		b.live.customer = true
+		return b
+	}
+	labelled := supplied()
+	labelled.live.toolVersions = map[string]string{"search": "2.4.1", "update": "1.0.0", "verify": "0.3"}
+	s, err := servedOwnerServerAt(t, map[string]binding{"tickets": labelled}, nil, admissionReadV2Version, digests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := servedEntries(t, s), readListingVector(t, "served-listing-read-v2.json"); !reflect.DeepEqual(got, want) {
+		have, _ := json.MarshalIndent(got, "", "  ")
+		t.Fatalf("the served listing differs from testdata/tool-taxonomy/served-listing-read-v2.json:\n%s", have)
+	}
+	below, err := servedOwnerServerAt(t, map[string]binding{"tickets": supplied()}, nil, "46", digests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := servedEntries(t, below), readListingVector(t, "served-listing.json"); !reflect.DeepEqual(got, want) {
+		have, _ := json.MarshalIndent(got, "", "  ")
+		t.Fatalf("below the version the served listing differs from testdata/tool-taxonomy/served-listing.json:\n%s", have)
 	}
 }
 

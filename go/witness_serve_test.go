@@ -1033,6 +1033,96 @@ func TestWitnessAnswerTimeIsBounded(t *testing.T) {
 	}
 }
 
+// loopbackPipe is a pipe listener that names a loopback address, so the
+// gateway serves on it as on a loopback listener.
+type loopbackPipe struct{ *pipeListener }
+
+func (loopbackPipe) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8787} }
+
+// Under the request limits, on the loopback listener a witness serves on, a
+// read of a trail holds a gateway-wide slot until its answer is written
+// (#597). The open routes' bound clears the write deadline of every other
+// route, and the witness sets its own (answerWithin): a reader that never
+// reads is cut off at witnessAnswerTime, its slot comes back, and the next
+// request under a cap of one is served.
+func TestAWitnessReadUnderLimitsGivesItsSlotBackAtItsBound(t *testing.T) {
+	saved := witnessAnswerTime
+	witnessAnswerTime = 200 * time.Millisecond
+	t.Cleanup(func() { witnessAnswerTime = saved })
+	f := newWitnessFixture(t, witnessSpec{}, testTrail)
+	statementAnswer(t, f.submit(t, testTrail, cpLine(testTrail, 1, "a")))
+	f.gateway.limits = &limitsConfig{beforeScope: 1}
+	limiter, err := newRequestLimiter((&fakeLimitClock{}).clock(), 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.gateway.limiter = limiter
+	pipe := newPipeListener()
+	listener := loopbackPipe{pipe}
+	ctx, cancel := context.WithCancel(context.Background())
+	f.gateway.bindLifetime(ctx)
+	done := make(chan error, 1)
+	go func() { done <- f.gateway.serveOn(listener) }()
+	t.Cleanup(func() {
+		cancel()
+		pipe.Close()
+		<-done
+	})
+	client := &http.Client{Transport: &http.Transport{DialContext: pipe.dial}, Timeout: 30 * time.Second}
+	for _, what := range []string{"head", "statements"} {
+		path := "/witness/trails/" + testTrail + "/" + what
+		// A client's answer arrives before its server unwinds the request,
+		// so the last request may still hold the slot and its place among
+		// the reads: wait until both are free, or this request is refused
+		// at the cap and the waits below see the last one's state.
+		idle := time.Now().Add(20 * time.Second)
+		for (limiter.beforeHeld.Load() != 0 || len(f.svc.reading) != 0) && time.Now().Before(idle) {
+			time.Sleep(time.Millisecond)
+		}
+		if n := limiter.beforeHeld.Load(); n != 0 || len(f.svc.reading) != 0 {
+			t.Fatalf("%s: the last request never gave back its slot (%d held) or its place among the reads", what, n)
+		}
+		conn, err := pipe.dial(context.Background(), "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Write([]byte("GET " + path + " HTTP/1.1\r\nHost: witness\r\n\r\n")); err != nil {
+			t.Fatal(err)
+		}
+		// the read is in, under the one slot, and its answer is never read
+		deadline := time.Now().Add(20 * time.Second)
+		for len(f.svc.reading) == 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		held := time.Now()
+		if len(f.svc.reading) == 0 || limiter.beforeHeld.Load() != 1 {
+			t.Fatalf("%s: the read never started under the slot (%d held)", what, limiter.beforeHeld.Load())
+		}
+		for limiter.beforeHeld.Load() != 0 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if n := limiter.beforeHeld.Load(); n != 0 {
+			t.Fatalf("%s: a reader that never reads holds the slot past its bound (%d held)", what, n)
+		}
+		if took := time.Since(held); took > 2*time.Second {
+			t.Fatalf("%s: the slot came back after %v, not at the bound", what, took)
+		}
+		resp, err := client.Get("http://witness" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: the next request under a cap of one: %d", what, resp.StatusCode)
+		}
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if got, err := conn.Read(make([]byte, 64)); got != 0 || err == nil {
+			t.Fatalf("%s: after its bound the answer was still written: %d bytes read, %v", what, got, err)
+		}
+		conn.Close()
+	}
+}
+
 // The round trip: statements served over a server, submitted and then read
 // back a page at a time to the head, read through the reader a verifier
 // uses (witness.go) with no finding -- current, to the head, before and

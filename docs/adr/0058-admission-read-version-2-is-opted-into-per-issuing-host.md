@@ -175,8 +175,8 @@ From the new engine version, each served platform tool's `_meta` (`listingEntry`
   none.
 
 The seal tool carries neither. Below the new engine version the listing is byte for byte as before,
-and `testdata/tool-taxonomy/served-listing.json` is unchanged; a second vector holds the listing at
-the new engine version. Both members are information for a host approving a tool, which it can
+and `testdata/tool-taxonomy/served-listing.json` is unchanged; a second vector,
+`testdata/tool-taxonomy/served-listing-read-v2.json`, holds the listing at the new engine version. Both members are information for a host approving a tool, which it can
 check against the snapshot it approves; they grant nothing, like the rest of `_meta`. The two members
 add up to about 170 bytes to an entry, inside the listing budget (*Budgets*, tool-descriptors
 design), so a listing near the budget sends some tools without their descriptions sooner.
