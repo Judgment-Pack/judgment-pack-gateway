@@ -99,6 +99,13 @@ func sealDigestOf(record *vObject) string { return receiptDigestOf(record) }
 // {"deliveryVersion": "2", "seal", "sealDigest"} in canonical form, at
 // sealIndex.
 func (f *receiptForwarder) heldSeal(record *vObject) heldReceipt {
+	if f.v3 {
+		// "3" (sink_delivery_v3.go): the seal in the envelope
+		body, digest := sinkDeliveryV3Envelope(sinkKindSeal, canon(record), func(r *vObject) {
+			r.set("seal", record)
+		})
+		return heldReceipt{index: sealIndex, body: body, digest: digest, seal: true}
+	}
 	digest := sealDigestOf(record)
 	request := newObject()
 	request.set("deliveryVersion", vString(sealDeliveryVersion))

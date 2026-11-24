@@ -472,7 +472,17 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 					return nil, err
 				}
 				if prior.outcome == "response" {
+					// under delivery "3", answered only once the receipt
+					// it carries is acknowledged (sink_delivery_v3.go)
+					if err := g.redeliverAnswered(prior.response); err != nil {
+						return nil, err
+					}
 					return prior.response, nil
+				}
+				// an uncertain record's receipt is acknowledged before it is
+				// reconciled, or answered as uncertain (sink_delivery_v3.go)
+				if err := g.redeliverAnswered(prior.response); err != nil {
+					return nil, err
 				}
 				// the read-back is receipted in the request's session, so a
 				// label minted for it is recorded before the read-back runs
@@ -729,6 +739,11 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 			return nil, err
 		}
 	}
+	// Under delivery "3" the action receipt is held for the sink in the hold
+	// that stamps it, at its index, and delivered once the lock is released
+	// (ADR-0059 section 9).
+	var forwarding *forwardQueue
+	var actionIndex int64
 	out, err := func() (map[string]any, error) {
 		g.mu.Lock()
 		defer g.mu.Unlock()
@@ -803,6 +818,14 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		if err != nil {
 			return nil, err
 		}
+		if g.forwarder != nil && g.forwarder.v3 {
+			if state.forward == nil {
+				state.forward = newForwardQueue()
+			}
+			actionIndex = state.index
+			state.forward.add(g.forwarder.heldAction(actionIndex, stored))
+			forwarding = state.forward
+		}
 		state.index++
 		state.prev = signature
 
@@ -838,9 +861,20 @@ func (g *gatewayService) actKeyed(sessionRaw, platformRaw, toolRaw, argumentsRaw
 		if err = claim.publish("action.json", raw, actionJournalResponseLimit); err != nil {
 			return nil, err
 		}
-		if uncertain {
-			return g.reconcileAction(sessionID, platform, spec.scope, arguments, who, key, recovery, out, !dispatched)
+	}
+	if forwarding != nil {
+		// Delivered under the session's admission, outside the gateway's
+		// lock, and after the key's evidence is published: the write has
+		// happened, so an action receipt not acknowledged is refused with
+		// the action's own sentence, held, and the same key answers it from
+		// that evidence once it is acknowledged, never running the write
+		// again (redeliverAnswered).
+		if err := g.forwarder.deliver(g.forwardingContext(), forwarding, actionIndex); err != nil {
+			return nil, actionReceiptNotForwarded{keyed: key != ""}
 		}
+	}
+	if claim != nil && uncertain {
+		return g.reconcileAction(sessionID, platform, spec.scope, arguments, who, key, recovery, out, !dispatched)
 	}
 	return out, nil
 }

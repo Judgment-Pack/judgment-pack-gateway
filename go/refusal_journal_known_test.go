@@ -26,12 +26,31 @@ func refusalNearMisses(name string) []string {
 		name,
 		refusalJournalPrefix + "anything.jsonl",
 		refusalJournalPrefix + ".jsonl",
+		// a forwarding cursor's staging file of any other form
+		refusalJournalPrefix + stem[:23] + ".forwarded.4242.0123456789ab.tmp",
+		name + ".forwarded.4242.0123456789AB.tmp",
+		name + ".forwarded.4242.0123456789a.tmp",
+		name + ".forwarded.4242.0123456789abc.tmp",
+		name + ".forwarded.12345678901.0123456789ab.tmp",
+		name + ".forwarded..0123456789ab.tmp",
+		name + ".forwarded.0123456789ab.tmp",
+		name + ".forwarded.4242.0123456789ab",
+		name + ".forwarded.4242.0123456789ab.tmp.x",
+		name + ".key.4242.0123456789ab.tmp",
+		name + ".forwarded.bak",
 	}
 }
 
-// Only a refusal journal's exact name, with .jsonl or .key, is a file this
-// release reads; every near miss is named journal-unknown, and the files
-// of the exact name are not.
+// refusalKnownFiles are the files of a refusal journal's exact name this
+// release knows: the journal, its key, its forwarding cursor and the
+// cursor's staging file (ADR-0059 §8, §9).
+func refusalKnownFiles(name string) []string {
+	return []string{name + ".jsonl", name + ".key", name + ".forwarded", name + ".forwarded.4242.0123456789ab.tmp"}
+}
+
+// Only a refusal journal's exact name, with .jsonl, .key, .forwarded or a
+// cursor's staging form, is a file this release knows; every near miss is
+// named journal-unknown, and the files of the exact name are not.
 func TestOnlyARefusalJournalsExactNameIsKnown(t *testing.T) {
 	name := refusalJournalName(callerScopeA)
 	root := t.TempDir()
@@ -41,7 +60,7 @@ func TestOnlyARefusalJournalsExactNameIsKnown(t *testing.T) {
 	}
 	misses := refusalNearMisses(name)
 	var want []string
-	for _, file := range append([]string{name + ".jsonl", name + ".key"}, misses...) {
+	for _, file := range append(refusalKnownFiles(name), misses...) {
 		at := filepath.Join(dir, file)
 		if _, err := os.Lstat(at); err == nil {
 			// a filesystem that folds case holds it as a known file's name
@@ -66,17 +85,17 @@ func TestOnlyARefusalJournalsExactNameIsKnown(t *testing.T) {
 	if !slices.Equal(names, want) {
 		t.Fatalf("journal-unknown:\n got %q\nwant %q", names, want)
 	}
-	for _, file := range []string{name + ".jsonl", name + ".key"} {
+	for _, file := range refusalKnownFiles(name) {
 		if !isKnownJournalFile(file) {
 			t.Errorf("%s is not known", file)
 		}
 	}
-	// an export carries the journal by its exact name, and never its key
-	// nor a near miss
+	// an export carries the journal by its exact name, and never its key,
+	// its cursor, a staging file nor a near miss
 	if !exportPathWritten("store/journals/" + name + ".jsonl") {
 		t.Error("an export reader refuses a refusal journal")
 	}
-	for _, file := range append([]string{name + ".key"}, misses...) {
+	for _, file := range append(refusalKnownFiles(name)[1:], misses...) {
 		if exportPathWritten("store/journals/" + file) {
 			t.Errorf("an export reader takes %s", file)
 		}

@@ -65,14 +65,25 @@ type receiptSinkSpec struct {
 	url     string
 	payload bool
 	// seals is receiptSink.seals (sealSinkVersion; seal_sink.go): each seal
-	// is delivered to the sink too, after the session's receipts.
+	// is delivered to the sink too, after the session's receipts. It is
+	// implied by deliveryVersion "3".
 	seals bool
+	// deliveryV3 is receiptSink.deliveryVersion "3" (sinkDeliveryV3Version;
+	// sink_delivery_v3.go): every delivery is a "3" envelope, and action
+	// receipts are delivered too.
+	deliveryV3 bool
+	// refusalEntries is receiptSink.refusalEntries, valid under "3" alone
+	// and true when absent there: false declines refusal entries
+	// (ADR-0059 section 9, condition C11).
+	refusalEntries bool
 }
 
 // parseReceiptSink holds receiptSink to its form: {"url": …} with an
 // optional "payload", true or false, and from sealSinkVersion an optional
 // "seals", true or false, which a file of an earlier version is refused by
-// name for. The url is https, or plain http to a
+// name for. From sinkDeliveryV3Version it takes "deliveryVersion", the string
+// "3" alone, which implies seals and so refuses the member beside it, and,
+// beside it alone, "refusalEntries", true or false (ADR-0059 section 9). The url is https, or plain http to a
 // loopback address written as one -- 127.0.0.0/8 in dotted decimal or
 // [::1] -- so that a plain-http sink is reached without a name being
 // resolved. It carries no user, query or fragment. A refusal repeats no
@@ -82,7 +93,7 @@ func parseReceiptSink(v value, version string) (*receiptSinkSpec, error) {
 	if !ok {
 		return nil, errors.New("receiptSink is an object")
 	}
-	if err := exactlyMembers(obj, map[string]bool{"url": true, "payload": false, "seals": false}, "receiptSink"); err != nil {
+	if err := exactlyMembers(obj, map[string]bool{"url": true, "payload": false, "seals": false, "deliveryVersion": false, "refusalEntries": false}, "receiptSink"); err != nil {
 		return nil, err
 	}
 	raw, _ := obj.get("url")
@@ -101,7 +112,33 @@ func parseReceiptSink(v value, version string) (*receiptSinkSpec, error) {
 		}
 		spec.payload = bool(on)
 	}
+	if value, present := obj.get("deliveryVersion"); present {
+		if !versionAtLeast(version, sinkDeliveryV3Version) {
+			return nil, fmt.Errorf("receiptSink: deliveryVersion is a version-%s member; engineVersion %s has no deliveryVersion", sinkDeliveryV3Version, version)
+		}
+		if text, ok := value.(vString); !ok || string(text) != sinkDeliveryV3 {
+			return nil, errors.New(`receiptSink: deliveryVersion, when present, is the string "3"; versions "1" and "2" are chosen by its absence and by seals`)
+		}
+		spec.deliveryV3 = true
+		// seals are always forwarded under "3", and refusal entries unless
+		// declined below
+		spec.seals = true
+		spec.refusalEntries = true
+	}
+	if value, present := obj.get("refusalEntries"); present {
+		if !spec.deliveryV3 {
+			return nil, errors.New(`receiptSink: refusalEntries is a member of deliveryVersion "3"; a receiptSink without deliveryVersion "3" has no refusalEntries`)
+		}
+		on, ok := value.(vBool)
+		if !ok {
+			return nil, errors.New("receiptSink: refusalEntries, when present, is true or false")
+		}
+		spec.refusalEntries = bool(on)
+	}
 	if value, present := obj.get("seals"); present {
+		if spec.deliveryV3 {
+			return nil, errors.New(`receiptSink: seals is implied by deliveryVersion "3"`)
+		}
 		if !versionAtLeast(version, sealSinkVersion) {
 			return nil, fmt.Errorf("receiptSink: seals is a version-%s member; engineVersion %s has no seals", sealSinkVersion, version)
 		}
@@ -229,9 +266,13 @@ func (q *forwardQueue) heldRefusal(upTo int64) error {
 
 // receiptForwarder delivers to the configured sink.
 type receiptForwarder struct {
-	url            string
-	payload        bool
-	seals          bool
+	url     string
+	payload bool
+	seals   bool
+	// v3 is deliveryVersion "3" (sink_delivery_v3.go): every delivery is a
+	// "3" envelope, and action receipts are delivered too.
+	v3             bool
+	refusalEntries bool
 	client         *http.Client
 	attemptTimeout time.Duration
 	backoff        []time.Duration
@@ -267,6 +308,10 @@ func newReceiptForwarder(spec *receiptSinkSpec) *receiptForwarder {
 		url:     spec.url,
 		payload: spec.payload,
 		seals:   spec.seals,
+		v3:      spec.deliveryV3,
+		// refusal entries, where on, are forwarded through a forwarder
+		// of their own (sink_refusal_entries.go)
+		refusalEntries: spec.refusalEntries,
 		client: &http.Client{
 			Transport: transport,
 			// a redirect is an answer that is not the acknowledgment
@@ -290,6 +335,18 @@ func receiptDigestOf(stored *vObject) string {
 // configuration asks for it and the source keeps its payload: a payload the
 // gateway does not keep (ADR-0028) is not kept at the sink either.
 func (f *receiptForwarder) held(index int64, stored *vObject, payloadDigest string, payload value, notRetained bool) heldReceipt {
+	if f.v3 {
+		// "3" (sink_delivery_v3.go): the same members in the envelope, under
+		// the digest of its own
+		body, digest := sinkDeliveryV3Envelope(sinkKindAcquisitionReceipt, canon(stored), func(r *vObject) {
+			if f.payload && !notRetained {
+				r.set("payload", payload)
+			}
+			r.set("payloadDigest", vString(payloadDigest))
+			r.set("receipt", stored)
+		})
+		return heldReceipt{index: index, body: body, digest: digest}
+	}
 	digest := receiptDigestOf(stored)
 	request := newObject()
 	request.set("deliveryVersion", vString(receiptDeliveryVersion))
@@ -466,12 +523,27 @@ type sealOpenSink struct {
 // A receipt that cannot be read back is no acknowledgment either. The
 // payload goes where the configuration asks for it and the store keeps one.
 // A receipt of another kind, the action receipt /act stores in the same
-// chain, is not delivered: the sink takes acquisition receipts alone
-// (SPEC.md §6a), as the delivery before /acquire answers does.
+// chain, is not delivered under "1" and "2": the sink takes acquisition
+// receipts alone (SPEC.md §6a), as the delivery before /acquire answers does.
+// Under "3" it is delivered in its place in the chain, as /act delivers it
+// (ADR-0059 section 9), so a session is sealed only once its action receipts
+// are acknowledged too.
 func (s *sealOpenSink) deliver(st sealOpenStore, t sealOpenTarget) bool {
-	reading, refusal, err := st.reading(t.sessionID)
-	if err != nil || refusal != "" {
+	queue, ok := s.forwarder.storedQueue(st, t.sessionID, math.MaxInt64)
+	if !ok {
 		return false
+	}
+	return s.forwarder.deliver(s.ctx, queue, math.MaxInt64) == nil
+}
+
+// storedQueue is the queue of the receipts the store holds of the session,
+// through index upTo, oldest first, as the forwarder delivers each kind (see
+// sealOpenSink.deliver); false where any of them, or the session, cannot be
+// read, which is no acknowledgment either.
+func (f *receiptForwarder) storedQueue(st sealOpenStore, sessionID string, upTo int64) (*forwardQueue, bool) {
+	reading, refusal, err := st.reading(sessionID)
+	if err != nil || refusal != "" {
+		return nil, false
 	}
 	type stored struct {
 		index int64
@@ -481,11 +553,14 @@ func (s *sealOpenSink) deliver(st sealOpenStore, t sealOpenTarget) bool {
 	for _, name := range reading.names {
 		index, err := strconv.ParseInt(strings.TrimSuffix(name, ".json"), 10, 64)
 		if err != nil {
-			return false
+			return nil, false
+		}
+		if index > upTo {
+			continue
 		}
 		data, err := reading.read(name)
 		if err != nil {
-			return false
+			return nil, false
 		}
 		all = append(all, stored{index, data})
 	}
@@ -494,45 +569,48 @@ func (s *sealOpenSink) deliver(st sealOpenStore, t sealOpenTarget) bool {
 	for _, r := range all {
 		parsed, err := parseJSON(r.bytes)
 		if err != nil {
-			return false
+			return nil, false
 		}
 		receipt, ok := parsed.(*vObject)
 		if !ok {
-			return false
+			return nil, false
 		}
 		// a receipt that names no kind (versions 1 and 2) is an acquisition
 		if kind, present := receipt.get("kind"); present {
 			name, isString := kind.(vString)
 			if !isString {
-				return false
+				return nil, false
 			}
 			if name != "acquisition" {
+				if name == "action" && f.v3 {
+					queue.add(f.heldAction(r.index, receipt))
+				}
 				continue
 			}
 		}
 		digest, ok := memberString(receipt, "resultDigest")
 		if !ok {
-			return false
+			return nil, false
 		}
 		notRetained := false
 		if artifact, present := memberString(receipt, "artifact"); present && artifact == artifactNotRetained {
 			notRetained = true
 		}
 		var payload value
-		if s.forwarder.payload && !notRetained {
+		if f.payload && !notRetained {
 			if hexSum, ok := strings.CutPrefix(digest, "sha256:"); ok {
-				if data, found, err := st.payload(t.sessionID, hexSum); err != nil {
-					return false
+				if data, found, err := st.payload(sessionID, hexSum); err != nil {
+					return nil, false
 				} else if found {
 					if payload, err = parseJSON(data); err != nil {
-						return false
+						return nil, false
 					}
 				}
 			}
 		}
 		// a payload the store no longer holds (a removal, SPEC.md §1.3a) is
 		// carried as the one a source that keeps none is: not at all
-		queue.add(s.forwarder.held(r.index, receipt, digest, payload, notRetained || payload == nil))
+		queue.add(f.held(r.index, receipt, digest, payload, notRetained || payload == nil))
 	}
-	return s.forwarder.deliver(s.ctx, queue, math.MaxInt64) == nil
+	return queue, true
 }
