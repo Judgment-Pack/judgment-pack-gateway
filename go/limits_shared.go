@@ -327,14 +327,17 @@ func (l *requestLimiter) shareOn(rates sharedRates, live int) string {
 	go c.run(ctx)
 	if !c.available.Load() {
 		reason, _ := c.failed.Load().(string)
-		return fmt.Sprintf("request limits: the shared count is unavailable (%s); each instance counts alone at ceil(limit/N) of %d instances until the database answers a refill, tried every %s", reason, c.live.Load(), c.probeEvery)
+		return fmt.Sprintf("request limits: the shared count is unavailable (%s); this instance counts alone at ceil(limit/N) of %d instances until a probe, tried every %s, leases every limited scope's batch, one scope after another, all within %s", reason, c.live.Load(), c.probeEvery, 2*c.bound)
 	}
 	return fmt.Sprintf("request limits: counted together by the %d live instances of this database (limits.shared): each scope's rate is leased in batches, and its in-flight cap and per-caller limits are split ceil(limit/N); the gateway-wide cap is this instance's alone", c.live.Load())
 }
 
 // leaseAll leases each limited scope's batch up to b, the first failure
 // ending it, and makes the shared count available where every lease
-// succeeds, all within twice the refill's bound. A scope whose row another
+// succeeds, all within twice the refill's bound. The leases run one scope
+// after another, so the bound holds their sum: with many limited scopes a
+// database that answers each lease in time can still keep the instance
+// counting alone, and the reason says so. A scope whose row another
 // transaction holds is tried again by the refill and passed over here; at
 // least one lease must succeed, except where no scope has a rate, and
 // there is nothing to lease. rows makes each scope's row first, as the
@@ -369,7 +372,7 @@ func (c *sharedCount) leaseAll(rows bool) {
 		return
 	}
 	if took := time.Duration(sharedSince() - began); took > 2*c.bound {
-		c.fallback(fmt.Sprintf("the probe's leases took %s, longer than %s", took.Round(time.Millisecond), 2*c.bound), true)
+		c.fallback(fmt.Sprintf("the leases of %d limited scopes, one after another, took %s, longer than %s", rated, took.Round(time.Millisecond), 2*c.bound), true)
 		return
 	}
 	c.slow.Store(false)

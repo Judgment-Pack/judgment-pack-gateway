@@ -88,6 +88,15 @@ Write N for the live instances, B for the burst, T for the interval, and b for t
   For example, a scope of 6000 requests a minute (T = 10 ms, so b = 10) with a burst B of 50, on
   N = 3 instances, admits at most 50 + 100 + 3·10 = 180 requests in any one second; one instance
   counting alone admits at most 50 + 100 = 150.
+- **Some instances alone.** An instance counting alone (section 4) admits from its own bucket, and
+  the others, which do not know it, keep leasing the whole shared bucket. So while k of the N
+  instances count alone, a window W admits at most
+  B + ⌈W/T⌉ + N·b + k·(⌈B/N⌉ + ⌈W/T_N⌉), T_N the interval of ⌈rpm/N⌉: above the shared bound by
+  about k/N of the rate, for as long as it lasts. In the example above, with one of the three
+  alone (T_N = 30 ms), at most 180 + 17 + 34 = 231 in any one second; over 10 seconds, 1080
+  shared and 1431 with one alone, where the pre-release review's probe measured 1397. A lasting
+  fallback is therefore an alert condition: `/posture` on each instance says whether it counts
+  alone. Marking it on the start lease, so that the others account for it, is gateway #629.
 - **Burst.** The shared bucket's burst is the configured B, unchanged, and a batch is part of it.
   At one instant the instances together admit at most B + N·b: the bucket's room plus the batches
   they hold.
@@ -135,8 +144,11 @@ Write N for the live instances, B for the burst, T for the interval, and b for t
   answer, or a refill waited too long (section 5).
 - **Recovery.** A probe every second (`sharedProbeInterval`) counts the instances and leases each
   limited scope's batch, up to b. The shared count is available again only once a lease succeeds:
-  the probe returns the instance where every lease succeeds, all within twice the bound. A probe
-  that fails, or is slow, leaves the instance counting alone. At the start the shared count is
+  the probe returns the instance where every lease succeeds, all within twice the bound. The leases
+  run one scope after another, so the bound holds their sum: with many limited scopes, a database
+  that answers each lease in time can still keep an instance counting alone (at 25 ms a lease,
+  about 160 scopes), and the reason says how many leases took how long. A probe that fails, or is
+  slow, leaves the instance counting alone. At the start the shared count is
   likewise available only once the first batches are leased.
 
 ### 5. Start lines and `/posture`
@@ -179,14 +191,20 @@ Write N for the live instances, B for the burst, T for the interval, and b for t
   at most about 20 statements a second per scope at the highest rate, all off the request path.
 - A held or slow row delays only its own scope's refill. That scope refuses `scope-rate` from its
   own batch and never waits.
+- **Enabling `limits.shared`, or changing a limit value, is a stop-all change,** as changing the
+  key-history version is (ADR-0062). The start lease does not compare `limits.shared` or the limit
+  values between instances, so an instance started with others beside it serves under its own:
+  instances without the member each count the whole limit, and instances of other values lease
+  one row under other intervals and bursts. Stop every instance, change the configuration, then
+  start them. A start refusal is gateway #630.
 
 ## What is not established
 
 - The bounds assume that each instance's monotonic clock runs at the database clock's rate.
   Neither drift nor a database clock that steps is modelled.
-- A fallback does not divide what is left of the shared bucket. Each instance starts its own bucket
-  full at ⌈B/N⌉, so the first second of a fallback may admit up to about B beside what the batches
-  had admitted.
+- A fallback does not divide what is left of the shared bucket, and the instances still sharing do
+  not account for one counting alone: the mixed-state bound of section 3 is stated, not lowered
+  (gateway #629).
 
 ## Tests
 

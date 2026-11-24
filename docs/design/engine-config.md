@@ -3262,7 +3262,13 @@ configuration may carry a top-level `limits` member. Below that version it is re
     2 seconds), or a scope's refill waiting more than 4 seconds with
     its batch spent: each instance counts the rate alone at ceil(limit/N), from its own bucket
     carried over from its last spell alone, `/posture` says the shared count is unavailable and why, and a probe every
-    second that leases every scope's batch in time returns it.
+    second that leases every limited scope's batch, one scope after another, all within 4 seconds,
+    returns it. The instances still sharing do not know of one counting alone: while k of N count
+    alone, a window W admits up to `burst` + ceil(W/T) + N·b + k·(ceil(`burst`/N) + ceil(W/T_N)),
+    T_N the interval of ceil(requestsPerMinute/N), for as long as it lasts, so a lasting fallback
+    is an alert condition.
+  - *A stop-all change.* Setting `shared`, or changing a limit value under it, needs every instance
+    stopped first: the instances of one database are not compared on either.
   - *`beforeScope`* stays each instance's own.
   - *The start line* ends `counted together by the instances of this database (limits.shared)`,
     and a second line names the live instances once the first batches are leased. The
