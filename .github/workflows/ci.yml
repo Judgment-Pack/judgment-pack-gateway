@@ -101,9 +101,11 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: Vet
         run: go vet ./...
+      # An explicit ceiling: Go's default of 10 minutes is the whole binary's, and the macOS leg's
+      # core run passed it (581.9 s of 600 at 73ef9d6). The Linux leg runs the same step, far below.
       - name: Tests
         if: matrix.os != 'windows-latest'
-        run: go test ./...
+        run: go test -timeout 30m ./...
       # Each top-level test of the core in exactly one shard, by the length of its name; the script
       # refuses unless Go's selection of this shard is that, and the two shards together are the
       # whole listing `go test -list` gives (.github/go_test_shard.py).
