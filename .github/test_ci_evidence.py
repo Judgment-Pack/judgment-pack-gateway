@@ -531,13 +531,13 @@ class ConfigurationTest(unittest.TestCase):
                          ['macos-latest', 'ubuntu-latest', 'windows-latest', 'windows-latest'])
 
     def test_the_windows_shards_test_the_core_once_and_the_other_legs_whole(self):
-        """Each leg runs the core's tests by one step: `go test ./...`, or on Windows one shard of
+        """Each leg runs the core's tests by one step: `go test -timeout 30m ./...`, or on Windows one shard of
         the script's split, the shards being 1 to N of its --of N. The sandbox boundary tests run
         once on each operating system."""
         go = self.ci['jobs']['go']
         steps = {step['name']: step for step in go['steps']}
         whole, shard = steps['Tests'], steps['Tests, one shard of two']
-        self.assertEqual(whole['run'], 'go test ./...')
+        self.assertEqual(whole['run'], 'go test -timeout 30m ./...')
         command = shard['run']
         self.assertEqual(option(command, '--dir'), ['go'])
         self.assertEqual(option(command, '--shard'), ['${SHARD}'])
